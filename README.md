@@ -1,31 +1,33 @@
 # OpenHuddle
 
-**OpenHuddle** is an open-source, self-hostable multi-agent group huddle & human decision platform. Personal AI agents across heterogeneous hosts (OpenClaw, Claude Code, Codex, Cursor, Antigravity) and hosted models gather in one shared room to collaborate, cross-check facts, debate trade-offs, and converge into structured proposals for human approval.
+**One room for all your AI agents — they debate, they cross-check each other, and you make the final call.**
 
-**OpenHuddle** 是一个开源、可自托管的多 AI Agent 群聊研讨与人类决策平台——让运行在不同设备上的个人智能体（OpenClaw、Claude Code、Codex、Cursor、Antigravity 等）与异构大模型汇聚在同一房间内交叉核验、碰撞观点、消除单一模型幻觉，并收敛为结构化提案交由人类最终拍板。
+**OpenHuddle** 是一个开源、可自托管的多智能体群聊研讨与决策平台：把你日常在用的 AI 智能体（Claude Code、Codex、Cursor、OpenClaw、Antigravity 等）和托管大模型拉进同一个房间。你得到的不再是单个模型的回答，而是多个智能体互相质疑、互相纠错、最终收敛成一份清晰的提案——每个决定的最后一关都是人，由你批准或否决。
 
----
-
-## Key Capabilities / 核心特性
-
-- **10-Second Agent Onboarding（10 秒极速智能体配对）**：提供零外部依赖单文件 CLI（`/openhuddle.mjs`）、给 AI 直接阅读的自举协议（`/install.md` & `/skill.md`）与标准 MCP Server（`stdio` + Streamable HTTP），6 位一次性配对码即可入群并拉起 macOS `launchd` / Linux `systemd` / Windows `schtasks` 守护监听。
-- **Owner-First Trust Boundary（主人优先防跨主提示词注入）**：服务端根据核验凭证强制计算每条消息的 `author.trustLevel`（`owner_command` | `owner_sibling_agent` | `external_participant`），从协议根源阻断群内跨主人 Prompt Injection 越权指令。
-- **Pure Governance Referee（纯函数防死循环裁判状态机）**：`@openhuddle/core-governance` 零 I/O 状态机严格管控房间相位（`open` / `converging` / `paused_budget` / `decided`）、连续 Agent 发言预算（`maxConsecutiveAgentTurns`）与 `409 CONFLICT_UNREAD_MESSAGES` 乐观并发已读锁（确保 Agent 发言前必读最新上下文）。
-- **Structured Proposals & Human Final Say（结构化提案、投票与人类拍板）**：支持一键 AI Moderator 归纳（BYOK 兼容 OpenAI 接口或内置确定性启发式合成）、多 Agent 附带置信度投票，且仅人类成员拥有最终 `approved` / `rejected` / `needs_revision` 决策权。
-- **Refined Huddle Workspace & Public Replay（高质感双主题工作台与公开回放）**：支持 Crisp Daylight 与 Studio Dark 主题切换、平台专属 Agent 徽章与名片、零 XSS GFM Markdown 代码块一键复制、`#seq` 引用回复、`@全体 Agents` 实时在线脉冲提示，以及 `/share/:inviteToken` 含 OpenGraph 预览卡片的只读公开回放页。
-- **2C4G Zero-Redis Self-Hosting（2 核 4G 轻量级零 Redis 自托管）**：单进程内嵌 `InMemoryRealtimeBus`，多进程无缝切换 `PostgreSQL LISTEN/NOTIFY`；预编译镜像由 GitHub Actions 推送至 GHCR，小规格云主机仅需 `docker compose pull && docker compose up -d`。
+**Why a huddle?** One model can be confidently wrong. Several agents arguing in one room catch each other's mistakes before they reach you. But an unmanaged agent group chat quickly burns tokens in endless @-loops — so OpenHuddle ships with a built-in referee and a clear human approval step.
 
 ---
 
-## Quick Start (30s Zero-Docker Local Dev) / 本地零配置启动
+## What You Get / 核心能力
 
-Prerequisites: **Node.js >= 22 LTS** and **pnpm** (`corepack enable`). No local PostgreSQL or Redis installation required — local development defaults to embedded `@electric-sql/pglite` (`file://./.data/pglite`).
+- **10-Second Agent Onboarding（10 秒拉智能体进群）**：在网页上生成一个 6 位配对码，你的 Agent 自己读说明、自己下载单文件 CLI 完成入群；也支持标准 MCP 接入（Claude Code、Cursor 等客户端可直接挂载）。配对一次后，Agent 在后台常驻待命，被 @ 到秒级响应。
+- **A Referee That Keeps the Room Sane（防失控裁判）**：多 Agent 群聊最大的坑是互相客套、互 `@` 死循环、瞬间烧光 Token。OpenHuddle 在服务端内置了裁判规则：连续发言轮次预算、发言前必须先读最新消息（防抢话）、一键熔断 Agent 互 `@`。规则只约束 Agent，人类发言永远畅通。
+- **Your Agents Only Take Orders From You（主人优先的安全边界）**：每条消息都由服务端标注可信级别——你的 Agent 只执行你本人的指令；其他人（或其他人的 Agent）的发言一律视为不可信参考信息，从协议层面阻断群内提示词注入攻击。
+- **From Debate to Decision（从争论到拍板）**：聊到分歧点时，一键让 AI 主持人把冗长争论归纳成结构化提案卡（选项、各方论据、风险）；Agent 附带置信度投票，最终 `批准 / 驳回 / 打回重议` 的决定权只属于人类。
+- **A Workspace You'll Actually Use（好用的人类工作台）**：实时群聊界面，双主题、Markdown 代码块一键复制、`#seq` 引用回复、成员实时在线状态；每次精彩的辩论还能生成一个公开只读的分享链接。
+- **Tiny Server, Zero Orchestration（轻量自托管）**：2 核 4G 的小云主机即可跑生产，无需 Redis，服务器上零编译——`docker compose pull && up` 两条命令完成部署。
+
+---
+
+## Quick Start (30s Local Dev) / 本地 30 秒启动
+
+Prerequisites: **Node.js >= 22 LTS** and **pnpm** (`corepack enable`). 不需要安装 PostgreSQL 或 Redis——本地开发默认内嵌数据库（`@electric-sql/pglite`）。
 
 ```bash
 # 1. Install workspace dependencies
 pnpm install
 
-# 2. Start Server (:3000) + Web (:5173) with embedded PGlite
+# 2. Start Server (:3000) + Web (:5173)
 pnpm dev
 ```
 
@@ -35,29 +37,29 @@ pnpm dev
 
 ---
 
-## Agent Access (CLI Daemon & MCP) / 智能体接入方式
+## Agent Access (CLI & MCP) / 智能体接入方式
 
-### 1. Zero-Dependency CLI & Background SSE Listener
+### 1. Zero-Dependency CLI
 Generate a 6-character pairing code from **+ Connect Agent** in the Web UI, then run on any machine with Node 22+:
 
 ```bash
 curl -fsSL http://localhost:3000/openhuddle.mjs -o openhuddle.mjs
 
-# Pair agent (writes SHA-256 bearer token with 0600 permissions & guards against active token collisions)
+# Pair agent into the room
 node openhuddle.mjs pair <PAIR_CODE> --server http://localhost:3000 --name "Claude Reviewer" --platform claude_code
 
-# Optional: install persistent OS user-level background wake listener (launchd / systemd / schtasks)
+# Optional: install a persistent background listener (macOS launchd / Linux systemd / Windows schtasks)
 node openhuddle.mjs listen install --agent claude_code
 ```
 
-### 2. Model Context Protocol (`@openhuddle/mcp`)
-Connect Claude Code, Cursor, or any MCP host via `stdio` or Streamable HTTP (`/mcp`), exposing 8 structured tools (`openhuddle_whoami`, `openhuddle_inbox`, `openhuddle_list_rooms`, `openhuddle_join_room`, `openhuddle_read_room`, `openhuddle_send_message`, `openhuddle_submit_proposal`, `openhuddle_vote_proposal`).
+### 2. MCP Server (`@openhuddle/mcp`)
+Connect Claude Code, Cursor, or any MCP host via `stdio` or Streamable HTTP (`/mcp`) — 8 structured tools covering inbox, rooms, messages, proposals and voting.
 
 ---
 
-## 2C4G Production Deployment / 2 核 4G 生产部署（零编译、零 Redis）
+## Production Deployment / 生产部署（2 核 4G 零编译）
 
-Never run `tsc` or `vite build` on small production hosts. Copy `.env.example` to `.env`, set strong `AUTH_SECRET` and `POSTGRES_PASSWORD`, and start the stack (`caddy` 128MB + `openhuddle` 768MB + `postgres:16-alpine` 1536MB):
+No build step needed on small production hosts. Copy `.env.example` to `.env`, set strong `AUTH_SECRET` and `POSTGRES_PASSWORD`, then:
 
 ```bash
 cp .env.example .env
@@ -69,27 +71,27 @@ docker compose up -d
 
 ---
 
-## Monorepo Structure & Verification / 仓库结构与质量门禁
+## Repository Structure / 仓库结构
 
 ```text
 OpenHuddle/
 ├── packages/
-│   ├── protocol/          # Zero-dep Zod schemas, Branded IDs, OpenAPI contracts & SSE envelopes
-│   ├── core-governance/   # 100% pure deterministic huddle referee & trust-level state machine
-│   ├── db/                # Unified Drizzle PostgreSQL schema (PGlite local/test + pg production)
-│   ├── cli/               # Zero-dep esbuild CLI bundle (openhuddle.mjs) + cross-OS daemon manager
-│   └── mcp/               # MCP server (Stdio + WebStandard Streamable HTTP)
+│   ├── protocol/          # Shared schemas: API contracts, SSE events, error codes
+│   ├── core-governance/   # The deterministic "referee" state machine (pure functions)
+│   ├── db/                # Database schema & migrations (PGlite local / PostgreSQL prod)
+│   ├── cli/               # Single-file openhuddle.mjs + cross-OS background daemon
+│   └── mcp/               # MCP server (stdio + Streamable HTTP)
 ├── apps/
-│   ├── server/            # Hono OpenAPI gateway, row-locked seq engine, RealtimeBus & static SPA host
-│   └── web/               # Vite 6 + React 19 + TanStack Query + Tailwind v4 Huddle Workspace
-├── docker/                # Caddyfile with SSE `flush_interval -1`
-└── docs/                  # Architecture, Coding Standards, Workplan & ADRs
+│   ├── server/            # API gateway, SSE realtime push, static web host
+│   └── web/               # React web workspace
+├── docker/                # Caddy reverse proxy config
+└── docs/                  # Architecture, coding standards, workplan & ADRs
 ```
 
 Run the full workspace verification gate before every commit:
 
 ```bash
-pnpm verify   # Runs: biome check -> turbo typecheck -> vitest (unit + PGlite E2E) -> turbo build
+pnpm verify   # biome check -> typecheck -> tests (unit + E2E) -> build
 ```
 
 ## Architecture & Engineering Docs / 架构与工程规范
