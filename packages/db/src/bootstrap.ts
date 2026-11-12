@@ -18,6 +18,23 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique_idx ON users (email)",
+  `CREATE TABLE IF NOT EXISTS auth_otp_codes (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    requested_display_name TEXT,
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  `CREATE TABLE IF NOT EXISTS user_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS user_sessions_token_hash_unique_idx ON user_sessions (token_hash)",
   `CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

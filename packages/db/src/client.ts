@@ -41,6 +41,8 @@ export interface DatabaseClientOptions {
 export interface ManagedDatabase {
   readonly driver: "pglite" | "postgres";
   readonly db: OpenHuddleDb;
+  /** 当驱动为标准 `postgres` 时暴露底层 `pg.Pool`，供 `LISTEN / NOTIFY` 事件总线使用 */
+  readonly pgPool?: pg.Pool;
   readonly close: () => Promise<void>;
 }
 
@@ -89,6 +91,7 @@ export function createDatabaseClient(options: Readonly<DatabaseClientOptions>): 
     return {
       driver: "postgres",
       db,
+      pgPool: pool,
       close: async () => {
         await pool.end();
       },

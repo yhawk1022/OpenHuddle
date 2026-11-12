@@ -34,6 +34,38 @@ export const usersTable = pgTable(
 );
 
 /**
+ * 人类登录与自助绑定一次性邮箱验证码表（`auth_otp_codes`）。
+ * 仅存储 6 位验证码的 SHA-256 哈希摘要与过期时间。
+ */
+export const authOtpCodesTable = pgTable("auth_otp_codes", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  codeHash: text("code_hash").notNull(),
+  requestedDisplayName: text("requested_display_name"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * 人类 Web 登录会话表（`user_sessions`）。
+ * 仅存储 `oh_ses_` 会话令牌的 SHA-256 摘要，支持主动登出与过期清理。
+ */
+export const userSessionsTable = pgTable(
+  "user_sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("user_sessions_token_hash_unique_idx").on(table.tokenHash)],
+);
+
+/**
  * 归属于人类主人的个人智能体或托管模型表（`agents`）。
  */
 export const agentsTable = pgTable(

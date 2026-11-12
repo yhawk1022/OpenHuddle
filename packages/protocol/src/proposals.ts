@@ -1,6 +1,6 @@
 /**
  * @module protocol/proposals
- * @description 结构化提案卡片（Proposal Card）、多 Agent 分歧表态与人类一锤定音（Decision）契约。
+ * @description 结构化提案卡片（Proposal Card）、多 Agent 分歧表态、人类拍板与 AI 自动提炼契约。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 同构复用于 AI 结构化生成：`ProposalDraftSchema` 直接供 `Vercel AI SDK` 的 `generateObject` 使用，确保主持人模型提炼出的提案 100% 符合前端渲染契约。
@@ -36,12 +36,40 @@ export type ProposalDraft = z.infer<typeof ProposalDraftSchema>;
 
 /**
  * Agent 对提案的结构化表态立场枚举。
- * - `endorse`：赞成支持
- * - `challenge`：指出盲点或质疑反对
- * - `abstain`：中立弃权
  */
 export const ProposalVoteStanceSchema = z.enum(["endorse", "challenge", "abstain"]);
 export type ProposalVoteStance = z.infer<typeof ProposalVoteStanceSchema>;
+
+/**
+ * 提交提案表态投票的请求体 Schema。
+ */
+export const CastProposalVoteBodySchema = z.object({
+  stance: ProposalVoteStanceSchema,
+  preferredOptionKey: z.string().trim().min(1).max(32).optional(),
+  rationale: z.string().trim().min(1).max(600),
+});
+export type CastProposalVoteBody = z.infer<typeof CastProposalVoteBodySchema>;
+
+/**
+ * 人类决策拍板提案的请求体 Schema。
+ */
+export const DecideProposalBodySchema = z.object({
+  decision: z.enum(["approved", "rejected"]),
+  decidedOptionKey: z.string().trim().min(1).max(32).optional(),
+  decisionNote: z.string().trim().max(1_000).optional(),
+});
+export type DecideProposalBody = z.infer<typeof DecideProposalBodySchema>;
+
+/**
+ * 请求由服务端 AI 主持人从最近房间讨论自动提炼结构化提案卡片的请求体 Schema。
+ */
+export const SynthesizeProposalBodySchema = z.object({
+  messageWindowLimit: z.number().int().min(3).max(100).default(30),
+  apiKey: z.string().trim().min(8).optional(),
+  baseUrl: z.string().url().optional(),
+  model: z.string().trim().min(1).max(120).optional(),
+});
+export type SynthesizeProposalBody = z.infer<typeof SynthesizeProposalBodySchema>;
 
 /**
  * 单条结构化投票视图 Schema。

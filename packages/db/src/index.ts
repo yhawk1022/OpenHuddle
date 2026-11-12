@@ -11,11 +11,13 @@ export {
 } from "./client.js";
 export {
   agentsTable,
+  authOtpCodesTable,
   messagesTable,
   pairingCodesTable,
   proposalsTable,
   proposalVotesTable,
   roomMembersTable,
   roomsTable,
+  userSessionsTable,
   usersTable,
 } from "./schema.js";
