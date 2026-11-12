@@ -1,0 +1,26 @@
+{
+  "name": "@openhuddle/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.8",
+    "@hono/zod-openapi": "^0.19.1",
+    "@openhuddle/core-governance": "workspace:*",
+    "@openhuddle/db": "workspace:*",
+    "@openhuddle/protocol": "workspace:*",
+    "@scalar/hono-api-reference": "^0.8.0",
+    "hono": "^4.7.4",
+    "pino": "^9.6.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3"
+  }
+}

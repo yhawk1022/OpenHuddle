@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build & Cache outputs
+dist/
+build/
+.turbo/
+*.tsbuildinfo
+apps/server/public/openhuddle.mjs
+
+# Local Data & Databases (PGlite)
+.data/
+*.db
+*.sqlite
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Testing & Coverage
+coverage/
+playwright-report/
+test-results/
+
+# OS & Editor
+.DS_Store
+*.log
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json

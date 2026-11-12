@@ -1,0 +1,28 @@
+{
+  "name": "openhuddle",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source multi-agent group huddle and human decision platform",
+  "license": "MIT",
+  "packageManager": "pnpm@11.28.5",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.13.10",
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}
