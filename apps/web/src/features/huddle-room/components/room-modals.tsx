@@ -1,10 +1,11 @@
 /**
  * @module web/features/huddle-room/room-modals
- * @description 新建 Huddle 协作房间弹窗与凭邀请码/分享链接一键入群弹窗组件。
+ * @description Pachat 极简风格「新建群聊」与「加入群聊」模态窗组件。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 新建即防护：默认预填 `maxConsecutiveAgentTurns = 6` 与防抢话读锁，允许创建时直接定制自由讨论或圆桌轮流表态模式。
- * 2. 智能入群解析：同时兼容粘贴纯邀请码（`inv_xxx`）或完整 `/share/inv_xxx` URL，自动提取纯净 `inviteToken`。
+ * 1. 新建即防护：默认预填 `maxConsecutiveAgentTurns = 6` 与防抢话乐观读锁（`requireReadBeforeSend = true`），创建时可一键选择自由聊、轮流聊或提案收敛模式。
+ * 2. 智能入群解析：同时兼容粘贴纯邀请码（`inv_xxx`）或完整 `/share/inv_xxx` 回放链接，自动提取并解码纯净 `inviteToken`。
+ * 3. Pachat 单色极简与暗色安全：全量采用 `AppInput`、`AppTextarea`、`SegmentedTabs`、`AppSelect` 与 `rounded-full` `AppButton`，零原生下拉框、零蓝紫渐变，暗色输入框恒保持 `#18181B` 深色底面。
  */
 import {
   DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS,
@@ -12,11 +13,77 @@ import {
   type RoomDetailDto,
   type RoomVisibility,
 } from "@openhuddle/protocol";
-import { Loader2, LogIn, PlusCircle } from "lucide-react";
+import { CheckCircle2, Globe, Hash, Link2, Lock, LogIn, MessagesSquare, Plus } from "lucide-react";
 import { type FormEvent, useState } from "react";
+import {
+  AnimatePresence,
+  AppButton,
+  AppInput,
+  AppSelect,
+  type AppSelectOption,
+  AppTextarea,
+  type SegmentedTabItem,
+  SegmentedTabs,
+  cn,
+  motion,
+  toast,
+} from "../../../components/primitives/index.js";
 import { ModalDialog } from "../../../components/ui/modal-dialog.js";
 import { ApiClientError } from "../../../lib/api-client.js";
 import { useCreateRoomMutation, useJoinRoomMutation } from "../api/huddle-room.queries.js";
+
+const LABEL_CLASS = "block text-xs font-medium text-[#3A3A3C] dark:text-zinc-300";
+
+/** 房间讨论组织模式候选项 */
+const GOVERNANCE_MODE_OPTIONS: ReadonlyArray<{
+  readonly value: GovernanceMode;
+  readonly title: string;
+  readonly hint: string;
+}> = [
+  { value: "free", title: "自由讨论", hint: "谁有想法谁先说" },
+  { value: "round_table", title: "圆桌轮流", hint: "按顺序逐个发言" },
+  { value: "proposal", title: "提案收敛", hint: "聚焦方案与拍板" },
+];
+
+/** 房间可见范围分段控制器选项 */
+const VISIBILITY_TABS: ReadonlyArray<SegmentedTabItem<RoomVisibility>> = [
+  {
+    value: "invite_only",
+    label: "仅受邀进群",
+    icon: <Lock className="h-3.5 w-3.5" />,
+  },
+  {
+    value: "public_shareable",
+    label: "允许公开只读回放",
+    icon: <Globe className="h-3.5 w-3.5" />,
+  },
+];
+
+/** Agent 连续发言预算字符串字面量枚举（适配 Radix `AppSelect` 非空字符串泛型） */
+type TurnBudgetValue = "4" | "6" | "10" | "16";
+
+const TURN_BUDGET_OPTIONS: ReadonlyArray<AppSelectOption<TurnBudgetValue>> = [
+  { value: "4", label: "4 轮（紧凑节流）", description: "每 4 条 AI 发言后等待人类表态" },
+  { value: "6", label: "6 轮（推荐默认）", description: "兼顾多方核对事实与讨论节奏" },
+  { value: "10", label: "10 轮（深入讨论）", description: "适合复杂方案对比与多轮追问" },
+  { value: "16", label: "16 轮（充分展开）", description: "允许更多 Agent 连续发散推演" },
+];
+
+/**
+ * 统一解析 TanStack Mutation 错误为可读文案。
+ *
+ * @param error - Mutation 抛出的未知错误
+ * @returns 用户可读的错误信息；无错误时返回 `null`
+ */
+function resolveMutationErrorMessage(error: unknown): string | null {
+  if (error instanceof ApiClientError) {
+    return error.message;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return null;
+}
 
 /** `CreateRoomModal` 入参属性 */
 export interface CreateRoomModalProps {
@@ -26,10 +93,10 @@ export interface CreateRoomModalProps {
 }
 
 /**
- * 新建多 Agent 协作 Huddle 房间配置模态框。
+ * 新建多 Agent 群聊配置模态框。
  *
  * @param props - 打开状态与创建成功跳转回调
- * @returns 新建房间弹窗
+ * @returns 新建群聊弹窗
  */
 export function CreateRoomModal(props: CreateRoomModalProps) {
   const [name, setName] = useState<string>("");
@@ -37,7 +104,9 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
   const [rules, setRules] = useState<string>("");
   const [visibility, setVisibility] = useState<RoomVisibility>("invite_only");
   const [mode, setMode] = useState<GovernanceMode>("free");
-  const [maxTurns, setMaxTurns] = useState<number>(DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS);
+  const [maxTurns, setMaxTurns] = useState<TurnBudgetValue>(
+    String(DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS) as TurnBudgetValue,
+  );
 
   const createMutation = useCreateRoomMutation();
 
@@ -56,179 +125,210 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
         visibility,
         governance: {
           mode,
-          maxConsecutiveAgentTurns: maxTurns,
+          maxConsecutiveAgentTurns: Number(maxTurns),
           allowAgentMentions: true,
           requireReadBeforeSend: true,
         },
       },
       {
         onSuccess: (res) => {
+          toast.success(`群聊「${res.room.name}」已建好`, {
+            description: "现在可以把自己的 Agent 拉进来，或发邀请码给同伴",
+          });
           setName("");
           setTopic("");
           setRules("");
           props.onRoomCreated(res.room);
           props.onClose();
         },
+        onError: (err) => {
+          toast.error(resolveMutationErrorMessage(err) ?? "新建群聊失败，请稍后重试");
+        },
       },
     );
   };
 
-  const errMsg =
-    createMutation.error instanceof ApiClientError
-      ? createMutation.error.message
-      : createMutation.error instanceof Error
-        ? createMutation.error.message
-        : null;
+  const errMsg = resolveMutationErrorMessage(createMutation.error);
+  const previewName = name.trim().length > 0 ? name.trim() : "未命名群聊";
 
   return (
     <ModalDialog
       open={props.open}
       onClose={props.onClose}
-      title="创建新 Huddle 协作房间"
-      subtitle="配置讨论议题、群规与初始防死循环轮次预算"
+      title="新建群聊"
+      subtitle="拉上同伴和各自的 Agent，在一个群里核对事实、把方案聊透"
       maxWidthClass="max-w-lg"
+      icon={<MessagesSquare className="h-4 w-4" />}
     >
       <form onSubmit={handleSubmit} className="space-y-4">
+        {/* 群聊即时预览卡片：纯正 Pachat 暖白/浅灰纸面 + 圆形墨黑头像 */}
+        <div className="flex select-none items-center gap-3 rounded-[18px] bg-[#F5F5F7] p-3 ring-1 ring-inset ring-black/[0.05] dark:bg-[#222226] dark:ring-white/[0.07]">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#141414] text-white dark:bg-[#F5F5F7] dark:text-[#141414]">
+            <Hash aria-hidden="true" className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className="truncate text-sm font-semibold text-[#141414] dark:text-zinc-100">
+                {previewName}
+              </p>
+              <span
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium",
+                  visibility === "public_shareable"
+                    ? "bg-[#E4F4EA] text-[#215236] dark:bg-[#192920] dark:text-[#86E0A6]"
+                    : "bg-black/[0.06] text-[#5F5F64] dark:bg-white/[0.09] dark:text-zinc-300",
+                )}
+              >
+                {visibility === "public_shareable" ? "可公开回放" : "仅受邀"}
+              </span>
+            </div>
+            <p className="mt-0.5 truncate text-[11.5px] text-[#6E6E73] dark:text-zinc-400">
+              {topic.trim().length > 0 ? topic.trim() : "写一句群主题，大家进群就知道聊什么"}
+            </p>
+          </div>
+        </div>
+
         <div>
-          <label
-            htmlFor="create-room-name"
-            className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
-          >
-            房间名称 (Room Name) *
+          <label htmlFor="create-room-name" className={LABEL_CLASS}>
+            群名称 <span className="text-[#FF3B30]">*</span>
           </label>
-          <input
+          <AppInput
             id="create-room-name"
             type="text"
+            size="lg"
             required={true}
             maxLength={100}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="例如：v0.2 实时同步引擎架构评审"
-            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-white/10 dark:bg-[#0b0e15] dark:text-white"
+            leadingIcon={<Hash className="h-4 w-4" />}
+            placeholder="例如：v0.2 实时同步方案评审"
+            containerClassName="mt-1.5"
           />
         </div>
 
         <div>
-          <label
-            htmlFor="create-room-topic"
-            className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
-          >
-            核心议题摘要 (Topic)
+          <label htmlFor="create-room-topic" className={LABEL_CLASS}>
+            讨论主题
           </label>
-          <input
+          <AppInput
             id="create-room-topic"
             type="text"
+            size="md"
             maxLength={500}
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
-            placeholder="需要各 Agent 交叉审查并收敛的目标问题..."
-            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-white/10 dark:bg-[#0b0e15] dark:text-white"
+            placeholder="想让群里的 Agent 帮你一起搞清楚什么问题？"
+            containerClassName="mt-1.5"
           />
         </div>
 
         <div>
-          <label
-            htmlFor="create-room-rules"
-            className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
-          >
-            房间讨论公约 (Rules，展示给所有入群 Agent)
+          <label htmlFor="create-room-rules" className={LABEL_CLASS}>
+            群内约定{" "}
+            <span className="font-normal text-[#8E8E93] dark:text-zinc-500">
+              （所有进群的 Agent 都会先读一遍）
+            </span>
           </label>
-          <textarea
+          <AppTextarea
             id="create-room-rules"
             rows={2}
             maxLength={2000}
             value={rules}
             onChange={(e) => setRules(e.target.value)}
-            placeholder="例如：请优先给定量数据与权衡对比表，避免空洞复读同意。"
-            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-white/10 dark:bg-[#0b0e15] dark:text-white"
+            placeholder="例如：发言尽量简短，给具体事实与取舍依据，不要客套附和。"
+            className="mt-1.5 resize-none"
           />
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <div>
-            <label
-              htmlFor="create-room-mode"
-              className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
-            >
-              讨论组织模式
-            </label>
-            <select
-              id="create-room-mode"
-              value={mode}
-              onChange={(e) => setMode(e.target.value as GovernanceMode)}
-              className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-800 dark:border-white/10 dark:bg-[#0b0e15] dark:text-slate-200"
-            >
-              <option value="free">Free · 自由讨论</option>
-              <option value="round_table">Round Table · 圆桌轮流</option>
-              <option value="proposal">Proposal · 提案收敛</option>
-            </select>
-          </div>
+        {/* 可见范围：使用 motion 弹簧滑动胶囊 SegmentedTabs */}
+        <div>
+          <span className={LABEL_CLASS}>谁能看到这个群</span>
+          <SegmentedTabs
+            value={visibility}
+            onValueChange={setVisibility}
+            items={VISIBILITY_TABS}
+            size="md"
+            fullWidth={true}
+            ariaLabel="房间可见范围"
+            className="mt-1.5"
+          />
+        </div>
 
-          <div>
-            <label
-              htmlFor="create-room-budget"
-              className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
-            >
-              连续 Agent 轮次上限
-            </label>
-            <select
-              id="create-room-budget"
-              value={String(maxTurns)}
-              onChange={(e) => setMaxTurns(Number(e.target.value))}
-              className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-800 dark:border-white/10 dark:bg-[#0b0e15] dark:text-slate-200"
-            >
-              <option value="4">4 轮（严格节流）</option>
-              <option value="6">6 轮（推荐默认）</option>
-              <option value="10">10 轮（深度辩论）</option>
-              <option value="16">16 轮（宽松探索）</option>
-            </select>
+        {/* 讨论组织模式：纯墨黑选中态三栏卡片 */}
+        <fieldset>
+          <legend className={LABEL_CLASS}>聊天节奏</legend>
+          <div className="mt-1.5 grid grid-cols-3 gap-2">
+            {GOVERNANCE_MODE_OPTIONS.map((option) => {
+              const selected = mode === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setMode(option.value)}
+                  className={cn(
+                    "app-no-drag cursor-pointer select-none rounded-[14px] px-3 py-2.5 text-left transition-all duration-150 active:scale-[0.98]",
+                    selected
+                      ? "bg-[#141414] text-white ring-1 ring-[#141414] dark:bg-[#F5F5F7] dark:text-[#141414] dark:ring-[#F5F5F7]"
+                      : "bg-[#F5F5F7] text-[#141414] ring-1 ring-inset ring-black/[0.06] hover:bg-[#EFEFF3] dark:bg-[#222226] dark:text-zinc-100 dark:ring-white/[0.08] dark:hover:bg-[#2A2A2F]",
+                  )}
+                >
+                  <span className="block text-xs font-semibold">{option.title}</span>
+                  <span
+                    className={cn(
+                      "mt-0.5 block text-[10.5px]",
+                      selected
+                        ? "text-white/75 dark:text-[#141414]/70"
+                        : "text-[#6E6E73] dark:text-zinc-400",
+                    )}
+                  >
+                    {option.hint}
+                  </span>
+                </button>
+              );
+            })}
           </div>
+        </fieldset>
 
-          <div>
-            <label
-              htmlFor="create-room-visibility"
-              className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
-            >
-              可见性策略
-            </label>
-            <select
-              id="create-room-visibility"
-              value={visibility}
-              onChange={(e) => setVisibility(e.target.value as RoomVisibility)}
-              className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-800 dark:border-white/10 dark:bg-[#0b0e15] dark:text-slate-200"
-            >
-              <option value="invite_only">仅受邀成员可见</option>
-              <option value="public_shareable">允许公开只读回放</option>
-            </select>
-          </div>
+        {/* Agent 连续发言轮次预算：使用 Radix 浮层 AppSelect */}
+        <div>
+          <label htmlFor="create-room-budget" className={LABEL_CLASS}>
+            Agent 连续发言上限
+          </label>
+          <AppSelect
+            id="create-room-budget"
+            value={maxTurns}
+            onValueChange={setMaxTurns}
+            options={TURN_BUDGET_OPTIONS}
+            size="md"
+            ariaLabel="Agent 连续发言上限"
+            className="mt-1.5"
+          />
         </div>
 
         {errMsg ? (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+          <div
+            role="alert"
+            className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
+          >
             {errMsg}
           </div>
         ) : null}
 
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={props.onClose}
-            className="rounded-xl border border-slate-200 px-3.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/10"
-          >
+        <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.07] pt-3.5 dark:border-white/[0.08]">
+          <AppButton variant="ghost" size="md" onClick={props.onClose}>
             取消
-          </button>
-          <button
+          </AppButton>
+          <AppButton
             type="submit"
-            disabled={createMutation.isPending || name.trim().length === 0}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-indigo-500 disabled:opacity-50"
+            variant="primary"
+            size="md"
+            isLoading={createMutation.isPending}
+            disabled={name.trim().length === 0}
+            leadingIcon={<Plus aria-hidden="true" className="h-3.5 w-3.5" />}
           >
-            {createMutation.isPending ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <PlusCircle className="h-3.5 w-3.5" />
-            )}
-            <span>立即创建房间</span>
-          </button>
+            创建群聊
+          </AppButton>
         </div>
       </form>
     </ModalDialog>
@@ -242,6 +342,12 @@ export interface JoinRoomModalProps {
   readonly onRoomJoined: (room: RoomDetailDto) => void;
 }
 
+/**
+ * 从用户粘贴的原始文本中提取纯净邀请令牌。
+ *
+ * @param raw - 纯邀请码或包含 `/share/<token>` 的完整链接
+ * @returns 解码后的邀请令牌
+ */
 function extractInviteTokenFromRawInput(raw: string): string {
   const trimmed = raw.trim();
   const shareMatch = /\/share\/([^/?#\s]+)/.exec(trimmed);
@@ -252,7 +358,7 @@ function extractInviteTokenFromRawInput(raw: string): string {
 }
 
 /**
- * 凭房间邀请码或分享链接一键加入协作群聊的弹窗。
+ * 凭房间邀请码或分享链接一键加入群聊的弹窗。
  *
  * @param props - 弹窗开关与入群成功跳转回调
  * @returns 入群弹窗
@@ -262,6 +368,7 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
   const joinMutation = useJoinRoomMutation();
 
   const parsedToken = extractInviteTokenFromRawInput(rawInput);
+  const isLinkInput = rawInput.trim() !== parsedToken && parsedToken.length > 0;
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
@@ -272,74 +379,99 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
       { inviteToken: parsedToken },
       {
         onSuccess: (res) => {
+          toast.success(`已加入群聊「${res.room.name}」`);
           setRawInput("");
           props.onRoomJoined(res.room);
           props.onClose();
+        },
+        onError: (err) => {
+          toast.error(resolveMutationErrorMessage(err) ?? "进群失败，请确认邀请码是否正确");
         },
       },
     );
   };
 
-  const errMsg =
-    joinMutation.error instanceof ApiClientError
-      ? joinMutation.error.message
-      : joinMutation.error instanceof Error
-        ? joinMutation.error.message
-        : null;
+  const errMsg = resolveMutationErrorMessage(joinMutation.error);
 
   return (
     <ModalDialog
       open={props.open}
       onClose={props.onClose}
-      title="凭邀请令牌加入 Huddle 房间"
-      subtitle="粘贴同事分享的房间 Invite Token 或公开回放链接即可加入"
+      title="加入群聊"
+      subtitle="粘贴同伴发来的群邀请码或回放链接即可进群"
       maxWidthClass="max-w-md"
+      icon={<LogIn className="h-4 w-4" />}
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label
-            htmlFor="join-room-token-input"
-            className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
-          >
-            房间邀请令牌 (Invite Token) *
+          <label htmlFor="join-room-token-input" className={LABEL_CLASS}>
+            邀请码或分享链接 <span className="text-[#FF3B30]">*</span>
           </label>
-          <input
+          <AppInput
             id="join-room-token-input"
             type="text"
+            size="lg"
             required={true}
             value={rawInput}
             onChange={(e) => setRawInput(e.target.value)}
-            placeholder="例如：inv_01jk9x... 或 https://.../share/inv_..."
-            className="mt-1.5 w-full rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 font-mono text-xs text-slate-900 placeholder:font-sans placeholder:text-slate-400 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-white/10 dark:bg-[#0b0e15] dark:text-white"
+            leadingIcon={<Link2 className="h-4 w-4" />}
+            placeholder="inv_01jk9x... 或 https://.../share/inv_..."
+            className="font-mono text-xs placeholder:font-sans"
+            containerClassName="mt-1.5"
           />
+          <AnimatePresence mode="wait" initial={false}>
+            {isLinkInput ? (
+              <motion.p
+                key="parsed-link"
+                initial={{ opacity: 0, y: -3 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -3 }}
+                transition={{ duration: 0.14 }}
+                className="mt-2 flex items-center gap-1.5 text-[11.5px] font-medium text-[#215236] dark:text-[#86E0A6]"
+              >
+                <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">
+                  已从链接提取邀请码：<code className="font-mono font-semibold">{parsedToken}</code>
+                </span>
+              </motion.p>
+            ) : (
+              <motion.p
+                key="plain-hint"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.12 }}
+                className="mt-1.5 text-[11.5px] text-[#6E6E73] dark:text-zinc-400"
+              >
+                直接粘贴完整的 /share/ 链接也可以，会自动提取邀请码。
+              </motion.p>
+            )}
+          </AnimatePresence>
         </div>
 
         {errMsg ? (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+          <div
+            role="alert"
+            className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
+          >
             {errMsg}
           </div>
         ) : null}
 
-        <div className="flex items-center justify-end gap-2 pt-1">
-          <button
-            type="button"
-            onClick={props.onClose}
-            className="rounded-xl border border-slate-200 px-3.5 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/10"
-          >
+        <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.07] pt-3.5 dark:border-white/[0.08]">
+          <AppButton variant="ghost" size="md" onClick={props.onClose}>
             取消
-          </button>
-          <button
+          </AppButton>
+          <AppButton
             type="submit"
-            disabled={joinMutation.isPending || parsedToken.length < 4}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-indigo-500 disabled:opacity-50"
+            variant="primary"
+            size="md"
+            isLoading={joinMutation.isPending}
+            disabled={parsedToken.length < 4}
+            leadingIcon={<LogIn aria-hidden="true" className="h-3.5 w-3.5" />}
           >
-            {joinMutation.isPending ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <LogIn className="h-3.5 w-3.5" />
-            )}
-            <span>加入房间</span>
-          </button>
+            加入群聊
+          </AppButton>
         </div>
       </form>
     </ModalDialog>

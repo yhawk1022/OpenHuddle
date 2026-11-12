@@ -1,10 +1,11 @@
 /**
  * @module web/lib/format
- * @description 平台视觉徽章元数据映射、时间格式化、2 分钟撤回窗口计算与幂等键生成纯工具库。
+ * @description 平台暖色粉彩头像/徽章元数据映射、自然可达状态文案、时间格式化、2 分钟撤回窗口计算与幂等键生成纯工具库。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 纯确定性无副作用：所有展示映射函数均使用 `assertNever` 对协议枚举做编译期穷尽检查，新增宿主平台或可达状态时编译器自动告警。
- * 2. 撤回时效对齐：前端撤回按钮显隐严格对齐后端 120 秒（2 分钟）业务窗口，避免无效点击。
+ * 2. Pachat 低饱和暖粉彩体系：摒弃高饱和霓虹渐变与廉价紫光阴影，统一采用 `#F4ECDD`、`#FFF1C2`、`#FBE3D9`、`#E1ECFF`、`#E4F4EA`、`#EFEAFF` 等温润纸感底色与克制的暗色对应色。
+ * 3. 撤回时效对齐：前端撤回按钮显隐严格对齐后端 120 秒（2 分钟）业务窗口，避免无效点击。
  */
 import {
   type AgentPlatform,
@@ -40,7 +41,7 @@ export interface ReachVisualMeta {
 }
 
 /**
- * 获取指定 `AgentPlatform` 的品牌缩写、主题配色与推荐唤醒说明。
+ * 获取指定 `AgentPlatform` 的精简名称、Pachat 暖粉彩头像/徽章样式与接入说明。
  *
  * @param platform - 协议定义的 Agent 宿主平台枚举
  * @returns 完整的视觉与引导配置元数据
@@ -52,87 +53,100 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "Antigravity",
         monogram: "AG",
         badgeClass:
-          "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+          "border-black/[0.06] bg-[#EFEAFF] text-[#3F3368] dark:border-white/[0.08] dark:bg-[#242030] dark:text-[#D9D0F5]",
         avatarClass:
-          "bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-emerald-500/20",
-        cliHint: "完美支持读取 /install.md 自动配对与本地 SSE 毫秒级唤醒",
+          "bg-[#EFEAFF] text-[#352A59] ring-1 ring-inset ring-black/[0.06] dark:bg-[#242030] dark:text-[#DFD7F7] dark:ring-white/[0.08]",
+        cliHint: "读取 /install.md 自动完成绑定，支持本地 SSE 实时唤醒",
       };
     case "codex":
       return {
-        label: "OpenAI Codex",
+        label: "Codex",
         monogram: "CX",
-        badgeClass: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
-        avatarClass: "bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-sky-500/20",
-        cliHint: "支持 CLI 零依赖单文件运行与 --agent codex 自动拉起回复",
+        badgeClass:
+          "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1B2433] dark:text-[#C7DCFF]",
+        avatarClass:
+          "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1B2433] dark:text-[#CFE1FF] dark:ring-white/[0.08]",
+        cliHint: "支持零依赖单文件 CLI 监听并自动拉起 Codex 回复群消息",
       };
     case "claude_code":
       return {
         label: "Claude Code",
         monogram: "CC",
-        badgeClass: "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300",
+        badgeClass:
+          "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2B251D] dark:text-[#E7D3B5]",
         avatarClass:
-          "bg-gradient-to-br from-amber-500 to-orange-600 text-white shadow-amber-500/20",
-        cliHint: "支持终端粘贴引导词一键进群与后台守护实时唤醒",
+          "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2B251D] dark:text-[#EAD8BC] dark:ring-white/[0.08]",
+        cliHint: "在终端粘贴一句话引导词即可进群，支持后台实时唤醒",
       };
     case "cursor":
       return {
         label: "Cursor",
         monogram: "CR",
-        badgeClass: "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+        badgeClass:
+          "border-black/[0.06] bg-[#FFF1C2] text-[#5C4813] dark:border-white/[0.08] dark:bg-[#2C2718] dark:text-[#F2DF9D]",
         avatarClass:
-          "bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-violet-500/20",
-        cliHint: "支持 IDE Agent Composer 直接粘贴配对提示词或挂载 MCP 工具",
+          "bg-[#FFF1C2] text-[#4F3D0E] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2C2718] dark:text-[#F5E4AA] dark:ring-white/[0.08]",
+        cliHint: "支持在 IDE Composer 直接粘贴引导词或挂载 MCP 工具进群",
       };
     case "deepseek":
       return {
         label: "DeepSeek",
         monogram: "DS",
-        badgeClass: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
-        avatarClass: "bg-gradient-to-br from-blue-600 to-indigo-700 text-white shadow-blue-500/20",
-        cliHint: "擅长深度推理交叉核验，支持 CLI / MCP 双通道接入讨论",
+        badgeClass:
+          "border-black/[0.06] bg-[#FBE3D9] text-[#663523] dark:border-white/[0.08] dark:bg-[#2E201B] dark:text-[#F2C7B6]",
+        avatarClass:
+          "bg-[#FBE3D9] text-[#572B1B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2E201B] dark:text-[#F5CEBF] dark:ring-white/[0.08]",
+        cliHint: "擅长交叉核对事实与逻辑推演，支持 CLI 与 MCP 双通道接入",
       };
     case "openclaw":
       return {
         label: "OpenClaw",
         monogram: "OC",
-        badgeClass: "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
-        avatarClass: "bg-gradient-to-br from-rose-500 to-pink-600 text-white shadow-rose-500/20",
-        cliHint: "支持常驻自治 Agent 守护监听与定时 Check-in 巡检",
+        badgeClass:
+          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#BEE3CC]",
+        avatarClass:
+          "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#192920] dark:text-[#C7E8D3] dark:ring-white/[0.08]",
+        cliHint: "支持常驻后台守护监听群内 @ 提及与定时巡检",
       };
     case "gemini":
       return {
         label: "Gemini",
         monogram: "GM",
         badgeClass:
-          "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-300",
+          "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1B2433] dark:text-[#C7DCFF]",
         avatarClass:
-          "bg-gradient-to-br from-fuchsia-500 to-indigo-600 text-white shadow-fuchsia-500/20",
-        cliHint: "支持 Gemini CLI 粘贴接入指令自动绑定个人身份进群",
+          "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1B2433] dark:text-[#CFE1FF] dark:ring-white/[0.08]",
+        cliHint: "支持在 Gemini CLI 粘贴引导词绑定个人身份进群",
       };
     case "chatgpt":
       return {
         label: "ChatGPT",
         monogram: "GP",
-        badgeClass: "border-teal-500/30 bg-teal-500/10 text-teal-700 dark:text-teal-300",
-        avatarClass: "bg-gradient-to-br from-teal-500 to-emerald-600 text-white shadow-teal-500/20",
-        cliHint: "支持 Remote MCP 或桌面端工具连接参与多方辩论",
+        badgeClass:
+          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#BEE3CC]",
+        avatarClass:
+          "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#192920] dark:text-[#C7E8D3] dark:ring-white/[0.08]",
+        cliHint: "支持通过 Remote MCP 或桌面端工具连接参与群内讨论",
       };
     case "hosted":
       return {
-        label: "Hosted AI",
+        label: "Hosted",
         monogram: "AI",
-        badgeClass: "border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300",
+        badgeClass:
+          "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2B251D] dark:text-[#E7D3B5]",
         avatarClass:
-          "bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-indigo-500/20",
-        cliHint: "服务端托管 BYOK 模型角色，无需本地守护即可秒级响应",
+          "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2B251D] dark:text-[#EAD8BC] dark:ring-white/[0.08]",
+        cliHint: "服务端托管 BYOK 模型角色，无需本地守护即可直接响应",
       };
     case "custom":
       return {
-        label: "Custom Agent",
+        label: "Custom",
         monogram: "CA",
-        badgeClass: "border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-300",
-        avatarClass: "bg-gradient-to-br from-slate-600 to-slate-800 text-white shadow-slate-500/20",
-        cliHint: "任意支持 HTTP / CLI / MCP 的自定义智能体脚本接入",
+        badgeClass:
+          "border-black/[0.06] bg-[#EFEFF3] text-[#3A3A3C] dark:border-white/[0.08] dark:bg-[#27272A] dark:text-zinc-300",
+        avatarClass:
+          "bg-[#EFEFF3] text-[#141414] ring-1 ring-inset ring-black/[0.06] dark:bg-[#27272A] dark:text-zinc-200 dark:ring-white/[0.08]",
+        cliHint: "支持任意兼容 HTTP、CLI 或 MCP 协议的自定义脚本接入",
       };
     default:
       return assertNever(platform);
@@ -140,54 +154,58 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
 }
 
 /**
- * 获取 Agent 在线可达状态（`reach`）的指示灯样式与人类可读说明。
+ * 获取 Agent 在线可达状态（`reach`）的克制指示圆点与自然中文说明。
  *
  * @param reach - Agent 当前实时可达状态（缺省按 `offline` 处理）
- * @returns LED 圆点颜色、徽章文案与通俗说明
+ * @returns 圆点颜色（在线使用 `#34C759`）、胶囊类名与自然说明文案
  */
 export function getReachVisualMeta(reach: AgentReachState | undefined): ReachVisualMeta {
   const effective = reach ?? "offline";
   switch (effective) {
     case "online_sse":
       return {
-        label: "⚡ Instant SSE 实时在线",
-        shortLabel: "SSE 实时",
-        description: "本地 Listener 守护进程已建立出站 SSE 长连，@提及可毫秒级自动唤醒",
-        dotClass: "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.75)]",
-        pillClass: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+        label: "实时在线",
+        shortLabel: "在线",
+        description: "本地守护已建立实时连接，群内 @ 提及可立即唤醒回复",
+        dotClass: "bg-[#34C759]",
+        pillClass:
+          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#86E0A6]",
       };
     case "hosted_ready":
       return {
-        label: "🤖 Hosted 云端就绪",
-        shortLabel: "云端就绪",
-        description: "服务端内置 BYOK 托管模型，随时响应讨论与提案投票",
-        dotClass: "bg-violet-500 shadow-[0_0_8px_rgba(139,92,246,0.7)]",
-        pillClass: "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+        label: "云端在线",
+        shortLabel: "在线",
+        description: "服务端托管模型已就绪，可随时响应讨论与提案表决",
+        dotClass: "bg-[#34C759]",
+        pillClass:
+          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#86E0A6]",
       };
     case "webhook":
       return {
-        label: "🔗 Webhook 实时触达",
+        label: "Webhook 在线",
         shortLabel: "Webhook",
-        description: "通过已注册的 HTTPS Webhook 端点实时接收房间唤醒事件",
-        dotClass: "bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.7)]",
-        pillClass: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
+        description: "通过已注册的 HTTPS Webhook 实时接收房间唤醒事件",
+        dotClass: "bg-[#2F6FED]",
+        pillClass:
+          "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1B2433] dark:text-[#9EC5FF]",
       };
     case "polling":
       return {
-        label: "⏱ Polling 定时巡检",
-        shortLabel: "长轮询/巡检",
-        description: "处于周期性收件箱 Check-in 或长轮询模式，将在下次巡检窗口回复",
-        dotClass: "bg-sky-400",
-        pillClass: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+        label: "定时巡检",
+        shortLabel: "巡检中",
+        description: "处于周期性收件箱检查模式，将在下次巡检窗口回复",
+        dotClass: "bg-[#D99B26] dark:bg-[#E5B34B]",
+        pillClass:
+          "border-black/[0.06] bg-[#FFF1C2] text-[#5C4813] dark:border-white/[0.08] dark:bg-[#2C2718] dark:text-[#F2DF9D]",
       };
     case "offline":
       return {
-        label: "💤 离线待唤醒",
+        label: "暂不在线",
         shortLabel: "离线",
-        description: "当前未检测到活跃的 SSE 守护进程；需主人手动触发或重新运行 listen",
-        dotClass: "bg-zinc-400 dark:bg-zinc-500",
+        description: "当前未检测到活跃的实时连接，可在终端运行 listen 唤醒",
+        dotClass: "bg-[#C7C7CC] dark:bg-zinc-600",
         pillClass:
-          "border-slate-300/70 bg-slate-500/10 text-slate-600 dark:border-white/10 dark:text-slate-400",
+          "border-black/[0.06] bg-[#F5F5F7] text-[#6E6E73] dark:border-white/[0.08] dark:bg-[#1C1C1F] dark:text-zinc-400",
       };
     default:
       return assertNever(effective);

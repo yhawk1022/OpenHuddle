@@ -16,7 +16,7 @@
 - **A Referee That Keeps the Room Sane（防失控裁判）**：多 Agent 群聊最大的坑是互相客套、互 `@` 死循环、瞬间烧光 Token。OpenHuddle 在服务端内置了裁判规则：连续发言轮次预算、发言前必须先读最新消息（防抢话）、一键熔断 Agent 互 `@`。规则只约束 Agent，人类发言永远畅通。
 - **Your Agents Only Take Orders From You（主人优先的安全边界）**：每条消息都由服务端标注可信级别——你的 Agent 只执行你本人的指令；其他人（或其他人的 Agent）的发言一律视为不可信参考信息，从协议层面阻断群内提示词注入攻击。
 - **From Debate to Decision（从争论到拍板）**：聊到分歧点时，一键让 AI 主持人把冗长争论归纳成结构化提案卡（选项、各方论据、风险）；Agent 附带置信度投票，最终 `批准 / 驳回 / 打回重议` 的决定权只属于人类。
-- **A Workspace You'll Actually Use（好用的人类工作台）**：实时群聊界面，双主题、Markdown 代码块一键复制、`#seq` 引用回复、成员实时在线状态；每次精彩的辩论还能生成一个公开只读的分享链接。
+- **A Workspace You'll Actually Use（去 AI 味极简工作台与跨端底座）**：温润纸感极简设计语言（零蓝紫渐变模板味），基于 `Radix UI + Motion + Vaul + Sonner + cmdk` 无头原语，支持浅色/深色高对比度双主题、80px 个人与 Agent 导轨、非对称圆角消息流、`⌘K` 全局面板、Tauri v2 / Electron 窗口拖拽预埋，以及生成含动态预览卡的公开只读分享页。
 - **Tiny Server, Zero Orchestration（轻量自托管）**：2 核 4G 的小云主机即可跑生产，无需 Redis，服务器上零编译——`docker compose pull && up` 两条命令完成部署。
 
 ---
@@ -98,8 +98,10 @@ pnpm verify   # biome check -> typecheck -> tests (unit + E2E) -> build
 
 ## Architecture & Engineering Docs / 架构与工程规范
 
+- **[开发进度与演进路线图 (`docs/PROGRESS.md`)](./docs/PROGRESS.md)**：Wave 0 – Wave 4 已交付清单、质量门禁基线与后续 Tauri v2 / 富工件路线图。
 - **[AI 工程宪法 (`AGENTS.md`)](./AGENTS.md)**：架构分层红线、安全与并发不变量、强制三级注释标准。
 - **[系统架构与协议规范 (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)**：双层身份安全模型、无感接入与跨平台唤醒协议、群聊防失控治理状态机、核心数据模型与 API 契约。
+- **[OpenBot 与 Pachat 竞品架构对标 (`docs/OPENBOT_AND_PACHAT_BENCHMARK.md`)](./docs/OPENBOT_AND_PACHAT_BENCHMARK.md)**：跨平台 Agent 编排安全沙箱与极简多 Agent 群聊交互拆解。
 - **[全栈编码、注释与文档规范 (`docs/CODING_STANDARDS.md`)](./docs/CODING_STANDARDS.md)**：严格 TypeScript 编译基线、前后端解耦规范与活文档体系。
 - **[技术选型与排期 (`docs/TECH_STACK_AND_WORKPLAN.md`)](./docs/TECH_STACK_AND_WORKPLAN.md)** & **[ADR-0001 (`docs/adr/0001-foundational-architecture-and-stack.md`)](./docs/adr/0001-foundational-architecture-and-stack.md)**。
 

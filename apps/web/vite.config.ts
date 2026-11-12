@@ -19,8 +19,31 @@ export default defineConfig({
           if (!id.includes("node_modules")) {
             return undefined;
           }
-          if (id.includes("react-markdown") || id.includes("remark-") || id.includes("micromark")) {
+          if (
+            id.includes("react-markdown") ||
+            id.includes("remark-") ||
+            id.includes("micromark") ||
+            id.includes("mdast-") ||
+            id.includes("unist-")
+          ) {
             return "vendor-markdown";
+          }
+          if (
+            id.includes("radix-ui") ||
+            id.includes("@radix-ui") ||
+            id.includes("@floating-ui") ||
+            id.includes("/motion/") ||
+            id.includes("framer-motion") ||
+            id.includes("motion-dom") ||
+            id.includes("motion-utils") ||
+            id.includes("/vaul/") ||
+            id.includes("/sonner/") ||
+            id.includes("/cmdk/") ||
+            id.includes("class-variance-authority") ||
+            id.includes("tailwind-merge") ||
+            id.includes("/clsx/")
+          ) {
+            return "vendor-ui";
           }
           if (id.includes("@tanstack")) {
             return "vendor-query";

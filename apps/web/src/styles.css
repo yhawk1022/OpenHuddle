@@ -1,19 +1,449 @@
+/**
+ * @module web/styles
+ * @description OpenHuddle 全局设计系统（Tailwind CSS v4 + Pachat 纯粹暖白/墨黑极简主义令牌 + Radix 动效）。
+ *
+ * 架构职责与关键不变量（Invariants）：
+ * 1. Pachat 去 AI 模板化视觉语言（Monochrome & Warm Paper Minimalism）：摒弃廉价蓝紫渐变与点阵网格背景，主强调色在日光下恒为纯墨黑 `#141414`、暗夜下恒为暖白 `#F5F5F7`；主舞台为纯净无网格画布（`#FFFFFF` / `#0E0E10`），配合暖象牙本人气泡（`#F6F2EC` / `#272521`）、鼠尾草绿同伴气泡（`#E3F3EC` / `#16271F`）与柔灰 Agent 气泡（`#F5F5F7` / `#1C1C1F`）。
+ * 2. 暗色模式输入框绝不变白：`--oh-im-input`（`#18181B`）与 `--oh-im-input-focus`（`#1F1F23`）在 `.dark` 下恒为暖中性深色表面，且文件底部保留非分层（unlayered）兜底规则，彻底阻断白底白字缺陷。
+ * 3. Tauri v2 & Electron 跨端原生壳就绪：视口严格锁定 `100dvh`，同时兼容 `.app-drag-region` 与 `[data-tauri-drag-region]` 无边框标题栏拖拽，且所有交互控件默认豁免拖拽。
+ * 4. 动效克制与无障碍：Radix 浮层（`data-state="open|closed"`）、气泡入场及引用定位闪烁严格遵守 `prefers-reduced-motion: reduce`。
+ */
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ─────────────────────────────────────────────────────────────
+ * 1. Pachat 暖纸极简语义令牌（Light = 纯净日光暖纸 / Dark = 暖中性深黑）
+ * ───────────────────────────────────────────────────────────── */
 :root {
   color-scheme: light;
-  --oh-scrollbar-thumb: rgba(100, 116, 139, 0.25);
-  --oh-scrollbar-thumb-hover: rgba(100, 116, 139, 0.45);
+
+  /* 三栏骨架表面：左侧导轨 #EFEFF3 -> 会话侧栏 #F8F8FA -> 纯白聊天主舞台 #FFFFFF */
+  --oh-app-frame: #efeff3;
+  --oh-rail-surface: #efeff3;
+  --oh-sidebar-surface: #f8f8fa;
+  --oh-island-surface: #ffffff;
+  --oh-island-canvas: #ffffff;
+  --oh-island-ring: rgba(0, 0, 0, 0.07);
+
+  /* 画布与面板（纯色无点阵） */
+  --oh-im-canvas: #ffffff;
+  --oh-im-surface: #ffffff;
+  --oh-im-surface-muted: #f5f5f7;
+  --oh-im-border: rgba(0, 0, 0, 0.07);
+  --oh-im-border-strong: rgba(0, 0, 0, 0.14);
+
+  /* 文本层级 */
+  --oh-im-fg: #141414;
+  --oh-im-fg-soft: #3a3a3c;
+  --oh-im-muted: #6e6e73;
+  --oh-im-subtle: #8e8e93;
+
+  /* 气泡表面：Agent 柔灰 #F5F5F7 / 其他人类同伴柔鼠尾草绿 #E3F3EC / 本人暖象牙白 #F6F2EC */
+  --oh-im-peer: #f5f5f7;
+  --oh-im-peer-fg: #141414;
+  --oh-im-peer-border: rgba(0, 0, 0, 0.05);
+  --oh-im-human: #e3f3ec;
+  --oh-im-human-fg: #141414;
+  --oh-im-self: #f6f2ec;
+  --oh-im-self-fg: #141414;
+  --oh-im-self-muted: #6e6e73;
+
+  /* 输入框（纯净白底 + 纯墨黑焦点描边，零蓝紫光晕） */
+  --oh-im-input: #ffffff;
+  --oh-im-input-focus: #ffffff;
+  --oh-im-input-fg: #141414;
+  --oh-im-input-border: rgba(0, 0, 0, 0.12);
+  --oh-im-input-ring: rgba(0, 0, 0, 0.06);
+  --oh-im-placeholder: #8e8e93;
+
+  /* 系统提示与悬浮菜单 */
+  --oh-im-system: #f5f5f7;
+  --oh-im-system-fg: #8e8e93;
+  --oh-im-floating: rgba(255, 255, 255, 0.97);
+
+  /* 主强调色（纯墨黑 #141414）与仅有的三个功能色 */
+  --oh-im-accent: #141414;
+  --oh-im-accent-hover: #000000;
+  --oh-im-accent-fg: #ffffff;
+  --oh-im-accent-soft: rgba(20, 20, 20, 0.06);
+  --oh-link-blue: #2f6fed;
+  --oh-live-green: #34c759;
+  --oh-unread-coral: #ff3b30;
+
+  /* 精致滚动条 */
+  --oh-scrollbar-thumb: rgba(20, 20, 20, 0.16);
+  --oh-scrollbar-thumb-hover: rgba(20, 20, 20, 0.3);
 }
 
 .dark {
   color-scheme: dark;
-  --oh-scrollbar-thumb: rgba(148, 163, 184, 0.18);
-  --oh-scrollbar-thumb-hover: rgba(148, 163, 184, 0.34);
+
+  /* 暖中性 Apple/Linear 暗色层级（绝不使用偏蓝紫底色） */
+  --oh-app-frame: #101012;
+  --oh-rail-surface: #101012;
+  --oh-sidebar-surface: #151518;
+  --oh-island-surface: #0e0e10;
+  --oh-island-canvas: #0e0e10;
+  --oh-island-ring: rgba(255, 255, 255, 0.08);
+
+  --oh-im-canvas: #0e0e10;
+  --oh-im-surface: #151518;
+  --oh-im-surface-muted: #1c1c1f;
+  --oh-im-border: rgba(255, 255, 255, 0.08);
+  --oh-im-border-strong: rgba(255, 255, 255, 0.15);
+
+  --oh-im-fg: #f5f5f7;
+  --oh-im-fg-soft: #d1d1d6;
+  --oh-im-muted: #98989f;
+  --oh-im-subtle: #6e6e73;
+
+  --oh-im-peer: #1c1c1f;
+  --oh-im-peer-fg: #ececef;
+  --oh-im-peer-border: rgba(255, 255, 255, 0.07);
+  --oh-im-human: #16271f;
+  --oh-im-human-fg: #e8f3ec;
+  --oh-im-self: #272521;
+  --oh-im-self-fg: #f4f4f2;
+  --oh-im-self-muted: #a1a1aa;
+
+  /* 不变量：暗色输入框（含聚焦态）永远保持暖深灰 #18181B -> #1F1F23，严禁出现白色 */
+  --oh-im-input: #18181b;
+  --oh-im-input-focus: #1f1f23;
+  --oh-im-input-fg: #f5f5f7;
+  --oh-im-input-border: rgba(255, 255, 255, 0.12);
+  --oh-im-input-ring: rgba(255, 255, 255, 0.07);
+  --oh-im-placeholder: #71717a;
+
+  --oh-im-system: #1c1c1f;
+  --oh-im-system-fg: #8e8e93;
+  --oh-im-floating: rgba(24, 24, 27, 0.97);
+
+  --oh-im-accent: #f5f5f7;
+  --oh-im-accent-hover: #ffffff;
+  --oh-im-accent-fg: #141414;
+  --oh-im-accent-soft: rgba(245, 245, 247, 0.1);
+  --oh-link-blue: #4f8cff;
+  --oh-live-green: #34c759;
+  --oh-unread-coral: #ff453a;
+
+  --oh-scrollbar-thumb: rgba(255, 255, 255, 0.16);
+  --oh-scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
 }
 
+/* 将设计令牌暴露为 Tailwind 工具类：bg-app-frame, bg-im-*, text-im-*, border-im-* 等 */
+@theme inline {
+  --color-app-frame: var(--oh-app-frame);
+  --color-rail-surface: var(--oh-rail-surface);
+  --color-sidebar-surface: var(--oh-sidebar-surface);
+  --color-island-surface: var(--oh-island-surface);
+  --color-island-canvas: var(--oh-island-canvas);
+  --color-island-ring: var(--oh-island-ring);
+  --color-im-canvas: var(--oh-im-canvas);
+  --color-im-surface: var(--oh-im-surface);
+  --color-im-surface-muted: var(--oh-im-surface-muted);
+  --color-im-border: var(--oh-im-border);
+  --color-im-border-strong: var(--oh-im-border-strong);
+  --color-im-fg: var(--oh-im-fg);
+  --color-im-fg-soft: var(--oh-im-fg-soft);
+  --color-im-muted: var(--oh-im-muted);
+  --color-im-subtle: var(--oh-im-subtle);
+  --color-im-peer: var(--oh-im-peer);
+  --color-im-peer-fg: var(--oh-im-peer-fg);
+  --color-im-peer-border: var(--oh-im-peer-border);
+  --color-im-human: var(--oh-im-human);
+  --color-im-human-fg: var(--oh-im-human-fg);
+  --color-im-self: var(--oh-im-self);
+  --color-im-self-fg: var(--oh-im-self-fg);
+  --color-im-self-muted: var(--oh-im-self-muted);
+  --color-im-input: var(--oh-im-input);
+  --color-im-input-focus: var(--oh-im-input-focus);
+  --color-im-input-fg: var(--oh-im-input-fg);
+  --color-im-input-border: var(--oh-im-input-border);
+  --color-im-input-ring: var(--oh-im-input-ring);
+  --color-im-placeholder: var(--oh-im-placeholder);
+  --color-im-system: var(--oh-im-system);
+  --color-im-system-fg: var(--oh-im-system-fg);
+  --color-im-floating: var(--oh-im-floating);
+  --color-im-accent: var(--oh-im-accent);
+  --color-im-accent-hover: var(--oh-im-accent-hover);
+  --color-im-accent-fg: var(--oh-im-accent-fg);
+  --color-im-accent-soft: var(--oh-im-accent-soft);
+  --color-link-blue: var(--oh-link-blue);
+  --color-live-green: var(--oh-live-green);
+  --color-unread-coral: var(--oh-unread-coral);
+
+  --font-sans: "Figtree", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+}
+
+/* 动效令牌：气泡入场 / 引用定位闪烁 / 在线微脉冲 / Radix 浮层缩放淡入 */
+@theme {
+  --animate-bubble-in: oh-bubble-in 180ms cubic-bezier(0.2, 0.85, 0.25, 1) both;
+  --animate-msg-flash: oh-msg-flash 1.5s ease-out 1;
+  --animate-presence-pulse: oh-presence-pulse 2.2s cubic-bezier(0, 0, 0.2, 1) infinite;
+
+  @keyframes oh-bubble-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px) scale(0.99);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes oh-msg-flash {
+    0%,
+    35% {
+      background-color: var(--oh-im-accent-soft);
+    }
+    100% {
+      background-color: transparent;
+    }
+  }
+
+  @keyframes oh-presence-pulse {
+    0% {
+      transform: scale(1);
+      opacity: 0.65;
+    }
+    80%,
+    100% {
+      transform: scale(2);
+      opacity: 0;
+    }
+  }
+}
+
+@keyframes oh-radix-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes oh-radix-menu-out {
+  from {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.98) translateY(-2px);
+  }
+}
+
+@keyframes oh-radix-tooltip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.oh-floating-menu {
+  transform-origin: var(
+    --radix-popover-content-transform-origin,
+    var(
+      --radix-dropdown-menu-content-transform-origin,
+      var(--radix-select-content-transform-origin, center top)
+    )
+  );
+}
+
+.oh-floating-menu[data-state="open"] {
+  animation: oh-radix-menu-in 140ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.oh-floating-menu[data-state="closed"] {
+  animation: oh-radix-menu-out 100ms ease-in forwards;
+}
+
+.oh-tooltip-content {
+  transform-origin: var(--radix-tooltip-content-transform-origin, center bottom);
+}
+
+.oh-tooltip-content[data-state="delayed-open"],
+.oh-tooltip-content[data-state="instant-open"] {
+  animation: oh-radix-tooltip-in 120ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * 2. 原生 App 外壳（Web + Tauri v2 + Electron + Capacitor 多端就绪）
+ * ─────────────────────────────────────────────────────────────
+ * 为什么锁定视口：IM 客户端应像原生桌面/移动应用一样只在内部面板滚动；文档级滚动会导致
+ * macOS/iOS 橡皮筋回弹、无边框桌面窗口整体被拉扯、移动端地址栏抖动。 */
+html,
+body,
+#root {
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--oh-im-canvas);
+  color: var(--oh-im-fg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tauri v2 (`data-tauri-drag-region`) 与 Electron (`-webkit-app-region: drag`) 无边框标题栏拖拽支持 */
+.app-drag-region,
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+}
+
+.app-no-drag,
+.app-drag-region
+  :is(button, a, input, textarea, select, [role="button"], [role="tab"], [role="switch"]),
+[data-tauri-drag-region]
+  :is(button, a, input, textarea, select, [role="button"], [role="tab"], [role="switch"]) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* 移动端刘海屏 / Home Indicator 安全区 */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+.pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * 3. 可复用 Pachat IM 原子工具类
+ * ───────────────────────────────────────────────────────────── */
+
+/* 主舞台干净面板 */
+@utility app-island {
+  background-color: var(--oh-island-surface);
+  box-shadow: 0 0 0 1px var(--oh-island-ring);
+}
+
+/* Pachat 标志性胶囊主按钮（#141414 纯墨黑 / 暗夜 #F5F5F7） */
+@utility btn-dark {
+  border-radius: 9999px;
+  background-color: var(--oh-im-accent);
+  color: var(--oh-im-accent-fg);
+  transition: transform 120ms ease, background-color 150ms ease, opacity 150ms ease;
+
+  &:hover:not(:disabled) {
+    background-color: var(--oh-im-accent-hover);
+  }
+}
+
+/* Pachat 柔和浅灰胶囊按钮 */
+@utility btn-light {
+  border-radius: 9999px;
+  background-color: rgba(0, 0, 0, 0.045);
+  color: var(--oh-im-fg);
+  transition: transform 120ms ease, background-color 150ms ease, opacity 150ms ease;
+
+  &:hover:not(:disabled) {
+    background-color: rgba(0, 0, 0, 0.075);
+  }
+
+  &:where(.dark, .dark *) {
+    background-color: rgba(255, 255, 255, 0.08);
+
+    &:hover:not(:disabled) {
+      background-color: rgba(255, 255, 255, 0.13);
+    }
+  }
+}
+
+/* 原生触感按压反馈：<button className="im-press"> */
+@utility im-press {
+  transition: transform 120ms ease, background-color 150ms ease, color 150ms ease, opacity 150ms
+    ease;
+  -webkit-user-select: none;
+  user-select: none;
+
+  &:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+}
+
+/* 主题安全输入框：日光纯白底深字；暗色 #18181B -> 聚焦 #1F1F23，永不变白 */
+@utility im-input {
+  background-color: var(--oh-im-input);
+  color: var(--oh-im-input-fg);
+  border: 1px solid var(--oh-im-input-border);
+  caret-color: var(--oh-im-fg);
+  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+
+  &::placeholder {
+    color: var(--oh-im-placeholder);
+  }
+
+  &:focus,
+  &:focus-visible {
+    outline: none;
+    background-color: var(--oh-im-input-focus);
+    border-color: var(--oh-im-accent);
+    box-shadow: 0 0 0 4px var(--oh-im-input-ring);
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
+/* 主题安全输入容器（聊天输入舱等 focus-within 场景） */
+@utility im-input-shell {
+  background-color: var(--oh-im-input);
+  color: var(--oh-im-input-fg);
+  border: 1px solid var(--oh-im-input-border);
+  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+
+  &:focus-within {
+    background-color: var(--oh-im-input-focus);
+    border-color: var(--oh-im-accent);
+    box-shadow: 0 0 0 4px var(--oh-im-input-ring);
+  }
+}
+
+/* 聊天画布背景：纯净无网格实色背景（日光 #FFFFFF / 暗夜 #0E0E10） */
+@utility im-canvas {
+  background-color: var(--oh-im-canvas);
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * 4. 精致细滚动条
+ * ───────────────────────────────────────────────────────────── */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--oh-scrollbar-thumb) transparent;
@@ -31,8 +461,48 @@
 *::-webkit-scrollbar-thumb {
   background-color: var(--oh-scrollbar-thumb);
   border-radius: 9999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
   background-color: var(--oh-scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * 5. 暗色模式输入框兜底防线（非分层规则，优先级高于 Tailwind utilities 层）
+ * ───────────────────────────────────────────────────────────── */
+.dark :is(input, textarea, select):not([class*="dark:bg-"]) {
+  color: var(--oh-im-input-fg);
+}
+
+.dark :is(input, textarea, select)[class~="bg-white"]:not([class*="dark:bg-"]) {
+  background-color: var(--oh-im-input);
+  color: var(--oh-im-input-fg);
+}
+
+.dark :is(input, textarea, select):focus:not([class*="dark:focus:bg-"]) {
+  color: var(--oh-im-input-fg);
+}
+
+.dark :is(input, textarea, select)::placeholder {
+  color: var(--oh-im-placeholder);
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * 6. 无障碍：尊重系统「减少动态效果」偏好
+ * ───────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -124,7 +124,7 @@ OpenHuddle/
    - **铁律**：AI 必须本地跑绿 `pnpm verify`（`Biome` + 全仓四端 `tsc` + `Vitest`）才允许提交 PR，严禁把未自测通过的半成品抛给人类排错。
 3. **`Git Worktree` + 目录写白名单（多 Agent 零冲突并发）**：
    - 借助模块高内聚切分，每位人类可在本地通过 `git worktree` 同时拉起 2～3 个独立工作树，并发派发给不同 Agent（例如 Agent 1 写 `packages/cli` 守护进程，Agent 2 同时写 `modules/events` SSE 网关）。
-   - 每个任务卡明确限定 **允许修改的目录范围（Write Scope）**；任何触碰公共 `packages/protocol` 的改动必须先单独拆成微型 `contract:` PR 合并进 `main`。
+   - 每个任务卡明确限定 **允许修改的目录范围（Write Scope）**；任何触碰公共 `packages/protocol` 的改动必须先单独拆成微型 `contract:` PR 合并进 `master`。
 4. **高信噪比 `AGENTS.md` 上下文锚点**：
    - 根目录维护统一的 `AGENTS.md`，将架构拓扑、`Functional Core` 纯函数约定、服务端权威 `trustLevel` 注入红线一次性喂给所有 Coding Agent，消除不同模型间的代码风格撕裂。
 
