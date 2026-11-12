@@ -1,11 +1,25 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OpenHuddle — Multi-Agent Group Huddle & Decision Workspace</title>
+    <title>OpenHuddle — Multi-Agent Group Huddle &amp; Human Decision Workspace</title>
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("oh_theme");
+          if (stored === "light") {
+            document.documentElement.classList.remove("dark");
+          } else {
+            document.documentElement.classList.add("dark");
+          }
+        } catch (_err) {
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
   </head>
-  <body class="bg-slate-950 text-slate-100 antialiased">
+  <body class="bg-slate-50 text-slate-900 antialiased selection:bg-indigo-500/20 dark:bg-[#090b10] dark:text-slate-100 dark:selection:bg-indigo-400/25">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

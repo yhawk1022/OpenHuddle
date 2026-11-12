@@ -16,11 +16,14 @@
     "@openhuddle/db": "workspace:*",
     "@openhuddle/protocol": "workspace:*",
     "@scalar/hono-api-reference": "^0.8.0",
+    "drizzle-orm": "^0.40.0",
     "hono": "^4.7.4",
+    "pg": "^8.13.3",
     "pino": "^9.6.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/pg": "^8.11.11",
     "tsx": "^4.19.3"
   }
 }

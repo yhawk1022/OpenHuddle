@@ -28,8 +28,17 @@ describe("@openhuddle/server — gateway & OpenAPI contract harness", () => {
       NODE_ENV: "test",
       LOG_LEVEL: "silent",
       DATABASE_URL: "memory://",
+      AI_API_KEY: "",
+      ALLOW_DEV_OTP_ECHO: "",
     });
+    expect(env.AI_API_KEY).toBeUndefined();
+    expect(env.ALLOW_DEV_OTP_ECHO).toBeUndefined();
+
     const app = createServerApp({ env, database, realtimeBus: bus });
+
+    const docsRes = await app.request("/api/docs");
+    expect(docsRes.status).toBe(200);
+    expect(docsRes.headers.get("content-type")).toContain("text/html");
 
     const healthRes = await app.request("/api/v1/health", {
       headers: { "x-request-id": "req-test-001" },
@@ -58,5 +67,9 @@ describe("@openhuddle/server — gateway & OpenAPI contract harness", () => {
         requestId: "req-404-check",
       },
     });
+
+    const cliRes = await app.request("/openhuddle.mjs");
+    expect(cliRes.status).toBe(200);
+    expect(cliRes.headers.get("content-type")).toContain("text/javascript");
   });
 });

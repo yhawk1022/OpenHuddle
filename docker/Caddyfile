@@ -1,0 +1,21 @@
+# ==============================================================================
+# OpenHuddle Production Caddy Reverse Proxy (Automatic HTTPS + Zero-Buffer SSE)
+# Set OPENHUDDLE_DOMAIN in your environment (defaults to :80 for IP testing)
+# ==============================================================================
+{$OPENHUDDLE_DOMAIN::80} {
+  encode zstd gzip
+
+  # SSE 实时事件流严禁代理层缓冲，确保 wake 与 message.created 毫秒级透传
+  @sse_stream {
+    path /api/v1/events*
+  }
+  handle @sse_stream {
+    reverse_proxy openhuddle:3000 {
+      flush_interval -1
+    }
+  }
+
+  handle {
+    reverse_proxy openhuddle:3000
+  }
+}

@@ -1,17 +1,19 @@
 /**
  * @module server/index
- * @description OpenHuddle Node.js 进程启动入口与优雅停机（Graceful Shutdown）生命周期管理。
+ * @description OpenHuddle Node.js 进程启动入口、实时事件总线自动选型（`InMemory` / `PostgreSQL LISTEN/NOTIFY`）与优雅停机生命周期管理。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 启动前自动执行幂等 `ensureCoreSchema`，确保本地嵌入式 PGlite 或新数据库首次拉起即可直接使用。
- * 2. 监听 `SIGINT` / `SIGTERM` 信号，依序停止接收新 HTTP 请求、关闭实时总线订阅并排空数据库连接池。
+ * 1. 启动前自动执行幂等 `ensureCoreSchema`，确保本地嵌入式 PGlite 或生产 PostgreSQL 首次拉起即可直接使用。
+ * 2. 2C4G 免 Redis 弹性：当 `REALTIME_BUS_DRIVER === "postgres"` 且底层连接池就绪时自动启用 `PostgresListenNotifyBus` 跨进程广播，否则回退轻量进程内 `InMemoryRealtimeBus`。
+ * 3. 监听 `SIGINT` / `SIGTERM` 信号，依序停止接收新 HTTP 请求、关闭实时总线订阅并排空数据库连接池。
  */
 import { serve } from "@hono/node-server";
 import { createDatabaseClient, ensureCoreSchema } from "@openhuddle/db";
 import { createServerApp } from "./app.js";
 import { parseServerEnv } from "./infra/env.js";
 import { createRootLogger } from "./infra/logger.js";
-import { InMemoryRealtimeBus } from "./infra/realtime-bus.js";
+import { PostgresListenNotifyBus } from "./infra/postgres-bus.js";
+import { InMemoryRealtimeBus, type RealtimeBus } from "./infra/realtime-bus.js";
 
 /**
  * 引导并运行服务端主进程。
@@ -23,7 +25,24 @@ export async function startServer(): Promise<void> {
   const database = createDatabaseClient({ url: env.DATABASE_URL });
   await ensureCoreSchema(database.db);
 
-  const realtimeBus = new InMemoryRealtimeBus();
+  let realtimeBus: RealtimeBus;
+  if (env.REALTIME_BUS_DRIVER === "postgres" && database.pgPool !== undefined) {
+    const pgBus = new PostgresListenNotifyBus({
+      pool: database.pgPool,
+      logger,
+    });
+    await pgBus.start();
+    realtimeBus = pgBus;
+  } else {
+    if (env.REALTIME_BUS_DRIVER === "postgres" && database.pgPool === undefined) {
+      logger.warn(
+        { databaseDriver: database.driver },
+        "REALTIME_BUS_DRIVER=postgres requested without pg.Pool; falling back to InMemoryRealtimeBus",
+      );
+    }
+    realtimeBus = new InMemoryRealtimeBus();
+  }
+
   const app = createServerApp({ env, database, realtimeBus });
 
   const server = serve(

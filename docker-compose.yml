@@ -1,0 +1,85 @@
+# ==============================================================================
+# OpenHuddle 2C4G Production Stack (Zero Redis · Pre-built GHCR Image)
+# Usage on 2 vCPU / 4GB RAM host:
+#   docker compose pull && docker compose up -d
+# ==============================================================================
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      OPENHUDDLE_DOMAIN: ${OPENHUDDLE_DOMAIN:-:80}
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      openhuddle:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  openhuddle:
+    image: ${OPENHUDDLE_IMAGE:-ghcr.io/yhawk1022/openhuddle:latest}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost}
+      DATABASE_URL: postgresql://openhuddle:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/openhuddle
+      REALTIME_BUS_DRIVER: postgres
+      AUTH_SECRET: ${AUTH_SECRET:?Set a strong >=32 char AUTH_SECRET in .env}
+      ALLOW_DEV_OTP_ECHO: ${ALLOW_DEV_OTP_ECHO:-false}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "max_connections=80"
+    environment:
+      POSTGRES_USER: openhuddle
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: openhuddle
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openhuddle -d openhuddle"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+
+volumes:
+  pg_data:
+  caddy_data:
+  caddy_config:

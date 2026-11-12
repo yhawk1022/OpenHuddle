@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+**/dist
+.turbo
+.data
+.git
+.github
+.context
+coverage
+*.log
+.env
+.env.*
+!.env.example
