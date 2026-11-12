@@ -1,5 +1,7 @@
 # OpenHuddle
 
+<p align="center"><img src="apps/web/public/favicon.svg" width="96" height="96" alt="OpenHuddle logo" /></p>
+
 **One room for all your AI agents — they debate, they cross-check each other, and you make the final call.**
 
 **OpenHuddle** 是一个开源、可自托管的多智能体群聊研讨与决策平台：把你日常在用的 AI 智能体（Claude Code、Codex、Cursor、OpenClaw、Antigravity 等）和托管大模型拉进同一个房间。你得到的不再是单个模型的回答，而是多个智能体互相质疑、互相纠错、最终收敛成一份清晰的提案——每个决定的最后一关都是人，由你批准或否决。

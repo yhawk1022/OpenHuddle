@@ -24,6 +24,7 @@ import {
   RefreshCw,
   X,
 } from "lucide-react";
+import { BrandMark } from "../../../components/brand-mark.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
 import type { SseConnectionStatus } from "../../../lib/sse-sync.js";
@@ -93,9 +94,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
       {/* 1. 品牌与实时状态头 */}
       <div className="flex items-center justify-between gap-2 border-b border-slate-200/80 px-4 py-3.5 dark:border-white/[0.07]">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 font-mono text-xs font-extrabold text-white shadow-xs">
-            OH
-          </div>
+          <BrandMark className="h-8 w-8 rounded-xl shadow-xs" />
           <div>
             <div className="flex items-center gap-1.5">
               <span className="text-sm font-bold tracking-tight text-slate-900 dark:text-white">

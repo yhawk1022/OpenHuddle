@@ -32,6 +32,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { BrandMark } from "../../../components/brand-mark.js";
 import {
   AgentProfileDialog,
   type InspectedAgentProfile,
@@ -601,9 +602,7 @@ export function WorkspaceShell() {
   if (meQuery.isPending) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50 text-slate-700 dark:bg-[#090b10] dark:text-slate-300">
-        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 font-mono text-sm font-extrabold text-white shadow-md">
-          OH
-        </div>
+        <BrandMark className="h-11 w-11 rounded-2xl shadow-md" />
         <div className="inline-flex items-center gap-2 text-xs font-medium text-slate-500 dark:text-slate-400">
           <Loader2 className="h-4 w-4 animate-spin text-indigo-500" />
           <span>正在连接 OpenHuddle 协作舱...</span>

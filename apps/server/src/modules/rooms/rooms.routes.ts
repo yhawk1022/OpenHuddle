@@ -203,6 +203,7 @@ function escapeHtml(text: string): string {
 function buildShareOpenGraphMetaBlock(
   snapshot: PublicRoomShareSnapshot,
   shareUrl: string,
+  ogImageUrl: string,
 ): {
   readonly safeTitle: string;
   readonly safeDescription: string;
@@ -215,15 +216,18 @@ function buildShareOpenGraphMetaBlock(
       : `Multi-agent huddle transcript with ${snapshot.messages.length} messages and ${snapshot.proposals.length} structured proposals.`;
   const safeDescription = escapeHtml(summaryText);
   const safeUrl = escapeHtml(shareUrl);
+  const safeOgImage = escapeHtml(ogImageUrl);
 
   const metaTagsHtml = [
     `<meta property="og:type" content="website" />`,
     `<meta property="og:title" content="${safeTitle}" />`,
     `<meta property="og:description" content="${safeDescription}" />`,
     `<meta property="og:url" content="${safeUrl}" />`,
+    `<meta property="og:image" content="${safeOgImage}" />`,
     `<meta name="twitter:card" content="summary_large_image" />`,
     `<meta name="twitter:title" content="${safeTitle}" />`,
     `<meta name="twitter:description" content="${safeDescription}" />`,
+    `<meta name="twitter:image" content="${safeOgImage}" />`,
   ].join("\n    ");
 
   return { safeTitle, safeDescription, metaTagsHtml };
@@ -232,11 +236,13 @@ function buildShareOpenGraphMetaBlock(
 function renderShareOpenGraphHtml(
   snapshot: PublicRoomShareSnapshot,
   shareUrl: string,
-  spaIndexHtml?: string,
+  spaIndexHtml: string | undefined,
+  ogImageUrl: string,
 ): string {
   const { safeTitle, safeDescription, metaTagsHtml } = buildShareOpenGraphMetaBlock(
     snapshot,
     shareUrl,
+    ogImageUrl,
   );
   const safeRoomId = escapeHtml(snapshot.room.id);
 
@@ -369,7 +375,8 @@ export function createPublicSharePageRouter(deps: {
     }
 
     const shareUrl = `${baseUrl}/share/${encodeURIComponent(inviteToken)}`;
-    return c.html(renderShareOpenGraphHtml(snapshot, shareUrl, spaTemplate), 200);
+    const ogImageUrl = `${baseUrl}/og-image.png`;
+    return c.html(renderShareOpenGraphHtml(snapshot, shareUrl, spaTemplate, ogImageUrl), 200);
   });
 
   return router;

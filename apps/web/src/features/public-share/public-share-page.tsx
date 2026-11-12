@@ -22,6 +22,7 @@ import {
   Users,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { BrandMark } from "../../components/brand-mark.js";
 import {
   AgentProfileDialog,
   type InspectedAgentProfile,
@@ -126,9 +127,9 @@ export function PublicSharePage(props: PublicSharePageProps) {
             <button
               type="button"
               onClick={() => navigateTo("/")}
-              className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 font-mono text-xs font-extrabold text-white shadow-xs"
+              className="flex h-8 w-8 items-center justify-center rounded-xl shadow-xs"
             >
-              OH
+              <BrandMark className="h-8 w-8 rounded-xl" />
             </button>
             <div>
               <div className="flex items-center gap-2">

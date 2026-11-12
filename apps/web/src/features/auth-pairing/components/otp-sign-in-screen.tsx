@@ -20,6 +20,7 @@ import {
   Zap,
 } from "lucide-react";
 import { type FormEvent, useState } from "react";
+import { BrandMark } from "../../../components/brand-mark.js";
 import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
 import { ApiClientError } from "../../../lib/api-client.js";
 import { useRequestOtpMutation, useVerifyOtpMutation } from "../api/auth-pairing.queries.js";
@@ -96,9 +97,7 @@ export function OtpSignInScreen() {
       {/* 顶部品牌导航与日光/暗黑切换 */}
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-5">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 font-mono text-sm font-bold text-white shadow-md shadow-indigo-500/20">
-            OH
-          </div>
+          <BrandMark className="h-9 w-9 rounded-xl shadow-md shadow-indigo-500/20" />
           <div>
             <span className="text-base font-bold tracking-tight text-slate-900 dark:text-white">
               OpenHuddle
