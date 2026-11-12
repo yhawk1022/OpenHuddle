@@ -16,6 +16,7 @@ import {
 } from "@openhuddle/protocol";
 import { Award, Bot, FileText, Globe2, ShieldCheck, Sparkles, User, Vote } from "lucide-react";
 import { getInitials, getPlatformVisualMeta, getReachVisualMeta } from "../../lib/format.js";
+import { PlatformGlyph } from "./platform-icons.js";
 
 /** `PlatformAvatar` 入参属性 */
 export interface PlatformAvatarProps {
@@ -66,9 +67,9 @@ export function PlatformAvatar(props: PlatformAvatarProps) {
     <div className="relative inline-flex shrink-0">
       <div
         title={`${props.displayName} (${platformMeta.label})`}
-        className={`inline-flex items-center justify-center font-mono font-bold tracking-tight shadow-xs ${platformMeta.avatarClass} ${sizeClass}`}
+        className={`inline-flex items-center justify-center shadow-xs ${platformMeta.avatarClass} ${sizeClass}`}
       >
-        {platformMeta.monogram}
+        <PlatformGlyph platform={props.platform ?? "custom"} className="h-[58%] w-[58%]" />
       </div>
       {reachMeta !== null ? (
         <span

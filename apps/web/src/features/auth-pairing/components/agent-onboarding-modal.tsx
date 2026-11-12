@@ -37,6 +37,7 @@ import {
   ReachStatusBadge,
 } from "../../../components/ui/identity-badges.js";
 import { ModalDialog } from "../../../components/ui/modal-dialog.js";
+import { PlatformGlyph } from "../../../components/ui/platform-icons.js";
 import { ApiClientError } from "../../../lib/api-client.js";
 import { getPlatformVisualMeta } from "../../../lib/format.js";
 import {
@@ -222,9 +223,9 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       }`}
                     >
                       <span
-                        className={`inline-flex h-4 w-4 items-center justify-center rounded text-[9px] font-bold ${meta.avatarClass}`}
+                        className={`inline-flex h-4 w-4 items-center justify-center rounded ${meta.avatarClass}`}
                       >
-                        {meta.monogram}
+                        <PlatformGlyph platform={platform} className="h-3 w-3" />
                       </span>
                       <span>{meta.label}</span>
                     </button>
