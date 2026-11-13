@@ -34,8 +34,11 @@ export const DEFAULT_SSE_BASE_DELAY_MS = 1_000;
 /** 最大 SSE 指数退避重连上限毫秒数（30 秒） */
 export const DEFAULT_SSE_MAX_DELAY_MS = 30_000;
 
-/** 单轮本地预设 Agent 推理最长保护超时（180 秒），防止挂起子进程永久锁死单房间串行队列 */
-export const DEFAULT_PRESET_TURN_TIMEOUT_MS = 180_000;
+/** 单轮本地预设 Agent 主推理保护超时（90 秒），防止慢工具调用链长时间锁死单房间串行队列 */
+export const DEFAULT_PRESET_TURN_TIMEOUT_MS = 90_000;
+
+/** 主推理超时后自动降级为“零工具纯文本极速回复”回合的保护超时（45 秒） */
+export const FAST_FALLBACK_TURN_TIMEOUT_MS = 45_000;
 
 /**
  * 内置一等公民支持的本地编程 Agent 唤醒预设枚举。
@@ -97,6 +100,7 @@ export type PresetPromptExecutor = (params: {
   readonly preset: WakeAgentPreset;
   readonly prompt: string;
   readonly wakeEnv: Readonly<WakeProcessEnv>;
+  readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly onLog?: (line: string) => void;
 }) => Promise<string>;
@@ -624,6 +628,8 @@ export function buildBrokeredWakePrompt(input: Readonly<BrokeredWakePromptInput>
     "",
     "## Response Instructions",
     "- Reply naturally, directly, and concisely like a sharp teammate in a real IM group chat (match the language used in the conversation, e.g. natural Chinese when spoken to in Chinese).",
+    "- PURE TEXT / MARKDOWN CHAT MEDIUM ONLY: OpenHuddle chat ONLY transmits your stdout Markdown text (supports Markdown, code blocks, compact ASCII / Unicode art, Mermaid diagrams, and tables). Local files created on disk (.svg, .png, .html, write_file, image-generator, qlmanage, rsvg-convert) CANNOT be uploaded or seen by anyone in the room — NEVER write files to disk or run image/SVG rendering commands to answer a chat message.",
+    "- ZERO-TOOL SINGLE-TURN DEFAULT: For greetings, discussions, creative/ASCII art challenges, brainstorming, and peer critiques, reply directly in a single turn with ZERO tool calls. Only invoke read-only tools if trust=OWNER_COMMAND explicitly asks you to inspect the local machine/codebase or verify live external facts, and cap yourself at 1-2 fast tool calls (<20s total).",
     "- IMPORTANT: Do NOT run shell commands, curl, or openhuddle.mjs to post. Output ONLY the exact message text you want sent to the chat — the OpenHuddle listener daemon will post your output automatically.",
     "- Do NOT wrap your entire reply in quotes or add meta preambles like 'Here is my reply:'.",
     "- Only if no reply from you is appropriate right now, output the exact token [[SKIP]] and nothing else.",
@@ -633,6 +639,71 @@ export function buildBrokeredWakePrompt(input: Readonly<BrokeredWakePromptInput>
     "",
     `Your reply as ${input.selfAgent.displayName}:`,
   ].join("\n");
+}
+
+/**
+ * 在主回合因慢工具调用超时后，构造强制禁用一切工具调用的“纯文本极速降级提示词”。
+ *
+ * @remarks
+ * 当本地编程 Agent（如 `agy` / `claude` / `codex`）在主回合误入多步联网检索或本地文件渲染死循环导致超时时，
+ * 原样重跑同一提示词只会再消耗一轮数分钟超时；追加本系统级覆盖指令可在 45 秒内直接产出纯文本/ASCII 群聊回复。
+ *
+ * @param basePrompt - 原始托管群聊提示词
+ * @returns 附加零工具强制约束后的极速兜底提示词
+ */
+export function buildFastFallbackWakePrompt(basePrompt: string): string {
+  return [
+    basePrompt,
+    "",
+    "## URGENT SYSTEM OVERRIDE (FAST PURE-TEXT FALLBACK)",
+    "Your previous attempt timed out due to slow tool execution.",
+    "Reply IMMEDIATELY right now in a single turn using pure Markdown / ASCII text ONLY.",
+    "STRICTLY FORBIDDEN in this fallback turn: DO NOT call ANY tools (zero search_web, zero run_command, zero write_file, zero read_file, zero subagents).",
+  ].join("\n");
+}
+
+/**
+ * 判定预设 CLI 异常是否属于单轮推理或打印超时（含外层进程超时与 `agy --print-timeout` 截止信号）。
+ *
+ * @param error - 捕获到的异常对象
+ * @returns 若属于超时类错误则返回 `true`
+ */
+export function isPresetTimeoutError(error: unknown): boolean {
+  const raw = error instanceof Error ? error.message : String(error);
+  return /timed out after|print timeout after|"reason"\s*:\s*"print_timeout"|DEADLINE_EXCEEDED/i.test(
+    raw,
+  );
+}
+
+/**
+ * 判定预设 CLI 异常是否属于本机代理冷启动握手断流或上游网关瞬态网络抖动。
+ *
+ * @remarks
+ * 例如 `agy` 启动首检 `loadCodeAssist` 内置约 5.0s 上下文超时，当本地 Clash/TUN 代理冷连接 TLS 握手恰好落在 5.0s 边界时会报 `EOF` 或 `SSL_ERROR_SYSCALL`；
+ * 对此类瞬态网络错误做 1.2s/2.4s 快速热身重试即可在连接池预热后立即成功。
+ *
+ * @param error - 捕获到的异常对象
+ * @returns 若属于可快速热身重试的网络/网关瞬态异常则返回 `true`
+ */
+export function isTransientPresetNetworkError(error: unknown): boolean {
+  if (isPresetTimeoutError(error)) {
+    return false;
+  }
+  const raw = error instanceof Error ? error.message : String(error);
+  return /\bEOF\b|TLS handshake timeout|SSL_ERROR_SYSCALL|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|fetch failed|socket hang up|\b502\b|\b503\b|\b504\b|\b429\b|overloaded|rate limit|temporarily unavailable/i.test(
+    raw,
+  );
+}
+
+/**
+ * 判定预设 CLI 异常是否属于无需重试的确定性启动失败（如二进制未安装）。
+ *
+ * @param error - 捕获到的异常对象
+ * @returns 若属于不可恢复的本地启动错误则返回 `true`
+ */
+function isUnrecoverableLaunchError(error: unknown): boolean {
+  const raw = error instanceof Error ? error.message : String(error);
+  return /Failed to launch preset CLI|ENOENT/i.test(raw);
 }
 
 /**
@@ -647,7 +718,9 @@ function formatSafeDiagnosticReason(error: unknown): string {
     raw
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .find((line) => line.length > 0 && !line.startsWith("AGY_ERROR:")) ?? "Unknown CLI error";
+      .find(
+        (line) => line.length > 0 && !line.startsWith("AGY_ERROR:") && !line.startsWith("[agy] "),
+      ) ?? "Unknown CLI error";
 
   return firstMeaningfulLine
     .replace(/oh_agt_[A-Za-z0-9_-]+/g, "oh_agt_***")
@@ -661,6 +734,10 @@ function formatSafeDiagnosticReason(error: unknown): string {
 /**
  * 从 Agent 生成的回复正文中提取对群内其他成员的 `@昵称` 结构化提及（自动排除自身防自唤醒死循环）。
  *
+ * @remarks
+ * 按成员昵称长度降序做贪心不重叠区间匹配：避免在 `@主人名-Agent名`（如 `@庞彦-OpenAICodex`）场景下，
+ * 短前缀 `@主人名`（`@庞彦`）被误判为同时提及人类主人。
+ *
  * @param content - 回复文本
  * @param room - 房间详情（含成员列表）
  * @param selfAgentId - 当前 Agent 主键
@@ -673,12 +750,38 @@ function extractMentionsFromReplyContent(
 ): readonly MessageMention[] {
   const lower = content.toLowerCase();
   const mentions: MessageMention[] = [];
+  const claimedSpans: Array<{ readonly start: number; readonly end: number }> = [];
 
-  for (const member of room.members) {
+  const membersByLengthDesc = [...room.members].sort(
+    (a, b) => b.displayName.length - a.displayName.length,
+  );
+
+  for (const member of membersByLengthDesc) {
     const needle = `@${member.displayName.toLowerCase()}`;
-    if (!lower.includes(needle)) {
+    if (needle.length <= 1) {
       continue;
     }
+
+    let matchedOutsideClaimed = false;
+    let searchFrom = 0;
+    while (searchFrom < lower.length) {
+      const idx = lower.indexOf(needle, searchFrom);
+      if (idx === -1) {
+        break;
+      }
+      const end = idx + needle.length;
+      const overlapsExisting = claimedSpans.some((span) => idx < span.end && end > span.start);
+      if (!overlapsExisting) {
+        claimedSpans.push({ start: idx, end });
+        matchedOutsideClaimed = true;
+      }
+      searchFrom = idx + 1;
+    }
+
+    if (!matchedOutsideClaimed) {
+      continue;
+    }
+
     if (
       member.memberKind === "agent" &&
       member.agentId !== undefined &&
@@ -702,18 +805,21 @@ function extractMentionsFromReplyContent(
 }
 
 /**
- * 调用本机安装的官方预设 Agent CLI（`codex` / `claude` / `agy` / `gemini`）通过 `stdin` 执行单轮无交互推理并返回纯文本回复。
+ * 调用本机安装的官方预设 Agent CLI（`codex` / `claude` / `agy` / `gemini`）通过无交互管道执行单轮推理并返回纯文本回复。
  *
- * @param params - 预设平台、完整提示词、唤醒环境变量与可选信号
+ * @param params - 预设平台、完整提示词、唤醒环境变量、可选超时与中止信号
  * @returns 模型输出的回复文本
  */
 async function runDefaultPresetPrompt(params: {
   readonly preset: WakeAgentPreset;
   readonly prompt: string;
   readonly wakeEnv: Readonly<WakeProcessEnv>;
+  readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly onLog?: (line: string) => void;
 }): Promise<string> {
+  const effectiveTimeoutMs = params.timeoutMs ?? DEFAULT_PRESET_TURN_TIMEOUT_MS;
+  const agyPrintTimeoutSec = Math.max(15, Math.floor(effectiveTimeoutMs / 1_000) - 5);
   const codexOutputFile =
     params.preset === "codex"
       ? join(tmpdir(), `openhuddle-codex-reply-${randomUUID()}.txt`)
@@ -743,7 +849,8 @@ async function runDefaultPresetPrompt(params: {
           sendPromptViaStdin: true,
         };
       case "claude_code":
-        // `--no-session-persistence` 省去会话落盘开销，`--permission-prompts none` 防止意外工具弹窗阻塞后台守护进程
+        // `--no-session-persistence` 省去会话落盘开销，`--permission-prompts none` 防止意外工具弹窗阻塞后台守护进程；
+        // 切勿附加 `--bare`，否则会禁用用户本机 OAuth / Keychain 登录态。
         return {
           command: "claude",
           args: [
@@ -759,7 +866,7 @@ async function runDefaultPresetPrompt(params: {
       case "antigravity":
         // 关键语法边界：与 `claude -p`（布尔标志 + stdin）不同，`agy` 的 `--print` 是带值字符串标志（`--print <prompt>`）；
         // 若写为 `agy --print --output-format text`，`agy` 会把 `"--output-format"` 误吞为提示词并以退出码 2 报错。
-        // 同时显式传入 `--effort low` 降低群聊日常回复的首轮思考时延。
+        // 同时显式传入 `--effort low` 与 `--print-timeout` 限制失控的多步工具循环耗时。
         return {
           command: "agy",
           args: [
@@ -768,6 +875,8 @@ async function runDefaultPresetPrompt(params: {
             "--disable-slash-commands",
             "--effort",
             "low",
+            "--print-timeout",
+            `${agyPrintTimeoutSec}s`,
             "--print",
             params.prompt,
           ],
@@ -802,14 +911,76 @@ async function runDefaultPresetPrompt(params: {
       const stdoutChunks: string[] = [];
       const stderrChunks: string[] = [];
       let timedOut = false;
+      let settled = false;
+      let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+      let printTimeoutGraceTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const clearAllTimers = (): void => {
+        clearTimeout(timer);
+        if (forceKillTimer !== undefined) {
+          clearTimeout(forceKillTimer);
+          forceKillTimer = undefined;
+        }
+        if (printTimeoutGraceTimer !== undefined) {
+          clearTimeout(printTimeoutGraceTimer);
+          printTimeoutGraceTimer = undefined;
+        }
+      };
+
+      const settleResolve = (val: string): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearAllTimers();
+        params.signal?.removeEventListener("abort", onAbort);
+        resolvePromise(val);
+      };
+
+      const settleReject = (err: Error): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearAllTimers();
+        params.signal?.removeEventListener("abort", onAbort);
+        rejectPromise(err);
+      };
+
+      // 强隔离进程回收：发送 SIGTERM 后若孙进程仍握住管道不退出，1.5s 后升级 SIGKILL 并主动销毁管道确保房间串行队列绝不死锁
+      const terminateChildTree = (timeoutError?: Error): void => {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // 忽略已退出进程异常
+        }
+        if (forceKillTimer === undefined) {
+          forceKillTimer = setTimeout(() => {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // 忽略已退出进程异常
+            }
+            child.stdout.destroy();
+            child.stderr.destroy();
+            child.stdin.destroy();
+            if (timeoutError !== undefined) {
+              settleReject(timeoutError);
+            }
+          }, 1_500);
+          forceKillTimer.unref();
+        }
+      };
 
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill();
-      }, DEFAULT_PRESET_TURN_TIMEOUT_MS);
+        terminateChildTree(
+          new Error(`Preset CLI "${command}" timed out after ${effectiveTimeoutMs}ms`),
+        );
+      }, effectiveTimeoutMs);
 
       const onAbort = (): void => {
-        child.kill();
+        terminateChildTree(new Error(`Preset CLI "${command}" aborted`));
       };
       params.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -821,6 +992,19 @@ async function runDefaultPresetPrompt(params: {
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk: string) => {
         stderrChunks.push(chunk);
+        // `agy` 触发 `--print-timeout` 输出 `AGY_ERROR` 后其内部后台 gRPC 清理可能拖延约 10s；宽限 1.2s 未退出则主动回收并进入极速降级
+        if (
+          printTimeoutGraceTimer === undefined &&
+          (chunk.includes('"reason":"print_timeout"') || chunk.includes("print timeout after"))
+        ) {
+          timedOut = true;
+          printTimeoutGraceTimer = setTimeout(() => {
+            terminateChildTree(
+              new Error(`Preset CLI "${command}" timed out after ${effectiveTimeoutMs}ms`),
+            );
+          }, 1_200);
+          printTimeoutGraceTimer.unref();
+        }
       });
 
       child.stdin.on("error", () => {
@@ -833,9 +1017,7 @@ async function runDefaultPresetPrompt(params: {
       }
 
       child.once("error", (err) => {
-        clearTimeout(timer);
-        params.signal?.removeEventListener("abort", onAbort);
-        rejectPromise(
+        settleReject(
           new Error(
             `Failed to launch preset CLI "${command}" (ensure it is installed and on PATH): ${err.message}`,
           ),
@@ -843,20 +1025,15 @@ async function runDefaultPresetPrompt(params: {
       });
 
       child.once("close", (code) => {
-        clearTimeout(timer);
-        params.signal?.removeEventListener("abort", onAbort);
-
         if (timedOut) {
-          rejectPromise(
-            new Error(
-              `Preset CLI "${command}" timed out after ${DEFAULT_PRESET_TURN_TIMEOUT_MS}ms`,
-            ),
+          settleReject(
+            new Error(`Preset CLI "${command}" timed out after ${effectiveTimeoutMs}ms`),
           );
           return;
         }
 
         if (code === 0 || code === null) {
-          resolvePromise(stdoutChunks.join(""));
+          settleResolve(stdoutChunks.join(""));
           return;
         }
 
@@ -864,7 +1041,7 @@ async function runDefaultPresetPrompt(params: {
         if (errTail.length > 0) {
           params.onLog?.(`[openhuddle:runner:stderr] ${errTail}`);
         }
-        rejectPromise(
+        settleReject(
           new Error(
             `Preset CLI "${command}" exited with code ${code}${errTail.length > 0 ? `: ${errTail}` : ""}`,
           ),
@@ -1061,42 +1238,88 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       `[openhuddle:wake] room=${wake.roomId} seq=${readRes.latestSeq} reason=${wake.reason} preset=${preset} -> generating reply`,
     );
 
+    const invokeWithTransientRetries = async (
+      activePrompt: string,
+      timeoutMs: number,
+      phaseLabel: "primary" | "fast-fallback",
+    ): Promise<string> => {
+      let attempt = 0;
+      while (true) {
+        attempt += 1;
+        try {
+          return await runPreset({
+            preset,
+            prompt: activePrompt,
+            wakeEnv,
+            timeoutMs,
+            ...(options.signal !== undefined ? { signal: options.signal } : {}),
+            onLog: log,
+          });
+        } catch (err) {
+          // 超时错误或二进制缺失不在此处原样重复，交由外层极速纯文本降级或直接汇报诊断
+          if (
+            options.signal?.aborted ||
+            isPresetTimeoutError(err) ||
+            isUnrecoverableLaunchError(err)
+          ) {
+            throw err;
+          }
+          // 冷代理握手断流（如 Clash/TUN 5.0s 边界 EOF / TLS 握手超时 / 502 / 429）允许最多 2 次快速热身重试（共 3 次）
+          const maxAttempts =
+            phaseLabel === "fast-fallback"
+              ? isTransientPresetNetworkError(err)
+                ? 2
+                : 1
+              : isTransientPresetNetworkError(err)
+                ? 3
+                : 2;
+          if (attempt >= maxAttempts) {
+            throw err;
+          }
+          const retryDelayMs = attempt === 1 ? 1_200 : 2_400;
+          log(
+            `[openhuddle:wake:retry-cli] room=${wake.roomId} preset=${preset} phase=${phaseLabel} attempt #${attempt}/${maxAttempts} failed (${formatSafeDiagnosticReason(err)}), retrying in ${retryDelayMs}ms...`,
+          );
+          await sleepFn(retryDelayMs, options.signal);
+        }
+      }
+    };
+
     let rawReply: string;
     try {
       try {
-        rawReply = await runPreset({
-          preset,
+        rawReply = await invokeWithTransientRetries(
           prompt,
-          wakeEnv,
-          ...(options.signal !== undefined ? { signal: options.signal } : {}),
-          onLog: log,
-        });
-      } catch (firstErr) {
-        if (options.signal?.aborted) {
-          throw firstErr;
-        }
-        // 自动瞬态重试：应对偶发网络抖动或模型网关瞬时拥塞，等待 1.2s 后自动重试一次
-        log(
-          `[openhuddle:wake:retry-cli] room=${wake.roomId} preset=${preset} attempt #1 failed (${formatSafeDiagnosticReason(firstErr)}), retrying once...`,
+          DEFAULT_PRESET_TURN_TIMEOUT_MS,
+          "primary",
         );
-        await sleepFn(1_200, options.signal);
-        rawReply = await runPreset({
-          preset,
-          prompt,
-          wakeEnv,
-          ...(options.signal !== undefined ? { signal: options.signal } : {}),
-          onLog: log,
-        });
+      } catch (primaryErr) {
+        if (options.signal?.aborted || !isPresetTimeoutError(primaryErr)) {
+          throw primaryErr;
+        }
+        // 自适应超时降级自愈：主回合因慢工具调用链（如写本地 SVG/图片文件或连续联网检索）超时后，
+        // 绝不盲目重跑第二次慢工具死循环，而是立即切换 45s“零工具纯文本极速模式”保底产出群聊回复。
+        log(
+          `[openhuddle:wake:fast-fallback] room=${wake.roomId} preset=${preset} primary turn timed out (${formatSafeDiagnosticReason(primaryErr)}); switching to ${FAST_FALLBACK_TURN_TIMEOUT_MS}ms zero-tool pure-text fallback...`,
+        );
+        rawReply = await invokeWithTransientRetries(
+          buildFastFallbackWakePrompt(prompt),
+          FAST_FALLBACK_TURN_TIMEOUT_MS,
+          "fast-fallback",
+        );
       }
     } catch (finalErr) {
-      // 可观测自愈反馈：若明确被人类主人或 @点名唤醒但连续两次本地推理失败，向群聊回传一条零提及的故障提示，彻底杜绝“石沉大海无响应”
+      // 可观测自愈反馈：若明确被人类主人或 @点名唤醒但本地推理最终失败，向群聊回传一条零提及的故障提示，彻底杜绝“石沉大海无响应”
       if (
         !options.signal?.aborted &&
         (wake.reason === "owner_command" ||
           wake.reason === "direct_mention" ||
           wake.reason === "round_table_turn")
       ) {
-        const diagText = `⚠️ 本地推理执行失败（${preset}）：${formatSafeDiagnosticReason(finalErr)} —— 若刚切换了本机代理或登录态，可在「接入我的 Agent」中点「重连」同步环境。`;
+        const remediationHint = isPresetTimeoutError(finalErr)
+          ? "推理及纯文本极速降级均已超时（多因代理链路高延迟或上游模型拥塞），可直接重发再试；若刚切换了本机代理，可在「接入我的 Agent」中点「重连」同步环境。"
+          : "若刚切换了本机代理或登录态，可在「接入我的 Agent」中点「重连」同步环境。";
+        const diagText = `⚠️ 本地推理执行失败（${preset}）：${formatSafeDiagnosticReason(finalErr)} —— ${remediationHint}`;
         try {
           const diagSent = await client.sendRoomMessage(wake.roomId, {
             content: diagText,

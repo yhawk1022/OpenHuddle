@@ -1265,10 +1265,15 @@ export {
 
 export {
   buildBrokeredWakePrompt,
+  buildFastFallbackWakePrompt,
   buildWakeProcessEnv,
   buildWakeShellCommand,
   computeReconnectDelayMs,
   createSseFrameParser,
+  DEFAULT_PRESET_TURN_TIMEOUT_MS,
+  FAST_FALLBACK_TURN_TIMEOUT_MS,
+  isPresetTimeoutError,
+  isTransientPresetNetworkError,
   parseWakeAgentPreset,
   parseWakeEventFrame,
   readSseFrames,

@@ -12,10 +12,13 @@ import { join } from "node:path";
 import type { AgentId, MessageSeq, RoomId } from "@openhuddle/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  DEFAULT_PRESET_TURN_TIMEOUT_MS,
   type DaemonServiceSpec,
   type DaemonSystemDeps,
+  FAST_FALLBACK_TURN_TIMEOUT_MS,
   RoomWakeQueue,
   type WakeEventPayload,
+  buildFastFallbackWakePrompt,
   buildLinuxSystemdUnit,
   buildMacLaunchdPlist,
   buildWakeProcessEnv,
@@ -25,6 +28,8 @@ import {
   computeReconnectDelayMs,
   getDaemonPidFilePath,
   getRoomLastReadSeq,
+  isPresetTimeoutError,
+  isTransientPresetNetworkError,
   parseCliArgs,
   parseWakeEventFrame,
   readDaemonPidFile,
@@ -2039,6 +2044,281 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
         content: "收到补充追问 #12，这里给你详细说明。",
         replyToSeq: 12,
       });
+    });
+
+    it("recovers from cold-proxy EOF handshake + slow tool timeout via 45s zero-tool pure-text fast fallback", async () => {
+      // 断言错误分类器精准区分冷代理 EOF 握手瞬态错误与打印超时错误
+      const eofErr = new Error(
+        'Preset CLI "agy" exited with code 1: error: Eligibility check failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": EOF',
+      );
+      const timeoutErr = new Error('Preset CLI "agy" timed out after 90000ms');
+      expect(isTransientPresetNetworkError(eofErr)).toBe(true);
+      expect(isPresetTimeoutError(eofErr)).toBe(false);
+      expect(isPresetTimeoutError(timeoutErr)).toBe(true);
+      expect(isTransientPresetNetworkError(timeoutErr)).toBe(false);
+
+      const controller = new AbortController();
+      const recordedCalls: Array<{
+        readonly prompt: string;
+        readonly timeoutMs: number | undefined;
+      }> = [];
+      const sleepDelays: number[] = [];
+      const postedPayloads: Array<Record<string, unknown>> = [];
+
+      await startSseListener({
+        serverUrl: "http://localhost:3400",
+        token: "oh_agt_agy_fallback",
+        tokenFilePath: join(tempHome, ".openhuddle", "tokens", "pangyan-antigravity.token"),
+        homeDir: tempHome,
+        target: { kind: "preset", preset: "antigravity" },
+        signal: controller.signal,
+        sleepImpl: async (ms) => {
+          sleepDelays.push(ms);
+        },
+        runPresetTurn: async ({ prompt, timeoutMs }) => {
+          recordedCalls.push({ prompt, timeoutMs });
+          if (recordedCalls.length === 1) {
+            throw eofErr;
+          }
+          if (recordedCalls.length === 2) {
+            throw timeoutErr;
+          }
+          return "交卷！字符画海鸥骑车 🐦🚲 —— @庞彦-OpenAICodex 你的车轮很稳，但海鸥脖子略像鸭子哈哈！";
+        },
+        fetchImpl: async (input, init) => {
+          const url = String(input);
+          const method = init?.method ?? "GET";
+
+          if (url.endsWith("/api/v1/events")) {
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                start(streamCtrl) {
+                  streamCtrl.enqueue(new TextEncoder().encode(": connected\n\n"));
+                },
+              }),
+              { status: 200, headers: { "Content-Type": "text/event-stream" } },
+            );
+          }
+
+          if (url.includes("/api/v1/inbox")) {
+            return jsonResponse(200, {
+              ok: true,
+              totalUnreadMessages: 1,
+              rooms: [
+                {
+                  roomId: "rom_seagull",
+                  roomName: "c测试",
+                  lastSeq: 17,
+                  yourLastReadSeq: 16,
+                  unreadCount: 1,
+                  hasOwnerCommand: true,
+                  hasDirectMention: true,
+                  governanceStatus: "active",
+                },
+              ],
+              serverTimeIso: "2026-11-13T08:45:38.000Z",
+            });
+          }
+
+          if (url.endsWith("/api/v1/me")) {
+            return jsonResponse(200, {
+              ok: true,
+              callerKind: "agent",
+              agent: {
+                id: "agt_agy_seagull",
+                ownerUserId: "usr_pangyan",
+                displayName: "庞彦-Antigravity",
+                slug: "pangyan-antigravity",
+                platform: "antigravity",
+                reach: "online_sse",
+                createdAtIso: "2026-11-13T05:59:00.000Z",
+              },
+              owner: {
+                id: "usr_pangyan",
+                email: "pangyan@example.com",
+                displayName: "庞彦",
+                createdAtIso: "2026-11-13T05:00:00.000Z",
+              },
+              siblingAgents: [],
+            });
+          }
+
+          if (url.endsWith("/api/v1/rooms/rom_seagull") && method === "GET") {
+            return jsonResponse(200, {
+              ok: true,
+              room: {
+                id: "rom_seagull",
+                ownerUserId: "usr_pangyan",
+                name: "c测试",
+                topic: "海鸥骑车大赛",
+                rules: "",
+                visibility: "invite_only",
+                lastSeq: 17,
+                yourLastReadSeq: 16,
+                governance: {
+                  status: "active",
+                  consecutiveAgentTurns: 1,
+                  roundTableSpokenAgentIds: [],
+                  config: {
+                    mode: "free",
+                    maxConsecutiveAgentTurns: 6,
+                    agentCooldownMs: 0,
+                    requireReadBeforeSend: true,
+                    allowAgentMentions: true,
+                  },
+                },
+                members: [
+                  {
+                    memberKind: "human",
+                    userId: "usr_pangyan",
+                    ownerUserId: "usr_pangyan",
+                    ownerDisplayName: "庞彦",
+                    displayName: "庞彦",
+                    role: "owner",
+                    lastReadSeq: 17,
+                  },
+                  {
+                    memberKind: "agent",
+                    agentId: "agt_codex_peer",
+                    ownerUserId: "usr_pangyan",
+                    ownerDisplayName: "庞彦",
+                    displayName: "庞彦-OpenAICodex",
+                    role: "participant",
+                    lastReadSeq: 17,
+                  },
+                  {
+                    memberKind: "agent",
+                    agentId: "agt_agy_seagull",
+                    ownerUserId: "usr_pangyan",
+                    ownerDisplayName: "庞彦",
+                    displayName: "庞彦-Antigravity",
+                    role: "participant",
+                    lastReadSeq: 16,
+                  },
+                ],
+                createdAtIso: "2026-11-13T05:00:00.000Z",
+              },
+            });
+          }
+
+          if (url.includes("/api/v1/rooms/rom_seagull/messages") && method === "GET") {
+            return jsonResponse(200, {
+              ok: true,
+              latestSeq: 17,
+              governance: {
+                status: "active",
+                consecutiveAgentTurns: 1,
+                roundTableSpokenAgentIds: [],
+                config: {
+                  mode: "free",
+                  maxConsecutiveAgentTurns: 6,
+                  agentCooldownMs: 0,
+                  requireReadBeforeSend: true,
+                  allowAgentMentions: true,
+                },
+              },
+              messages: [
+                {
+                  roomId: "rom_seagull",
+                  seq: 17,
+                  type: "text",
+                  author: {
+                    kind: "human",
+                    userId: "usr_pangyan",
+                    ownerUserId: "usr_pangyan",
+                    displayName: "庞彦",
+                    isYou: false,
+                    isYourOwner: true,
+                    trustLevel: "owner_command",
+                  },
+                  content:
+                    "@庞彦-OpenAICodex @庞彦-Antigravity 你们比赛画一个最近最火的海鸥骑车图，互相锐评",
+                  mentions: [
+                    {
+                      kind: "agent",
+                      agentId: "agt_agy_seagull",
+                      displayName: "庞彦-Antigravity",
+                    },
+                  ],
+                  createdAtIso: "2026-11-13T08:45:37.000Z",
+                },
+              ],
+            });
+          }
+
+          if (url.endsWith("/api/v1/rooms/rom_seagull/messages") && method === "POST") {
+            const parsedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+            postedPayloads.push(parsedBody);
+            controller.abort();
+            return jsonResponse(201, {
+              ok: true,
+              message: {
+                roomId: "rom_seagull",
+                seq: 19,
+                type: "text",
+                author: {
+                  kind: "agent",
+                  agentId: "agt_agy_seagull",
+                  ownerUserId: "usr_pangyan",
+                  displayName: "庞彦-Antigravity",
+                  platform: "antigravity",
+                  isYou: true,
+                  isYourOwner: false,
+                  trustLevel: "owner_sibling_agent",
+                },
+                content: String(parsedBody.content ?? ""),
+                mentions: [],
+                createdAtIso: "2026-11-13T08:47:20.000Z",
+              },
+              governance: {
+                status: "active",
+                consecutiveAgentTurns: 2,
+                roundTableSpokenAgentIds: [],
+                config: {
+                  mode: "free",
+                  maxConsecutiveAgentTurns: 6,
+                  agentCooldownMs: 0,
+                  requireReadBeforeSend: true,
+                  allowAgentMentions: true,
+                },
+              },
+              wokenAgentIds: ["agt_codex_peer"],
+            });
+          }
+
+          throw new Error(`Unexpected request in seagull recovery test: ${method} ${url}`);
+        },
+        onLog: () => undefined,
+      });
+
+      // 第 1 次：90s 主回合遭遇冷代理 EOF -> 等待 1.2s 热身重试
+      // 第 2 次：90s 主回合因慢工具超时 -> 不再傻等重跑同一提示词，立即切换 45s 零工具纯文本极速降级
+      // 第 3 次：45s 纯文本降级成功返回群聊回复并提取 @庞彦-OpenAICodex 提及，无报错气泡！
+      expect(sleepDelays).toEqual([1_200]);
+      expect(recordedCalls).toHaveLength(3);
+      expect(recordedCalls[0]?.timeoutMs).toBe(DEFAULT_PRESET_TURN_TIMEOUT_MS);
+      expect(recordedCalls[0]?.prompt).toContain("PURE TEXT / MARKDOWN CHAT MEDIUM ONLY");
+      expect(recordedCalls[0]?.prompt).toContain("NEVER write files to disk");
+      expect(recordedCalls[0]?.prompt).not.toContain("URGENT SYSTEM OVERRIDE");
+      expect(recordedCalls[1]?.timeoutMs).toBe(DEFAULT_PRESET_TURN_TIMEOUT_MS);
+      expect(recordedCalls[2]?.timeoutMs).toBe(FAST_FALLBACK_TURN_TIMEOUT_MS);
+      expect(recordedCalls[2]?.prompt).toBe(
+        buildFastFallbackWakePrompt(recordedCalls[0]?.prompt ?? ""),
+      );
+      expect(recordedCalls[2]?.prompt).toContain(
+        "URGENT SYSTEM OVERRIDE (FAST PURE-TEXT FALLBACK)",
+      );
+
+      expect(postedPayloads).toHaveLength(1);
+      expect(String(postedPayloads[0]?.content ?? "")).toContain("字符画海鸥骑车");
+      expect(String(postedPayloads[0]?.content ?? "")).not.toContain("⚠️ 本地推理执行失败");
+      expect(postedPayloads[0]?.mentions).toEqual([
+        {
+          kind: "agent",
+          agentId: "agt_codex_peer",
+          displayName: "庞彦-OpenAICodex",
+        },
+      ]);
     });
   });
 });
