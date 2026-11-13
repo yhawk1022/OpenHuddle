@@ -163,10 +163,9 @@ export function AppPopover(props: AppPopoverProps) {
           sideOffset={sideOffset}
           collisionPadding={12}
           className={cn(
-            "oh-floating-menu app-no-drag z-[90] w-80 rounded-2xl p-3.5 outline-none",
-            "bg-white/98 text-[#141414] backdrop-blur-xl",
-            "shadow-[0_18px_50px_-12px_rgba(0,0,0,0.16)] ring-1 ring-black/[0.08]",
-            "dark:bg-[#18181B]/98 dark:text-zinc-100 dark:shadow-[0_22px_56px_-12px_rgba(0,0,0,0.76)] dark:ring-white/[0.11]",
+            "glass-modal oh-floating-menu app-no-drag z-[90] w-80 rounded-2xl p-3.5 outline-none",
+            "text-[#141414]",
+            "dark:text-zinc-100",
             className,
           )}
         >
@@ -308,10 +307,9 @@ export function AppDropdownMenu(props: AppDropdownMenuProps) {
           sideOffset={sideOffset}
           collisionPadding={10}
           className={cn(
-            "oh-floating-menu app-no-drag z-[95] min-w-[11.5rem] overflow-hidden rounded-2xl p-1 outline-none",
-            "bg-white/98 text-[#141414] backdrop-blur-xl",
-            "shadow-[0_16px_42px_-10px_rgba(0,0,0,0.15)] ring-1 ring-black/[0.08]",
-            "dark:bg-[#18181B]/98 dark:text-zinc-100 dark:shadow-[0_20px_50px_-10px_rgba(0,0,0,0.75)] dark:ring-white/[0.12]",
+            "glass-modal oh-floating-menu app-no-drag z-[95] min-w-[11.5rem] overflow-hidden rounded-2xl p-1 outline-none",
+            "text-[#141414]",
+            "dark:text-zinc-100",
             className,
           )}
         >

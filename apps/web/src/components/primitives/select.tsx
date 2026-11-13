@@ -147,10 +147,9 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
           align={align}
           sideOffset={6}
           className={cn(
-            "oh-floating-menu app-no-drag z-[95] max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-2xl p-1",
-            "bg-white/98 text-[#141414] backdrop-blur-xl",
-            "shadow-[0_16px_42px_-10px_rgba(0,0,0,0.14)] ring-1 ring-black/[0.08]",
-            "dark:bg-[#18181B]/98 dark:text-zinc-100 dark:shadow-[0_20px_50px_-10px_rgba(0,0,0,0.75)] dark:ring-white/[0.12]",
+            "glass-modal oh-floating-menu app-no-drag z-[95] max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-2xl p-1",
+            "text-[#141414]",
+            "dark:text-zinc-100",
             contentClassName,
           )}
         >
