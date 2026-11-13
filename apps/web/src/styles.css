@@ -81,7 +81,7 @@
   --oh-glass-pane: rgba(255, 255, 255, 0.6);
   --oh-glass-bar: rgba(255, 255, 255, 0.68);
   --oh-glass-strong: rgba(255, 255, 255, 0.48);
-  --oh-glass-blur: 20px;
+  --oh-glass-blur: 10px;
   --oh-glass-saturate: 165%;
   --oh-glass-border: rgba(20, 20, 20, 0.1);
   --oh-glass-edge: rgba(255, 255, 255, 1);
@@ -148,7 +148,7 @@
   --oh-glass-pane: rgba(255, 255, 255, 0.045);
   --oh-glass-bar: rgba(255, 255, 255, 0.06);
   --oh-glass-strong: rgba(255, 255, 255, 0.08);
-  --oh-glass-blur: 22px;
+  --oh-glass-blur: 12px;
   --oh-glass-saturate: 150%;
   --oh-glass-border: rgba(255, 255, 255, 0.22);
   --oh-glass-edge: rgba(255, 255, 255, 0.45);
@@ -510,6 +510,8 @@ body::before {
   background-color: var(--oh-glass-pane);
   -webkit-backdrop-filter: blur(var(--oh-glass-blur)) saturate(var(--oh-glass-saturate));
   backdrop-filter: blur(var(--oh-glass-blur)) saturate(var(--oh-glass-saturate));
+  /* 降级级联：Chromium 渲染边缘折射（滤镜定义见 GlassFilterDefs），不支持的浏览器保持上一行磨砂 */
+  backdrop-filter: url(#oh-refract) blur(var(--oh-glass-blur)) saturate(var(--oh-glass-saturate));
   box-shadow: inset 0 1px 0 var(--oh-glass-edge);
 }
 
@@ -518,6 +520,8 @@ body::before {
   background-color: var(--oh-glass-bar);
   -webkit-backdrop-filter: blur(calc(var(--oh-glass-blur) + 6px)) saturate(var(--oh-glass-saturate));
   backdrop-filter: blur(calc(var(--oh-glass-blur) + 6px)) saturate(var(--oh-glass-saturate));
+  backdrop-filter: url(#oh-refract) blur(calc(var(--oh-glass-blur) + 6px))
+    saturate(var(--oh-glass-saturate));
   box-shadow: inset 0 1px 0 var(--oh-glass-edge);
 }
 
@@ -527,6 +531,8 @@ body::before {
   -webkit-backdrop-filter: blur(calc(var(--oh-glass-blur) + 10px))
     saturate(var(--oh-glass-saturate));
   backdrop-filter: blur(calc(var(--oh-glass-blur) + 10px)) saturate(var(--oh-glass-saturate));
+  backdrop-filter: url(#oh-refract) blur(calc(var(--oh-glass-blur) + 10px))
+    saturate(var(--oh-glass-saturate));
   box-shadow: inset 0 1px 0 var(--oh-glass-edge), 0 0 0 1px var(--oh-glass-border),
     var(--oh-glass-shadow);
 }
@@ -539,6 +545,8 @@ body::before {
   -webkit-backdrop-filter: blur(calc(var(--oh-glass-blur) + 12px))
     saturate(var(--oh-glass-saturate));
   backdrop-filter: blur(calc(var(--oh-glass-blur) + 12px)) saturate(var(--oh-glass-saturate));
+  backdrop-filter: url(#oh-refract) blur(calc(var(--oh-glass-blur) + 12px))
+    saturate(var(--oh-glass-saturate));
   box-shadow: inset 0 1px 0 var(--oh-glass-edge), 0 0 0 1px var(--oh-glass-border), 0 24px 70px
     rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0, 0, 0, 0.1);
 }

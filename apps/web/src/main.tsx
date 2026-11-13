@@ -9,6 +9,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { GlassFilterDefs } from "./components/glass-filter-defs.js";
 import { AppToaster, AppTooltipProvider } from "./components/primitives/index.js";
 import { WorkspaceShell } from "./features/huddle-room/components/workspace-shell.js";
 import { PublicSharePage } from "./features/public-share/index.js";
@@ -41,6 +42,7 @@ if (rootElement) {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <AppTooltipProvider delayDuration={150}>
+          <GlassFilterDefs />
           <AppRoot />
           <AppToaster />
         </AppTooltipProvider>
