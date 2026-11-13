@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 /**
  * @module server/index
  * @description OpenHuddle Node.js 进程启动入口、实时事件总线自动选型（`InMemory` / `PostgreSQL LISTEN/NOTIFY`）与优雅停机生命周期管理。
@@ -75,7 +77,14 @@ export async function startServer(): Promise<void> {
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
-// 仅当作为主入口直接执行时拉起端口监听，避免测试导入时产生副作用
-if (import.meta.url === `file://${process.argv[1]}`) {
+// 仅当作为主入口直接执行时拉起端口监听，避免测试导入时产生副作用。
+// 关键不变量：必须经 `realpathSync + pathToFileURL` 归一化比较——tsx 传相对路径
+// （`src/index.ts`）或 macOS 符号链接路径（`/tmp` -> `/private/tmp`）时，
+// 裸拼 `file://${process.argv[1]}` 与 `import.meta.url`（Node 自动解析真实路径）永不相等，
+// 导致 `tsx watch src/index.ts` 静默空退出。
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+) {
   void startServer();
 }
