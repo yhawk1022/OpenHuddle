@@ -121,10 +121,54 @@ function isReachableNow(member: RoomMemberDto): boolean {
   );
 }
 
-/** 判断正文是否包含对某位成员的不区分大小写 `@昵称` 点名 */
-function containsMemberMention(text: string, displayName: string): boolean {
-  const normalized = displayName.trim().toLowerCase();
-  return normalized.length > 0 && text.toLowerCase().includes(`@${normalized}`);
+/**
+ * 从正文中按成员昵称长度降序做贪心不重叠区间匹配，精确提取真实出现的 `@昵称` 成员集合。
+ *
+ * @remarks
+ * 避免在 `@主人名-Agent名`（如 `@庞彦-OpenAICodex`）场景下，短前缀 `@庞彦` 被误识别为同时提及人类主人。
+ */
+function extractPresentRoomMentions(
+  text: string,
+  members: ReadonlyArray<RoomMemberDto>,
+): ReadonlyArray<MessageMention> {
+  const lower = text.toLowerCase();
+  const matched: MessageMention[] = [];
+  const claimedSpans: Array<{ readonly start: number; readonly end: number }> = [];
+
+  const sortedMembers = [...members].sort((a, b) => b.displayName.length - a.displayName.length);
+
+  for (const member of sortedMembers) {
+    const normalized = member.displayName.trim().toLowerCase();
+    if (normalized.length === 0) {
+      continue;
+    }
+    const needle = `@${normalized}`;
+    let foundUnclaimed = false;
+    let searchFrom = 0;
+
+    while (searchFrom < lower.length) {
+      const idx = lower.indexOf(needle, searchFrom);
+      if (idx === -1) {
+        break;
+      }
+      const end = idx + needle.length;
+      const overlaps = claimedSpans.some((span) => idx < span.end && end > span.start);
+      if (!overlaps) {
+        claimedSpans.push({ start: idx, end });
+        foundUnclaimed = true;
+      }
+      searchFrom = idx + 1;
+    }
+
+    if (foundUnclaimed) {
+      const converted = memberToMention(member);
+      if (converted !== null) {
+        matched.push(converted);
+      }
+    }
+  }
+
+  return matched;
 }
 
 /**
@@ -227,15 +271,10 @@ export function MessageComposer(props: MessageComposerProps) {
 
   // 与正文实时对齐微胶囊显示：若用户在输入框内手删了 `@昵称`，仅展示仍存在于正文中的被点名队友
   const activeChipMentions = useMemo(() => {
-    const typed: MessageMention[] = [];
-    for (const member of props.members) {
-      const converted = memberToMention(member);
-      if (converted !== null && containsMemberMention(draft, member.displayName)) {
-        typed.push(converted);
-      }
-    }
-    return mergeMentions(selectedMentions, typed).filter((m) =>
-      containsMemberMention(draft, m.displayName),
+    const presentMentions = extractPresentRoomMentions(draft, props.members);
+    const presentKeys = new Set(presentMentions.map(mentionIdentityKey));
+    return mergeMentions(selectedMentions, presentMentions).filter((m) =>
+      presentKeys.has(mentionIdentityKey(m)),
     );
   }, [draft, props.members, selectedMentions]);
 
@@ -341,13 +380,13 @@ export function MessageComposer(props: MessageComposerProps) {
 
   const toggleMention = (target: MessageMention): void => {
     const targetKey = mentionIdentityKey(target);
-    const inDraft = draft.includes(`@${target.displayName}`);
+    const inDraft = activeChipMentions.some((m) => mentionIdentityKey(m) === targetKey);
     if (inDraft) {
-      // 移除胶囊时同步剥离正文中的 `@昵称`，维持「所见即所派发」不变量
+      // 移除胶囊时仅剥离非更长昵称前缀的独立 `@昵称`，避免删 `@庞彦` 时误截断 `@庞彦-OpenAICodex`
       setSelectedMentions((prev) => prev.filter((m) => mentionIdentityKey(m) !== targetKey));
-      setDraft((prev) =>
-        prev.replace(`@${target.displayName} `, "").replace(`@${target.displayName}`, ""),
-      );
+      const escaped = target.displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const tokenRegex = new RegExp(`@${escaped}(?![-\\w])\\s?`, "iu");
+      setDraft((prev) => prev.replace(tokenRegex, ""));
       window.requestAnimationFrame(() => textareaRef.current?.focus());
       return;
     }
@@ -397,16 +436,11 @@ export function MessageComposer(props: MessageComposerProps) {
       return;
     }
 
-    // 最终提及集合严格与正文中保留的 `@昵称` 求交集，防止幽灵唤醒
-    const typedMentions: MessageMention[] = [];
-    for (const member of props.members) {
-      const converted = memberToMention(member);
-      if (converted !== null && containsMemberMention(trimmed, member.displayName)) {
-        typedMentions.push(converted);
-      }
-    }
-    const finalMentions = mergeMentions(selectedMentions, typedMentions).filter((m) =>
-      containsMemberMention(trimmed, m.displayName),
+    // 最终提及集合严格与正文中保留的 `@昵称` 求交集，防止幽灵唤醒或前缀误命中
+    const presentMentions = extractPresentRoomMentions(trimmed, props.members);
+    const presentKeys = new Set(presentMentions.map(mentionIdentityKey));
+    const finalMentions = mergeMentions(selectedMentions, presentMentions).filter((m) =>
+      presentKeys.has(mentionIdentityKey(m)),
     );
 
     const opKey = createClientOperationKey();

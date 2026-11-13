@@ -17,12 +17,14 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AgentId,
   AuthenticatedCaller,
   ConnectLocalAgentBody,
   ConnectLocalAgentResponse,
@@ -31,8 +33,10 @@ import type {
   LocalCliPresetPlatform,
   MessageSeq,
   OperationKey,
+  UserId,
 } from "@openhuddle/protocol";
 import { assertHumanCaller } from "../../infra/auth-middleware.js";
+import { slugifyAgentName } from "../../infra/crypto.js";
 import type { ServerEnv } from "../../infra/env.js";
 import { AppError } from "../../infra/errors.js";
 import type { MessagesService } from "../messages/messages.service.js";
@@ -63,6 +67,15 @@ export type LocalDaemonInstallerFn = (params: {
 }) => { readonly serviceId: string };
 
 /**
+ * 可选注入的本地守护停止执行器（供无副作用集成测试覆盖）。
+ */
+export type LocalDaemonStopperFn = (params: {
+  readonly cliScriptPath: string;
+  readonly slug: string;
+  readonly homeDir: string;
+}) => boolean;
+
+/**
  * 构造 `LocalConnectService` 所需的依赖。
  */
 export interface LocalConnectServiceDeps {
@@ -73,6 +86,7 @@ export interface LocalConnectServiceDeps {
   readonly homeDir?: string;
   readonly pathEnv?: string;
   readonly installDaemonFn?: LocalDaemonInstallerFn;
+  readonly stopDaemonFn?: LocalDaemonStopperFn;
 }
 
 /**
@@ -198,6 +212,37 @@ function resolveAgentTokenFilePath(tokensDir: string, agentId: string, slug: str
 }
 
 /**
+ * 判断传入的 Agent 名称是否属于前端默认生成的 `<主人名>-<平台标签>` 模板名（兼容历史 `OpenAICodex` 与新版 `Codex` 等别名）。
+ *
+ * @param candidateName - 本次请求提交的展示名称
+ * @param ownerDisplayName - 人类主人展示名称
+ * @param platform - 本机 CLI 平台
+ * @returns 若属于默认模板名而非用户手填的专属角色名则返回 `true`
+ */
+function isDefaultPlatformAgentName(
+  candidateName: string,
+  ownerDisplayName: string,
+  platform: LocalCliPresetPlatform,
+): boolean {
+  const trimmed = candidateName.trim().toLowerCase();
+  const ownerPrefix = `${ownerDisplayName.trim().toLowerCase()}-`;
+  if (!trimmed.startsWith(ownerPrefix)) {
+    return false;
+  }
+  const suffix = trimmed.slice(ownerPrefix.length).replace(/[\s_-]+/g, "");
+  switch (platform) {
+    case "codex":
+      return suffix === "codex" || suffix === "openaicodex";
+    case "claude_code":
+      return suffix === "claude" || suffix === "claudecode";
+    case "antigravity":
+      return suffix === "antigravity" || suffix === "agy";
+    case "gemini":
+      return suffix === "gemini" || suffix === "geminicli";
+  }
+}
+
+/**
  * 本机 CLI 探测与一键秒连编排服务。
  */
 export class LocalConnectService {
@@ -208,6 +253,8 @@ export class LocalConnectService {
   private readonly homeDir: string;
   private readonly pathEnv: string | undefined;
   private readonly installDaemonFn: LocalDaemonInstallerFn;
+  private readonly stopDaemonFn: LocalDaemonStopperFn;
+  private readonly connectChainByKey = new Map<string, Promise<unknown>>();
 
   /**
    * @param deps - 配置、配对服务、消息服务与可选测试桩
@@ -239,7 +286,7 @@ export class LocalConnectService {
           {
             encoding: "utf8",
             windowsHide: true,
-            env: process.env,
+            env: { ...process.env, HOME: this.homeDir, USERPROFILE: this.homeDir },
             timeout: 15_000,
           },
         );
@@ -261,6 +308,24 @@ export class LocalConnectService {
         }
         return { serviceId: `openhuddle-listen-${params.slug}` };
       });
+    // 测试注入了虚拟 `installDaemonFn` 但未注入 `stopDaemonFn` 时，同步采用无副作用桩，防止沙箱测试误停宿主机真实 LaunchAgent
+    this.stopDaemonFn =
+      deps.stopDaemonFn ??
+      (deps.installDaemonFn !== undefined
+        ? () => true
+        : (params) => {
+            const res = spawnSync(
+              process.execPath,
+              [params.cliScriptPath, "listen", "stop", "--json", "--slug", params.slug],
+              {
+                encoding: "utf8",
+                windowsHide: true,
+                env: { ...process.env, HOME: params.homeDir, USERPROFILE: params.homeDir },
+                timeout: 10_000,
+              },
+            );
+            return res.status === 0;
+          });
   }
 
   /**
@@ -314,7 +379,29 @@ export class LocalConnectService {
     body: Readonly<ConnectLocalAgentBody>,
   ): Promise<ConnectLocalAgentResponse> {
     const human = assertHumanCaller(caller);
+    const lockKey = `${human.userId}:${body.platform}`;
+    const prevChain = this.connectChainByKey.get(lockKey) ?? Promise.resolve();
 
+    // 同主人同平台串行化：防止前端连续快速点击产生并发配对竞争与双份守护进程
+    const task = prevChain
+      .catch(() => undefined)
+      .then(() => this.executeConnectLocalAgent(caller, human.userId, body));
+
+    this.connectChainByKey.set(lockKey, task);
+    try {
+      return await task;
+    } finally {
+      if (this.connectChainByKey.get(lockKey) === task) {
+        this.connectChainByKey.delete(lockKey);
+      }
+    }
+  }
+
+  private async executeConnectLocalAgent(
+    caller: Readonly<AuthenticatedCaller>,
+    ownerUserId: UserId,
+    body: Readonly<ConnectLocalAgentBody>,
+  ): Promise<ConnectLocalAgentResponse> {
     if (!isLoopbackServerUrl(this.env.PUBLIC_BASE_URL)) {
       throw new AppError({
         code: "FORBIDDEN_NOT_OWNER",
@@ -342,17 +429,49 @@ export class LocalConnectService {
       });
     }
 
+    // 幂等防重保护：若调用方未显式传入 `reclaimAgentId`，但该主人名下已存在同名/同 slug 或同平台默认命名的 Agent
+    // （如早期接入的 `庞彦-OpenAICodex` 与新版默认名 `庞彦-Codex`），自动转为原身份无损重连，彻底消除多次点击产生重复分身。
+    let effectiveReclaimAgentId: AgentId | undefined = body.reclaimAgentId;
+    let effectiveAgentName = body.name.trim();
+
+    if (effectiveReclaimAgentId === undefined) {
+      const [existingSamePlatform, ownerDto] = await Promise.all([
+        this.pairingService.listOwnedAgentsByPlatform(ownerUserId, body.platform),
+        this.pairingService.findOwnerById(ownerUserId),
+      ]);
+      const requestedSlug = slugifyAgentName(effectiveAgentName);
+      const exactMatch = existingSamePlatform.find(
+        (item) =>
+          item.slug === requestedSlug ||
+          item.displayName.trim().toLowerCase() === effectiveAgentName.toLowerCase(),
+      );
+      if (exactMatch !== undefined) {
+        effectiveReclaimAgentId = exactMatch.id;
+        effectiveAgentName = exactMatch.displayName;
+      } else if (
+        existingSamePlatform.length > 0 &&
+        ownerDto !== undefined &&
+        isDefaultPlatformAgentName(effectiveAgentName, ownerDto.displayName, body.platform)
+      ) {
+        const primaryExisting = existingSamePlatform[0];
+        if (primaryExisting !== undefined) {
+          effectiveReclaimAgentId = primaryExisting.id;
+          effectiveAgentName = primaryExisting.displayName;
+        }
+      }
+    }
+
     // 1. 进程内直接签发并消费一次性配对码（零 HTTP 回环开销）
     const issuedCode = await this.pairingService.createPairingCode(caller, {
       ...(body.autoJoinRoomId !== undefined ? { autoJoinRoomId: body.autoJoinRoomId } : {}),
-      ...(body.reclaimAgentId !== undefined ? { reclaimAgentId: body.reclaimAgentId } : {}),
+      ...(effectiveReclaimAgentId !== undefined ? { reclaimAgentId: effectiveReclaimAgentId } : {}),
       expiresInHours: 1,
     });
 
-    const isReclaim = body.reclaimAgentId !== undefined;
+    const isReclaim = effectiveReclaimAgentId !== undefined;
     const paired = await this.pairingService.pairAgent({
       code: issuedCode.code,
-      name: body.name,
+      name: effectiveAgentName,
       platform: body.platform,
       reclaim: isReclaim,
     });
@@ -383,26 +502,28 @@ export class LocalConnectService {
       )}\n`,
     );
 
-    // 3. 若自动加入了群聊，立即在进程内投递报到问候并同步游标（前端毫秒级通过 SSE 看到新气泡）
+    // 3. 若自动加入了群聊，立即在进程内投递报到问候并同步游标（按分钟桶生成幂等 opKey，连点重连不刷屏）
     let greetedMessageSeq: MessageSeq | undefined;
     if (paired.autoJoinedRoomId !== undefined) {
       try {
         const agentCaller: AuthenticatedCaller = {
           kind: "agent",
           agentId: paired.agent.id,
-          ownerUserId: human.userId,
+          ownerUserId,
           displayName: paired.agent.displayName,
           platform: paired.agent.platform,
         };
         const greetingContent = isReclaim
           ? `${paired.agent.displayName} 已重新连回群聊并同步最新本地环境，直接 @ 我即可继续讨论。`
           : `大家好，我是 ${paired.agent.displayName}，已通过本机一键直连接入并开启实时监听，直接 @ 我即可开始讨论。`;
+        const minuteBucket = Math.floor(Date.now() / 60_000);
 
         const sent = await this.messagesService.sendMessage(agentCaller, paired.autoJoinedRoomId, {
           content: greetingContent,
           mentions: [],
           ignoreUnread: true,
-          opKey: `op_local_greet_${paired.agent.id}_${Date.now()}` as OperationKey,
+          opKey:
+            `op_local_greet_${paired.agent.id}_${isReclaim ? "reclaim" : "join"}_${minuteBucket}` as OperationKey,
         });
         greetedMessageSeq = sent.message.seq;
 
@@ -445,5 +566,129 @@ export class LocalConnectService {
       ...(greetedMessageSeq !== undefined ? { greetedMessageSeq } : {}),
       serviceId: daemonRes.serviceId,
     };
+  }
+
+  /**
+   * 当人类主人删除某个 Agent 时，在本机回环模式下尽力卸载其对应的后台 SSE 监听守护服务，并擦除本地 `.token` 与游标缓存文件。
+   *
+   * @remarks
+   * 严守公网隔离边界：非回环（非 `localhost`/`127.0.0.1`/`::1`）部署下立即返回 `false`，绝不触碰服务端文件系统。
+   *
+   * @param agent - 已从数据库删除的 Agent 标识快照
+   * @returns 若成功停止了本机守护进程或清理了本地凭据文件则返回 `true`
+   */
+  public cleanupDeletedLocalAgent(agent: {
+    readonly id: AgentId;
+    readonly slug: string;
+  }): boolean {
+    if (!isLoopbackServerUrl(this.env.PUBLIC_BASE_URL)) {
+      return false;
+    }
+
+    const openhuddleDir = path.join(this.homeDir, ".openhuddle");
+    const tokensDir = path.join(openhuddleDir, "tokens");
+    const matchedTokenFiles = new Set<string>();
+    const candidateSlugs = new Set<string>();
+
+    const normalizedAgentSlug = agent.slug
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (normalizedAgentSlug.length > 0) {
+      candidateSlugs.add(normalizedAgentSlug);
+    }
+
+    // 扫描 `~/.openhuddle/tokens/*.token.json` 精准匹配归属于该 `agentId` 的凭据文件（兼容带后缀或改名后的文件）
+    if (existsSync(tokensDir)) {
+      try {
+        for (const entry of readdirSync(tokensDir)) {
+          if (!entry.endsWith(".token.json")) {
+            continue;
+          }
+          const metaPath = path.join(tokensDir, entry);
+          try {
+            const parsed = JSON.parse(readFileSync(metaPath, "utf8")) as Record<string, unknown>;
+            if (parsed.agentId === agent.id) {
+              const tokenPath = metaPath.slice(0, -".json".length);
+              matchedTokenFiles.add(tokenPath);
+              const baseSlug = path
+                .basename(tokenPath, ".token")
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, "-")
+                .replace(/^-+|-+$/g, "");
+              if (baseSlug.length > 0) {
+                candidateSlugs.add(baseSlug);
+              }
+              if (typeof parsed.slug === "string" && parsed.slug.trim().length > 0) {
+                candidateSlugs.add(
+                  parsed.slug
+                    .trim()
+                    .toLowerCase()
+                    .replace(/[^a-z0-9]+/g, "-")
+                    .replace(/^-+|-+$/g, ""),
+                );
+              }
+            }
+          } catch {
+            // 忽略单个损坏元数据文件，继续清理其余条目
+          }
+        }
+      } catch {
+        // 忽略目录不可读异常
+      }
+    }
+
+    let cleanedAny = false;
+    const cliCandidatePaths = [path.join(openhuddleDir, "openhuddle.mjs"), this.cliBundlePath];
+    const activeCliPath = cliCandidatePaths.find((candidate) => existsSync(candidate));
+
+    if (activeCliPath !== undefined) {
+      for (const slug of candidateSlugs) {
+        try {
+          if (
+            this.stopDaemonFn({
+              cliScriptPath: activeCliPath,
+              slug,
+              homeDir: this.homeDir,
+            })
+          ) {
+            cleanedAny = true;
+          }
+        } catch {
+          // 尽力卸载：即使后台服务此前未安装也不阻塞主删除响应
+        }
+      }
+    }
+
+    for (const tokenPath of matchedTokenFiles) {
+      try {
+        if (existsSync(tokenPath) || existsSync(`${tokenPath}.json`)) {
+          cleanedAny = true;
+        }
+        rmSync(tokenPath, { force: true });
+        rmSync(`${tokenPath}.json`, { force: true });
+      } catch {
+        // 忽略本地文件清理异常
+      }
+    }
+
+    const safeAgentFileKey = agent.id.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const cursorPaths = [
+      path.join(openhuddleDir, "cursors", `${safeAgentFileKey}.cursors.json`),
+      path.join(openhuddleDir, "cursors", `${safeAgentFileKey}.json`),
+    ];
+    for (const cursorPath of cursorPaths) {
+      try {
+        if (existsSync(cursorPath)) {
+          cleanedAny = true;
+          rmSync(cursorPath, { force: true });
+        }
+      } catch {
+        // 忽略游标缓存清理异常
+      }
+    }
+
+    return cleanedAny;
   }
 }

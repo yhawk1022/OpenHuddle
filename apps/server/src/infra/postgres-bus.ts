@@ -147,6 +147,11 @@ export class PostgresListenNotifyBus implements RealtimeBus {
     return this.localBus.getActiveAgentConnectionCount(agentId);
   }
 
+  /** {@inheritDoc RealtimeBus.evictAgentSubscribers} */
+  public evictAgentSubscribers(agentId: AgentId): void {
+    this.localBus.evictAgentSubscribers(agentId);
+  }
+
   /** {@inheritDoc RealtimeBus.close} */
   public async close(): Promise<void> {
     this.closing = true;

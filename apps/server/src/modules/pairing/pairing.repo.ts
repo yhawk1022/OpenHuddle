@@ -23,7 +23,7 @@ import {
   type RoomId,
   type UserId,
 } from "@openhuddle/protocol";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { extractSqlRows } from "../../infra/sql-rows.js";
 import { type SafeAgentRecord, mapUserRowToDto } from "../auth/auth.repo.js";
 
@@ -275,6 +275,41 @@ export class PairingRepository {
   }
 
   /**
+   * 按 `(ownerUserId, platform)` 按创建时间升序查询主人名下已绑定的同平台 Agent 列表。
+   *
+   * @remarks
+   * 供本机一键直连做幂等防重：当主人名下已存在同平台默认 Agent（如早期创建的 `庞彦-OpenAICodex`）时，
+   * 后续重复点击未显式指定自定义角色名的连接请求可自动认领原身份，杜绝产生多个重复分身。
+   *
+   * @param ownerUserId - 人类主人主键
+   * @param platform - Agent 宿主平台标识
+   * @returns 按创建时间升序排列的 `SafeAgentRecord` 数组
+   */
+  public async findAgentsByOwnerAndPlatform(
+    ownerUserId: UserId,
+    platform: AgentPlatform,
+  ): Promise<readonly SafeAgentRecord[]> {
+    const rows = await this.db
+      .select({
+        id: agentsTable.id,
+        ownerUserId: agentsTable.ownerUserId,
+        displayName: agentsTable.displayName,
+        slug: agentsTable.slug,
+        platform: agentsTable.platform,
+        intro: agentsTable.intro,
+        wakeKind: agentsTable.wakeKind,
+        checkinIntervalMin: agentsTable.checkinIntervalMin,
+        lastSeenAt: agentsTable.lastSeenAt,
+        createdAt: agentsTable.createdAt,
+      })
+      .from(agentsTable)
+      .where(and(eq(agentsTable.ownerUserId, ownerUserId), eq(agentsTable.platform, platform)))
+      .orderBy(asc(agentsTable.createdAt));
+
+    return rows.map(mapAgentRowToSafe);
+  }
+
+  /**
    * 插入全新绑定的 Agent 记录并返回脱敏投影。
    *
    * @param input - 新 Agent 字段与 SHA-256 令牌摘要
@@ -395,5 +430,25 @@ export class PairingRepository {
         lastReadSeq: 0,
       })
       .onConflictDoNothing();
+  }
+
+  /**
+   * 按主键彻底删除指定 Agent 记录。
+   *
+   * @remarks
+   * 依托数据库级联与置空外键约束：
+   * - `room_members.agent_id` (`ON DELETE CASCADE`) 自动将其移出所有群聊；
+   * - `proposal_votes.voter_agent_id` (`ON DELETE CASCADE`) 自动清理其提案投票；
+   * - `messages.author_agent_id` 与 `pairing_codes.reclaim_agent_id` (`ON DELETE SET NULL`) 无损保留房间历史消息序号连续性。
+   *
+   * @param agentId - 待删除的 Agent 主键
+   * @returns 若实际删除了行则返回 `true`
+   */
+  public async deleteAgentById(agentId: AgentId): Promise<boolean> {
+    const deleted = await this.db
+      .delete(agentsTable)
+      .where(eq(agentsTable.id, agentId))
+      .returning({ id: agentsTable.id });
+    return deleted.length > 0;
   }
 }

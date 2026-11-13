@@ -16,6 +16,7 @@ import {
   type ConnectLocalAgentResponse,
   type CreatePairingCodeResponse,
   type DecideProposalBody,
+  type DeleteOwnedAgentResponse,
   type ErrorCode,
   type HumanUserDto,
   type JoinRoomBody,
@@ -297,6 +298,18 @@ export async function connectLocalAgent(
   return requestJson<ConnectLocalAgentResponse>("/api/v1/local-agents/connect", {
     method: "POST",
     body,
+  });
+}
+
+/**
+ * 彻底删除当前人类主人名下的指定个人 Agent（吊销 `oh_agt_` 令牌、移出全部群聊，并在本机回环模式下自动卸载对应后台守护进程）。
+ *
+ * @param agentId - 待删除的个人 Agent ID
+ * @returns 删除确认与是否同步停止了本机守护进程
+ */
+export async function deleteOwnedAgent(agentId: AgentId): Promise<DeleteOwnedAgentResponse> {
+  return requestJson<DeleteOwnedAgentResponse>(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
+    method: "DELETE",
   });
 }
 

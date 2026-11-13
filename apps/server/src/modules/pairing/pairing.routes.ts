@@ -5,13 +5,15 @@
  * 架构职责与关键不变量（Invariants）：
  * 路由层仅做 OpenAPI 入参校验、鉴权中间件挂载与 HTTP 201 序列化，所有锁与认领判定下沉至 `PairingService`。
  */
-import { type OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { type OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import {
+  AgentIdSchema,
   ApiErrorEnvelopeSchema,
   ConnectLocalAgentBodySchema,
   ConnectLocalAgentResponseSchema,
   CreatePairingCodeBodySchema,
   CreatePairingCodeResponseSchema,
+  DeleteOwnedAgentResponseSchema,
   LocalAgentsStatusResponseSchema,
   PairAgentRequestSchema,
   PairAgentResponseSchema,
@@ -194,11 +196,58 @@ const connectLocalAgentRoute = createRoute({
   },
 });
 
+const deleteOwnedAgentRoute = createRoute({
+  method: "delete",
+  path: "/agents/{agentId}",
+  tags: ["Pairing"],
+  summary:
+    "Delete an owned personal AI agent, revoke its token, remove it from all rooms, and stop any local listener daemon (Human owner only)",
+  request: {
+    params: z.object({
+      agentId: AgentIdSchema,
+    }),
+  },
+  responses: {
+    200: {
+      description: "Agent deleted and credentials revoked",
+      content: {
+        "application/json": {
+          schema: DeleteOwnedAgentResponseSchema,
+        },
+      },
+    },
+    401: {
+      description: "Unauthenticated",
+      content: {
+        "application/json": {
+          schema: ApiErrorEnvelopeSchema,
+        },
+      },
+    },
+    403: {
+      description: "Caller is not the human owner of this agent",
+      content: {
+        "application/json": {
+          schema: ApiErrorEnvelopeSchema,
+        },
+      },
+    },
+    404: {
+      description: "Target agent not found",
+      content: {
+        "application/json": {
+          schema: ApiErrorEnvelopeSchema,
+        },
+      },
+    },
+  },
+});
+
 /**
  * 创建配对接入 OpenAPI 子路由器。
  *
  * @param deps - 认证服务、配对服务与可选本机一键直连服务
- * @returns 挂载了 `/pairing-codes`、`/pair` 与 `/local-agents/*` 的 `OpenAPIHono`
+ * @returns 挂载了 `/pairing-codes`、`/pair`、`/agents/{agentId}` 与 `/local-agents/*` 的 `OpenAPIHono`
  */
 export function createPairingRouter(deps: {
   readonly authService: AuthService;
@@ -209,6 +258,7 @@ export function createPairingRouter(deps: {
   const requireAuth = createRequireAuthMiddleware(deps.authService);
 
   router.use("/pairing-codes", requireAuth);
+  router.use("/agents/*", requireAuth);
   router.use("/local-agents/*", requireAuth);
 
   router.openapi(createPairingCodeRoute, async (c) => {
@@ -222,6 +272,24 @@ export function createPairingRouter(deps: {
     const body = c.req.valid("json");
     const result = await deps.pairingService.pairAgent(body);
     return c.json(result, 201);
+  });
+
+  router.openapi(deleteOwnedAgentRoute, async (c) => {
+    const caller = c.get("caller");
+    const { agentId } = c.req.valid("param");
+    const deleted = await deps.pairingService.deleteOwnedAgent(caller, agentId);
+    const stoppedLocalDaemon =
+      deps.localConnectService !== undefined
+        ? deps.localConnectService.cleanupDeletedLocalAgent(deleted)
+        : false;
+    return c.json(
+      {
+        ok: true as const,
+        deletedAgentId: deleted.id,
+        stoppedLocalDaemon,
+      },
+      200,
+    );
   });
 
   if (deps.localConnectService !== undefined) {

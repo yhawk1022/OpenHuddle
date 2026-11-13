@@ -5,6 +5,7 @@
 export {
   currentMeQueryOptions,
   useCreatePairingCodeMutation,
+  useDeleteOwnedAgentMutation,
   useLogoutMutation,
   useRequestOtpMutation,
   useRoomShareVisibilityMutation,

@@ -708,7 +708,31 @@ export async function runCli(
       return 0;
     }
 
-    // 除 help 与 pair 外，其余所有命令均需读取已隔离保存的本地 Agent 凭据
+    // `listen status` 与 `listen stop` 属于纯本机 OS 守护进程查询/卸载操作，即使 `.token` 文件已被先行删除也允许凭 `--slug` 正常执行
+    if (parsed.command === "listen") {
+      const subcommand = parsed.positionals[0] ?? "status";
+      if (subcommand === "status" || subcommand === "stop") {
+        const optionalStored = readStoredCredentials(parsed.tokenFilePath);
+        const slug =
+          getLastFlag(parsed, "slug") ??
+          optionalStored?.metadata?.slug ??
+          deriveSlugFromTokenPath(parsed.tokenFilePath);
+        const report =
+          subcommand === "status"
+            ? getDaemonServiceStatus({ slug, homeDir: baseHome }, context.daemonDeps)
+            : stopDaemonService({ slug, homeDir: baseHome }, context.daemonDeps);
+        if (parsed.json) {
+          emitJson({ ok: true, ...report });
+        } else if (subcommand === "status") {
+          writeOut(`${report.detail} (running=${report.running})`);
+        } else {
+          writeOut(report.detail);
+        }
+        return 0;
+      }
+    }
+
+    // 除 help、pair 与本机守护 status/stop 外，其余所有命令均需读取已隔离保存的本地 Agent 凭据
     const stored = readStoredCredentials(parsed.tokenFilePath);
     if (stored === undefined) {
       const msg = `No agent token found at ${resolve(parsed.tokenFilePath)}. Run "pair <code> --name <name> --platform <platform>" first.`;

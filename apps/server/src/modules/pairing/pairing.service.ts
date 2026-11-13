@@ -7,11 +7,15 @@
  * 2. 单次可见明文令牌：配对成功后签发的 `oh_agt_...` 明文令牌仅在本次响应返回一次，服务端仅存 SHA-256 哈希。
  */
 import type {
+  AgentId,
+  AgentPlatform,
   AuthenticatedCaller,
   CreatePairingCodeBody,
   CreatePairingCodeResponse,
+  HumanUserDto,
   PairAgentRequest,
   PairAgentResponse,
+  UserId,
 } from "@openhuddle/protocol";
 import { assertHumanCaller } from "../../infra/auth-middleware.js";
 import {
@@ -51,6 +55,30 @@ export class PairingService {
     this.repo = deps.repo;
     this.env = deps.env;
     this.realtimeBus = deps.realtimeBus;
+  }
+
+  /**
+   * 查询指定人类主人名下已绑定的同平台 Agent 列表（供本机一键直连防重幂等复用）。
+   *
+   * @param ownerUserId - 人类主人主键
+   * @param platform - 宿主平台标识
+   * @returns 同平台 `SafeAgentRecord` 列表
+   */
+  public async listOwnedAgentsByPlatform(
+    ownerUserId: UserId,
+    platform: AgentPlatform,
+  ): Promise<readonly SafeAgentRecord[]> {
+    return this.repo.findAgentsByOwnerAndPlatform(ownerUserId, platform);
+  }
+
+  /**
+   * 查询指定人类主人资料摘要。
+   *
+   * @param ownerUserId - 人类主人主键
+   * @returns `HumanUserDto` 或 `undefined`
+   */
+  public async findOwnerById(ownerUserId: UserId): Promise<HumanUserDto | undefined> {
+    return this.repo.findOwnerById(ownerUserId);
   }
 
   /**
@@ -246,5 +274,46 @@ export class PairingService {
         ? { autoJoinedRoomId: txResult.autoJoinedRoomId }
         : {}),
     };
+  }
+
+  /**
+   * 彻底删除当前人类主人名下的指定个人 Agent（吊销 `oh_agt_` 令牌、移出全部群聊，并在事务提交后驱逐实时订阅）。
+   *
+   * @param caller - 当前已认证调用者（必须为人类主人）
+   * @param agentId - 待删除的 Agent 主键
+   * @returns 被删除的 `SafeAgentRecord` 快照（供本机回环场景清理对应守护进程与本地凭据）
+   * @throws {AppError} 非人类或非归属主人抛 `403 FORBIDDEN_NOT_OWNER`；目标不存在抛 `404 NOT_FOUND`
+   */
+  public async deleteOwnedAgent(
+    caller: Readonly<AuthenticatedCaller>,
+    agentId: AgentId,
+  ): Promise<SafeAgentRecord> {
+    const human = assertHumanCaller(caller);
+
+    const deletedRecord = await this.repo.runInTransaction(async (txRepo) => {
+      const target = await txRepo.findAgentById(agentId);
+      if (!target) {
+        throw new AppError({
+          code: "NOT_FOUND",
+          statusCode: 404,
+          message: `Agent "${agentId}" was not found.`,
+        });
+      }
+      // 严守 Owner-First 权限边界：仅允许归属人类主人本人执行物理删除
+      if (target.ownerUserId !== human.userId) {
+        throw new AppError({
+          code: "FORBIDDEN_NOT_OWNER",
+          statusCode: 403,
+          message: "You can only delete an agent that you own.",
+        });
+      }
+
+      await txRepo.deleteAgentById(target.id);
+      return target;
+    });
+
+    // Post-Commit：数据库事务提交后立即驱逐该 Agent 的内存唤醒订阅器
+    this.realtimeBus.evictAgentSubscribers(deletedRecord.id);
+    return deletedRecord;
   }
 }

@@ -10,12 +10,13 @@
  * 3. 多端拖拽与安全区就绪：顶栏同时携带 `data-tauri-drag-region` 与 `.app-drag-region`；移动端（`< md`）因隐藏左侧 80px 导轨，在本栏底部补齐个人账号与退出入口。
  */
 import type {
+  AgentId,
   HumanUserDto,
   OwnedAgentSummaryDto,
   RoomId,
   RoomSummaryDto,
 } from "@openhuddle/protocol";
-import { AlertCircle, LogOut, PauseCircle, Plus, RefreshCw, Search, X } from "lucide-react";
+import { AlertCircle, LogOut, PauseCircle, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
   AnimatePresence,
@@ -53,6 +54,10 @@ export interface RoomSidebarProps {
   readonly onLogout: () => void;
   /** 点击通讯录中的个人 Agent 时打开名片详情；缺省回退至配对面板 */
   readonly onInspectOwnedAgent?: ((agent: OwnedAgentSummaryDto) => void) | undefined;
+  /** 在通讯录「我的 agent」列表中彻底删除指定个人 Agent */
+  readonly onDeleteOwnedAgent?: ((agent: OwnedAgentSummaryDto) => void) | undefined;
+  /** 当前正在执行删除请求的 Agent ID（用于行内按钮加载态） */
+  readonly deletingAgentId?: AgentId | null | undefined;
   /** 点击搜索框内 `⌘K` 徽章时打开全局命令面板 */
   readonly onOpenCommandPalette?: (() => void) | undefined;
 }
@@ -206,6 +211,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
       return !prev;
     });
   };
+  const [confirmDeleteAgentId, setConfirmDeleteAgentId] = useState<AgentId | null>(null);
 
   return (
     <aside className="glass-pane flex h-full w-full shrink-0 select-none flex-col pt-[env(safe-area-inset-top,0px)] md:w-[280px] md:pt-0">
@@ -479,41 +485,87 @@ export function RoomSidebar(props: RoomSidebarProps) {
               {filteredAgents.map((agent) => {
                 const platformMeta = getPlatformVisualMeta(agent.platform);
                 const reachMeta = getReachVisualMeta(agent.reach);
+                const isConfirming = confirmDeleteAgentId === agent.id;
+                const isDeletingThis = props.deletingAgentId === agent.id;
                 return (
                   <li key={agent.id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (props.onInspectOwnedAgent !== undefined) {
-                          props.onInspectOwnedAgent(agent);
-                        } else {
-                          props.onOpenMyAgents();
-                        }
-                      }}
-                      className="flex w-full cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition-colors hover:bg-black/[0.035] active:scale-[0.99] dark:hover:bg-white/[0.04]"
-                    >
-                      <PlatformAvatar
-                        kind="agent"
-                        displayName={agent.displayName}
-                        platform={agent.platform}
-                        reach={agent.reach}
-                        size="md"
-                        className="[&>div]:rounded-full"
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13.5px] font-semibold text-[#141414] dark:text-zinc-100">
-                          {agent.displayName}
-                        </span>
-                        <span className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-[#6E6E73] dark:text-zinc-400">
-                          <span
-                            className={cn("h-1.5 w-1.5 shrink-0 rounded-full", reachMeta.dotClass)}
-                          />
-                          <span className="truncate">
-                            {platformMeta.label} · {reachMeta.shortLabel}
+                    <div className="group flex items-center gap-1.5 rounded-2xl pr-2 transition-colors hover:bg-black/[0.035] dark:hover:bg-white/[0.04]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmDeleteAgentId(null);
+                          if (props.onInspectOwnedAgent !== undefined) {
+                            props.onInspectOwnedAgent(agent);
+                          } else {
+                            props.onOpenMyAgents();
+                          }
+                        }}
+                        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-2xl py-2.5 pl-3 pr-1 text-left active:scale-[0.99]"
+                      >
+                        <PlatformAvatar
+                          kind="agent"
+                          displayName={agent.displayName}
+                          platform={agent.platform}
+                          reach={agent.reach}
+                          size="md"
+                          className="[&>div]:rounded-full"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[13.5px] font-semibold text-[#141414] dark:text-zinc-100">
+                            {agent.displayName}
+                          </span>
+                          <span className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-[#6E6E73] dark:text-zinc-400">
+                            <span
+                              className={cn(
+                                "h-1.5 w-1.5 shrink-0 rounded-full",
+                                reachMeta.dotClass,
+                              )}
+                            />
+                            <span className="truncate">
+                              {platformMeta.label} · {reachMeta.shortLabel}
+                            </span>
                           </span>
                         </span>
-                      </span>
-                    </button>
+                      </button>
+
+                      {props.onDeleteOwnedAgent !== undefined ? (
+                        isConfirming ? (
+                          <div className="flex shrink-0 items-center gap-1">
+                            <AppButton
+                              variant="ghost"
+                              size="xs"
+                              disabled={isDeletingThis}
+                              onClick={() => setConfirmDeleteAgentId(null)}
+                            >
+                              取消
+                            </AppButton>
+                            <AppButton
+                              variant="danger"
+                              size="xs"
+                              isLoading={isDeletingThis}
+                              onClick={() => {
+                                props.onDeleteOwnedAgent?.(agent);
+                                setConfirmDeleteAgentId(null);
+                              }}
+                            >
+                              删除
+                            </AppButton>
+                          </div>
+                        ) : (
+                          <AppTooltip side="top" content="删除该 Agent">
+                            <IconButton
+                              size="xs"
+                              variant="ghost"
+                              label={`删除 ${agent.displayName}`}
+                              onClick={() => setConfirmDeleteAgentId(agent.id)}
+                              className="shrink-0 text-[#8E8E93] opacity-100 transition hover:text-[#FF3B30] md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:text-zinc-500 dark:hover:text-[#FF6961]"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </IconButton>
+                          </AppTooltip>
+                        )
+                      ) : null}
+                    </div>
                   </li>
                 );
               })}

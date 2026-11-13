@@ -14,7 +14,17 @@ import {
   type UserId,
   assertNever,
 } from "@openhuddle/protocol";
-import { AtSign, BadgeCheck, Check, Clock, Copy, KeyRound, Radio, ShieldCheck } from "lucide-react";
+import {
+  AtSign,
+  BadgeCheck,
+  Check,
+  Clock,
+  Copy,
+  KeyRound,
+  Radio,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   formatMessageTimestamp,
@@ -53,6 +63,12 @@ export interface AgentProfileDialogProps {
   readonly onClose: () => void;
   readonly onMentionAgent?: ((agentId: AgentId, displayName: string) => void) | undefined;
   readonly onReclaimAgent?: ((agentId: AgentId) => void) | undefined;
+  /** 是否在打开名片时直接展开删除二次确认卡片（如从左侧 80px 导轨悬停 `×` 触发） */
+  readonly initialConfirmDelete?: boolean | undefined;
+  /** 删除请求进行中加载状态 */
+  readonly isDeletingAgent?: boolean | undefined;
+  /** 仅针对当前登录人类本人名下的 Agent 暴露彻底删除回调 */
+  readonly onDeleteAgent?: ((agentId: AgentId, displayName: string) => void) | undefined;
 }
 
 /** 名片上的可达性胶囊视觉描述 */
@@ -143,14 +159,18 @@ function resolveReachPill(
 export function AgentProfileDialog(props: AgentProfileDialogProps) {
   const { profile } = props;
   const [copiedHandle, setCopiedHandle] = useState<boolean>(false);
+  const [confirmingDelete, setConfirmingDelete] = useState<boolean>(false);
 
-  // 切换查看不同 Agent 名片时重置瞬态复制勾选反馈
+  // 切换查看不同 Agent 名片或外部显式请求删除确认时同步局部交互态
   const activeAgentId = profile?.agentId;
   useEffect(() => {
     if (activeAgentId !== undefined) {
       setCopiedHandle(false);
+      setConfirmingDelete(props.initialConfirmDelete === true);
+    } else {
+      setConfirmingDelete(false);
     }
-  }, [activeAgentId]);
+  }, [activeAgentId, props.initialConfirmDelete]);
 
   if (!profile) {
     return null;
@@ -354,7 +374,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
         </p>
 
         {/* 底部胶囊操作栏 */}
-        {props.onMentionAgent || (isOwnedByMe && props.onReclaimAgent) ? (
+        {props.onMentionAgent || (isOwnedByMe && (props.onReclaimAgent || props.onDeleteAgent)) ? (
           <div className="flex flex-col gap-2 pt-1">
             {props.onMentionAgent ? (
               <AppButton
@@ -371,7 +391,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
               </AppButton>
             ) : null}
 
-            {isOwnedByMe && props.onReclaimAgent ? (
+            {isOwnedByMe && props.onReclaimAgent && !confirmingDelete ? (
               <AppButton
                 variant="secondary"
                 size="md"
@@ -384,6 +404,46 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
               >
                 断连了？恢复原身份重连
               </AppButton>
+            ) : null}
+
+            {isOwnedByMe && props.onDeleteAgent ? (
+              confirmingDelete ? (
+                <div className="space-y-2.5 rounded-[18px] bg-[#FF3B30]/[0.07] px-3.5 py-3 ring-1 ring-inset ring-[#FF3B30]/20 dark:bg-[#FF453A]/[0.12] dark:ring-[#FF453A]/25">
+                  <p className="text-[12px] leading-relaxed text-[#8A1C14] dark:text-[#FFB4AE]">
+                    确定彻底删除「{profile.displayName}
+                    」？将自动移出所有群聊、吊销令牌并停止本机监听（群内历史消息会安全保留）。
+                  </p>
+                  <div className="flex items-center justify-end gap-2">
+                    <AppButton
+                      variant="secondary"
+                      size="sm"
+                      disabled={props.isDeletingAgent === true}
+                      onClick={() => setConfirmingDelete(false)}
+                    >
+                      取消
+                    </AppButton>
+                    <AppButton
+                      variant="danger"
+                      size="sm"
+                      isLoading={props.isDeletingAgent === true}
+                      leadingIcon={<Trash2 aria-hidden="true" className="h-3.5 w-3.5" />}
+                      onClick={() => props.onDeleteAgent?.(profile.agentId, profile.displayName)}
+                    >
+                      确认彻底删除
+                    </AppButton>
+                  </div>
+                </div>
+              ) : (
+                <AppButton
+                  variant="dangerSoft"
+                  size="md"
+                  fullWidth={true}
+                  leadingIcon={<Trash2 aria-hidden="true" className="h-3.5 w-3.5" />}
+                  onClick={() => setConfirmingDelete(true)}
+                >
+                  删除该 Agent
+                </AppButton>
+              )
             ) : null}
           </div>
         ) : null}

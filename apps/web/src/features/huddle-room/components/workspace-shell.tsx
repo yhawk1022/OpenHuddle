@@ -40,6 +40,7 @@ import {
   Plus,
   RefreshCw,
   Sun,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -76,6 +77,7 @@ import {
   type OnboardingModalTab,
   OtpSignInScreen,
   currentMeQueryOptions,
+  useDeleteOwnedAgentMutation,
   useLogoutMutation,
 } from "../../auth-pairing/index.js";
 import {
@@ -733,6 +735,7 @@ interface PersonalAgentRailProps {
   readonly currentUser: HumanUserDto;
   readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
   readonly onInspectAgent: (agent: OwnedAgentSummaryDto) => void;
+  readonly onRequestDeleteAgent: (agent: OwnedAgentSummaryDto) => void;
   readonly onOpenConnectAgent: () => void;
   readonly onOpenCommandPalette: () => void;
   readonly onLogout: () => void;
@@ -784,25 +787,42 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
       {/* 2. 中部可滚动区：已连接的个人 Agents + 虚线圆形 `+ 接入 agent` */}
       <div className="my-3 flex w-full flex-1 flex-col items-center gap-3.5 overflow-y-auto px-1.5 [scrollbar-width:none]">
         {props.ownedAgents.map((agent) => (
-          <button
+          <div
             key={agent.id}
-            type="button"
-            onClick={() => props.onInspectAgent(agent)}
-            aria-label={`查看 ${agent.displayName} 名片`}
-            className="app-no-drag group flex w-full cursor-pointer flex-col items-center gap-1 transition active:scale-[0.96]"
+            className="app-no-drag group relative flex w-full flex-col items-center"
           >
-            <PlatformAvatar
-              kind="agent"
-              displayName={agent.displayName}
-              platform={agent.platform}
-              reach={agent.reach}
-              size="md"
-              className="transition-transform group-hover:scale-[1.03] [&>div]:h-[38px] [&>div]:w-[38px] [&>div]:rounded-full"
-            />
-            <span className="line-clamp-2 max-w-[66px] text-center text-[10.5px] leading-[1.24] text-[#3A3A3C] transition-colors group-hover:text-[#141414] dark:text-zinc-300 dark:group-hover:text-white">
-              {agent.displayName}
-            </span>
-          </button>
+            <button
+              type="button"
+              onClick={() => props.onInspectAgent(agent)}
+              aria-label={`查看 ${agent.displayName} 名片`}
+              className="flex w-full cursor-pointer flex-col items-center gap-1 transition active:scale-[0.96]"
+            >
+              <PlatformAvatar
+                kind="agent"
+                displayName={agent.displayName}
+                platform={agent.platform}
+                reach={agent.reach}
+                size="md"
+                className="transition-transform group-hover:scale-[1.03] [&>div]:h-[38px] [&>div]:w-[38px] [&>div]:rounded-full"
+              />
+              <span className="line-clamp-2 max-w-[66px] text-center text-[10.5px] leading-[1.24] text-[#3A3A3C] transition-colors group-hover:text-[#141414] dark:text-zinc-300 dark:group-hover:text-white">
+                {agent.displayName}
+              </span>
+            </button>
+            <AppTooltip side="right" content={`删除 ${agent.displayName}`}>
+              <button
+                type="button"
+                aria-label={`删除 ${agent.displayName}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  props.onRequestDeleteAgent(agent);
+                }}
+                className="absolute -top-0.5 right-2.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-white text-[#6E6E73] opacity-0 shadow-xs ring-1 ring-black/10 transition hover:bg-[#FF3B30] hover:text-white hover:ring-[#FF3B30] focus-visible:opacity-100 group-hover:opacity-100 dark:bg-[#222226] dark:text-zinc-300 dark:ring-white/15 dark:hover:bg-[#FF453A] dark:hover:text-white dark:hover:ring-[#FF453A]"
+              >
+                <X className="h-2.5 w-2.5 stroke-[2.4]" />
+              </button>
+            </AppTooltip>
+          </div>
         ))}
 
         {/* 虚线圆环 38px `+` 按钮 + `接入 agent` */}
@@ -865,6 +885,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const themeMode = useThemeMode();
   const roomsQuery = useQuery(joinedRoomsQueryOptions());
   const logoutMutation = useLogoutMutation();
+  const deleteOwnedAgentMutation = useDeleteOwnedAgentMutation();
 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
   const [createRoomOpen, setCreateRoomOpen] = useState<boolean>(false);
@@ -874,6 +895,8 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     useState<OnboardingModalTab>("pair_agent");
   const [reclaimAgentId, setReclaimAgentId] = useState<AgentId | null>(null);
   const [inspectedAgent, setInspectedAgent] = useState<InspectedAgentProfile | null>(null);
+  const [inspectConfirmDelete, setInspectConfirmDelete] = useState<boolean>(false);
+  const [deletingAgentId, setDeletingAgentId] = useState<AgentId | null>(null);
   const [synthesizeSignal, setSynthesizeSignal] = useState<number>(0);
 
   const rooms = roomsQuery.data?.rooms ?? [];
@@ -938,17 +961,48 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   );
 
   const inspectOwnedAgent = useCallback(
-    (agent: OwnedAgentSummaryDto): void => {
+    (agent: OwnedAgentSummaryDto, confirmDelete = false): void => {
+      setInspectConfirmDelete(confirmDelete);
       setInspectedAgent({
         agentId: agent.id,
         displayName: agent.displayName,
+        slug: agent.slug,
         platform: agent.platform,
         ownerUserId: props.currentUser.id,
         ownerDisplayName: props.currentUser.displayName,
+        ...(agent.intro !== undefined ? { intro: agent.intro } : {}),
         reach: agent.reach,
+        ...(agent.checkinIntervalMin !== undefined
+          ? { checkinIntervalMin: agent.checkinIntervalMin }
+          : {}),
+        ...(agent.lastSeenAtIso !== undefined ? { lastSeenAtIso: agent.lastSeenAtIso } : {}),
       });
     },
     [props.currentUser.displayName, props.currentUser.id],
+  );
+
+  const handleDeleteOwnedAgent = useCallback(
+    (agentId: AgentId, displayName: string): void => {
+      setDeletingAgentId(agentId);
+      deleteOwnedAgentMutation.mutate(agentId, {
+        onSuccess: (res) => {
+          setDeletingAgentId(null);
+          setInspectedAgent((prev) => (prev?.agentId === agentId ? null : prev));
+          setInspectConfirmDelete(false);
+          setReclaimAgentId((prev) => (prev === agentId ? null : prev));
+          toast.success(`已删除 Agent「${displayName}」`, {
+            description: res.stoppedLocalDaemon
+              ? "已同步移出全部群聊并停止本机后台监听服务"
+              : "已移出全部群聊并吊销其访问令牌",
+          });
+        },
+        onError: (err) => {
+          setDeletingAgentId(null);
+          toast.error(err instanceof Error ? err.message : "删除 Agent 失败");
+        },
+      });
+    },
+    [deleteOwnedAgentMutation],
   );
 
   const handleLogout = useCallback((): void => {
@@ -1084,7 +1138,8 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         <PersonalAgentRail
           currentUser={props.currentUser}
           ownedAgents={props.ownedAgents}
-          onInspectAgent={inspectOwnedAgent}
+          onInspectAgent={(agent) => inspectOwnedAgent(agent, false)}
+          onRequestDeleteAgent={(agent) => inspectOwnedAgent(agent, true)}
           onOpenConnectAgent={() => openOnboarding("pair_agent")}
           onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           onLogout={handleLogout}
@@ -1110,7 +1165,9 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
             onOpenCreateRoom={() => setCreateRoomOpen(true)}
             onOpenJoinRoom={() => setJoinRoomOpen(true)}
             onOpenMyAgents={() => openOnboarding("pair_agent")}
-            onInspectOwnedAgent={inspectOwnedAgent}
+            onInspectOwnedAgent={(agent) => inspectOwnedAgent(agent, false)}
+            onDeleteOwnedAgent={(agent) => handleDeleteOwnedAgent(agent.id, agent.displayName)}
+            deletingAgentId={deletingAgentId}
             onLogout={handleLogout}
             onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           />
@@ -1133,7 +1190,10 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                 openOnboarding(tab ?? "pair_agent", reclaimId)
               }
               onBackToList={() => setMobileShowChat(false)}
-              onInspectAgent={(profile) => setInspectedAgent(profile)}
+              onInspectAgent={(profile) => {
+                setInspectConfirmDelete(false);
+                setInspectedAgent(profile);
+              }}
             />
           </div>
         ) : (
@@ -1202,8 +1262,14 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       <AgentProfileDialog
         profile={inspectedAgent}
         currentUserId={props.currentUser.id}
-        onClose={() => setInspectedAgent(null)}
+        initialConfirmDelete={inspectConfirmDelete}
+        isDeletingAgent={inspectedAgent !== null && deletingAgentId === inspectedAgent.agentId}
+        onClose={() => {
+          setInspectedAgent(null);
+          setInspectConfirmDelete(false);
+        }}
         onReclaimAgent={(agentId) => openOnboarding("pair_agent", agentId)}
+        onDeleteAgent={handleDeleteOwnedAgent}
       />
     </div>
   );

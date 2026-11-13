@@ -212,3 +212,13 @@ export const ConnectLocalAgentResponseSchema = z.object({
   serviceId: z.string(),
 });
 export type ConnectLocalAgentResponse = z.infer<typeof ConnectLocalAgentResponseSchema>;
+
+/**
+ * 人类主人彻底删除名下个人 Agent 成功响应体 Schema。
+ */
+export const DeleteOwnedAgentResponseSchema = z.object({
+  ok: z.literal(true),
+  deletedAgentId: AgentIdSchema,
+  stoppedLocalDaemon: z.boolean(),
+});
+export type DeleteOwnedAgentResponse = z.infer<typeof DeleteOwnedAgentResponseSchema>;

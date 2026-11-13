@@ -7,6 +7,7 @@
  * 2. 登录即预热：`verifyEmailOtp` 成功后同步写入本地备份 `sessionToken` 并立即水合 `["me"]` 缓存，消除二次往返白屏。
  */
 import type {
+  AgentId,
   ConnectLocalAgentBody,
   RoomDetailDto,
   RoomId,
@@ -18,6 +19,7 @@ import {
   type CreatePairingCodeInput,
   connectLocalAgent,
   createPairingCode,
+  deleteOwnedAgent,
   fetchCurrentMe,
   fetchLocalAgentsStatus,
   logoutSession,
@@ -132,6 +134,22 @@ export function useConnectLocalAgentMutation() {
           queryKey: huddleQueryKeys.roomMessages(res.autoJoinedRoomId),
         });
       }
+    },
+  });
+}
+
+/**
+ * 彻底删除名下个人 Agent 并自动刷新个人身份、房间列表及房间成员名册的 Mutation Hook。
+ *
+ * @returns 删除个人 Agent 的 `useMutation` 实例
+ */
+export function useDeleteOwnedAgentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (agentId: AgentId) => deleteOwnedAgent(agentId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
     },
   });
 }

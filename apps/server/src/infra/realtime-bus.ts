@@ -43,6 +43,11 @@ export interface RealtimeBus {
   getActiveAgentConnectionCount(agentId: AgentId): number;
 
   /**
+   * 当某个 Agent 被其主人彻底删除吊销时，立即驱逐该 Agent 名下挂载的所有内存唤醒订阅器。
+   */
+  evictAgentSubscribers(agentId: AgentId): void;
+
+  /**
    * 优雅关闭总线并清空所有监听器。
    */
   close(): Promise<void>;
@@ -122,6 +127,11 @@ export class InMemoryRealtimeBus implements RealtimeBus {
   /** {@inheritDoc RealtimeBus.getActiveAgentConnectionCount} */
   public getActiveAgentConnectionCount(agentId: AgentId): number {
     return this.agentSubscribers.get(agentId)?.size ?? 0;
+  }
+
+  /** {@inheritDoc RealtimeBus.evictAgentSubscribers} */
+  public evictAgentSubscribers(agentId: AgentId): void {
+    this.agentSubscribers.delete(agentId);
   }
 
   /** {@inheritDoc RealtimeBus.close} */

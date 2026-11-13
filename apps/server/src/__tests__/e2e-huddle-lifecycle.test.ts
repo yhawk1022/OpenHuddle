@@ -12,6 +12,7 @@
  */
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -26,6 +27,7 @@ import type {
   ApiErrorEnvelope,
   ConnectLocalAgentResponse,
   CreatePairingCodeResponse,
+  DeleteOwnedAgentResponse,
   InboxResponse,
   LocalAgentsStatusResponse,
   MeResponse,
@@ -978,6 +980,121 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
       const rotatedRawToken = readFileSync(agyTokenPath, "utf8").trim();
       expect(rotatedRawToken.startsWith("oh_agt_")).toBe(true);
       expect(rotatedRawToken).not.toBe(storedRawToken);
+
+      // 4b. 防重幂等保护：用户未传 reclaimAgentId 多次点击 Codex 直连（即使提交默认新模板名 `庞彦-Codex`），
+      // 服务端自动认领已有的 `庞彦-OpenAICodex`，绝不产生第二个重复 Codex 分身！
+      const [dupClick1, dupClick2] = await Promise.all([
+        localApp.request("/api/v1/local-agents/connect", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${ownerSession.sessionToken}`,
+          },
+          body: JSON.stringify({
+            platform: "codex",
+            name: "庞彦-Codex",
+            autoJoinRoomId: room.id,
+          }),
+        }),
+        localApp.request("/api/v1/local-agents/connect", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${ownerSession.sessionToken}`,
+          },
+          body: JSON.stringify({
+            platform: "codex",
+            name: "庞彦-Codex",
+            autoJoinRoomId: room.id,
+          }),
+        }),
+      ]);
+      expect(dupClick1.status).toBe(201);
+      expect(dupClick2.status).toBe(201);
+      const dupBody1 = (await dupClick1.json()) as ConnectLocalAgentResponse;
+      const dupBody2 = (await dupClick2.json()) as ConnectLocalAgentResponse;
+      expect(dupBody1.agent.id).toBe(connectCodexBody.agent.id);
+      expect(dupBody2.agent.id).toBe(connectCodexBody.agent.id);
+      expect(dupBody2.agent.displayName).toBe("庞彦-OpenAICodex");
+
+      const roomAfterDupClicksRes = await localApp.request(`/api/v1/rooms/${room.id}`, {
+        headers: { authorization: `Bearer ${ownerSession.sessionToken}` },
+      });
+      const roomAfterDupClicks = (await roomAfterDupClicksRes.json()) as { room: RoomDetailDto };
+      const codexMembers = roomAfterDupClicks.room.members.filter(
+        (m) => m.memberKind === "agent" && m.displayName.toLowerCase().includes("codex"),
+      );
+      expect(codexMembers).toHaveLength(1);
+
+      // 4c. 删除个人 Agent（DELETE /api/v1/agents/:agentId）：拦截非主人越权、吊销令牌、级联退群、保留历史消息并擦除本机凭据
+      const outsiderSession = await loginHumanViaOtp(localApp, "outsider@example.com", "路人甲");
+      const forbiddenDeleteByOutsider = await localApp.request(
+        `/api/v1/agents/${connectAgyBody.agent.id}`,
+        {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${outsiderSession.sessionToken}` },
+        },
+      );
+      expect(forbiddenDeleteByOutsider.status).toBe(403);
+
+      const forbiddenDeleteByAgent = await localApp.request(
+        `/api/v1/agents/${connectAgyBody.agent.id}`,
+        {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${rotatedRawToken}` },
+        },
+      );
+      expect(forbiddenDeleteByAgent.status).toBe(403);
+
+      const ownerDeleteRes = await localApp.request(`/api/v1/agents/${connectAgyBody.agent.id}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${ownerSession.sessionToken}` },
+      });
+      expect(ownerDeleteRes.status).toBe(200);
+      const ownerDeleteBody = (await ownerDeleteRes.json()) as DeleteOwnedAgentResponse;
+      expect(ownerDeleteBody).toEqual({
+        ok: true,
+        deletedAgentId: connectAgyBody.agent.id,
+        stoppedLocalDaemon: true,
+      });
+
+      // 本地 `.token` 与 `.token.json` 文件已被物理擦除
+      expect(existsSync(agyTokenPath)).toBe(false);
+      expect(existsSync(`${agyTokenPath}.json`)).toBe(false);
+
+      // 已删除 Agent 的令牌立即失效（401）
+      const revokedMeRes = await localApp.request("/api/v1/me", {
+        headers: { authorization: `Bearer ${rotatedRawToken}` },
+      });
+      expect(revokedMeRes.status).toBe(401);
+
+      // 主人 `/api/v1/me` 与房间成员列表同步移除该 Agent，同时历史消息序号连续无损
+      const meAfterDeleteRes = await localApp.request("/api/v1/me", {
+        headers: { authorization: `Bearer ${ownerSession.sessionToken}` },
+      });
+      const meAfterDelete = (await meAfterDeleteRes.json()) as MeResponse;
+      expect(meAfterDelete.callerKind).toBe("human");
+      if (meAfterDelete.callerKind === "human") {
+        expect(meAfterDelete.agents.map((a) => a.id)).toEqual([connectCodexBody.agent.id]);
+      }
+
+      const roomAfterDeleteRes = await localApp.request(`/api/v1/rooms/${room.id}`, {
+        headers: { authorization: `Bearer ${ownerSession.sessionToken}` },
+      });
+      const roomAfterDelete = (await roomAfterDeleteRes.json()) as { room: RoomDetailDto };
+      expect(roomAfterDelete.room.members.some((m) => m.agentId === connectAgyBody.agent.id)).toBe(
+        false,
+      );
+
+      const historyAfterDeleteRes = await localApp.request(`/api/v1/rooms/${room.id}/messages`, {
+        headers: { authorization: `Bearer ${ownerSession.sessionToken}` },
+      });
+      expect(historyAfterDeleteRes.status).toBe(200);
+      const historyAfterDelete = (await historyAfterDeleteRes.json()) as {
+        messages: readonly MessageDto[];
+      };
+      expect(historyAfterDelete.messages[0]?.seq).toBe(1);
+      expect(historyAfterDelete.messages[0]?.author.kind).toBe("agent");
 
       // 5. 公网域名部署时，拒绝一键本机直连（available=false & POST 返回 403）
       const remoteEnv = parseServerEnv({

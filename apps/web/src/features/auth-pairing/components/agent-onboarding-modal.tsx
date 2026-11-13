@@ -35,6 +35,7 @@ import {
   RefreshCw,
   Share2,
   Terminal,
+  Trash2,
   UserPlus,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -64,6 +65,7 @@ import {
   localAgentsStatusQueryOptions,
   useConnectLocalAgentMutation,
   useCreatePairingCodeMutation,
+  useDeleteOwnedAgentMutation,
   useRoomShareVisibilityMutation,
 } from "../api/auth-pairing.queries.js";
 
@@ -244,7 +246,9 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
   });
   const connectLocalMutation = useConnectLocalAgentMutation();
   const pairingMutation = useCreatePairingCodeMutation();
+  const deleteAgentMutation = useDeleteOwnedAgentMutation();
   const visibilityMutation = useRoomShareVisibilityMutation();
+  const [confirmDeleteAgentId, setConfirmDeleteAgentId] = useState<AgentId | null>(null);
   const { mutate: mutatePairingCode, isPending: isPairingPending } = pairingMutation;
   const { reset: resetLocalConnectMutation } = connectLocalMutation;
 
@@ -268,14 +272,19 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
       return;
     }
     setActiveTab(props.initialTab ?? "pair_agent");
-    const nextReclaimId = props.initialReclaimAgentId ?? null;
-    setReclaimAgentId(nextReclaimId);
-    hasUserPickedPlatformRef.current = nextReclaimId !== null;
-    if (nextReclaimId !== null) {
-      const matched = props.ownedAgents.find((item) => item.id === nextReclaimId);
+    const explicitReclaimId = props.initialReclaimAgentId ?? null;
+    if (explicitReclaimId !== null) {
+      hasUserPickedPlatformRef.current = true;
+      setReclaimAgentId(explicitReclaimId);
+      const matched = props.ownedAgents.find((item) => item.id === explicitReclaimId);
       if (matched !== undefined) {
         setSelectedPlatform(matched.platform);
       }
+    } else {
+      hasUserPickedPlatformRef.current = false;
+      const existingDefault =
+        props.ownedAgents.find((item) => item.platform === selectedPlatform) ?? null;
+      setReclaimAgentId(existingDefault ? existingDefault.id : null);
     }
     setCustomAgentName("");
     setGeneratedPairing(null);
@@ -290,28 +299,36 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
     props.initialTab,
     props.initialReclaimAgentId,
     props.ownedAgents,
+    selectedPlatform,
     resetLocalConnectMutation,
   ]);
 
-  // 首次打开且用户尚未手动点选平台时，若默认平台在本机未安装而本机装有其他预设 CLI，则自动对齐首个已安装的 CLI
+  // 首次打开且用户尚未手动点选平台时：优先选中本机已安装但尚未接入的预设 CLI；若全部已接入则对齐首个已安装 CLI 并自动进入原身份重连模式
   useEffect(() => {
-    if (
-      !props.open ||
-      hasUserPickedPlatformRef.current ||
-      reclaimAgentId !== null ||
-      !localAgentsQuery.data?.available
-    ) {
+    if (!props.open || hasUserPickedPlatformRef.current || !localAgentsQuery.data?.available) {
       return;
     }
-    const currentCli = localCliByPlatform.get(selectedPlatform);
-    if (currentCli?.installed) {
+    const installedClis = localAgentsQuery.data.clis.filter((cli) => cli.installed);
+    if (installedClis.length === 0) {
       return;
     }
-    const firstInstalled = localAgentsQuery.data.clis.find((cli) => cli.installed);
-    if (firstInstalled) {
-      setSelectedPlatform(firstInstalled.platform);
+    const unpairedInstalled = installedClis.find(
+      (cli) => !props.ownedAgents.some((agent) => agent.platform === cli.platform),
+    );
+    const chosenCli = unpairedInstalled ?? installedClis[0];
+    if (!chosenCli) {
+      return;
     }
-  }, [props.open, reclaimAgentId, localAgentsQuery.data, localCliByPlatform, selectedPlatform]);
+    const existingForChosen =
+      props.ownedAgents.find((agent) => agent.platform === chosenCli.platform) ?? null;
+    if (selectedPlatform !== chosenCli.platform) {
+      setSelectedPlatform(chosenCli.platform);
+    }
+    const desiredReclaimId = existingForChosen ? existingForChosen.id : null;
+    if (reclaimAgentId !== desiredReclaimId) {
+      setReclaimAgentId(desiredReclaimId);
+    }
+  }, [props.open, localAgentsQuery.data, props.ownedAgents, selectedPlatform, reclaimAgentId]);
 
   // 生成接入口令后高频（2 秒）探测 `/api/v1/me` 与当前房间成员列表，让用户在 Agent 跑完命令后第一时间看到绿点连入反馈
   const activeRoomId = props.activeRoom?.id;
@@ -516,6 +533,8 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
       {
         onSuccess: (res) => {
           setDirectConnectedResult(res);
+          // 成功后立即锁定为该 Agent 的原身份重连模式，避免用户连点主按钮重复创建分身
+          setReclaimAgentId(res.agent.id);
           announcedAgentIdRef.current = res.agent.id;
           toast.success(`「${res.agent.displayName}」已一键直连成功！`, {
             description: `守护服务 ${res.serviceId} 已启动，回到群聊直接 @ 它即可开聊`,
@@ -683,13 +702,18 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       key={platform}
                       type="button"
                       aria-pressed={isSelected}
-                      disabled={reclaimTarget !== null}
                       onClick={() => {
                         hasUserPickedPlatformRef.current = true;
                         setSelectedPlatform(platform);
+                        // 若名下已有该平台的 Agent，点选平台时默认切入原身份重连模式，防误创重复 Agent（仍可在下拉框显式改为“接入一个新的 Agent”）
+                        const existingForPlatform =
+                          props.ownedAgents.find((item) => item.platform === platform) ?? null;
+                        setReclaimAgentId(existingForPlatform ? existingForPlatform.id : null);
+                        setGeneratedPairing(null);
                         setDirectConnectedResult(null);
                         resetLocalConnectMutation();
                         setShowManualConnectFallback(false);
+                        autoGeneratedScopeRef.current = null;
                       }}
                       className={cn(
                         "app-no-drag flex cursor-pointer items-center gap-2 rounded-full px-2.5 py-1.5 text-left text-xs font-medium transition-all duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50",
@@ -1093,6 +1117,9 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                 <div className="max-h-44 space-y-1 overflow-y-auto pr-1">
                   {props.ownedAgents.map((agent) => {
                     const meta = getPlatformVisualMeta(agent.platform);
+                    const isConfirmingDelete = confirmDeleteAgentId === agent.id;
+                    const isDeletingThis =
+                      deleteAgentMutation.isPending && deleteAgentMutation.variables === agent.id;
                     return (
                       <div
                         key={agent.id}
@@ -1117,25 +1144,121 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                           </div>
                         </div>
 
-                        <div className="flex shrink-0 items-center gap-2">
-                          <ReachStatusBadge reach={agent.reach} compact={true} />
-                          <AppButton
-                            variant="secondary"
-                            size="xs"
-                            leadingIcon={<KeyRound aria-hidden="true" className="h-3 w-3" />}
-                            onClick={() => {
-                              hasUserPickedPlatformRef.current = true;
-                              setReclaimAgentId(agent.id);
-                              setSelectedPlatform(agent.platform);
-                              setGeneratedPairing(null);
-                              setDirectConnectedResult(null);
-                              resetLocalConnectMutation();
-                              autoGeneratedScopeRef.current = null;
-                              toast.info(`已切换到「${agent.displayName}」重连模式`);
-                            }}
-                          >
-                            重连
-                          </AppButton>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {isConfirmingDelete ? (
+                            <>
+                              <AppButton
+                                variant="ghost"
+                                size="xs"
+                                disabled={isDeletingThis}
+                                onClick={() => setConfirmDeleteAgentId(null)}
+                              >
+                                取消
+                              </AppButton>
+                              <AppButton
+                                variant="danger"
+                                size="xs"
+                                isLoading={isDeletingThis}
+                                onClick={() => {
+                                  deleteAgentMutation.mutate(agent.id, {
+                                    onSuccess: (res) => {
+                                      setConfirmDeleteAgentId(null);
+                                      setReclaimAgentId((prev) =>
+                                        prev === agent.id ? null : prev,
+                                      );
+                                      setDirectConnectedResult((prev) =>
+                                        prev?.agent.id === agent.id ? null : prev,
+                                      );
+                                      toast.success(`已删除 Agent「${agent.displayName}」`, {
+                                        description: res.stoppedLocalDaemon
+                                          ? "已移出群聊并停止本机监听服务"
+                                          : "已移出群聊并吊销访问令牌",
+                                      });
+                                    },
+                                    onError: (err) => {
+                                      toast.error(
+                                        err instanceof Error ? err.message : "删除 Agent 失败",
+                                      );
+                                    },
+                                  });
+                                }}
+                              >
+                                确认删除
+                              </AppButton>
+                            </>
+                          ) : (
+                            <>
+                              <ReachStatusBadge reach={agent.reach} compact={true} />
+                              <AppButton
+                                variant="secondary"
+                                size="xs"
+                                isLoading={
+                                  connectLocalMutation.isPending && reclaimAgentId === agent.id
+                                }
+                                leadingIcon={<KeyRound aria-hidden="true" className="h-3 w-3" />}
+                                onClick={() => {
+                                  hasUserPickedPlatformRef.current = true;
+                                  setReclaimAgentId(agent.id);
+                                  setSelectedPlatform(agent.platform);
+                                  setGeneratedPairing(null);
+                                  setDirectConnectedResult(null);
+                                  resetLocalConnectMutation();
+                                  autoGeneratedScopeRef.current = null;
+
+                                  const matchingLocalCli = localCliByPlatform.get(agent.platform);
+                                  if (
+                                    localAgentsQuery.data?.available === true &&
+                                    matchingLocalCli?.installed === true
+                                  ) {
+                                    connectLocalMutation.mutate(
+                                      {
+                                        platform: matchingLocalCli.platform,
+                                        name: agent.displayName,
+                                        ...(targetAutoJoinRoomId !== undefined
+                                          ? { autoJoinRoomId: targetAutoJoinRoomId }
+                                          : {}),
+                                        reclaimAgentId: agent.id,
+                                      },
+                                      {
+                                        onSuccess: (res) => {
+                                          setDirectConnectedResult(res);
+                                          setReclaimAgentId(res.agent.id);
+                                          announcedAgentIdRef.current = res.agent.id;
+                                          toast.success(
+                                            `「${res.agent.displayName}」已完成原身份重连并同步本机环境！`,
+                                          );
+                                        },
+                                        onError: (err) => {
+                                          const msg =
+                                            err instanceof ApiClientError
+                                              ? err.message
+                                              : err instanceof Error
+                                                ? err.message
+                                                : "本机重连失败";
+                                          toast.error(msg);
+                                        },
+                                      },
+                                    );
+                                    return;
+                                  }
+                                  toast.info(`已切换到「${agent.displayName}」重连模式`);
+                                }}
+                              >
+                                重连
+                              </AppButton>
+                              <AppTooltip side="top" content="删除该 Agent">
+                                <IconButton
+                                  size="xs"
+                                  variant="ghost"
+                                  label={`删除 ${agent.displayName}`}
+                                  onClick={() => setConfirmDeleteAgentId(agent.id)}
+                                  className="text-[#8E8E93] hover:text-[#FF3B30] dark:text-zinc-500 dark:hover:text-[#FF6961]"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </IconButton>
+                              </AppTooltip>
+                            </>
+                          )}
                         </div>
                       </div>
                     );
