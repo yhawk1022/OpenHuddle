@@ -33,6 +33,10 @@ import { MessagesRepository } from "./modules/messages/messages.repo.js";
 import { createMessagesRouter } from "./modules/messages/messages.routes.js";
 import { MessagesService } from "./modules/messages/messages.service.js";
 import { createBootstrapDocsRouter } from "./modules/pairing/bootstrap-docs.routes.js";
+import {
+  LocalConnectService,
+  type LocalDaemonInstallerFn,
+} from "./modules/pairing/local-connect.service.js";
 import { PairingRepository } from "./modules/pairing/pairing.repo.js";
 import { createPairingRouter } from "./modules/pairing/pairing.routes.js";
 import { PairingService } from "./modules/pairing/pairing.service.js";
@@ -72,6 +76,9 @@ export interface AppDependencies {
   readonly realtimeBus: RealtimeBus;
   readonly cliBundlePath?: string;
   readonly webDistDir?: string;
+  readonly localConnectHomeDir?: string;
+  readonly localConnectPathEnv?: string;
+  readonly localDaemonInstaller?: LocalDaemonInstallerFn;
 }
 
 function getMimeTypeForFile(filePath: string): string {
@@ -145,6 +152,17 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
     repo: messagesRepo,
     realtimeBus: deps.realtimeBus,
   });
+  const localConnectService = new LocalConnectService({
+    env: deps.env,
+    pairingService,
+    messagesService,
+    ...(deps.cliBundlePath !== undefined ? { cliBundlePath: deps.cliBundlePath } : {}),
+    ...(deps.localConnectHomeDir !== undefined ? { homeDir: deps.localConnectHomeDir } : {}),
+    ...(deps.localConnectPathEnv !== undefined ? { pathEnv: deps.localConnectPathEnv } : {}),
+    ...(deps.localDaemonInstaller !== undefined
+      ? { installDaemonFn: deps.localDaemonInstaller }
+      : {}),
+  });
   const eventsService = new EventsService({
     roomsRepo,
     messagesRepo,
@@ -174,7 +192,7 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
     }),
   );
   apiV1.route("/", createAuthRouter({ authService, env: deps.env }));
-  apiV1.route("/", createPairingRouter({ authService, pairingService }));
+  apiV1.route("/", createPairingRouter({ authService, pairingService, localConnectService }));
   apiV1.route("/", createRoomsRouter({ authService, roomsService }));
   apiV1.route("/", createGovernanceRouter({ authService, governanceService }));
   apiV1.route("/", createMessagesRouter({ authService, messagesService }));

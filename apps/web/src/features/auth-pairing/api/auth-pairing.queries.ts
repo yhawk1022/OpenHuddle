@@ -6,12 +6,20 @@
  * 1. 登录态单点收敛：`currentMeQueryOptions` 设置 `retry: false`，确保未登录或令牌失效时零延迟切换至 OTP 登录视图。
  * 2. 登录即预热：`verifyEmailOtp` 成功后同步写入本地备份 `sessionToken` 并立即水合 `["me"]` 缓存，消除二次往返白屏。
  */
-import type { RoomDetailDto, RoomId, RoomSummaryDto, RoomVisibility } from "@openhuddle/protocol";
+import type {
+  ConnectLocalAgentBody,
+  RoomDetailDto,
+  RoomId,
+  RoomSummaryDto,
+  RoomVisibility,
+} from "@openhuddle/protocol";
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   type CreatePairingCodeInput,
+  connectLocalAgent,
   createPairingCode,
   fetchCurrentMe,
+  fetchLocalAgentsStatus,
   logoutSession,
   requestEmailOtp,
   updateRoomGovernance,
@@ -30,7 +38,8 @@ export function currentMeQueryOptions() {
     queryKey: huddleQueryKeys.me(),
     queryFn: () => fetchCurrentMe(),
     retry: false,
-    staleTime: 20_000,
+    staleTime: 15_000,
+    refetchInterval: 15_000,
   });
 }
 
@@ -86,6 +95,44 @@ export function useLogoutMutation() {
 export function useCreatePairingCodeMutation() {
   return useMutation({
     mutationFn: (input: CreatePairingCodeInput) => createPairingCode(input),
+  });
+}
+
+/**
+ * 探测同机部署下已安装的本机预设 Agent CLI 列表的 `queryOptions`。
+ *
+ * @returns 标准化的 `/api/v1/local-agents/status` 查询配置
+ */
+export function localAgentsStatusQueryOptions() {
+  return queryOptions({
+    queryKey: huddleQueryKeys.localAgentsStatus(),
+    queryFn: () => fetchLocalAgentsStatus(),
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * 一键直连本机已安装的预设 Agent CLI 并自动刷新个人身份、房间列表与当前群消息时间线的 Mutation Hook。
+ *
+ * @returns 本机一键直连 `useMutation` 实例
+ */
+export function useConnectLocalAgentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Readonly<ConnectLocalAgentBody>) => connectLocalAgent(body),
+    onSuccess: (res) => {
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+      if (res.autoJoinedRoomId !== undefined) {
+        void queryClient.invalidateQueries({
+          queryKey: huddleQueryKeys.roomDetail(res.autoJoinedRoomId),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: huddleQueryKeys.roomMessages(res.autoJoinedRoomId),
+        });
+      }
+    },
   });
 }
 

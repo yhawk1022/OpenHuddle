@@ -8,14 +8,18 @@
 import { type OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import {
   ApiErrorEnvelopeSchema,
+  ConnectLocalAgentBodySchema,
+  ConnectLocalAgentResponseSchema,
   CreatePairingCodeBodySchema,
   CreatePairingCodeResponseSchema,
+  LocalAgentsStatusResponseSchema,
   PairAgentRequestSchema,
   PairAgentResponseSchema,
 } from "@openhuddle/protocol";
 import { createRequireAuthMiddleware } from "../../infra/auth-middleware.js";
 import { createOpenApiRouter } from "../../infra/openapi-router.js";
 import type { AuthService } from "../auth/auth.service.js";
+import type { LocalConnectService } from "./local-connect.service.js";
 import type { PairingService } from "./pairing.service.js";
 
 const createPairingCodeRoute = createRoute({
@@ -104,20 +108,108 @@ const pairAgentRoute = createRoute({
   },
 });
 
+const localAgentsStatusRoute = createRoute({
+  method: "get",
+  path: "/local-agents/status",
+  tags: ["Pairing"],
+  summary:
+    "Detect installed local coding agent CLIs when running on localhost / 127.0.0.1 (Human only)",
+  responses: {
+    200: {
+      description: "Local CLI availability snapshot",
+      content: {
+        "application/json": {
+          schema: LocalAgentsStatusResponseSchema,
+        },
+      },
+    },
+    401: {
+      description: "Unauthenticated",
+      content: {
+        "application/json": {
+          schema: ApiErrorEnvelopeSchema,
+        },
+      },
+    },
+    403: {
+      description: "Caller is not a human user",
+      content: {
+        "application/json": {
+          schema: ApiErrorEnvelopeSchema,
+        },
+      },
+    },
+  },
+});
+
+const connectLocalAgentRoute = createRoute({
+  method: "post",
+  path: "/local-agents/connect",
+  tags: ["Pairing"],
+  summary:
+    "One-click pair, greet, and start background SSE daemon for a local CLI agent (localhost only)",
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: ConnectLocalAgentBodySchema,
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Local CLI agent paired and background SSE listener started",
+      content: {
+        "application/json": {
+          schema: ConnectLocalAgentResponseSchema,
+        },
+      },
+    },
+    400: {
+      description: "Requested local CLI binary is not installed on host",
+      content: {
+        "application/json": {
+          schema: ApiErrorEnvelopeSchema,
+        },
+      },
+    },
+    401: {
+      description: "Unauthenticated",
+      content: {
+        "application/json": {
+          schema: ApiErrorEnvelopeSchema,
+        },
+      },
+    },
+    403: {
+      description: "Forbidden on non-loopback deployment or non-human caller",
+      content: {
+        "application/json": {
+          schema: ApiErrorEnvelopeSchema,
+        },
+      },
+    },
+  },
+});
+
 /**
  * 创建配对接入 OpenAPI 子路由器。
  *
- * @param deps - 认证服务与配对服务实例
- * @returns 挂载了 `/pairing-codes` 与 `/pair` 的 `OpenAPIHono`
+ * @param deps - 认证服务、配对服务与可选本机一键直连服务
+ * @returns 挂载了 `/pairing-codes`、`/pair` 与 `/local-agents/*` 的 `OpenAPIHono`
  */
 export function createPairingRouter(deps: {
   readonly authService: AuthService;
   readonly pairingService: PairingService;
+  readonly localConnectService?: LocalConnectService;
 }): OpenAPIHono {
   const router = createOpenApiRouter();
   const requireAuth = createRequireAuthMiddleware(deps.authService);
 
   router.use("/pairing-codes", requireAuth);
+  router.use("/local-agents/*", requireAuth);
 
   router.openapi(createPairingCodeRoute, async (c) => {
     const caller = c.get("caller");
@@ -131,6 +223,21 @@ export function createPairingRouter(deps: {
     const result = await deps.pairingService.pairAgent(body);
     return c.json(result, 201);
   });
+
+  if (deps.localConnectService !== undefined) {
+    const localService = deps.localConnectService;
+    router.openapi(localAgentsStatusRoute, (c) => {
+      const caller = c.get("caller");
+      return c.json(localService.getStatus(caller), 200);
+    });
+
+    router.openapi(connectLocalAgentRoute, async (c) => {
+      const caller = c.get("caller");
+      const body = c.req.valid("json");
+      const result = await localService.connectLocalAgent(caller, body);
+      return c.json(result, 201);
+    });
+  }
 
   return router;
 }

@@ -30,6 +30,7 @@ import type {
   UserId,
 } from "@openhuddle/protocol";
 import {
+  type DaemonControlReport,
   type DaemonSystemDeps,
   getDaemonServiceStatus,
   installDaemonService,
@@ -85,6 +86,8 @@ export interface CliExecutionContext {
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "--json",
   "--reclaim",
+  "--listen",
+  "--greet",
   "--ignore-unread",
   "--help",
   "-h",
@@ -378,13 +381,17 @@ function buildProposalDraftFromArgs(parsed: Readonly<ParsedCliArgs>): ProposalDr
 }
 
 /**
- * 解析 `listen` 子命令所需的唤醒执行目标（`--agent` 预设或 `--run` 自定义命令）。
+ * 解析 `listen` 子命令所需的唤醒执行目标（`--agent` 预设、`--run` 自定义命令，或自动回退读取配对元数据中的 `platform`）。
  *
  * @param parsed - 解析后的 CLI 参数
+ * @param fallbackPlatform - 本地 `.token.json` 元数据中保存的已配对宿主平台（可选）
  * @returns 结构化唤醒执行目标
- * @throws {Error} 当未指定唤醒方式或 `--agent` 值不受支持时抛出
+ * @throws {Error} 当未指定唤醒方式且元数据平台无内置无头预设，或 `--agent` 值不受支持时抛出
  */
-function resolveWakeTarget(parsed: Readonly<ParsedCliArgs>): WakeExecutionTarget {
+function resolveWakeTarget(
+  parsed: Readonly<ParsedCliArgs>,
+  fallbackPlatform?: AgentPlatform,
+): WakeExecutionTarget {
   const customRun = getLastFlag(parsed, "run");
   if (customRun !== undefined && customRun.trim().length > 0) {
     return { kind: "custom", command: customRun.trim() };
@@ -395,14 +402,26 @@ function resolveWakeTarget(parsed: Readonly<ParsedCliArgs>): WakeExecutionTarget
     const preset = parseWakeAgentPreset(rawAgent);
     if (preset === undefined) {
       throw new Error(
-        `Unsupported --agent "${rawAgent}". Expected one of: antigravity, codex, claude_code.`,
+        `Unsupported --agent "${rawAgent}". Expected one of: antigravity, codex, claude_code, gemini.`,
       );
     }
     return { kind: "preset", preset };
   }
 
+  // 零标志开箱即用：若用户省略 `--agent`（如直接按 `/install.md` 运行 `listen install --token-file ...`），
+  // 自动从配对阶段落盘的 `.token.json` 元数据恢复预设平台。
+  if (fallbackPlatform !== undefined) {
+    const inferredPreset = parseWakeAgentPreset(fallbackPlatform);
+    if (inferredPreset !== undefined) {
+      return { kind: "preset", preset: inferredPreset };
+    }
+    throw new Error(
+      `Paired platform "${fallbackPlatform}" requires a custom wake hook. Pass --agent <antigravity|codex|claude_code|gemini> or --run "<shell command>".`,
+    );
+  }
+
   throw new Error(
-    'Specify either --agent <antigravity|codex|claude_code> or --run "<shell command>".',
+    'Specify either --agent <antigravity|codex|claude_code|gemini> or --run "<shell command>".',
   );
 }
 
@@ -422,8 +441,8 @@ function buildHelpText(): string {
     "  --json                        Emit machine-readable JSON output",
     "",
     "Commands:",
-    "  pair <code> --name <n> --platform <p> [--intro <text>] [--reclaim]",
-    "                                Bind agent with collision guard & 0600 token file",
+    "  pair <code> --name <n> --platform <p> [--listen] [--greet] [--intro <text>] [--reclaim]",
+    "                                Bind agent, optionally start SSE daemon & post join greeting in 1 step",
     "  whoami                        Inspect authenticated agent, human owner & sibling agents",
     "  profile [--name <n>] [--intro <text>] [--checkin-interval <min>]",
     "                                Update agent display name, intro, or check-in cadence",
@@ -441,7 +460,7 @@ function buildHelpText(): string {
     "                                Submit a structured multi-option proposal card (or --list)",
     "  vote <proposalId> --stance <endorse|challenge|abstain> --rationale <text> [--option <key>]",
     "                                Cast a structured vote on a proposal card",
-    "  listen <run|install|status|stop> [--agent antigravity|codex|claude_code | --run <cmd>]",
+    "  listen <run|install|status|stop> [--agent antigravity|codex|claude_code|gemini | --run <cmd>]",
     "                                Run or manage macOS/Linux/Windows background SSE wake daemon",
     "  help                          Show this command reference",
   ].join("\n");
@@ -507,10 +526,12 @@ export async function runCli(
       const platform = resolveAgentPlatform(getLastFlag(parsed, "platform"));
       const intro = getLastFlag(parsed, "intro")?.trim();
       const reclaim = parsed.booleanFlags.has("--reclaim");
+      const listenRequested = parsed.booleanFlags.has("--listen");
+      const greetRequested = parsed.booleanFlags.has("--greet");
 
       if (!pairingCode || !requestedName || platform === undefined) {
         writeErr(
-          "Usage: openhuddle pair <code> --name <name> --platform <antigravity|codex|claude_code|cursor|deepseek|openclaw|gemini|chatgpt|hosted|custom> [--intro <text>] [--reclaim]",
+          "Usage: openhuddle pair <code> --name <name> --platform <antigravity|codex|claude_code|cursor|deepseek|openclaw|gemini|chatgpt|hosted|custom> [--listen] [--greet] [--intro <text>] [--reclaim]",
         );
         return 1;
       }
@@ -581,6 +602,76 @@ export async function runCli(
         updatedAtIso: new Date().toISOString(),
       });
 
+      // 一键极速体验（1）：先发送进群打招呼消息，推进服务端与本地 `lastReadSeq` 游标并即时通过 SSE 通知前端群聊时间线
+      let greetedMessageSeq: MessageSeq | undefined;
+      if (greetRequested && pairRes.autoJoinedRoomId !== undefined) {
+        try {
+          const authedClient = new OpenHuddleHttpClient({
+            serverUrl: parsed.serverUrl,
+            token: pairRes.token,
+            ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
+          });
+          const greetingContent = reclaim
+            ? `${pairRes.agent.displayName} 已重新连回群聊并恢复实时监听，直接 @ 我即可继续讨论。`
+            : `大家好，我是 ${pairRes.agent.displayName}，已连入群聊并开启实时监听，直接 @ 我即可开始讨论。`;
+          const sentGreeting = await authedClient.sendRoomMessage(pairRes.autoJoinedRoomId, {
+            content: greetingContent,
+            ignoreUnread: true,
+            opKey: `op_greet_${pairRes.agent.id}_${randomUUID()}` as OperationKey,
+          });
+          greetedMessageSeq = sentGreeting.message.seq;
+          updateRoomLastReadSeq(
+            pairRes.agent.id,
+            pairRes.autoJoinedRoomId,
+            sentGreeting.message.seq as unknown as ReadCursorSeq,
+            baseHome,
+          );
+        } catch (greetErr) {
+          // 进群打招呼属于非阻塞体验增强（如房间处于预算暂停态返回 429），不应导致已消费口令的 pair 退出码变红
+          writeErr(
+            `[openhuddle:pair] Auto-greeting skipped: ${
+              greetErr instanceof Error ? greetErr.message : String(greetErr)
+            }`,
+          );
+        }
+      }
+
+      // 一键极速体验（2）：在同一进程内直接安装并拉起后台常驻 SSE 守护进程，省去 Agent 第二轮工具调用与审批等待
+      let daemonReport: DaemonControlReport | undefined;
+      let daemonSkippedNote: string | undefined;
+      if (listenRequested) {
+        const hasWakeConfig =
+          getLastFlag(parsed, "run") !== undefined ||
+          getLastFlag(parsed, "agent") !== undefined ||
+          parseWakeAgentPreset(pairRes.agent.platform) !== undefined;
+
+        if (hasWakeConfig) {
+          const target = resolveWakeTarget(parsed, pairRes.agent.platform);
+          const slug =
+            getLastFlag(parsed, "slug") ??
+            pairRes.agent.slug ??
+            deriveSlugFromTokenPath(parsed.tokenFilePath);
+          const cliScriptPath =
+            context.cliScriptPath ?? process.argv[1] ?? fileURLToPath(import.meta.url);
+          const nodeBinaryPath = context.nodeBinaryPath ?? process.execPath;
+
+          daemonReport = installDaemonService(
+            {
+              slug,
+              nodeBinaryPath,
+              cliScriptPath,
+              serverUrl: parsed.serverUrl,
+              tokenFilePath: resolve(parsed.tokenFilePath),
+              target,
+              homeDir: baseHome,
+            },
+            context.daemonDeps,
+          );
+        } else {
+          daemonSkippedNote = `Note: Platform "${pairRes.agent.platform}" has no built-in headless CLI preset; pass --run "<cmd>" to "listen install" to enable auto-replies.`;
+        }
+      }
+
       if (parsed.json) {
         emitJson({
           ok: true,
@@ -590,6 +681,8 @@ export async function runCli(
           ...(pairRes.autoJoinedRoomId !== undefined
             ? { autoJoinedRoomId: pairRes.autoJoinedRoomId }
             : {}),
+          ...(greetedMessageSeq !== undefined ? { greetedMessageSeq } : {}),
+          ...(daemonReport !== undefined ? { listener: daemonReport } : {}),
         });
       } else {
         writeOut(
@@ -600,6 +693,15 @@ export async function runCli(
             ...(pairRes.autoJoinedRoomId !== undefined
               ? [`Auto-joined room: ${pairRes.autoJoinedRoomId}`]
               : []),
+            ...(greetedMessageSeq !== undefined && pairRes.autoJoinedRoomId !== undefined
+              ? [
+                  `Posted arrival greeting #${greetedMessageSeq} in room ${pairRes.autoJoinedRoomId}.`,
+                ]
+              : []),
+            ...(daemonReport !== undefined
+              ? [daemonReport.detail, `Logs: ${daemonReport.logOutPath}`]
+              : []),
+            ...(daemonSkippedNote !== undefined ? [daemonSkippedNote] : []),
           ].join("\n"),
         );
       }
@@ -1010,13 +1112,14 @@ export async function runCli(
         const nodeBinaryPath = context.nodeBinaryPath ?? process.execPath;
 
         if (subcommand === "run") {
-          const target = resolveWakeTarget(parsed);
+          const target = resolveWakeTarget(parsed, stored.metadata?.platform);
           await startSseListener({
             serverUrl: effectiveServerUrl,
             token: stored.token,
             tokenFilePath: resolve(parsed.tokenFilePath),
             target,
             cliScriptPath,
+            homeDir: baseHome,
             ...(context.listenerSignal !== undefined ? { signal: context.listenerSignal } : {}),
             ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
             onLog: writeErr,
@@ -1025,7 +1128,7 @@ export async function runCli(
         }
 
         if (subcommand === "spawn-detached") {
-          const target = resolveWakeTarget(parsed);
+          const target = resolveWakeTarget(parsed, stored.metadata?.platform);
           const spawned = spawnDetachedDaemonWorker(
             {
               slug,
@@ -1047,7 +1150,7 @@ export async function runCli(
         }
 
         if (subcommand === "install") {
-          const target = resolveWakeTarget(parsed);
+          const target = resolveWakeTarget(parsed, stored.metadata?.platform);
           const report = installDaemonService(
             {
               slug,
@@ -1142,6 +1245,7 @@ export {
   buildLinuxSystemdUnit,
   buildMacLaunchdPlist,
   buildWindowsSchtasksArgs,
+  collectInheritedDaemonEnvVars,
   getDaemonPidFilePath,
   getDaemonServiceStatus,
   installDaemonService,
@@ -1160,6 +1264,7 @@ export {
 } from "./http-client.js";
 
 export {
+  buildBrokeredWakePrompt,
   buildWakeProcessEnv,
   buildWakeShellCommand,
   computeReconnectDelayMs,
@@ -1169,7 +1274,9 @@ export {
   readSseFrames,
   RoomWakeQueue,
   startSseListener,
+  type BrokeredWakePromptInput,
   type ParsedSseFrame,
+  type PresetPromptExecutor,
   type WakeAgentPreset,
   type WakeEventPayload,
   type WakeExecutionTarget,

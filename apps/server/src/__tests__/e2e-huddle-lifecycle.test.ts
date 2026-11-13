@@ -10,11 +10,24 @@
  * 5. 防死循环 `maxConsecutiveAgentTurns` 轮次预算熔断（`429 GOVERNANCE_BUDGET_PAUSED`）、SSE 在线状态灯与人类续命解锁。
  * 6. AI 提案自动提炼、多 Agent 结构化表态投票、禁止 Agent 越权拍板（`403`）、人类拍板落库与 `/share/:inviteToken` 公开只读快照。
  */
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type ManagedDatabase, createDatabaseClient, ensureCoreSchema } from "@openhuddle/db";
 import type {
   ApiErrorEnvelope,
+  ConnectLocalAgentResponse,
   CreatePairingCodeResponse,
   InboxResponse,
+  LocalAgentsStatusResponse,
   MeResponse,
   MessageDto,
   PairAgentResponse,
@@ -699,5 +712,308 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     };
     expect(listed.latestSeq).toBe(burstCount);
     expect(listed.messages.map((m) => m.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it("wakes active room agents when mentioned via plain-text @displayName or @slug even with empty mentions[]", async () => {
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      PUBLIC_BASE_URL: "http://localhost:3000",
+      DATABASE_URL: "memory://",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus });
+    const ownerSession = await loginHumanViaOtp(app, "pangyan@example.com", "庞彦");
+
+    const createRoomRes = await app.request("/api/v1/rooms", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ownerSession.sessionToken}`,
+      },
+      body: JSON.stringify({
+        name: "Codex 测试群",
+        visibility: "invite_only",
+      }),
+    });
+    const { room } = (await createRoomRes.json()) as { room: RoomDetailDto };
+
+    const pairCodeRes = await app.request("/api/v1/pairing-codes", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ownerSession.sessionToken}`,
+      },
+      body: JSON.stringify({ autoJoinRoomId: room.id }),
+    });
+    const pairCode = (await pairCodeRes.json()) as CreatePairingCodeResponse;
+
+    const pairedRes = await app.request("/api/v1/pair", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code: pairCode.code,
+        name: "庞彦-OpenAICodex",
+        platform: "codex",
+      }),
+    });
+    expect(pairedRes.status).toBe(201);
+    const paired = (await pairedRes.json()) as PairAgentResponse;
+
+    // 1. 正文中文无空格衔接 `@庞彦-OpenAICodex` 且 `mentions: []`
+    const msgByNameRes = await app.request(`/api/v1/rooms/${room.id}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ownerSession.sessionToken}`,
+      },
+      body: JSON.stringify({
+        content: "你好@庞彦-OpenAICodex 能听到吗？",
+        mentions: [],
+        ignoreUnread: true,
+      }),
+    });
+    expect(msgByNameRes.status).toBe(201);
+    const msgByName = (await msgByNameRes.json()) as {
+      message: MessageDto;
+      wokenAgentIds: readonly string[];
+    };
+    expect(msgByName.wokenAgentIds).toEqual([paired.agent.id]);
+    expect(msgByName.message.mentions).toEqual([
+      {
+        kind: "agent",
+        agentId: paired.agent.id,
+        displayName: "庞彦-OpenAICodex",
+      },
+    ]);
+
+    // 2. 正文通过 `@slug` 点名且 `mentions: []`
+    const msgBySlugRes = await app.request(`/api/v1/rooms/${room.id}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ownerSession.sessionToken}`,
+      },
+      body: JSON.stringify({
+        content: "@openaicodex 帮我看下这个接口设计",
+        mentions: [],
+        ignoreUnread: true,
+      }),
+    });
+    expect(msgBySlugRes.status).toBe(201);
+    const msgBySlug = (await msgBySlugRes.json()) as {
+      wokenAgentIds: readonly string[];
+    };
+    expect(msgBySlug.wokenAgentIds).toEqual([paired.agent.id]);
+
+    // 3. 单 Agent 房间人类直接发言无需手打 `@` 也会自然唤醒唯一在席 Agent
+    const naturalSingleAgentMsgRes = await app.request(`/api/v1/rooms/${room.id}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ownerSession.sessionToken}`,
+      },
+      body: JSON.stringify({
+        content: "顺便帮我看看日志有没有报错？",
+        mentions: [],
+        ignoreUnread: true,
+      }),
+    });
+    expect(naturalSingleAgentMsgRes.status).toBe(201);
+    const naturalSingleAgentMsg = (await naturalSingleAgentMsgRes.json()) as {
+      wokenAgentIds: readonly string[];
+    };
+    expect(naturalSingleAgentMsg.wokenAgentIds).toEqual([paired.agent.id]);
+  });
+
+  it("supports 1-click loopback local CLI instant connect, blocks non-loopback servers, and expands plain-text @全体", async () => {
+    const tempHome = mkdtempSync(join(tmpdir(), "openhuddle-local-connect-test-"));
+    const tempBin = join(tempHome, "mock-bin");
+    mkdirSync(tempBin, { recursive: true });
+
+    // 在沙箱 PATH 目录放置可执行的 mock `agy` 与 `codex` 二进制占位文件
+    for (const binName of ["agy", "codex"]) {
+      const binPath = join(tempBin, binName);
+      writeFileSync(binPath, "#!/bin/sh\nexit 0\n", "utf8");
+      chmodSync(binPath, 0o755);
+    }
+
+    try {
+      const installedDaemons: Array<{ slug: string; tokenFilePath: string; serverUrl: string }> =
+        [];
+
+      const localEnv = parseServerEnv({
+        NODE_ENV: "test",
+        LOG_LEVEL: "silent",
+        PUBLIC_BASE_URL: "http://localhost:3000",
+        DATABASE_URL: "memory://",
+      });
+      const localApp = createServerApp({
+        env: localEnv,
+        database,
+        realtimeBus: bus,
+        localConnectHomeDir: tempHome,
+        localConnectPathEnv: tempBin,
+        localDaemonInstaller: (params) => {
+          installedDaemons.push({
+            slug: params.slug,
+            tokenFilePath: params.tokenFilePath,
+            serverUrl: params.serverUrl,
+          });
+          return {
+            serviceId: `dev.openhuddle.listen.${params.slug}`,
+          };
+        },
+      });
+
+      const ownerSession = await loginHumanViaOtp(localApp, "local@example.com", "庞彦");
+
+      // 1. 探测本机已安装 CLI：仅 agy 与 codex 为 installed=true
+      const statusRes = await localApp.request("/api/v1/local-agents/status", {
+        headers: { authorization: `Bearer ${ownerSession.sessionToken}` },
+      });
+      expect(statusRes.status).toBe(200);
+      const statusBody = (await statusRes.json()) as LocalAgentsStatusResponse;
+      expect(statusBody.available).toBe(true);
+      expect(statusBody.clis.filter((c) => c.installed).map((c) => c.platform)).toEqual([
+        "codex",
+        "antigravity",
+      ]);
+
+      // 2. 创建房间并通过 POST /api/v1/local-agents/connect 一键秒连 Antigravity 与 Codex
+      const createRoomRes = await localApp.request("/api/v1/rooms", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${ownerSession.sessionToken}`,
+        },
+        body: JSON.stringify({
+          name: "秒连测试群",
+          visibility: "invite_only",
+        }),
+      });
+      const { room } = (await createRoomRes.json()) as { room: RoomDetailDto };
+
+      const connectAgyRes = await localApp.request("/api/v1/local-agents/connect", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${ownerSession.sessionToken}`,
+        },
+        body: JSON.stringify({
+          platform: "antigravity",
+          name: "庞彦-Antigravity",
+          autoJoinRoomId: room.id,
+        }),
+      });
+      expect(connectAgyRes.status).toBe(201);
+      const connectAgyBody = (await connectAgyRes.json()) as ConnectLocalAgentResponse;
+      expect(connectAgyBody.autoJoinedRoomId).toBe(room.id);
+      expect(connectAgyBody.serviceId).toContain("dev.openhuddle.listen.");
+      expect(connectAgyBody.greetedMessageSeq).toBe(1);
+      expect(installedDaemons).toHaveLength(1);
+
+      // 验证落盘 Token 文件权限为 0600 且未泄露到 HTTP 响应中
+      const agyTokenPath = installedDaemons[0]?.tokenFilePath ?? "";
+      expect(agyTokenPath).toContain(".openhuddle/tokens/");
+      const fileMode = statSync(agyTokenPath).mode & 0o777;
+      expect(fileMode).toBe(0o600);
+      const storedRawToken = readFileSync(agyTokenPath, "utf8").trim();
+      expect(storedRawToken.startsWith("oh_agt_")).toBe(true);
+      const storedMeta = JSON.parse(readFileSync(`${agyTokenPath}.json`, "utf8")) as {
+        agentId: string;
+      };
+      expect(storedMeta.agentId).toBe(connectAgyBody.agent.id);
+
+      const connectCodexRes = await localApp.request("/api/v1/local-agents/connect", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${ownerSession.sessionToken}`,
+        },
+        body: JSON.stringify({
+          platform: "codex",
+          name: "庞彦-OpenAICodex",
+          autoJoinRoomId: room.id,
+        }),
+      });
+      expect(connectCodexRes.status).toBe(201);
+      const connectCodexBody = (await connectCodexRes.json()) as ConnectLocalAgentResponse;
+
+      // 3. 人类手打 `@全体` 发送消息：两个在席 Agent 均被同时唤醒
+      const mentionAllRes = await localApp.request(`/api/v1/rooms/${room.id}/messages`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${ownerSession.sessionToken}`,
+        },
+        body: JSON.stringify({
+          content: "@全体 大家互相认识一下！",
+          mentions: [],
+          ignoreUnread: true,
+        }),
+      });
+      expect(mentionAllRes.status).toBe(201);
+      const mentionAllBody = (await mentionAllRes.json()) as {
+        wokenAgentIds: readonly string[];
+      };
+      expect(new Set(mentionAllBody.wokenAgentIds)).toEqual(
+        new Set([connectAgyBody.agent.id, connectCodexBody.agent.id]),
+      );
+
+      // 4. 原身份一键重连（reclaimAgentId）：复用原 `.token` 文件路径并轮换新令牌
+      const reclaimRes = await localApp.request("/api/v1/local-agents/connect", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${ownerSession.sessionToken}`,
+        },
+        body: JSON.stringify({
+          platform: "antigravity",
+          name: "庞彦-Antigravity",
+          reclaimAgentId: connectAgyBody.agent.id,
+        }),
+      });
+      expect(reclaimRes.status).toBe(201);
+      expect(installedDaemons[2]?.tokenFilePath).toBe(agyTokenPath);
+      const rotatedRawToken = readFileSync(agyTokenPath, "utf8").trim();
+      expect(rotatedRawToken.startsWith("oh_agt_")).toBe(true);
+      expect(rotatedRawToken).not.toBe(storedRawToken);
+
+      // 5. 公网域名部署时，拒绝一键本机直连（available=false & POST 返回 403）
+      const remoteEnv = parseServerEnv({
+        NODE_ENV: "test",
+        LOG_LEVEL: "silent",
+        PUBLIC_BASE_URL: "https://huddle.example.com",
+        DATABASE_URL: "memory://",
+      });
+      const remoteApp = createServerApp({
+        env: remoteEnv,
+        database,
+        realtimeBus: bus,
+        localConnectHomeDir: tempHome,
+        localConnectPathEnv: tempBin,
+      });
+      const remoteStatusRes = await remoteApp.request("/api/v1/local-agents/status", {
+        headers: { authorization: `Bearer ${ownerSession.sessionToken}` },
+      });
+      expect(remoteStatusRes.status).toBe(200);
+      const remoteStatus = (await remoteStatusRes.json()) as LocalAgentsStatusResponse;
+      expect(remoteStatus.available).toBe(false);
+
+      const remoteConnectRes = await remoteApp.request("/api/v1/local-agents/connect", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${ownerSession.sessionToken}`,
+        },
+        body: JSON.stringify({
+          platform: "antigravity",
+          name: "Illegal Remote Local Connect",
+        }),
+      });
+      expect(remoteConnectRes.status).toBe(403);
+    } finally {
+      rmSync(tempHome, { recursive: true, force: true });
+    }
   });
 });

@@ -36,6 +36,8 @@ export const huddleQueryKeys = {
   health: () => ["system", "health"] as const,
   /** 当前认证人类身份与名下 Agent 列表缓存键 */
   me: () => ["me"] as const,
+  /** 本机已安装的预设 Agent CLI 可用性探测缓存键 */
+  localAgentsStatus: () => ["localAgents", "status"] as const,
   /** 当前用户已加入的所有 Huddle 房间概览列表缓存键 */
   rooms: () => ["rooms"] as const,
   /** 指定房间详情（含成员可达性列表与邀请令牌）缓存键 */

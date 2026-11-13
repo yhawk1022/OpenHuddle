@@ -12,11 +12,14 @@ import {
   type ApiErrorEnvelope,
   ApiErrorEnvelopeSchema,
   type CastProposalVoteBody,
+  type ConnectLocalAgentBody,
+  type ConnectLocalAgentResponse,
   type CreatePairingCodeResponse,
   type DecideProposalBody,
   type ErrorCode,
   type HumanUserDto,
   type JoinRoomBody,
+  type LocalAgentsStatusResponse,
   type MessageDto,
   type MessageMention,
   type MessageSeq,
@@ -268,6 +271,30 @@ export async function createPairingCode(
   body: Readonly<CreatePairingCodeInput>,
 ): Promise<CreatePairingCodeResponse> {
   return requestJson<CreatePairingCodeResponse>("/api/v1/pairing-codes", {
+    method: "POST",
+    body,
+  });
+}
+
+/**
+ * 探测同机部署环境下本机已安装的预设 Agent CLI（`claude`、`codex`、`agy`、`gemini`）。
+ *
+ * @returns 是否允许本机直连及各预设 CLI 的安装状态列表
+ */
+export async function fetchLocalAgentsStatus(): Promise<LocalAgentsStatusResponse> {
+  return requestJson<LocalAgentsStatusResponse>("/api/v1/local-agents/status");
+}
+
+/**
+ * 一键直连同机安装的预设 Agent CLI（服务端内聚完成配对、写入 `0600` 令牌、发送进群问候并启动后台 SSE 守护）。
+ *
+ * @param body - 预设平台、群内昵称及可选自动入群房间 / 待恢复身份 ID
+ * @returns 绑定后的 Agent 摘要、自动加入的房间 ID 与守护进程运行状态
+ */
+export async function connectLocalAgent(
+  body: Readonly<ConnectLocalAgentBody>,
+): Promise<ConnectLocalAgentResponse> {
+  return requestJson<ConnectLocalAgentResponse>("/api/v1/local-agents/connect", {
     method: "POST",
     body,
   });

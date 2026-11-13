@@ -12,11 +12,13 @@
  * 3. 双主题高对比度安全：暗色下输入卡固定为 `dark:bg-[#18181B]`，绝不触发白底白字缺陷。
  */
 import type {
+  AgentId,
   MessageDto,
   MessageMention,
   MessageSeq,
   OperationKey,
   RoomMemberDto,
+  UserId,
 } from "@openhuddle/protocol";
 import { ArrowUp, AtSign, Check, CornerUpLeft, Loader2, User, Users, X } from "lucide-react";
 import {
@@ -49,6 +51,7 @@ const MAX_MENTION_SUGGESTIONS = 8;
 export interface MessageComposerProps {
   readonly roomName: string;
   readonly members: ReadonlyArray<RoomMemberDto>;
+  readonly currentUserId?: UserId | undefined;
   /** 当前登录用户的展示昵称（用于渲染输入卡上方「以 <名字> 的身份发言」） */
   readonly currentUserDisplayName?: string | undefined;
   readonly replyTarget: MessageDto | null;
@@ -57,6 +60,7 @@ export interface MessageComposerProps {
   readonly onClearReplyTarget: () => void;
   readonly isSending: boolean;
   readonly sendError: Error | null;
+  readonly onReconnectOfflineAgent?: ((agentId: AgentId) => void) | undefined;
   readonly onSendMessage: (params: {
     readonly content: string;
     readonly opKey: OperationKey;
@@ -117,18 +121,24 @@ function isReachableNow(member: RoomMemberDto): boolean {
   );
 }
 
+/** 判断正文是否包含对某位成员的不区分大小写 `@昵称` 点名 */
+function containsMemberMention(text: string, displayName: string): boolean {
+  const normalized = displayName.trim().toLowerCase();
+  return normalized.length > 0 && text.toLowerCase().includes(`@${normalized}`);
+}
+
 /**
  * 从光标前文本解析正在输入的 `@查询词`。
  *
- * @remarks 仅当 `@` 位于行首或空白之后时才视为提及触发，避免把邮箱 `a@b.com` 误判为点名。
+ * @remarks 允许在行首、空白或中文/标点后直接输入 `@` 唤起联想（如 `你好@庞彦-OpenAICodex`），同时排除邮箱地址 `a@b.com`。
  */
 function detectMentionTrigger(draft: string, caret: number): MentionTrigger | null {
   const before = draft.slice(0, caret);
-  const match = /(^|\s)@([^\s@]{0,32})$/u.exec(before);
+  const match = /(?<![A-Za-z0-9._%+-])@([^\s@]{0,32})$/u.exec(before);
   if (!match) {
     return null;
   }
-  const query = match[2] ?? "";
+  const query = match[1] ?? "";
   return { query, start: caret - query.length - 1, end: caret };
 }
 
@@ -220,14 +230,28 @@ export function MessageComposer(props: MessageComposerProps) {
     const typed: MessageMention[] = [];
     for (const member of props.members) {
       const converted = memberToMention(member);
-      if (converted !== null && draft.includes(`@${member.displayName}`)) {
+      if (converted !== null && containsMemberMention(draft, member.displayName)) {
         typed.push(converted);
       }
     }
     return mergeMentions(selectedMentions, typed).filter((m) =>
-      draft.includes(`@${m.displayName}`),
+      containsMemberMention(draft, m.displayName),
     );
   }, [draft, props.members, selectedMentions]);
+
+  const offlineMentionedAgents = useMemo(() => {
+    const result: RoomMemberDto[] = [];
+    for (const mention of activeChipMentions) {
+      if (mention.kind !== "agent") {
+        continue;
+      }
+      const member = agentMembers.find((m) => m.agentId === mention.agentId);
+      if (member !== undefined && !isReachableNow(member)) {
+        result.push(member);
+      }
+    }
+    return result;
+  }, [activeChipMentions, agentMembers]);
 
   const mentionTrigger = useMemo(
     () => (suggestDismissed ? null : detectMentionTrigger(draft, caretIndex)),
@@ -377,12 +401,12 @@ export function MessageComposer(props: MessageComposerProps) {
     const typedMentions: MessageMention[] = [];
     for (const member of props.members) {
       const converted = memberToMention(member);
-      if (converted !== null && trimmed.includes(`@${member.displayName}`)) {
+      if (converted !== null && containsMemberMention(trimmed, member.displayName)) {
         typedMentions.push(converted);
       }
     }
     const finalMentions = mergeMentions(selectedMentions, typedMentions).filter((m) =>
-      trimmed.includes(`@${m.displayName}`),
+      containsMemberMention(trimmed, m.displayName),
     );
 
     const opKey = createClientOperationKey();
@@ -464,6 +488,44 @@ export function MessageComposer(props: MessageComposerProps) {
               className="mb-2 rounded-2xl bg-[#FF3B30]/10 px-3.5 py-2 text-xs font-medium text-[#D70015] dark:bg-[#FF453A]/15 dark:text-[#FF6961]"
             >
               发送失败（草稿已保留）：{errorText}
+            </motion.div>
+          ) : null}
+          {offlineMentionedAgents.length > 0 ? (
+            <motion.div
+              key="offline-agent-hint"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 2 }}
+              transition={{ duration: 0.14 }}
+              className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[#FFF8E6] px-3.5 py-2 text-xs text-[#5C4813] ring-1 ring-inset ring-black/[0.05] dark:bg-[#241F14] dark:text-[#F2DF9D] dark:ring-white/[0.08]"
+            >
+              <span>
+                {offlineMentionedAgents.map((m) => `@${m.displayName}`).join("、")}{" "}
+                当前未开启本地监听（离线），发出后会在它上线时自动补回。
+              </span>
+              {(() => {
+                const reconnectableOwn = offlineMentionedAgents.find(
+                  (m) =>
+                    m.agentId !== undefined &&
+                    (props.currentUserId === undefined || m.ownerUserId === props.currentUserId),
+                );
+                if (
+                  props.onReconnectOfflineAgent === undefined ||
+                  reconnectableOwn?.agentId === undefined
+                ) {
+                  return null;
+                }
+                const targetId = reconnectableOwn.agentId;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => props.onReconnectOfflineAgent?.(targetId)}
+                    className="shrink-0 cursor-pointer rounded-full bg-[#141414] px-2.5 py-1 text-[11px] font-medium text-white transition hover:bg-black dark:bg-[#F5F5F7] dark:text-[#141414] dark:hover:bg-white"
+                  >
+                    重连开启监听
+                  </button>
+                );
+              })()}
             </motion.div>
           ) : null}
         </AnimatePresence>

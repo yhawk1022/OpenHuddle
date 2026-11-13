@@ -85,6 +85,7 @@ export function roomDetailQueryOptions(roomId: RoomId) {
   return queryOptions({
     queryKey: huddleQueryKeys.roomDetail(roomId),
     queryFn: () => fetchRoomDetail(roomId),
+    refetchInterval: 15_000,
   });
 }
 

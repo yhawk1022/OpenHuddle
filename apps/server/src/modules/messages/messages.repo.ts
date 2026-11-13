@@ -64,6 +64,15 @@ export interface LockedRoomForMessageRecord {
   readonly lastSeq: number;
 }
 
+/**
+ * 房间在席 Agent 的唤醒匹配标识（支持通过正文 `@昵称` 或 `@slug` 自动补全结构化提及）。
+ */
+export interface RoomAgentMentionTarget {
+  readonly agentId: AgentId;
+  readonly displayName: string;
+  readonly slug: string;
+}
+
 interface RawSqlMessageRow {
   readonly roomId: string;
   readonly seq: number;
@@ -289,6 +298,34 @@ export class MessagesRepository {
       role: RoomMemberRoleSchema.parse(row.role),
       lastReadSeq: row.lastReadSeq,
     };
+  }
+
+  /**
+   * 列出当前房间内所有在席 Agent 的主键、展示名称与 `slug`（供正文 `@昵称` / `@slug` 提及解析与治理过滤使用）。
+   *
+   * @param roomId - 房间主键
+   * @returns 在席 Agent 提及目标列表
+   */
+  public async listRoomAgentTargets(roomId: RoomId): Promise<readonly RoomAgentMentionTarget[]> {
+    const result = await this.db.execute(sql`
+      SELECT
+        a.id AS "agentId",
+        a.display_name AS "displayName",
+        a.slug AS "slug"
+      FROM room_members rm
+      INNER JOIN agents a ON rm.agent_id = a.id
+      WHERE rm.room_id = ${roomId} AND rm.member_kind = 'agent'
+    `);
+
+    return extractSqlRows<{
+      readonly agentId: string;
+      readonly displayName: string;
+      readonly slug: string;
+    }>(result).map((row) => ({
+      agentId: row.agentId as AgentId,
+      displayName: row.displayName,
+      slug: row.slug,
+    }));
   }
 
   /**

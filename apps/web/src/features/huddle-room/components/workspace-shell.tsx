@@ -181,7 +181,7 @@ interface ActiveRoomStageProps {
   readonly roomId: RoomId;
   readonly currentUser: HumanUserDto;
   readonly synthesizeSignal: number;
-  readonly onOpenAddAgentModal: (tab?: OnboardingModalTab) => void;
+  readonly onOpenAddAgentModal: (tab?: OnboardingModalTab, reclaimAgentId?: AgentId) => void;
   readonly onBackToList: () => void;
   readonly onInspectAgent: (profile: InspectedAgentProfile) => void;
 }
@@ -685,6 +685,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         <MessageComposer
           roomName={room.name}
           members={room.members}
+          currentUserId={props.currentUser.id}
           currentUserDisplayName={props.currentUser.displayName}
           replyTarget={replyTarget}
           pendingQuickMention={pendingQuickMention}
@@ -692,6 +693,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
           onClearReplyTarget={() => setReplyTarget(null)}
           isSending={sendMessageMutation.isPending}
           sendError={sendMessageMutation.error}
+          onReconnectOfflineAgent={(agentId) => props.onOpenAddAgentModal("pair_agent", agentId)}
           onSendMessage={({ content, opKey, replyToSeq, mentions, onConfirmedOrQueued }) => {
             onConfirmedOrQueued();
             sendMessageMutation.mutate({
@@ -902,7 +904,16 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     enabled: activeRoomId !== null,
   });
 
-  const sseTelemetry = useRealtimeSseSync(true, sessionToken, activeRoomId);
+  const joinedRoomsSignature = useMemo(
+    () =>
+      rooms
+        .map((r) => r.id)
+        .sort()
+        .join(","),
+    [rooms],
+  );
+
+  const sseTelemetry = useRealtimeSseSync(true, sessionToken, activeRoomId, joinedRoomsSignature);
 
   const onlineAgentCount = useMemo(
     () =>
@@ -1118,7 +1129,9 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
               roomId={activeRoomId}
               currentUser={props.currentUser}
               synthesizeSignal={synthesizeSignal}
-              onOpenAddAgentModal={(tab) => openOnboarding(tab ?? "pair_agent")}
+              onOpenAddAgentModal={(tab, reclaimId) =>
+                openOnboarding(tab ?? "pair_agent", reclaimId)
+              }
               onBackToList={() => setMobileShowChat(false)}
               onInspectAgent={(profile) => setInspectedAgent(profile)}
             />

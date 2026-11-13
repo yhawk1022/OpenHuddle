@@ -12,6 +12,7 @@ import {
   type AgentId,
   type AuthenticatedCaller,
   type MessageDto,
+  type MessageMention,
   type MessageSeq,
   type ReadCursorSeq,
   type RoomGovernanceState,
@@ -25,7 +26,11 @@ import {
 import { AppError } from "../../infra/errors.js";
 import { toActorMemberKey } from "../../infra/identity-stamp.js";
 import type { RealtimeBus } from "../../infra/realtime-bus.js";
-import { type MessagesRepository, stampRawMessageForViewer } from "./messages.repo.js";
+import {
+  type MessagesRepository,
+  type RoomAgentMentionTarget,
+  stampRawMessageForViewer,
+} from "./messages.repo.js";
 
 /** 消息发送者自助撤回时间窗口（2 分钟） */
 const AUTHOR_RECALL_WINDOW_MS = 2 * 60_000;
@@ -56,6 +61,84 @@ export interface SendMessageResult {
 export interface MessagesServiceDeps {
   readonly repo: MessagesRepository;
   readonly realtimeBus: RealtimeBus;
+}
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 合并客户端显式提交的 `mentions` 与消息正文中手打的 `@<displayName>` / `@<slug>` / `@全体` 在席 Agent 提及。
+ *
+ * @remarks
+ * 这样无论用户通过前端输入器、CLI `openhuddle send` 还是直接手打 `@庞彦-OpenAICodex`、`@全体`、`@所有人`、`@all`，
+ * 服务端都能统一识别并派发 `wake` 事件（仅允许人类触发全员 `@全体`，且自动过滤 Agent 自提及防止自回声死循环）。
+ */
+function resolveEffectiveMentions(
+  content: string,
+  explicitMentions: readonly MessageMention[],
+  activeRoomAgents: readonly RoomAgentMentionTarget[],
+  caller: Readonly<AuthenticatedCaller>,
+): readonly MessageMention[] {
+  const merged: MessageMention[] = [...explicitMentions];
+  const mentionedAgentIds = new Set<AgentId>();
+  for (const item of explicitMentions) {
+    if (item.kind === "agent") {
+      mentionedAgentIds.add(item.agentId);
+    }
+  }
+
+  const lowerContent = content.toLowerCase();
+  if (!lowerContent.includes("@")) {
+    return merged;
+  }
+
+  // 安全边界：仅允许人类发言者手打 `@全体` / `@所有人` / `@all` / `@everyone` 唤醒房间全部在席 Agent，防止失控 Agent 广播风暴
+  const mentionsAllAgents =
+    caller.kind === "human" &&
+    (content.includes("@全体") ||
+      content.includes("@所有人") ||
+      /(?<![a-z0-9._%+-])@(?:all|everyone)(?![a-z0-9_-])/iu.test(lowerContent));
+
+  for (const agent of activeRoomAgents) {
+    if (caller.kind === "agent" && caller.agentId === agent.agentId) {
+      continue;
+    }
+    if (mentionedAgentIds.has(agent.agentId)) {
+      continue;
+    }
+
+    if (mentionsAllAgents) {
+      mentionedAgentIds.add(agent.agentId);
+      merged.push({
+        kind: "agent",
+        agentId: agent.agentId,
+        displayName: agent.displayName,
+      });
+      continue;
+    }
+
+    const lowerName = agent.displayName.trim().toLowerCase();
+    const matchedByDisplayName = lowerName.length > 0 && lowerContent.includes(`@${lowerName}`);
+
+    const lowerSlug = agent.slug.trim().toLowerCase();
+    const slugPattern =
+      lowerSlug.length > 0
+        ? new RegExp(`(?<![a-z0-9._%+-])@${escapeRegexLiteral(lowerSlug)}(?![a-z0-9_-])`, "u")
+        : null;
+    const matchedBySlug = slugPattern?.test(lowerContent) === true;
+
+    if (matchedByDisplayName || matchedBySlug) {
+      mentionedAgentIds.add(agent.agentId);
+      merged.push({
+        kind: "agent",
+        agentId: agent.agentId,
+        displayName: agent.displayName,
+      });
+    }
+  }
+
+  return merged;
 }
 
 function didGovernanceChange(
@@ -180,7 +263,8 @@ export class MessagesService {
         });
       }
 
-      const activeRoomAgentIds = await txRepo.listRoomAgentIds(roomId);
+      const activeRoomAgents = await txRepo.listRoomAgentTargets(roomId);
+      const activeRoomAgentIds = activeRoomAgents.map((agent) => agent.agentId);
 
       // 3. 优先校验客户端 opKey 幂等键：重试请求直接返回原消息，不消耗新序号或轮次预算
       if (body.opKey !== undefined) {
@@ -236,12 +320,18 @@ export class MessagesService {
         });
       }
 
-      // 5. 计算下一个严格连续序号与候选唤醒目标集合
+      // 5. 计算下一个严格连续序号与候选唤醒目标集合（含正文 @昵称 / @slug 自动解析）
       const nextSeq = asMessageSeq(room.lastSeq + 1);
       const activeAgentSet = new Set<AgentId>(activeRoomAgentIds);
+      const effectiveMentions = resolveEffectiveMentions(
+        body.content,
+        body.mentions,
+        activeRoomAgents,
+        caller,
+      );
       const candidateWakeAgentIds: AgentId[] = [];
 
-      for (const mention of body.mentions) {
+      for (const mention of effectiveMentions) {
         if (mention.kind === "agent" && activeAgentSet.has(mention.agentId)) {
           candidateWakeAgentIds.push(mention.agentId);
         }
@@ -259,10 +349,11 @@ export class MessagesService {
         }
       }
 
+      // 圆桌模式或房间内仅有唯一在席 Agent 时，人类直接发言无需手打 @昵称 也会自然唤醒目标 Agent
       if (
         caller.kind === "human" &&
         candidateWakeAgentIds.length === 0 &&
-        room.governanceJson.config.mode === "round_table"
+        (room.governanceJson.config.mode === "round_table" || activeRoomAgentIds.length === 1)
       ) {
         candidateWakeAgentIds.push(...activeRoomAgentIds);
       }
@@ -283,7 +374,7 @@ export class MessagesService {
         type: "text",
         content: body.content,
         ...(body.replyToSeq !== undefined ? { replyToSeq: body.replyToSeq } : {}),
-        mentions: body.mentions,
+        mentions: effectiveMentions,
         ...(body.opKey !== undefined ? { opKey: body.opKey } : {}),
       });
 

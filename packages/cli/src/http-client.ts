@@ -375,6 +375,21 @@ export class OpenHuddleHttpClient {
   }
 
   /**
+   * 调用 `GET /api/v1/rooms/:roomId` 获取单个房间详情、治理快照与在席成员列表。
+   *
+   * @param roomId - 房间 ID
+   * @returns 含 `RoomDetailDto` 的房间详情响应
+   */
+  public async getRoomDetail(
+    roomId: RoomId | string,
+  ): Promise<{ readonly ok: true; readonly room: RoomDetailDto }> {
+    return this.requestJson<{ readonly ok: true; readonly room: RoomDetailDto }>(
+      "GET",
+      `/api/v1/rooms/${encodeURIComponent(roomId)}`,
+    );
+  }
+
+  /**
    * 调用 `POST /api/v1/rooms` 创建新的 Huddle 房间。
    *
    * @param body - 房间名称、话题与规则配置

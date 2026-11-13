@@ -149,12 +149,14 @@ export function mergeProposalIntoCache(
  * @param enabled - 是否已通过认证允许建立 SSE 连接
  * @param sessionToken - 本地备份的人类会话令牌（附加在 `?token=` 兼容跨代理 SSE 鉴权）
  * @param activeRoomId - 当前用户正在浏览的房间 ID（用于同步推进已读游标与断线重连精准补拉）
+ * @param joinedRoomsSignature - 已加入房间集合的排序签名（仅在新建群或新入群导致成员资格集合变化时自动重握手订阅新房间，切换已有群不触发重连）
  * @returns 供工作台状态栏展示的连接遥测状态
  */
 export function useRealtimeSseSync(
   enabled: boolean,
   sessionToken: string | null,
   activeRoomId?: RoomId | null,
+  joinedRoomsSignature = "",
 ): RealtimeSseTelemetry {
   const queryClient = useQueryClient();
   const [telemetry, setTelemetry] = useState<RealtimeSseTelemetry>({
@@ -166,6 +168,7 @@ export function useRealtimeSseSync(
   // 使用 ref 持有最新 activeRoomId，避免切换房间时无谓销毁重建全局单条 EventSource 长连接
   const activeRoomIdRef = useRef<RoomId | null | undefined>(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
+  const previousRoomsSigRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!enabled || typeof window === "undefined" || typeof EventSource === "undefined") {
@@ -176,6 +179,10 @@ export function useRealtimeSseSync(
       });
       return;
     }
+
+    const didRoomsMembershipChange =
+      previousRoomsSigRef.current !== null && previousRoomsSigRef.current !== joinedRoomsSignature;
+    previousRoomsSigRef.current = joinedRoomsSignature;
 
     const endpoint =
       sessionToken !== null && sessionToken.length > 0
@@ -216,8 +223,8 @@ export function useRealtimeSseSync(
             connectionId: event.connectionId,
             lastHeartbeatIso: event.serverTimeIso,
           });
-          // 断线重连恢复后主动失效房间列表与当前房间消息/提案，补齐断网窗口内错失的增量
-          if (isReconnect) {
+          // 断线重连或因新建/加入新群重握手后，主动补齐当前房间窗口期内的增量
+          if (isReconnect || didRoomsMembershipChange) {
             void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
             const currentRoom = activeRoomIdRef.current;
             if (currentRoom) {
@@ -311,7 +318,26 @@ export function useRealtimeSseSync(
             },
           );
 
-          // 4. 若新消息为结构化提案、投票或拍板记录，同步触发提案面板刷新保持时间线与右侧卡片一致
+          // 4. 若发言者是此前未在成员缓存或显示为离线的 Agent，立即刷新房间详情与个人 Agent 在线灯
+          if (event.message.author.kind === "agent" && event.message.author.agentId !== undefined) {
+            const cachedDetail = queryClient.getQueryData<{
+              readonly ok: true;
+              readonly room: RoomDetailDto;
+            }>(huddleQueryKeys.roomDetail(event.roomId));
+            const matchingMember = cachedDetail?.room.members.find(
+              (m) => m.agentId === event.message.author.agentId,
+            );
+            if (matchingMember === undefined || matchingMember.reach === "offline") {
+              void queryClient.invalidateQueries({
+                queryKey: huddleQueryKeys.roomDetail(event.roomId),
+              });
+              void queryClient.invalidateQueries({
+                queryKey: huddleQueryKeys.me(),
+              });
+            }
+          }
+
+          // 5. 若新消息为结构化提案、投票或拍板记录，同步触发提案面板刷新保持时间线与右侧卡片一致
           if (
             event.message.type === "proposal" ||
             event.message.type === "vote" ||
@@ -428,7 +454,7 @@ export function useRealtimeSseSync(
       }
       source.close();
     };
-  }, [enabled, sessionToken, queryClient]);
+  }, [enabled, sessionToken, queryClient, joinedRoomsSignature]);
 
   return telemetry;
 }

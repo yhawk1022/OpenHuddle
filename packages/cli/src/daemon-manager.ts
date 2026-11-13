@@ -10,7 +10,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 import type { WakeExecutionTarget } from "./sse-listener.js";
 import { normalizeServerUrl, sanitizeTokenSlug } from "./token-store.js";
 
@@ -31,6 +31,7 @@ export interface DaemonServiceSpec {
   readonly target: WakeExecutionTarget;
   readonly homeDir: string;
   readonly envPath?: string;
+  readonly envVars?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -195,13 +196,192 @@ function escapeXml(value: string): string {
 }
 
 /**
+ * 合并并去重 POSIX 可执行文件搜索路径（`PATH`），确保通过 `nvm` / `fnm` / `volta` / `Homebrew` 安装的
+ * `codex`、`claude`、`agy`、`gemini` 在 `launchd` 与 `systemd --user` 最小化环境变量中也能被定位。
+ *
+ * @param segments - 候选路径片段（可包含冒号分隔列表）
+ * @returns 去重后的冒号分隔 `PATH` 字符串
+ */
+function mergePosixPathSegments(segments: readonly (string | undefined)[]): string {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const rawSegment of segments) {
+    if (rawSegment === undefined) {
+      continue;
+    }
+    for (const part of rawSegment.split(":")) {
+      const trimmed = part.trim();
+      if (trimmed.length === 0 || trimmed === "." || seen.has(trimmed)) {
+        continue;
+      }
+      seen.add(trimmed);
+      ordered.push(trimmed);
+    }
+  }
+  return ordered.join(":");
+}
+
+/**
+ * 守护进程在 `launchd` / `systemd --user` 最小化环境启动时必须透传的网络代理与模型网关环境变量白名单。
+ *
+ * @remarks
+ * 真实故障复盘：macOS `launchd` 默认不加载用户的 `~/.zshrc`，导致 `agy` / `claude` / `gemini` 在需要本地代理（如 `127.0.0.1:7897`）
+ * 或自定义网关（`ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`）的网络环境下静默报 `400 User location is not supported` 或连接超时。
+ */
+const PASSTHROUGH_DAEMON_ENV_KEYS: readonly string[] = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "OPENAI_BASE_URL",
+  "OPENAI_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_GENAI_USE_VERTEXAI",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "LANG",
+  "LC_ALL",
+];
+
+/**
+ * 确保 `NO_PROXY` 列表中始终包含本地回环地址，防止代理软件劫持本地 `localhost:3000` SSE 与 REST 请求。
+ *
+ * @param existing - 原始 `NO_PROXY` 字符串
+ * @returns 合并回环豁免后的逗号分隔字符串
+ */
+function ensureLoopbackNoProxy(existing: string | undefined): string {
+  const required = ["localhost", "127.0.0.1", "::1"];
+  const items = (existing ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  const lowerSet = new Set(items.map((item) => item.toLowerCase()));
+  for (const host of required) {
+    if (!lowerSet.has(host)) {
+      items.push(host);
+      lowerSet.add(host);
+    }
+  }
+  return items.join(",");
+}
+
+/**
+ * 从当前进程环境变量（及用户 Shell 配置文件回退）提取需要写入后台守护服务的代理与网关环境变量。
+ *
+ * @param homeDir - 用户主目录（当进程未继承代理变量时用于轻量扫描 `~/.zshrc` 等静态 `export`）
+ * @param sourceEnv - 源环境变量字典
+ * @returns 去重且补齐回环 `NO_PROXY` 后的键值表
+ */
+export function collectInheritedDaemonEnvVars(
+  homeDir: string,
+  sourceEnv: Readonly<NodeJS.ProcessEnv> = process.env,
+): Readonly<Record<string, string>> {
+  const collected: Record<string, string> = {};
+
+  for (const key of PASSTHROUGH_DAEMON_ENV_KEYS) {
+    const val = sourceEnv[key];
+    if (typeof val === "string" && val.trim().length > 0) {
+      collected[key] = val.trim();
+    }
+  }
+
+  // 回退兜底：若用户通过非交互式宿主拉起安装导致进程本身未带代理或网关变量，轻量提取常见 Shell RC 中的白名单静态 export
+  if (homeDir.trim().length > 0) {
+    const rcCandidates = [".zshrc", ".zprofile", ".bashrc", ".bash_profile"];
+    const allowedKeysSet = new Set<string>(PASSTHROUGH_DAEMON_ENV_KEYS);
+    const exportPattern = /^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=([^\n#]+)/gm;
+    for (const rcFile of rcCandidates) {
+      const fullPath = join(homeDir, rcFile);
+      if (!existsSync(fullPath)) {
+        continue;
+      }
+      try {
+        const content = readFileSync(fullPath, "utf8");
+        for (const match of content.matchAll(exportPattern)) {
+          const key = match[1];
+          if (key === undefined || !allowedKeysSet.has(key)) {
+            continue;
+          }
+          let rawVal = (match[2] ?? "").trim();
+          if (
+            (rawVal.startsWith('"') && rawVal.endsWith('"')) ||
+            (rawVal.startsWith("'") && rawVal.endsWith("'"))
+          ) {
+            rawVal = rawVal.slice(1, -1).trim();
+          }
+          if (rawVal.length > 0 && !rawVal.includes("$")) {
+            collected[key] ??= rawVal;
+          }
+        }
+      } catch {
+        // 忽略不可读的 RC 文件
+      }
+    }
+  }
+
+  const finalHasProxy =
+    collected.HTTP_PROXY !== undefined ||
+    collected.HTTPS_PROXY !== undefined ||
+    collected.ALL_PROXY !== undefined ||
+    collected.http_proxy !== undefined ||
+    collected.https_proxy !== undefined ||
+    collected.all_proxy !== undefined;
+
+  if (finalHasProxy) {
+    // 同时补齐大小写代理变量与回环豁免，兼容 Go (`agy`)、Rust (`codex`) 与 Node (`claude` / `gemini`) 不同网络栈
+    const upperHttp = collected.HTTP_PROXY ?? collected.http_proxy;
+    const upperHttps = collected.HTTPS_PROXY ?? collected.https_proxy ?? upperHttp;
+    if (upperHttp !== undefined) {
+      collected.HTTP_PROXY = upperHttp;
+      collected.http_proxy = collected.http_proxy ?? upperHttp;
+    }
+    if (upperHttps !== undefined) {
+      collected.HTTPS_PROXY = upperHttps;
+      collected.https_proxy = collected.https_proxy ?? upperHttps;
+    }
+    const mergedNoProxy = ensureLoopbackNoProxy(collected.NO_PROXY ?? collected.no_proxy);
+    collected.NO_PROXY = mergedNoProxy;
+    collected.no_proxy = mergedNoProxy;
+  }
+
+  return collected;
+}
+
+/**
+ * 提取 POSIX 风格 `nodeBinaryPath` 所在的 `bin` 目录（如 `/Users/dev/.nvm/versions/node/v24/bin`）。
+ *
+ * @param nodeBinaryPath - Node.js 可执行文件路径
+ * @returns 若为绝对 POSIX 路径则返回父目录，否则返回 `undefined`
+ */
+function extractPosixNodeBinDir(nodeBinaryPath: string): string | undefined {
+  if (!nodeBinaryPath.startsWith("/")) {
+    return undefined;
+  }
+  const dir = posix.dirname(nodeBinaryPath);
+  return dir.length > 0 && dir !== "/" ? dir : undefined;
+}
+
+/**
  * 生成 macOS `launchd` LaunchAgent XML Plist 内容（纯函数）。
  *
  * @remarks
  * macOS 守护关键细节：
  * 1. `ProgramArguments` 直接向内核 `execvp` 传递参数数组，不经过 Shell 解析，从根源避免带空格路径或引号逃逸。
- * 2. macOS GUI `launchd` 默认 `PATH` 仅含 `/usr/bin:/bin:/usr/sbin:/sbin`，找不到 Homebrew 或用户目录安装的 `agy` / `codex` / `claude`；
- *    因此必须显式注入合并后的 `EnvironmentVariables.PATH`。
+ * 2. macOS GUI `launchd` 默认 `PATH` 仅含 `/usr/bin:/bin:/usr/sbin:/sbin`，找不到 Homebrew、`nvm` 或用户目录安装的 `agy` / `codex` / `claude` / `gemini`；
+ *    因此必须显式前置 `dirname(nodeBinaryPath)` 并注入合并后的 `EnvironmentVariables.PATH`。
  *
  * @param spec - 守护服务规格
  * @returns 完整的 `.plist` XML 文本
@@ -213,11 +393,28 @@ export function buildMacLaunchdPlist(spec: Readonly<DaemonServiceSpec>): string 
   const programArgs = [spec.nodeBinaryPath, ...buildDaemonListenNodeArgs(spec)];
   const mergedPath =
     spec.envPath ??
-    `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${join(spec.homeDir, ".local", "bin")}`;
+    mergePosixPathSegments([
+      extractPosixNodeBinDir(spec.nodeBinaryPath),
+      posix.join(spec.homeDir.replace(/\\/g, "/"), ".local", "bin"),
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin",
+      "/usr/sbin",
+      "/sbin",
+    ]);
 
   const renderedArgs = programArgs
     .map((arg) => `      <string>${escapeXml(arg)}</string>`)
     .join("\n");
+
+  const extraEnvEntries = Object.entries(spec.envVars ?? {})
+    .filter(([key, val]) => key !== "PATH" && val.length > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([key, val]) => [
+      `      <key>${escapeXml(key)}</key>`,
+      `      <string>${escapeXml(val)}</string>`,
+    ]);
 
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -244,6 +441,7 @@ export function buildMacLaunchdPlist(spec: Readonly<DaemonServiceSpec>): string 
     "    <dict>",
     "      <key>PATH</key>",
     `      <string>${escapeXml(mergedPath)}</string>`,
+    ...extraEnvEntries,
     "    </dict>",
     "  </dict>",
     "</plist>",
@@ -280,7 +478,19 @@ export function buildLinuxSystemdUnit(spec: Readonly<DaemonServiceSpec>): string
     .map(escapeSystemdExecArg)
     .join(" ");
   const mergedPath =
-    spec.envPath ?? `${join(spec.homeDir, ".local", "bin")}:/usr/local/bin:/usr/bin:/bin`;
+    spec.envPath ??
+    mergePosixPathSegments([
+      extractPosixNodeBinDir(spec.nodeBinaryPath),
+      posix.join(spec.homeDir.replace(/\\/g, "/"), ".local", "bin"),
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin",
+    ]);
+
+  const extraEnvLines = Object.entries(spec.envVars ?? {})
+    .filter(([key, val]) => key !== "PATH" && val.length > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, val]) => `Environment=${escapeSystemdExecArg(`${key}=${val}`)}`);
 
   return [
     "[Unit]",
@@ -291,6 +501,7 @@ export function buildLinuxSystemdUnit(spec: Readonly<DaemonServiceSpec>): string
     "[Service]",
     "Type=simple",
     `Environment=${escapeSystemdExecArg(`PATH=${mergedPath}`)}`,
+    ...extraEnvLines,
     `ExecStart=${execArgs}`,
     "Restart=always",
     "RestartSec=3",
@@ -529,12 +740,39 @@ export function installDaemonService(
 ): DaemonControlReport {
   const platform = assertSupportedPlatform(deps.platform);
   const safeSlug = sanitizeTokenSlug(spec.slug);
+  const hostEnvPath =
+    spec.envPath !== undefined
+      ? spec.envPath
+      : platform !== "win32" && process.platform !== "win32"
+        ? mergePosixPathSegments([
+            extractPosixNodeBinDir(spec.nodeBinaryPath),
+            process.env.PATH,
+            posix.join(resolve(spec.homeDir || homedir()).replace(/\\/g, "/"), ".local", "bin"),
+            platform === "darwin" ? "/opt/homebrew/bin" : undefined,
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+          ])
+        : undefined;
+
+  const resolvedHomeDir = resolve(spec.homeDir || homedir());
+  const inheritedEnvVars =
+    spec.envVars !== undefined
+      ? spec.envVars
+      : platform !== "win32"
+        ? collectInheritedDaemonEnvVars(resolvedHomeDir, process.env)
+        : undefined;
+
   const normalizedSpec: DaemonServiceSpec = {
     ...spec,
     slug: safeSlug,
     cliScriptPath: resolve(spec.cliScriptPath),
     tokenFilePath: resolve(spec.tokenFilePath),
-    homeDir: resolve(spec.homeDir || homedir()),
+    homeDir: resolvedHomeDir,
+    ...(hostEnvPath !== undefined ? { envPath: hostEnvPath } : {}),
+    ...(inheritedEnvVars !== undefined ? { envVars: inheritedEnvVars } : {}),
   };
   const { stdoutPath, stderrPath } = getDaemonLogPaths(normalizedSpec.homeDir, safeSlug);
   mkdirSync(dirname(stdoutPath), { recursive: true, mode: 0o700 });
@@ -543,7 +781,15 @@ export function installDaemonService(
     const label = getMacLaunchdLabel(safeSlug);
     const plistPath = getMacPlistPath(normalizedSpec.homeDir, safeSlug);
     mkdirSync(dirname(plistPath), { recursive: true, mode: 0o755 });
-    writeFileSync(plistPath, buildMacLaunchdPlist(normalizedSpec), "utf8");
+    writeFileSync(plistPath, buildMacLaunchdPlist(normalizedSpec), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    try {
+      chmodSync(plistPath, 0o600);
+    } catch {
+      // 忽略文件系统权限调整异常
+    }
 
     // 幂等重装：先尝试卸载旧实例（忽略未加载错误），再加载最新 plist 配置
     deps.execSyncCommand("launchctl", ["unload", plistPath]);
@@ -569,7 +815,15 @@ export function installDaemonService(
     const unitName = getLinuxSystemdUnitName(safeSlug);
     const unitPath = getLinuxSystemdUnitPath(normalizedSpec.homeDir, safeSlug);
     mkdirSync(dirname(unitPath), { recursive: true, mode: 0o755 });
-    writeFileSync(unitPath, buildLinuxSystemdUnit(normalizedSpec), "utf8");
+    writeFileSync(unitPath, buildLinuxSystemdUnit(normalizedSpec), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    try {
+      chmodSync(unitPath, 0o600);
+    } catch {
+      // 忽略文件系统权限调整异常
+    }
 
     const reloadRes = deps.execSyncCommand("systemctl", ["--user", "daemon-reload"]);
     if (reloadRes.exitCode !== 0) {
