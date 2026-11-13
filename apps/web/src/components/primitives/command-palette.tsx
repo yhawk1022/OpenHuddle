@@ -105,7 +105,7 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.14 }}
-            className="app-no-drag fixed inset-0 z-[98] bg-black/35 backdrop-blur-[3px] dark:bg-black/68"
+            className="app-no-drag fixed inset-0 z-[98] bg-black/45 backdrop-blur-[2px] dark:bg-black/75"
           />
         </Dialog.Overlay>
         <Dialog.Content asChild>
@@ -114,10 +114,9 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             transition={{ type: "spring", stiffness: 520, damping: 36 }}
             className={cn(
-              "app-no-drag fixed inset-x-0 top-[13vh] z-[99] mx-auto w-[calc(100%-1.5rem)] max-w-[560px] overflow-hidden rounded-[22px] outline-none",
-              "bg-white/98 text-[#141414] backdrop-blur-2xl",
-              "shadow-[0_26px_80px_-14px_rgba(0,0,0,0.2)] ring-1 ring-black/[0.09]",
-              "dark:bg-[#18181B]/98 dark:text-zinc-100 dark:shadow-[0_30px_90px_-12px_rgba(0,0,0,0.85)] dark:ring-white/[0.12]",
+              "glass-modal app-no-drag fixed inset-x-0 top-[13vh] z-[99] mx-auto w-[calc(100%-1.5rem)] max-w-[560px] overflow-hidden rounded-[22px] outline-none",
+              "text-[#141414]",
+              "dark:text-zinc-100",
             )}
           >
             <div className="sr-only">
