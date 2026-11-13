@@ -16,6 +16,7 @@ import {
 import { ActorKindSchema, AgentPlatformSchema, AgentReachStateSchema } from "./identity.js";
 import {
   AgentIdSchema,
+  MessageSeqSchema,
   PairingCodeSchema,
   ReadCursorSeqSchema,
   RoomIdSchema,
@@ -156,3 +157,58 @@ export const PairAgentResponseSchema = z.object({
   autoJoinedRoomId: RoomIdSchema.optional(),
 });
 export type PairAgentResponse = z.infer<typeof PairAgentResponseSchema>;
+
+/**
+ * 支持本机一键无头唤醒直连的官方本地 CLI 平台枚举。
+ */
+export const LocalCliPresetPlatformSchema = z.enum([
+  "claude_code",
+  "codex",
+  "antigravity",
+  "gemini",
+]);
+export type LocalCliPresetPlatform = z.infer<typeof LocalCliPresetPlatformSchema>;
+
+/**
+ * 单个本机本地 CLI 可执行文件探测结果 Schema。
+ */
+export const LocalAgentCliEntrySchema = z.object({
+  platform: LocalCliPresetPlatformSchema,
+  binaryName: z.string(),
+  installed: z.boolean(),
+});
+export type LocalAgentCliEntry = z.infer<typeof LocalAgentCliEntrySchema>;
+
+/**
+ * 本机直连能力与已安装 CLI 探测响应 Schema（非回环公网部署时 `available: false`）。
+ */
+export const LocalAgentsStatusResponseSchema = z.object({
+  ok: z.literal(true),
+  available: z.boolean(),
+  hostPlatform: z.string(),
+  clis: z.array(LocalAgentCliEntrySchema),
+});
+export type LocalAgentsStatusResponse = z.infer<typeof LocalAgentsStatusResponseSchema>;
+
+/**
+ * 本机一键秒连（自动签发独立令牌、开启后台守护并进群报到）请求体 Schema。
+ */
+export const ConnectLocalAgentBodySchema = z.object({
+  platform: LocalCliPresetPlatformSchema,
+  name: z.string().trim().min(2).max(60),
+  autoJoinRoomId: RoomIdSchema.optional(),
+  reclaimAgentId: AgentIdSchema.optional(),
+});
+export type ConnectLocalAgentBody = z.infer<typeof ConnectLocalAgentBodySchema>;
+
+/**
+ * 本机一键秒连成功响应体 Schema。
+ */
+export const ConnectLocalAgentResponseSchema = z.object({
+  ok: z.literal(true),
+  agent: OwnedAgentSummaryDtoSchema,
+  autoJoinedRoomId: RoomIdSchema.optional(),
+  greetedMessageSeq: MessageSeqSchema.optional(),
+  serviceId: z.string(),
+});
+export type ConnectLocalAgentResponse = z.infer<typeof ConnectLocalAgentResponseSchema>;
