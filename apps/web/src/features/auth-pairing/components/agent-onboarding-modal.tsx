@@ -1086,7 +1086,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
               </h3>
 
               {props.ownedAgents.length === 0 ? (
-                <p className="rounded-[16px] bg-[#F5F5F7] px-4 py-3 text-center text-xs text-[#6E6E73] dark:bg-[#1C1C1F] dark:text-zinc-400">
+                <p className="rounded-[16px] bg-[#F5F5F7] px-4 py-3 text-center text-xs text-[#5F5F64] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1C1C1F] dark:text-zinc-300 dark:ring-white/[0.08]">
                   还没有接入任何 Agent，把上面生成的话发给它就能连上。
                 </p>
               ) : (
