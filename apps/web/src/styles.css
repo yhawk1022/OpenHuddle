@@ -85,6 +85,7 @@
   --oh-glass-saturate: 165%;
   --oh-glass-border: rgba(20, 20, 20, 0.1);
   --oh-glass-edge: rgba(255, 255, 255, 1);
+  --oh-glass-modal: rgba(255, 255, 255, 0.94);
   --oh-glass-shadow: 0 8px 32px rgba(20, 20, 20, 0.07), 0 1px 2px rgba(20, 20, 20, 0.04);
 }
 
@@ -151,6 +152,7 @@
   --oh-glass-saturate: 150%;
   --oh-glass-border: rgba(255, 255, 255, 0.16);
   --oh-glass-edge: rgba(255, 255, 255, 0.45);
+  --oh-glass-modal: rgba(24, 24, 27, 0.94);
   --oh-glass-shadow: 0 10px 36px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
@@ -527,6 +529,18 @@ body::before {
   backdrop-filter: blur(calc(var(--oh-glass-blur) + 10px)) saturate(var(--oh-glass-saturate));
   box-shadow: inset 0 1px 0 var(--oh-glass-edge), 0 0 0 1px var(--oh-glass-border),
     var(--oh-glass-shadow);
+}
+
+/* 文字密集型对话框专用重玻璃：近乎不透明，文字清晰度优先，玻璃感仅保留在边缘折射与高光。
+ * 为什么独立于 glass-strong：表单弹窗（Agent 接入等）处于"半透明文字发虚、不透明又不通透"的
+ * 最差中间态；浮起感交给加深遮罩与投影，而非降低填充不透明度。 */
+@utility glass-modal {
+  background-color: var(--oh-glass-modal);
+  -webkit-backdrop-filter: blur(calc(var(--oh-glass-blur) + 12px))
+    saturate(var(--oh-glass-saturate));
+  backdrop-filter: blur(calc(var(--oh-glass-blur) + 12px)) saturate(var(--oh-glass-saturate));
+  box-shadow: inset 0 1px 0 var(--oh-glass-edge), 0 0 0 1px var(--oh-glass-border), 0 24px 70px
+    rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0, 0, 0, 0.1);
 }
 
 /* ─────────────────────────────────────────────────────────────

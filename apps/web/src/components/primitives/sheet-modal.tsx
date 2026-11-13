@@ -107,11 +107,11 @@ export function AppModal(props: AppModalProps) {
     return (
       <Drawer.Root open={open} onOpenChange={handleOpenChange} noBodyStyles={true}>
         <Drawer.Portal>
-          <Drawer.Overlay className="app-no-drag fixed inset-0 z-[89] bg-black/35 backdrop-blur-[3px] dark:bg-black/68" />
+          <Drawer.Overlay className="app-no-drag fixed inset-0 z-[89] bg-black/45 backdrop-blur-[2px] dark:bg-black/75" />
           <Drawer.Content
             className={cn(
               "app-no-drag fixed inset-x-0 bottom-0 z-[90] mt-16 flex max-h-[92dvh] flex-col overflow-hidden rounded-t-[26px] outline-none",
-              "glass-strong text-[#141414]",
+              "glass-modal text-[#141414]",
               "dark:text-zinc-100",
               className,
             )}
@@ -185,7 +185,7 @@ export function AppModal(props: AppModalProps) {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.16, ease: "easeOut" }}
-            className="app-no-drag fixed inset-0 z-[89] bg-black/35 backdrop-blur-[3px] dark:bg-black/68"
+            className="app-no-drag fixed inset-0 z-[89] bg-black/45 backdrop-blur-[2px] dark:bg-black/75"
           />
         </Dialog.Overlay>
         {/* 采用 inset-0 + m-auto + h-fit 几何居中，不占用 CSS translate(-50%, -50%)，从而与 motion 弹簧 scale/y 变换零冲突 */}
@@ -196,7 +196,7 @@ export function AppModal(props: AppModalProps) {
             transition={{ type: "spring", stiffness: 480, damping: 34 }}
             className={cn(
               "app-no-drag fixed inset-0 z-[90] m-auto flex h-fit max-h-[90dvh] w-[calc(100%-2rem)] flex-col overflow-hidden rounded-[24px] outline-none",
-              "glass-strong text-[#141414]",
+              "glass-modal text-[#141414]",
               "dark:text-zinc-100",
               maxWidthClass,
               className,
@@ -326,11 +326,11 @@ export function AppSheetDrawer(props: AppSheetDrawerProps) {
       noBodyStyles={true}
     >
       <Drawer.Portal>
-        <Drawer.Overlay className="app-no-drag fixed inset-0 z-[85] bg-black/35 backdrop-blur-[2px] dark:bg-black/65" />
+        <Drawer.Overlay className="app-no-drag fixed inset-0 z-[85] bg-black/45 backdrop-blur-[2px] dark:bg-black/75" />
         <Drawer.Content
           className={cn(
             "app-no-drag fixed z-[86] flex flex-col overflow-hidden outline-none",
-            "glass-strong text-[#141414]",
+            "glass-modal text-[#141414]",
             "dark:text-zinc-100",
             positionClass,
             className,
