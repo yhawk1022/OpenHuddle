@@ -449,7 +449,7 @@ export function MessageComposer(props: MessageComposerProps) {
   const hasAnyTeammate = agentMembers.length > 0 || humanMembers.length > 0;
 
   return (
-    <footer className="app-no-drag relative z-10 shrink-0 bg-white px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6 dark:bg-[#0E0E10]">
+    <footer className="glass-bar app-no-drag relative z-10 shrink-0 px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6">
       <div className="relative mx-auto max-w-3xl">
         {/* 1. 发送异常告警条（草稿完整保留） */}
         <AnimatePresence initial={false}>

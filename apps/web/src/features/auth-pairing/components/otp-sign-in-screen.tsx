@@ -72,7 +72,7 @@ function LiveHuddlePreview() {
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 360, damping: 32, delay: 0.05 }}
-      className="select-none overflow-hidden rounded-[28px] bg-white shadow-[0_24px_70px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.06] dark:bg-[#151518] dark:shadow-[0_28px_80px_rgba(0,0,0,0.55)] dark:ring-white/[0.08]"
+      className="glass-strong select-none overflow-hidden rounded-[28px]"
     >
       {/* 卡片顶部清爽群聊头：2x2 粉彩拼图头像 + 群标题 + 实时绿点 */}
       <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-5 py-3.5 dark:border-white/[0.07]">
@@ -273,7 +273,7 @@ export function OtpSignInScreen() {
 
   return (
     // 全局 body 已锁定滚动，因此本屏自身承担 h-dvh 视口与内部滚动
-    <div className="flex h-dvh flex-col overflow-hidden bg-white text-[#141414] dark:bg-[#0E0E10] dark:text-zinc-100">
+    <div className="flex h-dvh flex-col overflow-hidden text-[#141414] dark:text-zinc-100">
       {/* 顶部清爽标题栏：纯正 Figtree 粗体字标 + 主题切换，支持 Tauri v2 与 Electron 无边框拖拽 */}
       <header
         data-tauri-drag-region=""
@@ -322,7 +322,7 @@ export function OtpSignInScreen() {
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 400, damping: 32, delay: 0.06 }}
-              className="overflow-hidden rounded-[28px] bg-[#F8F8FA] p-6 ring-1 ring-black/[0.06] sm:bg-white sm:p-8 sm:shadow-[0_24px_70px_rgba(0,0,0,0.06)] dark:bg-[#151518] dark:shadow-[0_28px_80px_rgba(0,0,0,0.5)] dark:ring-white/[0.08]"
+              className="glass-strong overflow-hidden rounded-[28px] p-6 sm:p-8"
             >
               <AnimatePresence mode="wait" initial={false}>
                 {step === "request" ? (

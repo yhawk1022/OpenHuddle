@@ -191,7 +191,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
   };
 
   return (
-    <header className="relative z-20 shrink-0 select-none border-b border-black/[0.06] bg-white dark:border-white/[0.06] dark:bg-[#0E0E10]">
+    <header className="glass-bar relative z-20 shrink-0 select-none border-b border-black/[0.06] dark:border-white/[0.06]">
       <div
         data-tauri-drag-region=""
         className="app-drag-region flex h-[68px] items-center justify-between gap-3 px-4 sm:px-6"

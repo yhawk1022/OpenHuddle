@@ -208,7 +208,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
   };
 
   return (
-    <aside className="flex h-full w-full shrink-0 select-none flex-col bg-[#F8F8FA] pt-[env(safe-area-inset-top,0px)] md:w-[280px] md:pt-0 dark:bg-[#151518]">
+    <aside className="glass-pane flex h-full w-full shrink-0 select-none flex-col pt-[env(safe-area-inset-top,0px)] md:w-[280px] md:pt-0">
       {/* 1. 68px 顶栏（Tauri v2 + Electron 双端可拖拽区）：32px 头像 + 粗体昵称 + 你的全部群 + 极简搜索开关 */}
       <div
         data-tauri-drag-region=""

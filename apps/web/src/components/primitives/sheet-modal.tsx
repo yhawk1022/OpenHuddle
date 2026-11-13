@@ -111,8 +111,8 @@ export function AppModal(props: AppModalProps) {
           <Drawer.Content
             className={cn(
               "app-no-drag fixed inset-x-0 bottom-0 z-[90] mt-16 flex max-h-[92dvh] flex-col overflow-hidden rounded-t-[26px] outline-none",
-              "bg-white text-[#141414] shadow-[0_-18px_50px_-12px_rgba(0,0,0,0.2)] ring-1 ring-black/[0.08]",
-              "dark:bg-[#18181B] dark:text-zinc-100 dark:shadow-[0_-22px_60px_-10px_rgba(0,0,0,0.8)] dark:ring-white/[0.11]",
+              "glass-strong text-[#141414]",
+              "dark:text-zinc-100",
               className,
             )}
           >
@@ -196,9 +196,8 @@ export function AppModal(props: AppModalProps) {
             transition={{ type: "spring", stiffness: 480, damping: 34 }}
             className={cn(
               "app-no-drag fixed inset-0 z-[90] m-auto flex h-fit max-h-[90dvh] w-[calc(100%-2rem)] flex-col overflow-hidden rounded-[24px] outline-none",
-              "bg-white text-[#141414]",
-              "shadow-[0_24px_70px_-14px_rgba(0,0,0,0.18)] ring-1 ring-black/[0.08]",
-              "dark:bg-[#18181B] dark:text-zinc-100 dark:shadow-[0_28px_90px_-12px_rgba(0,0,0,0.82)] dark:ring-white/[0.11]",
+              "glass-strong text-[#141414]",
+              "dark:text-zinc-100",
               maxWidthClass,
               className,
             )}
@@ -331,8 +330,8 @@ export function AppSheetDrawer(props: AppSheetDrawerProps) {
         <Drawer.Content
           className={cn(
             "app-no-drag fixed z-[86] flex flex-col overflow-hidden outline-none",
-            "bg-white text-[#141414] shadow-2xl ring-1 ring-black/[0.08]",
-            "dark:bg-[#151518] dark:text-zinc-100 dark:shadow-black/80 dark:ring-white/[0.10]",
+            "glass-strong text-[#141414]",
+            "dark:text-zinc-100",
             positionClass,
             className,
           )}

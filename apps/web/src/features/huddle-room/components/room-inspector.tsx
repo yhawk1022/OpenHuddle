@@ -394,7 +394,7 @@ export function RoomInspector(props: RoomInspectorProps) {
         : null;
 
   return (
-    <aside className="flex h-full min-h-0 w-full flex-1 shrink-0 flex-col border-l border-black/[0.06] bg-white xl:w-[360px] xl:flex-none dark:border-white/[0.06] dark:bg-[#0E0E10]">
+    <aside className="glass-pane flex h-full min-h-0 w-full flex-1 shrink-0 flex-col border-l border-black/[0.06] xl:w-[360px] xl:flex-none dark:border-white/[0.06]">
       {/* 1. 68px 抽屉顶栏（对齐聊天头高度，兼容 Tauri v2 + Electron 拖拽） */}
       <div
         data-tauri-drag-region=""

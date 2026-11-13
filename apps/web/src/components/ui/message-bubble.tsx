@@ -431,7 +431,7 @@ export function MessageBubble(props: MessageBubbleProps) {
             {actionBar}
             <div
               className={cn(
-                "min-w-0 rounded-[18px_6px_18px_18px] bg-[#F6F2EC] px-3.5 py-2.5 text-[#141414] ring-1 ring-inset ring-black/[0.04] dark:bg-[#272521] dark:text-[#F4F4F2] dark:ring-white/[0.06]",
+                "min-w-0 rounded-[18px_6px_18px_18px] bg-[#F6F2EC]/72 px-3.5 py-2.5 text-[#141414] ring-1 ring-inset ring-black/[0.04] backdrop-blur-md dark:bg-[#272521]/60 dark:text-[#F4F4F2] dark:ring-white/[0.06]",
                 message.type === "decision" && "ring-1 ring-[#2A7B59]/30 dark:ring-[#5ED3A2]/25",
               )}
             >
@@ -448,8 +448,8 @@ export function MessageBubble(props: MessageBubbleProps) {
   // ── 4. 对端消息：36px 圆形头像 + 发送者头部 + 鼠尾草绿（人类 `#E3F3EC`）或柔灰（Agent `#F5F5F7`）气泡 ──
   const isHumanPeer = message.author.kind === "human";
   const peerBubbleSurfaceClass = isHumanPeer
-    ? "bg-[#E3F3EC] text-[#141414] ring-1 ring-inset ring-black/[0.04] dark:bg-[#16271F] dark:text-[#E8F3EC] dark:ring-white/[0.06]"
-    : "bg-[#F5F5F7] text-[#141414] ring-1 ring-inset ring-black/[0.04] dark:bg-[#1C1C1F] dark:text-[#ECECEF] dark:ring-white/[0.06]";
+    ? "bg-[#E3F3EC]/68 text-[#141414] ring-1 ring-inset ring-black/[0.04] backdrop-blur-md dark:bg-[#16271F]/60 dark:text-[#E8F3EC] dark:ring-white/[0.06]"
+    : "bg-[#F5F5F7]/68 text-[#141414] ring-1 ring-inset ring-black/[0.04] backdrop-blur-md dark:bg-[#1C1C1F]/55 dark:text-[#ECECEF] dark:ring-white/[0.06]";
 
   const avatar = (
     <PlatformAvatar

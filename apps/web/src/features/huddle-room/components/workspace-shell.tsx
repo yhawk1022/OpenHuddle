@@ -511,7 +511,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   );
 
   return (
-    <div className="relative flex min-w-0 flex-1 overflow-hidden bg-white dark:bg-[#0E0E10]">
+    <div className="relative flex min-w-0 flex-1 overflow-hidden">
       {/* 中央纯净 `#FFFFFF` 聊天舞台：68px 顶栏 + 待拍板提示条 + 无网格时间线 + Pachat 输入卡 */}
       <div className="im-canvas flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top,0px)] md:pt-0">
         <GovernanceBar
@@ -748,7 +748,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
     <nav
       aria-label="我与我的 Agent"
       data-tauri-drag-region=""
-      className="app-drag-region hidden w-[80px] shrink-0 select-none flex-col items-center border-r border-black/[0.06] bg-[#EFEFF3] pt-4 pb-3 md:flex dark:border-white/[0.06] dark:bg-[#111113]"
+      className="app-drag-region glass-pane hidden w-[80px] shrink-0 select-none flex-col items-center border-r border-black/[0.06] pt-4 pb-3 md:flex dark:border-white/[0.06]"
     >
       {/* 1. 顶部个人身份：左侧 4px 墨黑竖条 + 42px 墨黑环圆形头像 + `我` */}
       <AppTooltip
@@ -1066,9 +1066,9 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const isChatVisibleOnMobile = mobileShowChat && activeRoomId !== null;
 
   return (
-    <div className="flex h-dvh w-screen overflow-hidden bg-[#EFEFF3] text-[#141414] md:p-2 dark:bg-[#101012] dark:text-zinc-100">
-      {/* 统一圆角三栏窗口：各栏之间仅以 `1px solid rgba(0,0,0,0.06)` 极细发丝分割 */}
-      <div className="flex h-full w-full overflow-hidden bg-white md:rounded-[20px] md:border md:border-black/[0.06] md:shadow-[0_12px_40px_rgba(0,0,0,0.04)] dark:bg-[#0E0E10] dark:md:border-white/[0.06] dark:md:shadow-[0_18px_48px_rgba(0,0,0,0.45)]">
+    <div className="glass-canvas flex h-dvh w-screen overflow-hidden text-[#141414] md:p-2 dark:text-zinc-100">
+      {/* 统一圆角三栏玻璃窗口：各栏之间仅以 `1px solid rgba(0,0,0,0.06)` 极细发丝分割，环境光自 body 透入 */}
+      <div className="glass-strong flex h-full w-full overflow-hidden md:rounded-[20px] md:border md:border-black/[0.06] dark:md:border-white/[0.06]">
         {/* 第 1 栏：80px 个人头像 + 我的 Agents + `+ 接入 agent` 导轨 */}
         <PersonalAgentRail
           currentUser={props.currentUser}
