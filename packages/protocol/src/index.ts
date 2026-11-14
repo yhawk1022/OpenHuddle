@@ -44,6 +44,7 @@ export {
 } from "./events.js";
 
 export {
+  AgentWakePolicySchema,
   createDefaultGovernanceState,
   DEFAULT_AGENT_COOLDOWN_MS,
   DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS,
@@ -54,6 +55,7 @@ export {
   type GovernanceMode,
   type RoomGovernanceConfig,
   type RoomGovernanceState,
+  type AgentWakePolicy,
   type RoomGovernanceStatus,
 } from "./governance.js";
 
@@ -96,11 +98,13 @@ export {
 } from "./ids.js";
 
 export {
+  AttentionPayloadSchema,
   MessageDtoSchema,
   MessageMentionSchema,
   MessageTypeSchema,
   SendMessageRequestSchema,
   UnreadConflictDetailsSchema,
+  type AttentionPayload,
   type MessageDto,
   type MessageMention,
   type MessageType,
@@ -110,6 +114,7 @@ export {
 
 export {
   CastProposalVoteBodySchema,
+  DecisionMandateSchema,
   DecideProposalBodySchema,
   ProposalCardDtoSchema,
   ProposalDraftSchema,
@@ -117,9 +122,12 @@ export {
   ProposalStatusSchema,
   ProposalVoteDtoSchema,
   ProposalVoteStanceSchema,
+  MandateStrengthSchema,
   SynthesizeProposalBodySchema,
   type CastProposalVoteBody,
   type DecideProposalBody,
+  type DecisionMandate,
+  type MandateStrength,
   type ProposalCardDto,
   type ProposalDraft,
   type ProposalOption,

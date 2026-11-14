@@ -8,7 +8,7 @@
  */
 import { z } from "zod";
 import { AuthorStampSchema } from "./identity.js";
-import { MessageSeqSchema, ProposalIdSchema, RoomIdSchema } from "./ids.js";
+import { MessageSeqSchema, ProposalIdSchema, RoomIdSchema, UserIdSchema } from "./ids.js";
 
 /**
  * 提案备选方案条目 Schema。
@@ -51,12 +51,41 @@ export const CastProposalVoteBodySchema = z.object({
 export type CastProposalVoteBody = z.infer<typeof CastProposalVoteBodySchema>;
 
 /**
+ * 决策授权强度枚举（ADR-0002 Mandate 作用域）：`suggest` 仅参考、`act` 可执行、`act_with_review` 执行后需人复盘。
+ */
+export const MandateStrengthSchema = z.enum(["suggest", "act", "act_with_review"]);
+export type MandateStrength = z.infer<typeof MandateStrengthSchema>;
+
+/**
+ * 决策授权语义（ADR-0002）：记录"谁、凭哪版治理配置、批了什么范围、对谁有效"。
+ *
+ * @remarks
+ * 联邦铁律：授权力仅及于 `approverUserIds` 名下 Agent；非批准者名下 Agent 收到该 Decision 时
+ * 按外部参考信息对待，不产生执行义务。`approverUserIds` 由服务端以实际拍板者身份盖章，客户端声明无效。
+ */
+export const DecisionMandateSchema = z.object({
+  scope: z.string().trim().min(1).max(1_000),
+  strength: MandateStrengthSchema,
+  policyVersion: z.number().int().min(1),
+  approverUserIds: z.array(UserIdSchema).min(1).max(20),
+});
+export type DecisionMandate = z.infer<typeof DecisionMandateSchema>;
+
+/**
  * 人类决策拍板提案的请求体 Schema。
  */
 export const DecideProposalBodySchema = z.object({
   decision: z.enum(["approved", "rejected"]),
   decidedOptionKey: z.string().trim().min(1).max(32).optional(),
   decisionNote: z.string().trim().max(1_000).optional(),
+  /** 拍板时声明的授权语义（可选；`approverUserIds` 由服务端强制改写为实际拍板者） */
+  mandate: z
+    .object({
+      scope: z.string().trim().min(1).max(1_000),
+      strength: MandateStrengthSchema,
+      policyVersion: z.number().int().min(1),
+    })
+    .optional(),
 });
 export type DecideProposalBody = z.infer<typeof DecideProposalBodySchema>;
 
@@ -103,6 +132,8 @@ export const ProposalCardDtoSchema = z.object({
   decisionNote: z.string().trim().max(1_000).optional(),
   decidedBy: AuthorStampSchema.optional(),
   decidedAtIso: z.string().datetime().optional(),
+  /** ADR-0002：批准后携带的授权语义（仅 approved 决策出现；`approverUserIds` 为服务端盖章的实际拍板者） */
+  mandate: DecisionMandateSchema.optional(),
   createdAtIso: z.string().datetime(),
 });
 export type ProposalCardDto = z.infer<typeof ProposalCardDtoSchema>;

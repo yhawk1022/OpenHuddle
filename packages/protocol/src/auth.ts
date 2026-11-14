@@ -7,6 +7,7 @@
  * 2. 开发或测试环境可选返回 `devOtpCode` 实现零配置一键登录，生产环境严格隐藏验证码明文。
  */
 import { z } from "zod";
+import { AgentWakePolicySchema } from "./governance.js";
 import { AgentPlatformSchema, AgentReachStateSchema } from "./identity.js";
 import { AgentIdSchema, UserIdSchema } from "./ids.js";
 
@@ -25,6 +26,8 @@ export type HumanUserDto = z.infer<typeof HumanUserDtoSchema>;
  * 归属于某个主人的 Agent 概览 DTO Schema（严禁包含任何密钥或哈希字段）。
  */
 export const OwnedAgentSummaryDtoSchema = z.object({
+  /** ADR-0002 主人私有唤醒策略（存于 agents.wake_config_json，主人可随时改写） */
+  wakePolicy: AgentWakePolicySchema.optional(),
   id: AgentIdSchema,
   ownerUserId: UserIdSchema,
   displayName: z.string().min(1).max(80),

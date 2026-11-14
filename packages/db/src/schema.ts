@@ -7,7 +7,12 @@
  * 2. 密钥只存哈希：`agents.token_hash` 仅存储 `oh_agt_` 令牌的 SHA-256 摘要，绝不落盘明文凭据。
  * 3. 房间序号与幂等唯一约束：`messages` 表以 `(room_id, seq)` 为联合主键，并对 `(room_id, op_key)` 建唯一索引保障重试幂等。
  */
-import type { MessageMention, ProposalDraft, RoomGovernanceState } from "@openhuddle/protocol";
+import type {
+  DecisionMandate,
+  MessageMention,
+  ProposalDraft,
+  RoomGovernanceState,
+} from "@openhuddle/protocol";
 import {
   integer,
   jsonb,
@@ -204,6 +209,7 @@ export const proposalsTable = pgTable("proposals", {
     onDelete: "set null",
   }),
   decidedAt: timestamp("decided_at", { withTimezone: true }),
+  mandateJson: jsonb("mandate_json").$type<DecisionMandate>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

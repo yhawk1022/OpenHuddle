@@ -79,3 +79,20 @@ export function createDefaultGovernanceState(
     lastSpokenAtByAgentMs: {},
   };
 }
+
+/**
+ * 主人私有唤醒策略（ADR-0002 §3.1 双层 Policy 的主人层）：
+ * 每主人对自己的 Agent 声明静音时段与每日唤醒预算；服务端唤醒分发器与 Agent 本地 harness 双重执行。
+ */
+export const AgentWakePolicySchema = z.object({
+  /** 静音时段（本地 HH:mm）；窗口内服务端不下发自动唤醒 */
+  quietHours: z
+    .object({
+      startLocal: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+      endLocal: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    })
+    .optional(),
+  /** 每房每日自动唤醒预算上限（0 表示仅人工 @ 直达） */
+  dailyWakeBudget: z.number().int().min(0).max(10_000).optional(),
+});
+export type AgentWakePolicy = z.infer<typeof AgentWakePolicySchema>;

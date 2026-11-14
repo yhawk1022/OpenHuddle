@@ -18,10 +18,32 @@ import {
 } from "./ids.js";
 
 /**
- * 消息内容语义分类枚举。
+ * 消息内容语义分类枚举。`attention` 为 ADR-0002 新增：结构化"等待特定人类作答"的问题消息。
  */
-export const MessageTypeSchema = z.enum(["text", "proposal", "vote", "decision", "system"]);
+export const MessageTypeSchema = z.enum([
+  "text",
+  "proposal",
+  "vote",
+  "decision",
+  "system",
+  "attention",
+]);
 export type MessageType = z.infer<typeof MessageTypeSchema>;
+
+/**
+ * 收件人 Attention 载荷（ADR-0002 §3.3）：结构化等人，明确"在等哪个人类、等什么、到何时"。
+ *
+ * @remarks
+ * 联邦铁律：仅人类成员（及未来无投票权的 AI 主持人）可创建 Attention；Agent 消息永不携带本载荷，
+ * "等人"状态是结构化字段而非从自由文本推断。
+ */
+export const AttentionPayloadSchema = z.object({
+  question: z.string().trim().min(1).max(500),
+  options: z.array(z.string().trim().min(1).max(120)).max(6).default([]),
+  addresseeUserIds: z.array(UserIdSchema).min(1).max(10),
+  expiresAtIso: z.string().datetime(),
+});
+export type AttentionPayload = z.infer<typeof AttentionPayloadSchema>;
 
 /**
  * 消息中显式 `@mention` 的目标引用 Schema。
@@ -51,6 +73,8 @@ export const MessageDtoSchema = z.object({
   content: z.string().max(16_000),
   replyToSeq: MessageSeqSchema.optional(),
   mentions: z.array(MessageMentionSchema),
+  /** 仅 `type === "attention"` 时出现的结构化等人载荷（ADR-0002） */
+  attention: AttentionPayloadSchema.optional(),
   recalledAtIso: z.string().datetime().optional(),
   createdAtIso: z.string().datetime(),
 });
@@ -63,6 +87,8 @@ export const SendMessageRequestSchema = z.object({
   content: z.string().trim().min(1).max(16_000),
   replyToSeq: MessageSeqSchema.optional(),
   mentions: z.array(MessageMentionSchema).max(20).default([]),
+  /** ADR-0002：人类专属的结构化等人问题；Agent 携带此字段将被服务端拒绝 */
+  attention: AttentionPayloadSchema.optional(),
   opKey: OperationKeySchema.optional(),
   lastReadSeq: ReadCursorSeqSchema.optional(),
   ignoreUnread: z.boolean().default(false),

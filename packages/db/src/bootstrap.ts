@@ -112,8 +112,10 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     decision_note TEXT,
     decided_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
     decided_at TIMESTAMPTZ,
+    mandate_json JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  "ALTER TABLE proposals ADD COLUMN IF NOT EXISTS mandate_json JSONB",
   `CREATE TABLE IF NOT EXISTS proposal_votes (
     proposal_id TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
     voter_key TEXT NOT NULL,
