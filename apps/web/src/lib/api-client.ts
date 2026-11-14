@@ -150,6 +150,8 @@ interface RequestOptions {
   readonly method?: "GET" | "POST" | "PATCH" | "DELETE";
   readonly body?: unknown;
   readonly skipAuthTokenClearOn401?: boolean;
+  /** 请求超时毫秒数（默认 20s）。超时后以 TIMEOUT 错误落地，防止乐观 UI（如"发送中"气泡）永久悬挂 */
+  readonly timeoutMs?: number;
 }
 
 async function requestJson<TResponse>(
@@ -169,12 +171,32 @@ async function requestJson<TResponse>(
     headers["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(path, {
-    method,
-    headers,
-    credentials: "include",
-    ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers,
+      credentials: "include",
+      signal: AbortSignal.timeout(options.timeoutMs ?? 20_000),
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+    });
+  } catch (err) {
+    // 连接中断/超时必须显式落地为 ApiClientError，让乐观更新（发送中气泡等）进入失败态而非无限 pending
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      throw new ApiClientError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "请求超时（20 秒无响应），请检查网络后重试",
+        statusCode: 504,
+        requestId: "timeout",
+      });
+    }
+    throw new ApiClientError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: err instanceof Error ? err.message : "网络请求失败",
+      statusCode: 0,
+      requestId: "network",
+    });
+  }
 
   const rawPayload: unknown = await response.json().catch(() => null);
 
