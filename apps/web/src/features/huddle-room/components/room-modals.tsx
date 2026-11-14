@@ -8,8 +8,10 @@
  * 3. Pachat 单色极简与暗色安全：全量采用 `AppInput`、`AppTextarea`、`SegmentedTabs`、`AppSelect` 与 `rounded-full` `AppButton`，零原生下拉框、零蓝紫渐变，暗色输入框恒保持 `#18181B` 深色底面。
  */
 import {
+  type AgentId,
   DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS,
   type GovernanceMode,
+  type OwnedAgentSummaryDto,
   type RoomDetailDto,
   type RoomVisibility,
 } from "@openhuddle/protocol";
@@ -29,7 +31,9 @@ import {
   toast,
 } from "../../../components/primitives/index.js";
 import { ModalDialog } from "../../../components/ui/modal-dialog.js";
+import { PlatformGlyph } from "../../../components/ui/platform-icons.js";
 import { ApiClientError } from "../../../lib/api-client.js";
+import { getPlatformVisualMeta } from "../../../lib/format.js";
 import { useCreateRoomMutation, useJoinRoomMutation } from "../api/huddle-room.queries.js";
 
 const LABEL_CLASS = "block text-xs font-medium text-[#3A3A3C] dark:text-zinc-300";
@@ -90,12 +94,14 @@ export interface CreateRoomModalProps {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly onRoomCreated: (room: RoomDetailDto) => void;
+  /** 当前用户已接入的个人 Agent（建群时可勾选直拉入群，免发提示词） */
+  readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
 }
 
 /**
  * 新建多 Agent 群聊配置模态框。
  *
- * @param props - 打开状态与创建成功跳转回调
+ * @param props - 打开状态、创建成功跳转回调与已接入 Agent 列表
  * @returns 新建群聊弹窗
  */
 export function CreateRoomModal(props: CreateRoomModalProps) {
@@ -107,8 +113,21 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
   const [maxTurns, setMaxTurns] = useState<TurnBudgetValue>(
     String(DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS) as TurnBudgetValue,
   );
+  const [selectedAgentIds, setSelectedAgentIds] = useState<ReadonlySet<AgentId>>(new Set());
 
   const createMutation = useCreateRoomMutation();
+
+  const toggleAgent = (agentId: AgentId): void => {
+    setSelectedAgentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(agentId)) {
+        next.delete(agentId);
+      } else {
+        next.add(agentId);
+      }
+      return next;
+    });
+  };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
@@ -129,15 +148,20 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
           allowAgentMentions: true,
           requireReadBeforeSend: true,
         },
+        initialAgentIds: [...selectedAgentIds],
       },
       {
         onSuccess: (res) => {
           toast.success(`群聊「${res.room.name}」已建好`, {
-            description: "现在可以把自己的 Agent 拉进来，或发邀请码给同伴",
+            description:
+              selectedAgentIds.size > 0
+                ? `已直拉 ${String(selectedAgentIds.size)} 个个人 Agent 入群`
+                : "现在可以把自己的 Agent 拉进来，或发邀请码给同伴",
           });
           setName("");
           setTopic("");
           setRules("");
+          setSelectedAgentIds(new Set());
           props.onRoomCreated(res.room);
           props.onClose();
         },
@@ -205,6 +229,51 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
             containerClassName="mt-1.5"
           />
         </div>
+
+        {/* 建群直拉本人 Agent：服务端按归属校验后直接写入成员，免发提示词 */}
+        {props.ownedAgents.length > 0 ? (
+          <div>
+            <span className={LABEL_CLASS}>
+              直接拉入我的 Agent{" "}
+              <span className="font-normal text-[#8E8E93] dark:text-zinc-500">
+                （建群即入群，可选）
+              </span>
+            </span>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {props.ownedAgents.map((agent) => {
+                const meta = getPlatformVisualMeta(agent.platform);
+                const isSelected = selectedAgentIds.has(agent.id);
+                return (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    aria-pressed={isSelected}
+                    onClick={() => toggleAgent(agent.id)}
+                    className={cn(
+                      "app-no-drag flex cursor-pointer items-center gap-2 rounded-full px-2.5 py-1.5 text-left text-xs font-medium transition-all duration-150 active:scale-[0.98]",
+                      isSelected
+                        ? "bg-[#F5F5F7] text-[#141414] ring-[1.5px] ring-[#141414] dark:bg-[#27272A] dark:text-zinc-100 dark:ring-[#F5F5F7]"
+                        : "bg-white text-[#3A3A3C] ring-1 ring-inset ring-black/[0.08] hover:bg-[#F8F8FA] dark:bg-[#18181B] dark:text-zinc-300 dark:ring-white/[0.1] dark:hover:bg-[#222226]",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full",
+                        meta.avatarClass,
+                      )}
+                    >
+                      <PlatformGlyph platform={agent.platform} className="h-3 w-3" />
+                    </span>
+                    <span className="max-w-[10rem] truncate">{agent.displayName}</span>
+                    {isSelected ? (
+                      <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
 
         <div>
           <label htmlFor="create-room-topic" className={LABEL_CLASS}>

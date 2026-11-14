@@ -7,6 +7,7 @@
  * 2. 公开分享零凭据泄露：仅 `visibility === "public_shareable"` 的房间可对外生成分享快照，且强制剥离 `inviteToken` 并使用中立匿名视角盖章。
  */
 import {
+  type AgentId,
   type AuthenticatedCaller,
   type CreateRoomBody,
   type JoinRoomBody,
@@ -23,6 +24,7 @@ import { generateInviteToken, generateRoomId } from "../../infra/crypto.js";
 import { AppError } from "../../infra/errors.js";
 import { PUBLIC_NEUTRAL_VIEWER, toActorMemberKey } from "../../infra/identity-stamp.js";
 import type { RealtimeBus } from "../../infra/realtime-bus.js";
+import type { SafeAgentRecord } from "../auth/auth.repo.js";
 import { type MessagesRepository, stampRawMessageForViewer } from "../messages/messages.repo.js";
 import {
   type ProposalsRepository,
@@ -48,6 +50,8 @@ export interface RoomsServiceDeps {
   readonly messagesRepo: MessagesRepository;
   readonly proposalsRepo: ProposalsRepository;
   readonly realtimeBus: RealtimeBus;
+  /** 按主键查询 Agent 归属主人（由 pairing 仓储提供，用于建群直拉本人 Agent 的归属校验） */
+  readonly findAgentById: (agentId: AgentId) => Promise<SafeAgentRecord | undefined>;
 }
 
 /**
@@ -58,6 +62,7 @@ export class RoomsService {
   private readonly messagesRepo: MessagesRepository;
   private readonly proposalsRepo: ProposalsRepository;
   private readonly realtimeBus: RealtimeBus;
+  private readonly findAgentById: RoomsServiceDeps["findAgentById"];
 
   /**
    * @param deps - 房间、消息、提案仓储及实时事件总线
@@ -67,6 +72,7 @@ export class RoomsService {
     this.messagesRepo = deps.messagesRepo;
     this.proposalsRepo = deps.proposalsRepo;
     this.realtimeBus = deps.realtimeBus;
+    this.findAgentById = deps.findAgentById;
   }
 
   /**
@@ -116,6 +122,28 @@ export class RoomsService {
     );
     const ownerUserId = caller.kind === "human" ? caller.userId : caller.ownerUserId;
 
+    // Owner-First 建群直拉：逐个校验 Agent 归属（仅允许本人名下），杜绝替他人 Agent 强制入群
+    const initialAgentIds = [...new Set(body.initialAgentIds)];
+    const ownedAgents = new Map<AgentId, SafeAgentRecord>();
+    for (const agentId of initialAgentIds) {
+      const agent = await this.findAgentById(agentId);
+      if (agent === undefined) {
+        throw new AppError({
+          code: "NOT_FOUND",
+          statusCode: 404,
+          message: `Agent "${agentId}" was not found.`,
+        });
+      }
+      if (agent.ownerUserId !== ownerUserId) {
+        throw new AppError({
+          code: "FORBIDDEN_NOT_OWNER",
+          statusCode: 403,
+          message: `Agent "${agentId}" is not owned by the room creator; only your own agents can be pulled into a new huddle.`,
+        });
+      }
+      ownedAgents.set(agentId, agent);
+    }
+
     const roomRecord = await this.roomsRepo.runInTransaction(async (txRepo) => {
       const created = await txRepo.insertRoom({
         id: roomId,
@@ -143,6 +171,17 @@ export class RoomsService {
           memberKey: `agent:${caller.agentId}`,
           memberKind: "agent",
           agentId: caller.agentId,
+          role: "member",
+          lastReadSeq: 0,
+        });
+      }
+
+      for (const agentId of ownedAgents.keys()) {
+        await txRepo.addRoomMemberIfAbsent({
+          roomId: created.id,
+          memberKey: `agent:${agentId}`,
+          memberKind: "agent",
+          agentId,
           role: "member",
           lastReadSeq: 0,
         });

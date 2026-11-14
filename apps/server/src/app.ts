@@ -143,6 +143,7 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
     messagesRepo,
     proposalsRepo,
     realtimeBus: deps.realtimeBus,
+    findAgentById: (agentId) => pairingRepo.findAgentById(agentId),
   });
   const governanceService = new GovernanceService({
     roomsRepo,

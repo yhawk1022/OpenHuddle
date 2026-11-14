@@ -101,6 +101,8 @@ export interface CreateRoomInput {
   readonly rules: string;
   readonly visibility: RoomVisibility;
   readonly governance?: Partial<RoomGovernanceConfig>;
+  /** 建群时直拉入群的本人 Agent（服务端逐个校验归属） */
+  readonly initialAgentIds?: readonly AgentId[];
 }
 
 /** 房间消息增量拉取响应结构 */

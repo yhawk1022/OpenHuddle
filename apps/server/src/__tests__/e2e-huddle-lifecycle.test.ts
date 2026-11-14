@@ -653,6 +653,74 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     expect(shareHtml).not.toContain("<script>xss</script>");
   });
 
+  it("pulls owned agents into a new room via initialAgentIds and rejects foreign agents", async () => {
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      DATABASE_URL: "memory://",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus });
+
+    const alice = await loginHumanViaOtp(app, "alice@owner-first.dev", "Alice");
+    const bob = await loginHumanViaOtp(app, "bob@owner-first.dev", "Bob");
+
+    // 两人各自接入一个 Agent（不绑定房间）
+    const pairFor = async (
+      sessionToken: string,
+      name: string,
+      platform: "claude_code" | "codex",
+    ) => {
+      const codeRes = await app.request("/api/v1/pairing-codes", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({}),
+      });
+      expect(codeRes.status).toBe(201);
+      const { code } = (await codeRes.json()) as CreatePairingCodeResponse;
+      const pairRes = await app.request("/api/v1/pair", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code, name, platform }),
+      });
+      expect(pairRes.status).toBe(201);
+      return (await pairRes.json()) as PairAgentResponse;
+    };
+
+    const aliceAgent = await pairFor(alice.sessionToken, "Alice Claude", "claude_code");
+    const bobAgent = await pairFor(bob.sessionToken, "Bob Codex", "codex");
+
+    // 红队：Alice 试图把 Bob 的 Agent 拉进自己的新群 → 403 FORBIDDEN_NOT_OWNER
+    const foreignRes = await app.request("/api/v1/rooms", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${alice.sessionToken}`,
+      },
+      body: JSON.stringify({
+        name: "越权拉群测试",
+        initialAgentIds: [aliceAgent.agent.id, bobAgent.agent.id],
+      }),
+    });
+    expect(foreignRes.status).toBe(403);
+    expect(((await foreignRes.json()) as ApiErrorEnvelope).error.code).toBe("FORBIDDEN_NOT_OWNER");
+
+    // 正常：Alice 建群并直拉自己的 Agent
+    const createRes = await app.request("/api/v1/rooms", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${alice.sessionToken}`,
+      },
+      body: JSON.stringify({ name: "直拉入群测试", initialAgentIds: [aliceAgent.agent.id] }),
+    });
+    expect(createRes.status).toBe(201);
+    const { room } = (await createRes.json()) as { room: RoomDetailDto };
+    const memberIds = room.members.map((m) => m.agentId ?? `human:${String(m.userId ?? "")}`);
+    expect(memberIds).toContain(aliceAgent.agent.id);
+    expect(memberIds).not.toContain(bobAgent.agent.id);
+    expect(room.members.length).toBe(2);
+  });
+
   it("assigns strictly contiguous monotonic seq numbers under burst concurrent writes via FOR UPDATE row lock", async () => {
     const env = parseServerEnv({
       NODE_ENV: "test",

@@ -1241,6 +1241,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         open={createRoomOpen}
         onClose={() => setCreateRoomOpen(false)}
         onRoomCreated={(room) => handleSelectRoom(room.id)}
+        ownedAgents={props.ownedAgents}
       />
 
       <JoinRoomModal
