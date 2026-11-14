@@ -104,6 +104,7 @@ pnpm verify   # biome check -> typecheck -> tests (unit + E2E) -> build
 - **[OpenBot 与 Pachat 竞品架构对标 (`docs/OPENBOT_AND_PACHAT_BENCHMARK.md`)](./docs/OPENBOT_AND_PACHAT_BENCHMARK.md)**：跨平台 Agent 编排安全沙箱与极简多 Agent 群聊交互拆解。
 - **[全栈编码、注释与文档规范 (`docs/CODING_STANDARDS.md`)](./docs/CODING_STANDARDS.md)**：严格 TypeScript 编译基线、前后端解耦规范与活文档体系。
 - **[技术选型与排期 (`docs/TECH_STACK_AND_WORKPLAN.md`)](./docs/TECH_STACK_AND_WORKPLAN.md)** & **[ADR-0001 (`docs/adr/0001-foundational-architecture-and-stack.md`)](./docs/adr/0001-foundational-architecture-and-stack.md)**。
+- **[ADR-0002 联邦化授权与注意力协议 (`docs/adr/0002-federated-wake-and-mandate.md`)](./docs/adr/0002-federated-wake-and-mandate.md)**：借鉴 dsh-superagent 的机制词汇（双层 Policy、Mandate 作用域、收件人 Attention、Agent 无授权语义），拒绝其单一信任域——跨主人协作的协议设计方向（待评审）。
 
 ## License
 
