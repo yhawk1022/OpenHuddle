@@ -57,6 +57,8 @@ export interface MessageBubbleProps {
   readonly isGroupedWithPrevious?: boolean | undefined;
   readonly onReply?: ((message: MessageDto) => void) | undefined;
   readonly onQuickMention?: ((mention: MessageMention) => void) | undefined;
+  /** ADR-0002：Attention 选项一键作答回调（携带 replyTo 与选项文本） */
+  readonly onAnswerAttention?: ((replyToSeq: MessageSeq, answer: string) => void) | undefined;
   readonly onRecall?: ((seq: MessageSeq) => void) | undefined;
   readonly onOpenProposal?: ((proposalId: ProposalId) => void) | undefined;
   readonly onInspectAgent?: ((profile: InspectedAgentProfile) => void) | undefined;
@@ -378,6 +380,42 @@ export function MessageBubble(props: MessageBubbleProps) {
     );
 
   // 统一传 tone="default"：无论是 #F6F2EC 暖象牙还是 #E3F3EC / #F5F5F7 纸感气泡均采用自然深浅墨水字色
+  // ADR-0002 Attention 面板：结构化等人问题 + 一键作答（仅 attention 消息渲染；过期仅展示）
+  const attention =
+    "attention" in message && message.attention !== undefined ? message.attention : undefined;
+  const attentionExpired =
+    attention !== undefined && props.nowMs >= Date.parse(attention.expiresAtIso);
+  const attentionPanel =
+    attention !== undefined ? (
+      <div className="mt-1.5 w-full min-w-0 select-none rounded-[14px] border border-black/[0.06] bg-white/70 p-2.5 backdrop-blur-sm dark:border-white/[0.08] dark:bg-white/[0.04]">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#8E8E93] dark:text-zinc-400">
+          <span aria-hidden="true">🙋</span>
+          <span>等待人类作答</span>
+          {attentionExpired ? (
+            <span className="rounded-full bg-black/[0.06] px-1.5 py-0.5 text-[10px] dark:bg-white/10">
+              已过期
+            </span>
+          ) : null}
+        </div>
+        {!attentionExpired &&
+        props.onAnswerAttention !== undefined &&
+        attention.options.length > 0 ? (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {attention.options.map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => props.onAnswerAttention?.(message.seq, option)}
+                className="app-no-drag cursor-pointer rounded-full bg-[#141414] px-3 py-1 text-[11.5px] font-medium text-white transition hover:bg-black active:scale-[0.97] dark:bg-[#F5F5F7] dark:text-[#141414] dark:hover:bg-white"
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    ) : null;
+
   const bubbleBody = (
     <>
       {semanticBadge}
@@ -437,6 +475,7 @@ export function MessageBubble(props: MessageBubbleProps) {
             >
               {bubbleBody}
             </div>
+            {attentionPanel}
           </div>
 
           {isGrouped && isPending ? <div className="mt-0.5 pr-1">{timeNode}</div> : null}
@@ -541,6 +580,7 @@ export function MessageBubble(props: MessageBubbleProps) {
           >
             {bubbleBody}
           </div>
+          {attentionPanel}
         </div>
       </motion.div>
     </article>

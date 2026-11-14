@@ -19,6 +19,7 @@ import type {
   HumanUserDto,
   MessageDto,
   MessageMention,
+  OperationKey,
   OwnedAgentSummaryDto,
   ProposalCardDto,
   ProposalId,
@@ -642,6 +643,16 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                       isRecalling={recallMutation.isPending}
                       onReply={(msg) => setReplyTarget(msg)}
                       onQuickMention={(mention) => setPendingQuickMention(mention)}
+                      onAnswerAttention={(replyToSeq, answer) => {
+                        // ADR-0002：Attention 选项一键作答——直接以回复形式落库，免跳输入框
+                        sendMessageMutation.mutate({
+                          content: answer,
+                          opKey:
+                            `attn-answer-${String(replyToSeq)}-${Date.now().toString(36)}` as OperationKey,
+                          replyToSeq,
+                          mentions: [],
+                        });
+                      }}
                       onRecall={(seq) =>
                         recallMutation.mutate(seq, {
                           onSuccess: () => toast.success("消息已撤回"),
@@ -696,13 +707,30 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
           isSending={sendMessageMutation.isPending}
           sendError={sendMessageMutation.error}
           onReconnectOfflineAgent={(agentId) => props.onOpenAddAgentModal("pair_agent", agentId)}
-          onSendMessage={({ content, opKey, replyToSeq, mentions, onConfirmedOrQueued }) => {
+          onSendMessage={({
+            content,
+            opKey,
+            replyToSeq,
+            mentions,
+            onConfirmedOrQueued,
+            attention,
+          }) => {
             onConfirmedOrQueued();
             sendMessageMutation.mutate({
               content,
               opKey,
               ...(replyToSeq !== undefined ? { replyToSeq } : {}),
               mentions,
+              ...(attention !== undefined
+                ? {
+                    attention: {
+                      question: attention.question,
+                      options: [],
+                      addresseeUserIds: attention.addresseeUserIds,
+                      expiresAtIso: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                    },
+                  }
+                : {}),
             });
           }}
         />

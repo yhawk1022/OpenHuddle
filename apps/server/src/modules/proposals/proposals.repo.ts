@@ -18,6 +18,8 @@ import {
   type AgentId,
   AgentPlatformSchema,
   type AuthenticatedCaller,
+  type DecisionMandate,
+  DecisionMandateSchema,
   type MessageSeq,
   type MessageType,
   type ProposalCardDto,
@@ -65,6 +67,7 @@ export interface HydratedRawProposalRecord {
   readonly decisionNote: string | undefined;
   readonly rawDecidedBy: RawAuthorIdentity | undefined;
   readonly decidedAt: Date | null;
+  readonly mandate: DecisionMandate | undefined;
   readonly createdAt: Date;
 }
 
@@ -104,6 +107,7 @@ export function stampRawProposalForViewer(
       ? { decidedBy: computeAuthorStamp(record.rawDecidedBy, viewer) }
       : {}),
     ...(record.decidedAt !== null ? { decidedAtIso: record.decidedAt.toISOString() } : {}),
+    ...(record.mandate !== undefined ? { mandate: record.mandate } : {}),
     createdAtIso: record.createdAt.toISOString(),
   };
 }
@@ -380,6 +384,7 @@ export class ProposalsRepository {
     readonly decisionNote?: string;
     readonly decidedByUserId: UserId;
     readonly decidedAt: Date;
+    readonly mandate?: DecisionMandate;
   }): Promise<void> {
     await this.db
       .update(proposalsTable)
@@ -389,6 +394,7 @@ export class ProposalsRepository {
         decisionNote: input.decisionNote ?? null,
         decidedByUserId: input.decidedByUserId,
         decidedAt: input.decidedAt,
+        mandateJson: input.mandate ?? null,
       })
       .where(eq(proposalsTable.id, input.proposalId));
   }
@@ -413,6 +419,7 @@ export class ProposalsRepository {
         p.decision_note AS "decisionNote",
         p.decided_by_user_id AS "decidedByUserId",
         p.decided_at AS "decidedAt",
+        p.mandate_json AS "mandateJson",
         p.created_at AS "createdAt",
         u_decider.display_name AS "deciderDisplayName"
       FROM proposals p
@@ -431,6 +438,7 @@ export class ProposalsRepository {
       readonly decisionNote: string | null;
       readonly decidedByUserId: string | null;
       readonly decidedAt: Date | string | null;
+      readonly mandateJson: unknown;
       readonly createdAt: Date | string;
       readonly deciderDisplayName: string | null;
     }>(proposalResult)[0];
@@ -463,6 +471,7 @@ export class ProposalsRepository {
         p.decision_note AS "decisionNote",
         p.decided_by_user_id AS "decidedByUserId",
         p.decided_at AS "decidedAt",
+        p.mandate_json AS "mandateJson",
         p.created_at AS "createdAt",
         u_decider.display_name AS "deciderDisplayName"
       FROM proposals p
@@ -481,6 +490,7 @@ export class ProposalsRepository {
       readonly decisionNote: string | null;
       readonly decidedByUserId: string | null;
       readonly decidedAt: Date | string | null;
+      readonly mandateJson: unknown;
       readonly createdAt: Date | string;
       readonly deciderDisplayName: string | null;
     }>(proposalResult);
@@ -571,6 +581,7 @@ export class ProposalsRepository {
       readonly decisionNote: string | null;
       readonly decidedByUserId: string | null;
       readonly decidedAt: Date | string | null;
+      readonly mandateJson: unknown;
       readonly createdAt: Date | string;
       readonly deciderDisplayName: string | null;
     },
@@ -604,6 +615,11 @@ export class ProposalsRepository {
       decisionNote: pRow.decisionNote ?? undefined,
       rawDecidedBy,
       decidedAt,
+      // ADR-0002：拍板授权语义脏数据安全降级为 undefined（老数据无 mandate）
+      mandate: (() => {
+        const parsed = DecisionMandateSchema.safeParse(parseJsonColumn(pRow.mandateJson));
+        return parsed.success ? parsed.data : undefined;
+      })(),
       createdAt: pRow.createdAt instanceof Date ? pRow.createdAt : new Date(pRow.createdAt),
     };
   }

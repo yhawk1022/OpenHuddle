@@ -20,7 +20,7 @@ import type {
   RoomMemberDto,
   UserId,
 } from "@openhuddle/protocol";
-import { ArrowUp, AtSign, Check, CornerUpLeft, Loader2, User, Users, X } from "lucide-react";
+import { ArrowUp, AtSign, Check, CornerUpLeft, Hand, Loader2, User, Users, X } from "lucide-react";
 import {
   type KeyboardEvent,
   useCallback,
@@ -67,6 +67,8 @@ export interface MessageComposerProps {
     readonly replyToSeq?: MessageSeq;
     readonly mentions: ReadonlyArray<MessageMention>;
     readonly onConfirmedOrQueued: () => void;
+    /** ADR-0002：提问模式开启时以 attention 消息发出（等人类作答，默认 24h 过期） */
+    readonly attention?: { readonly question: string; readonly addresseeUserIds: UserId[] };
   }) => void;
 }
 
@@ -198,6 +200,8 @@ export function MessageComposer(props: MessageComposerProps) {
   const [caretIndex, setCaretIndex] = useState<number>(0);
   const [suggestDismissed, setSuggestDismissed] = useState<boolean>(false);
   const [activeSuggestIndex, setActiveSuggestIndex] = useState<number>(0);
+  // ADR-0002：提问模式——开启后本条消息以 attention（等人类作答）形式发出
+  const [askMode, setAskMode] = useState<boolean>(false);
   const [pickerOpen, setPickerOpen] = useState<boolean>(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -446,13 +450,22 @@ export function MessageComposer(props: MessageComposerProps) {
     const opKey = createClientOperationKey();
     const replySeq = props.replyTarget?.seq;
 
+    // ADR-0002 提问模式：以结构化 attention 消息发出，收件人默认为房间内全部人类成员
+    const humanMemberIds = props.members
+      .filter((m) => m.memberKind === "human" && m.userId !== undefined)
+      .map((m) => m.userId as UserId);
+
     props.onSendMessage({
       content: trimmed,
       opKey,
       ...(replySeq !== undefined ? { replyToSeq: replySeq } : {}),
       mentions: finalMentions,
+      ...(askMode && humanMemberIds.length > 0
+        ? { attention: { question: trimmed, addresseeUserIds: humanMemberIds } }
+        : {}),
       onConfirmedOrQueued: () => {
         setDraft("");
+        setAskMode(false);
         setSelectedMentions([]);
         setCaretIndex(0);
         props.onClearReplyTarget();
@@ -860,6 +873,30 @@ export function MessageComposer(props: MessageComposerProps) {
                   </div>
                 </div>
               </AppPopover>
+              {/* ADR-0002 提问模式开关：开启后本条消息以 attention 形式发出，等待人类作答 */}
+              <button
+                type="button"
+                title={
+                  askMode
+                    ? "提问模式已开启：发送后将等待人类作答"
+                    : "以提问形式发送（等待人类作答）"
+                }
+                aria-pressed={askMode}
+                onClick={() => setAskMode((v) => !v)}
+                className={cn(
+                  "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95]",
+                  askMode
+                    ? "bg-amber-500/15 text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-300"
+                    : "text-[#5F5F64] hover:bg-black/[0.05] hover:text-[#141414] dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100",
+                )}
+              >
+                <Hand className="h-[18px] w-[18px] stroke-[1.9]" />
+              </button>
+              {askMode ? (
+                <span className="hidden select-none rounded-full bg-amber-500/12 px-2 py-0.5 text-[10.5px] font-medium text-amber-700 sm:inline dark:text-amber-300">
+                  提问模式
+                </span>
+              ) : null}
 
               {agentMembers.length >= 2 ? (
                 <button

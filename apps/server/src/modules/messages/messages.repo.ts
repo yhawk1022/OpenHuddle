@@ -12,6 +12,8 @@ import {
   ActorKindSchema,
   type AgentId,
   AgentPlatformSchema,
+  type AttentionPayload,
+  AttentionPayloadSchema,
   type AuthenticatedCaller,
   type MessageDto,
   type MessageMention,
@@ -48,6 +50,7 @@ export interface HydratedRawMessageRecord {
   readonly content: string;
   readonly replyToSeq: MessageSeq | undefined;
   readonly mentions: readonly MessageMention[];
+  readonly attention: AttentionPayload | undefined;
   readonly recalledAt: Date | null;
   readonly createdAt: Date;
 }
@@ -84,6 +87,7 @@ interface RawSqlMessageRow {
   readonly content: string;
   readonly replyToSeq: number | null;
   readonly mentionsJson: unknown;
+  readonly payloadJson: unknown;
   readonly recalledAt: Date | string | null;
   readonly createdAt: Date | string;
   readonly humanDisplayName: string | null;
@@ -118,6 +122,14 @@ function mapSqlRowToHydratedMessage(row: RawSqlMessageRow): HydratedRawMessageRe
         };
 
   const mentions = MentionsArraySchema.parse(parseJsonColumn(row.mentionsJson ?? []));
+  const parsedType = MessageTypeSchema.parse(row.type);
+  // ADR-0002：仅 attention 类型消息透出结构化等人载荷；脏数据解析失败时静默降级为普通文本
+  const attention =
+    parsedType === "attention"
+      ? AttentionPayloadSchema.safeParse(parseJsonColumn(row.payloadJson ?? {})).success
+        ? AttentionPayloadSchema.parse(parseJsonColumn(row.payloadJson ?? {}))
+        : undefined
+      : undefined;
   const recalledAt =
     row.recalledAt === null
       ? null
@@ -129,11 +141,12 @@ function mapSqlRowToHydratedMessage(row: RawSqlMessageRow): HydratedRawMessageRe
   return {
     roomId: row.roomId as RoomId,
     seq: asMessageSeq(Number(row.seq)),
-    type: MessageTypeSchema.parse(row.type),
+    type: parsedType,
     rawAuthor,
     content: row.content,
     replyToSeq: row.replyToSeq !== null ? asMessageSeq(Number(row.replyToSeq)) : undefined,
     mentions,
+    attention,
     recalledAt,
     createdAt,
   };
@@ -159,6 +172,7 @@ export function stampRawMessageForViewer(
     content: record.content,
     ...(record.replyToSeq !== undefined ? { replyToSeq: record.replyToSeq } : {}),
     mentions: [...record.mentions],
+    ...(record.attention !== undefined ? { attention: record.attention } : {}),
     ...(record.recalledAt !== null ? { recalledAtIso: record.recalledAt.toISOString() } : {}),
     createdAtIso: record.createdAt.toISOString(),
   };
@@ -372,6 +386,7 @@ export class MessagesRepository {
         m.content AS "content",
         m.reply_to_seq AS "replyToSeq",
         m.mentions_json AS "mentionsJson",
+          m.payload_json AS "payloadJson",
         m.recalled_at AS "recalledAt",
         m.created_at AS "createdAt",
         u.display_name AS "humanDisplayName",
@@ -411,6 +426,7 @@ export class MessagesRepository {
         m.content AS "content",
         m.reply_to_seq AS "replyToSeq",
         m.mentions_json AS "mentionsJson",
+          m.payload_json AS "payloadJson",
         m.recalled_at AS "recalledAt",
         m.created_at AS "createdAt",
         u.display_name AS "humanDisplayName",
@@ -452,6 +468,7 @@ export class MessagesRepository {
         m.content AS "content",
         m.reply_to_seq AS "replyToSeq",
         m.mentions_json AS "mentionsJson",
+          m.payload_json AS "payloadJson",
         m.recalled_at AS "recalledAt",
         m.created_at AS "createdAt",
         u.display_name AS "humanDisplayName",
@@ -492,6 +509,7 @@ export class MessagesRepository {
           m.content AS "content",
           m.reply_to_seq AS "replyToSeq",
           m.mentions_json AS "mentionsJson",
+          m.payload_json AS "payloadJson",
           m.recalled_at AS "recalledAt",
           m.created_at AS "createdAt",
           u.display_name AS "humanDisplayName",

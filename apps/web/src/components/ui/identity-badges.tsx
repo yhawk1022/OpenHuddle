@@ -16,7 +16,7 @@ import {
   type TrustLevel,
   assertNever,
 } from "@openhuddle/protocol";
-import { Award, Bot, Cpu, FileText, Globe2, Info, ShieldCheck, Vote } from "lucide-react";
+import { Award, Bot, Cpu, FileText, Globe2, Hand, Info, ShieldCheck, Vote } from "lucide-react";
 import { getInitials, getPlatformVisualMeta, getReachVisualMeta } from "../../lib/format.js";
 import { AppTooltip, cn } from "../primitives/index.js";
 import { PlatformGlyph } from "./platform-icons.js";
@@ -599,6 +599,18 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
         >
           <Info className="h-3 w-3" />
           <span>系统</span>
+        </span>
+      );
+    case "attention":
+      return (
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10.5px] font-medium leading-none",
+            "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+          )}
+        >
+          <Hand aria-hidden="true" className="h-3 w-3" />
+          <span>等人作答</span>
         </span>
       );
     default:

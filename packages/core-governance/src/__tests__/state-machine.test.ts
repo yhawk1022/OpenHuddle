@@ -167,3 +167,104 @@ describe("@openhuddle/core-governance — pure deterministic state machine", () 
     expect(renewed.consecutiveAgentTurns).toBe(0);
   });
 });
+
+describe("@openhuddle/core-governance — ADR-0002 联邦铁律不变量（Agent 消息无授权语义）", () => {
+  const ownerId = UserIdSchema.parse("usr_owner2");
+  const agentA = AgentIdSchema.parse("agt_gamma");
+  const agentB = AgentIdSchema.parse("agt_delta");
+
+  const humanCaller: AuthenticatedCaller = {
+    kind: "human",
+    userId: ownerId,
+    displayName: "Owner",
+  };
+
+  const callerA: AuthenticatedCaller = {
+    kind: "agent",
+    agentId: agentA,
+    ownerUserId: ownerId,
+    displayName: "Gamma Agent",
+    platform: "claude_code",
+  };
+
+  const callerB: AuthenticatedCaller = {
+    kind: "agent",
+    agentId: agentB,
+    ownerUserId: ownerId,
+    displayName: "Delta Agent",
+    platform: "codex",
+  };
+
+  it("铁律1：Agent 发言永不重置连续轮次计数，也永不解除 paused_budget", () => {
+    const state = createDefaultGovernanceState({ maxConsecutiveAgentTurns: 3 });
+    let current = state;
+    for (let i = 0; i < 3; i += 1) {
+      const t = applyCommittedMessageTurn(current, {
+        sender: callerA,
+        candidateWakeAgentIds: [agentB],
+        activeRoomAgentIds: [agentA, agentB],
+        nowMs: 1_000 * i,
+      });
+      current = t.nextState;
+    }
+    expect(current.status).toBe("paused_budget");
+    expect(current.consecutiveAgentTurns).toBe(3);
+
+    // 另一个 Agent 发言：状态保持 paused、计数只增不减
+    const afterAgentB = applyCommittedMessageTurn(current, {
+      sender: callerB,
+      candidateWakeAgentIds: [agentA],
+      activeRoomAgentIds: [agentA, agentB],
+      nowMs: 9_999,
+    });
+    expect(afterAgentB.nextState.status).toBe("paused_budget");
+    expect(afterAgentB.nextState.consecutiveAgentTurns).toBe(4);
+    expect(afterAgentB.permittedWakeAgentIds).toEqual([]);
+
+    // 只有人类发言才重置并回到 active
+    const afterHuman = applyCommittedMessageTurn(current, {
+      sender: humanCaller,
+      candidateWakeAgentIds: [agentA],
+      activeRoomAgentIds: [agentA, agentB],
+      nowMs: 10_000,
+    });
+    expect(afterHuman.nextState.status).toBe("active");
+    expect(afterHuman.nextState.consecutiveAgentTurns).toBe(0);
+  });
+
+  it("铁律2：预算耗尽瞬间的 Agent 消息必须清零全部自动唤醒名单", () => {
+    const state = createDefaultGovernanceState({ maxConsecutiveAgentTurns: 1 });
+    const t = applyCommittedMessageTurn(state, {
+      sender: callerA,
+      candidateWakeAgentIds: [agentB],
+      activeRoomAgentIds: [agentA, agentB],
+      nowMs: 1,
+    });
+    expect(t.budgetJustExhausted).toBe(true);
+    expect(t.permittedWakeAgentIds).toEqual([]);
+  });
+
+  it("铁律3：挂起预算态下 Agent 发言被 GOVERNANCE_BUDGET_PAUSED 拦截，人类永远豁免", () => {
+    const pausedState = {
+      ...createDefaultGovernanceState({}),
+      status: "paused_budget" as const,
+    };
+    const agentDecision = evaluatePreSendPolicy(pausedState, {
+      caller: callerA,
+      roomLastSeq: asReadCursorSeq(10),
+      ignoreUnread: true,
+      activeRoomAgentIds: [agentA],
+      nowMs: 1,
+    });
+    expect(agentDecision.allowed).toBe(false);
+
+    const humanDecision = evaluatePreSendPolicy(pausedState, {
+      caller: humanCaller,
+      roomLastSeq: asReadCursorSeq(10),
+      ignoreUnread: true,
+      activeRoomAgentIds: [agentA],
+      nowMs: 1,
+    });
+    expect(humanDecision.allowed).toBe(true);
+  });
+});

@@ -11,6 +11,7 @@ import {
   type AgentId,
   type ApiErrorEnvelope,
   ApiErrorEnvelopeSchema,
+  type AttentionPayload,
   type CastProposalVoteBody,
   type ConnectLocalAgentBody,
   type ConnectLocalAgentResponse,
@@ -121,6 +122,8 @@ export interface SendRoomMessageInput {
   readonly opKey?: OperationKey;
   readonly lastReadSeq?: ReadCursorSeq;
   readonly ignoreUnread?: boolean;
+  /** ADR-0002：携带时以 attention 消息发送（服务端强制仅人类可用） */
+  readonly attention?: AttentionPayload;
 }
 
 /** 发送消息成功响应结构 */

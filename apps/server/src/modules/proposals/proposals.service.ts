@@ -498,6 +498,17 @@ export class ProposalsService {
         }
       }
 
+      // ADR-0002：批准可携带授权语义；approverUserIds 由服务端以实际拍板者盖章，客户端声明无效
+      const stampedMandate =
+        body.decision === "approved" && body.mandate !== undefined
+          ? {
+              scope: body.mandate.scope,
+              strength: body.mandate.strength,
+              policyVersion: body.mandate.policyVersion,
+              approverUserIds: [human.userId],
+            }
+          : undefined;
+
       await txRepo.updateProposalDecision({
         proposalId,
         decision: body.decision,
@@ -505,6 +516,7 @@ export class ProposalsService {
         ...(body.decisionNote !== undefined ? { decisionNote: body.decisionNote } : {}),
         decidedByUserId: human.userId,
         decidedAt,
+        ...(stampedMandate !== undefined ? { mandate: stampedMandate } : {}),
       });
 
       const nextSeq = asMessageSeq(lockedRoom.lastSeq + 1);

@@ -7,6 +7,7 @@
  * 2. 乐观消息发送不丢字：人类点击发送立即以 `OperationKey` 插入乐观气泡，若网络或治理拦截报错则精准回滚缓存并由输入框保留草稿；成功后与 SSE 流幂等合流。
  */
 import {
+  type AttentionPayload,
   type CastProposalVoteBody,
   type DecideProposalBody,
   type HumanUserDto,
@@ -203,6 +204,8 @@ export interface SendOptimisticMessageVariables {
   readonly opKey: OperationKey;
   readonly replyToSeq?: MessageSeq;
   readonly mentions: ReadonlyArray<MessageMention>;
+  /** ADR-0002：携带时以 attention 消息发送（结构化等人类作答） */
+  readonly attention?: AttentionPayload;
 }
 
 /**
@@ -221,6 +224,7 @@ export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto
         opKey: vars.opKey,
         mentions: vars.mentions,
         ...(vars.replyToSeq !== undefined ? { replyToSeq: vars.replyToSeq } : {}),
+        ...(vars.attention !== undefined ? { attention: vars.attention } : {}),
         ignoreUnread: true,
       }),
     onMutate: async (vars) => {
@@ -235,7 +239,8 @@ export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto
         const optimisticBubble: OptimisticMessageItem = {
           roomId,
           seq: provisionalSeq,
-          type: "text",
+          type: vars.attention !== undefined ? "attention" : "text",
+          ...(vars.attention !== undefined ? { attention: vars.attention } : {}),
           author: {
             kind: "human",
             userId: currentUser.id,

@@ -268,6 +268,28 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                 备注：{proposal.decisionNote}
               </p>
             ) : null}
+            {proposal.mandate ? (
+              /* ADR-0002：授权语义（scope/strength/策略版本/批准者）——授权力仅及于批准者名下 Agent */
+              <div className="mt-2 rounded-xl bg-black/[0.04] px-2.5 py-2 text-[11.5px] leading-relaxed ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.05] dark:ring-white/[0.07]">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-medium">
+                  <span>授权范围：{proposal.mandate.scope}</span>
+                  <span className="rounded-full bg-black/[0.06] px-1.5 py-0.5 text-[10.5px] dark:bg-white/10">
+                    {proposal.mandate.strength === "act"
+                      ? "可执行"
+                      : proposal.mandate.strength === "act_with_review"
+                        ? "执行后需复盘"
+                        : "仅供参考"}
+                  </span>
+                  <span className="font-normal opacity-70">
+                    群规 v{proposal.mandate.policyVersion}
+                  </span>
+                </div>
+                <p className="mt-1 font-normal opacity-75">
+                  授权力仅及于批准者（{proposal.decidedBy?.displayName ?? "拍板者"}）名下的
+                  Agent，其他成员的 Agent 视为参考信息。
+                </p>
+              </div>
+            ) : null}
           </div>
         ) : null}
 

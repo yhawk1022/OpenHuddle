@@ -17,6 +17,7 @@ import {
   type AgentId,
   type AgentPlatform,
   AgentPlatformSchema,
+  AgentWakePolicySchema,
   type HumanUserDto,
   type OwnedAgentSummaryDto,
   type UserId,
@@ -36,6 +37,7 @@ export interface SafeAgentRecord {
   readonly platform: AgentPlatform;
   readonly intro: string | null;
   readonly wakeKind: string;
+  readonly wakeConfigJson?: unknown;
   readonly checkinIntervalMin: number | null;
   readonly lastSeenAt: Date | null;
   readonly createdAt: Date;
@@ -90,6 +92,15 @@ export function mapAgentRecordToSummaryDto(
     slug: record.slug,
     platform: record.platform,
     ...(record.intro !== null ? { intro: record.intro } : {}),
+    // ADR-0002：主人私有唤醒策略（wake_config_json），脏数据安全降级为不展示
+    ...(() => {
+      const parsed = AgentWakePolicySchema.safeParse(
+        typeof record.wakeConfigJson === "string"
+          ? (JSON.parse(record.wakeConfigJson) as unknown)
+          : record.wakeConfigJson,
+      );
+      return parsed.success ? { wakePolicy: parsed.data } : {};
+    })(),
     reach: computeAgentReachState(record, realtimeBus),
     ...(record.checkinIntervalMin !== null
       ? { checkinIntervalMin: record.checkinIntervalMin }
@@ -107,6 +118,7 @@ function toSafeAgentRecord(row: {
   readonly platform: string;
   readonly intro: string | null;
   readonly wakeKind: string;
+  readonly wakeConfigJson?: unknown;
   readonly checkinIntervalMin: number | null;
   readonly lastSeenAt: Date | null;
   readonly createdAt: Date;
@@ -119,6 +131,7 @@ function toSafeAgentRecord(row: {
     platform: AgentPlatformSchema.parse(row.platform),
     intro: row.intro,
     wakeKind: row.wakeKind,
+    wakeConfigJson: row.wakeConfigJson,
     checkinIntervalMin: row.checkinIntervalMin,
     lastSeenAt: row.lastSeenAt,
     createdAt: row.createdAt,
@@ -334,6 +347,7 @@ export class AuthRepository {
         platform: agentsTable.platform,
         intro: agentsTable.intro,
         wakeKind: agentsTable.wakeKind,
+        wakeConfigJson: agentsTable.wakeConfigJson,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
         lastSeenAt: agentsTable.lastSeenAt,
         createdAt: agentsTable.createdAt,
@@ -381,6 +395,7 @@ export class AuthRepository {
         platform: agentsTable.platform,
         intro: agentsTable.intro,
         wakeKind: agentsTable.wakeKind,
+        wakeConfigJson: agentsTable.wakeConfigJson,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
         lastSeenAt: agentsTable.lastSeenAt,
         createdAt: agentsTable.createdAt,
@@ -409,6 +424,7 @@ export class AuthRepository {
         platform: agentsTable.platform,
         intro: agentsTable.intro,
         wakeKind: agentsTable.wakeKind,
+        wakeConfigJson: agentsTable.wakeConfigJson,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
         lastSeenAt: agentsTable.lastSeenAt,
         createdAt: agentsTable.createdAt,

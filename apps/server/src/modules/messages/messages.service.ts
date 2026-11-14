@@ -242,6 +242,16 @@ export class MessagesService {
     const memberKey = toActorMemberKey(caller);
     const nowMs = Date.now();
 
+    // ADR-0002 联邦铁律：结构化 Attention（等人作答）仅人类成员可发起，Agent 消息永不携带等人语义
+    if (body.attention !== undefined && caller.kind !== "human") {
+      throw new AppError({
+        code: "ATTENTION_HUMAN_ONLY",
+        statusCode: 403,
+        message:
+          "Attention questions can only be raised by human members; agent messages never carry awaiting-human semantics.",
+      });
+    }
+
     const txOutcome = await this.repo.runInTransaction(async (txRepo) => {
       // 1. 排他锁住房间行，严格串行化同一房间内的并发发言、游标核验与轮次预算计数
       const room = await txRepo.lockRoomForUpdate(roomId);
@@ -337,18 +347,6 @@ export class MessagesService {
         }
       }
 
-      if (body.replyToSeq !== undefined) {
-        const repliedMsg = await txRepo.findBySeq(roomId, body.replyToSeq);
-        if (
-          repliedMsg &&
-          repliedMsg.rawAuthor.kind === "agent" &&
-          repliedMsg.rawAuthor.agentId !== undefined &&
-          activeAgentSet.has(repliedMsg.rawAuthor.agentId)
-        ) {
-          candidateWakeAgentIds.push(repliedMsg.rawAuthor.agentId);
-        }
-      }
-
       // 圆桌模式或房间内仅有唯一在席 Agent 时，人类直接发言无需手打 @昵称 也会自然唤醒目标 Agent
       if (
         caller.kind === "human" &&
@@ -371,11 +369,12 @@ export class MessagesService {
         roomId,
         seq: nextSeq,
         caller,
-        type: "text",
+        type: body.attention !== undefined ? "attention" : "text",
         content: body.content,
         ...(body.replyToSeq !== undefined ? { replyToSeq: body.replyToSeq } : {}),
         mentions: effectiveMentions,
         ...(body.opKey !== undefined ? { opKey: body.opKey } : {}),
+        ...(body.attention !== undefined ? { payloadJson: body.attention } : {}),
       });
 
       await txRepo.updateRoomSeqAndGovernance(roomId, nextSeq, transition.nextState);
