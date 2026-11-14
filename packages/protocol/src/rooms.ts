@@ -88,6 +88,11 @@ export const CreateRoomBodySchema = z.object({
   rules: z.string().trim().max(2_000).default(""),
   visibility: RoomVisibilitySchema.default("invite_only"),
   governance: RoomGovernanceConfigSchema.partial().optional(),
+  /**
+   * 建群时直接拉入的本人名下 Agent（Owner-First：仅允许归群主所有的 Agent，
+   * 服务端逐个校验归属后写入成员表，替代"生成提示词让 Agent 自己进群"的旧链路）。
+   */
+  initialAgentIds: z.array(AgentIdSchema).max(10).default([]),
 });
 export type CreateRoomBody = z.infer<typeof CreateRoomBodySchema>;
 
