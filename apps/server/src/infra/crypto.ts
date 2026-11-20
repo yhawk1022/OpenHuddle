@@ -7,11 +7,143 @@
  * 2. 防计时侧信道（Timing Attack）：验证码哈希与敏感摘要比对强制通过 `timingSafeEqual` 执行恒定时间比较。
  * 3. 高熵随机源：全部凭据基于 Node.js `node:crypto` CSPRNG 生成，严禁使用 `Math.random()`。
  */
-import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
-import type { AgentId, PairingCode, ProposalId, RoomId, UserId } from "@openhuddle/protocol";
+import {
+  createHash,
+  randomBytes,
+  randomInt,
+  scrypt as scryptCallback,
+  timingSafeEqual,
+} from "node:crypto";
+import type {
+  AgentId,
+  AuditLogId,
+  PairingCode,
+  ProposalId,
+  RoomId,
+  UserId,
+} from "@openhuddle/protocol";
 
 /** 剔除易混淆字符（0/O/1/I）的大写配对码字母表 */
 const PAIRING_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+/** scrypt 密码哈希基线参数（N=16384, r=8, p=1 约占 16MB 临时内存，适配 2C4G 容器并发安全） */
+const SCRYPT_N = 16_384;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const SCRYPT_KEY_LEN = 64;
+const SCRYPT_SALT_BYTES = 16;
+const SCRYPT_MAXMEM = 64 * 1024 * 1024;
+
+function deriveScryptKey(
+  password: string,
+  salt: Buffer,
+  keylen: number,
+  options: { readonly N: number; readonly r: number; readonly p: number },
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scryptCallback(
+      password,
+      salt,
+      keylen,
+      { N: options.N, r: options.r, p: options.p, maxmem: SCRYPT_MAXMEM },
+      (err, derivedKey) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(derivedKey);
+      },
+    );
+  });
+}
+
+/**
+ * 使用 RFC 7914 `scrypt` 内存困难 KDF 与 128-bit 随机盐值对用户明文密码进行不可逆单向哈希。
+ *
+ * @remarks
+ * 异步投递至 Node.js libuv 线程池执行，绝不阻塞 HTTP/SSE 主事件循环；
+ * 输出格式固定为 `scrypt$<N>$<r>$<p>$<saltHex>$<derivedKeyHex>`，支持未来无痛升级工作因子。
+ *
+ * @param password - 已通过协议层长度校验的原始密码字符串
+ * @returns 可安全持久化至 `users.password_hash` 的编码哈希字符串
+ */
+export async function hashPasswordScrypt(password: string): Promise<string> {
+  const salt = randomBytes(SCRYPT_SALT_BYTES);
+  const derived = await deriveScryptKey(password, salt, SCRYPT_KEY_LEN, {
+    N: SCRYPT_N,
+    r: SCRYPT_R,
+    p: SCRYPT_P,
+  });
+  return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString("hex")}$${derived.toString("hex")}`;
+}
+
+/**
+ * 校验用户提交的明文密码是否与存储的 `scrypt` 编码哈希匹配（恒定时间比对）。
+ *
+ * @remarks
+ * 任何格式损坏或非法参数均静默返回 `false`，绝不向上游抛出内部解析异常。
+ *
+ * @param password - 待校验的明文密码
+ * @param storedHash - 数据库中存储的 `scrypt$...` 编码哈希
+ * @returns 密码匹配返回 `true`，否则返回 `false`
+ */
+export async function verifyPasswordScrypt(password: string, storedHash: string): Promise<boolean> {
+  const parts = storedHash.split("$");
+  if (parts.length !== 6 || parts[0] !== "scrypt") {
+    return false;
+  }
+  const n = Number(parts[1]);
+  const r = Number(parts[2]);
+  const p = Number(parts[3]);
+  const saltHex = parts[4];
+  const keyHex = parts[5];
+
+  if (
+    !Number.isInteger(n) ||
+    !Number.isInteger(r) ||
+    !Number.isInteger(p) ||
+    n < 1024 ||
+    n > 131_072 ||
+    r < 1 ||
+    r > 32 ||
+    p < 1 ||
+    p > 8 ||
+    !saltHex ||
+    !keyHex
+  ) {
+    return false;
+  }
+
+  const salt = Buffer.from(saltHex, "hex");
+  const expectedKey = Buffer.from(keyHex, "hex");
+  if (salt.byteLength < 8 || expectedKey.byteLength < 32) {
+    return false;
+  }
+
+  const actualKey = await deriveScryptKey(password, salt, expectedKey.byteLength, {
+    N: n,
+    r,
+    p,
+  });
+  if (actualKey.byteLength !== expectedKey.byteLength) {
+    return false;
+  }
+  return timingSafeEqual(actualKey, expectedKey);
+}
+
+let cachedDummyPasswordHash: Promise<string> | undefined;
+
+/**
+ * 获取进程级缓存的虚拟 `scrypt` 哈希，用于在登录邮箱不存在或未设密码时执行等耗时的防枚举兜底校验。
+ *
+ * @returns 合法格式的虚拟 `scrypt` 编码哈希
+ */
+export function getDummyPasswordHash(): Promise<string> {
+  if (cachedDummyPasswordHash === undefined) {
+    cachedDummyPasswordHash = hashPasswordScrypt("openhuddle-dummy-timing-guard-2026");
+  }
+  return cachedDummyPasswordHash;
+}
 
 /**
  * 计算输入字符串的 SHA-256 十六进制小写摘要。
@@ -49,11 +181,22 @@ export function constantTimeEqualHex(expectedHex: string, actualHex: string): bo
 /**
  * 生成带业务语义前缀的高熵实体主键字符串。
  *
- * @param prefix - 实体域前缀（如 `usr`, `agt`, `rom`, `prp`, `ses`, `otp`）
+ * @param prefix - 实体域前缀（如 `usr`, `agt`, `rom`, `prp`, `ses`, `otp`, `aud`）
  * @returns 形如 `<prefix>_<24位hex>` 的唯一标识符
  */
-export function generatePrefixedId(prefix: "usr" | "ses" | "otp" | "agt" | "rom" | "prp"): string {
+export function generatePrefixedId(
+  prefix: "usr" | "ses" | "otp" | "agt" | "rom" | "prp" | "aud",
+): string {
   return `${prefix}_${randomBytes(12).toString("hex")}`;
+}
+
+/**
+ * 生成品牌化的后台审计日志主键 `AuditLogId`。
+ *
+ * @returns 新生成的 `AuditLogId`
+ */
+export function generateAuditLogId(): AuditLogId {
+  return generatePrefixedId("aud") as AuditLogId;
 }
 
 /**

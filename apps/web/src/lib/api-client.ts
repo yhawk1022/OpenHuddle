@@ -12,16 +12,23 @@ import {
   type ApiErrorEnvelope,
   ApiErrorEnvelopeSchema,
   type AttentionPayload,
+  type AuthCodeSentResponse,
+  type AuthPublicConfigResponse,
+  type AuthSessionResponse,
   type CastProposalVoteBody,
+  type ChangePasswordBody,
+  type ConfirmPasswordResetBody,
   type ConnectLocalAgentBody,
   type ConnectLocalAgentResponse,
   type CreatePairingCodeResponse,
   type DecideProposalBody,
   type DeleteOwnedAgentResponse,
+  type DeleteRoomResponse,
   type ErrorCode,
   type HumanUserDto,
   type JoinRoomBody,
   type LocalAgentsStatusResponse,
+  type LoginWithPasswordBody,
   type MessageDto,
   type MessageMention,
   type MessageSeq,
@@ -31,8 +38,11 @@ import {
   type ProposalDraft,
   type ProposalId,
   type ReadCursorSeq,
+  type RegisterWithPasswordBody,
   type RequestOtpBody,
   type RequestOtpResponse,
+  type RequestPasswordResetCodeBody,
+  type RequestRegisterCodeBody,
   type RoomDetailDto,
   type RoomGovernanceConfig,
   type RoomGovernanceState,
@@ -40,6 +50,7 @@ import {
   type RoomSummaryDto,
   type RoomVisibility,
   type UpdateGovernanceBody,
+  type UpdateMeBody,
   type VerifyOtpBody,
   type VerifyOtpResponse,
 } from "@openhuddle/protocol";
@@ -149,7 +160,7 @@ export interface PublicShareReplayDto {
   readonly proposals: ReadonlyArray<ProposalCardDto>;
 }
 
-interface RequestOptions {
+export interface RequestOptions {
   readonly method?: "GET" | "POST" | "PATCH" | "DELETE";
   readonly body?: unknown;
   readonly skipAuthTokenClearOn401?: boolean;
@@ -157,7 +168,14 @@ interface RequestOptions {
   readonly timeoutMs?: number;
 }
 
-async function requestJson<TResponse>(
+/**
+ * 向同源 `/api/v1` 网关发送强类型 JSON 请求并自动附加认证凭证与 401 自愈处理。
+ *
+ * @param path - 请求路径与查询字符串
+ * @param options - HTTP 方法、请求体与超时设置
+ * @returns 解析后的强类型 JSON 响应
+ */
+export async function requestApiJson<TResponse>(
   path: string,
   options: RequestOptions = {},
 ): Promise<TResponse> {
@@ -230,6 +248,8 @@ async function requestJson<TResponse>(
   return rawPayload as TResponse;
 }
 
+const requestJson = requestApiJson;
+
 /**
  * 探测后端网关、数据库驱动与实时总线健康状态。
  *
@@ -242,7 +262,114 @@ export async function fetchSystemHealth(): Promise<SystemHealthDto> {
 }
 
 /**
- * 请求向指定邮箱发送 6 位一次性登录验证码（开发模式可选附带 `devOtpCode`）。
+ * 获取面向未登录前端的认证与注册策略公开配置（注册开关、域名白名单、邮件投递模式与冷却参数）。
+ *
+ * @returns 公开认证能力配置
+ */
+export async function fetchAuthConfig(): Promise<AuthPublicConfigResponse> {
+  return requestJson<AuthPublicConfigResponse>("/api/v1/auth/config", {
+    skipAuthTokenClearOn401: true,
+  });
+}
+
+/**
+ * 注册前向指定邮箱发送 6 位邮箱激活验证码。
+ *
+ * @param body - 规范化待注册邮箱
+ * @returns 验证码有效期、重发冷却秒数与投递通道信息
+ */
+export async function requestRegisterCode(
+  body: Readonly<RequestRegisterCodeBody>,
+): Promise<AuthCodeSentResponse> {
+  return requestJson<AuthCodeSentResponse>("/api/v1/auth/register/request-code", {
+    method: "POST",
+    body,
+    skipAuthTokenClearOn401: true,
+  });
+}
+
+/**
+ * 校验 6 位邮箱激活验证码，使用邮箱与密码完成新账号注册并自动签发登录会话。
+ *
+ * @param body - 邮箱、6 位验证码、昵称与密码
+ * @returns 新建人类用户档案与会话令牌
+ */
+export async function registerWithPassword(
+  body: Readonly<RegisterWithPasswordBody>,
+): Promise<AuthSessionResponse> {
+  return requestJson<AuthSessionResponse>("/api/v1/auth/register", {
+    method: "POST",
+    body,
+    skipAuthTokenClearOn401: true,
+  });
+}
+
+/**
+ * 使用邮箱与密码登录并建立人类登录会话。
+ *
+ * @param body - 邮箱与登录密码
+ * @returns 已认证人类资料与备份 `sessionToken`
+ */
+export async function loginWithPassword(
+  body: Readonly<LoginWithPasswordBody>,
+): Promise<AuthSessionResponse> {
+  return requestJson<AuthSessionResponse>("/api/v1/auth/login", {
+    method: "POST",
+    body,
+    skipAuthTokenClearOn401: true,
+  });
+}
+
+/**
+ * 忘记密码时请求向注册邮箱发送 6 位重置验证码。
+ *
+ * @param body - 目标邮箱
+ * @returns 标准发送回执与冷却秒数
+ */
+export async function requestPasswordResetCode(
+  body: Readonly<RequestPasswordResetCodeBody>,
+): Promise<AuthCodeSentResponse> {
+  return requestJson<AuthCodeSentResponse>("/api/v1/auth/password-reset/request-code", {
+    method: "POST",
+    body,
+    skipAuthTokenClearOn401: true,
+  });
+}
+
+/**
+ * 校验 6 位邮箱重置验证码并更新登录密码，同时自动登录并下线其余设备会话。
+ *
+ * @param body - 邮箱、6 位重置码与新密码
+ * @returns 更新后的用户资料与新会话令牌
+ */
+export async function confirmPasswordReset(
+  body: Readonly<ConfirmPasswordResetBody>,
+): Promise<AuthSessionResponse> {
+  return requestJson<AuthSessionResponse>("/api/v1/auth/password-reset/confirm", {
+    method: "POST",
+    body,
+    skipAuthTokenClearOn401: true,
+  });
+}
+
+/**
+ * 已登录人类修改密码（或无密码历史用户补设初始密码），同步轮换当前会话令牌。
+ *
+ * @param body - 可选旧密码与新密码
+ * @returns 更新后的用户资料与新会话令牌
+ */
+export async function changePassword(
+  body: Readonly<ChangePasswordBody>,
+): Promise<AuthSessionResponse> {
+  return requestJson<AuthSessionResponse>("/api/v1/auth/password/change", {
+    method: "POST",
+    body,
+    skipAuthTokenClearOn401: true,
+  });
+}
+
+/**
+ * [兼容旧版 OTP 路由] 请求向指定邮箱发送 6 位一次性登录验证码（开发模式可选附带 `devOtpCode`）。
  *
  * @param body - 邮箱地址与可选首次注册展示昵称
  * @returns 验证码有效期与开发快捷码（如有）
@@ -256,7 +383,7 @@ export async function requestEmailOtp(body: Readonly<RequestOtpBody>): Promise<R
 }
 
 /**
- * 校验 6 位邮箱验证码并建立人类登录会话。
+ * [兼容旧版 OTP 路由] 校验 6 位邮箱验证码并建立人类登录会话。
  *
  * @param body - 邮箱、6 位数字验证码与可选展示昵称
  * @returns 已认证人类资料与备份 `sessionToken`
@@ -287,6 +414,19 @@ export async function logoutSession(): Promise<{ readonly ok: true }> {
  */
 export async function fetchCurrentMe(): Promise<HumanMeResponseDto> {
   return requestJson<HumanMeResponseDto>("/api/v1/me");
+}
+
+/**
+ * 更新当前已登录人类用户的公开展示昵称。
+ *
+ * @param body - 包含新 `displayName` 的资料更新载荷
+ * @returns 更新后的 `HumanMeResponseDto`
+ */
+export async function updateCurrentMe(body: Readonly<UpdateMeBody>): Promise<HumanMeResponseDto> {
+  return requestJson<HumanMeResponseDto>("/api/v1/me", {
+    method: "PATCH",
+    body,
+  });
 }
 
 /**
@@ -385,6 +525,18 @@ export async function fetchRoomDetail(
 }
 
 /**
+ * 人类群主彻底删除指定群聊房间（级联清理消息、成员、提案与投票；名下个人 Agent 保持不受影响）。
+ *
+ * @param roomId - 待删除的房间品牌 ID
+ * @returns 删除确认与被删除房间 ID
+ */
+export async function deleteHuddleRoom(roomId: RoomId): Promise<DeleteRoomResponse> {
+  return requestJson<DeleteRoomResponse>(`/api/v1/rooms/${encodeURIComponent(roomId)}`, {
+    method: "DELETE",
+  });
+}
+
+/**
  * 凭房间邀请令牌加入现有 Huddle 房间。
  *
  * @param body - 包含 `inviteToken` 的入群载荷
@@ -396,6 +548,18 @@ export async function joinRoomByInvite(
   return requestJson<{ readonly ok: true; readonly room: RoomDetailDto }>("/api/v1/join", {
     method: "POST",
     body,
+  });
+}
+
+/**
+ * 主动退出当前已加入的 Huddle 房间（非群主成员退群入口）。
+ *
+ * @param roomId - 目标房间品牌 ID
+ * @returns 标准 `{ ok: true }` 确认响应
+ */
+export async function leaveHuddleRoom(roomId: RoomId): Promise<{ readonly ok: true }> {
+  return requestJson<{ readonly ok: true }>(`/api/v1/rooms/${encodeURIComponent(roomId)}/leave`, {
+    method: "POST",
   });
 }
 

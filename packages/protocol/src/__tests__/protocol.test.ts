@@ -4,11 +4,28 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  AdminOverviewResponseSchema,
+  AdminRoomMessagesQuerySchema,
+  AdminUpdateUserBodySchema,
   AgentIdSchema,
+  AuthPublicConfigResponseSchema,
+  ChangePasswordBodySchema,
+  ConfirmPasswordResetBodySchema,
+  DeleteRoomResponseSchema,
+  ErrorCodeSchema,
+  HumanUserDtoSchema,
+  LoginWithPasswordBodySchema,
+  OtpPurposeSchema,
   PairingCodeSchema,
+  PasswordSchema,
+  RegisterWithPasswordBodySchema,
+  RoomIdSchema,
+  RoomSummaryDtoSchema,
+  SseEventSchema,
   UserIdSchema,
   asMessageSeq,
   computeAuthorStamp,
+  createDefaultGovernanceState,
 } from "../index.js";
 
 describe("@openhuddle/protocol — identity & security invariants", () => {
@@ -106,5 +123,201 @@ describe("@openhuddle/protocol — identity & security invariants", () => {
     expect(PairingCodeSchema.parse("huddle-8k3p-92m")).toBe("HUDDLE-8K3P-92M");
     expect(asMessageSeq(1)).toBe(1);
     expect(() => asMessageSeq(0)).toThrow(RangeError);
+  });
+
+  it("validates DeleteRoomResponse, RoomSummaryDto ownerUserId, and room.deleted SSE event", () => {
+    const roomId = RoomIdSchema.parse("rom_test_delete_01");
+    expect(DeleteRoomResponseSchema.parse({ ok: true, deletedRoomId: roomId })).toEqual({
+      ok: true,
+      deletedRoomId: roomId,
+    });
+
+    expect(
+      SseEventSchema.parse({
+        type: "room.deleted",
+        roomId,
+      }),
+    ).toEqual({
+      type: "room.deleted",
+      roomId,
+    });
+
+    const summaryBase = {
+      id: roomId,
+      name: "Test Room",
+      topic: "Topic",
+      visibility: "invite_only",
+      lastSeq: 0,
+      yourLastReadSeq: 0,
+      governance: createDefaultGovernanceState(),
+      createdAtIso: "2026-11-20T08:00:00.000Z",
+    };
+    expect(() => RoomSummaryDtoSchema.parse(summaryBase)).toThrow();
+    expect(
+      RoomSummaryDtoSchema.parse({
+        ...summaryBase,
+        ownerUserId: ownerA,
+      }).ownerUserId,
+    ).toBe(ownerA);
+  });
+
+  it("defaults HumanUserDto role/status for backward compatibility and validates admin schemas", () => {
+    const legacyHuman = HumanUserDtoSchema.parse({
+      id: ownerA,
+      email: "owner@example.com",
+      displayName: "Owner",
+      createdAtIso: "2026-11-20T08:00:00.000Z",
+    });
+    expect(legacyHuman.role).toBe("user");
+    expect(legacyHuman.status).toBe("active");
+
+    expect(ErrorCodeSchema.parse("FORBIDDEN_ADMIN_ONLY")).toBe("FORBIDDEN_ADMIN_ONLY");
+    expect(ErrorCodeSchema.parse("ACCOUNT_SUSPENDED")).toBe("ACCOUNT_SUSPENDED");
+    expect(ErrorCodeSchema.parse("ADMIN_GUARDRAIL_VIOLATION")).toBe("ADMIN_GUARDRAIL_VIOLATION");
+
+    expect(
+      AdminUpdateUserBodySchema.parse({
+        role: "admin",
+        status: "suspended",
+        suspendedReason: "Spamming",
+      }),
+    ).toEqual({
+      role: "admin",
+      status: "suspended",
+      suspendedReason: "Spamming",
+    });
+
+    expect(AdminRoomMessagesQuerySchema.parse({ includeRecalled: "false" }).includeRecalled).toBe(
+      false,
+    );
+
+    const parsedOverview = AdminOverviewResponseSchema.parse({
+      ok: true,
+      windowDays: 14,
+      runtime: {
+        databaseDriver: "pglite",
+        realtimeBusDriver: "memory",
+        activeAgentConnections: 1,
+        activeAgentCount: 1,
+        activeRoomSubscriptions: 2,
+        activeRoomCount: 1,
+        uptimeSec: 120,
+        serverTimeIso: "2026-11-20T09:00:00.000Z",
+      },
+      kpis: {
+        totalUsers: 2,
+        adminUsers: 1,
+        suspendedUsers: 0,
+        newUsers7d: 2,
+        activeSessions: 1,
+        expiredSessions: 0,
+        totalAgents: 1,
+        onlineSseAgents: 1,
+        totalRooms: 1,
+        publicShareableRooms: 0,
+        pausedBudgetRooms: 0,
+        totalMessages: 5,
+        messages24h: 5,
+        messages7d: 5,
+        recalledMessages: 0,
+        totalProposals: 1,
+        openProposals: 1,
+        approvedProposals: 0,
+        rejectedProposals: 0,
+        totalVotes: 1,
+        activePairingCodes: 0,
+      },
+      dailyTrends: [
+        {
+          date: "2026-11-20",
+          newUsers: 2,
+          newRooms: 1,
+          totalMessages: 5,
+          humanMessages: 3,
+          agentMessages: 2,
+          newProposals: 1,
+        },
+      ],
+      agentPlatformDistribution: [{ key: "codex", label: "Codex", count: 1 }],
+      agentReachDistribution: [{ key: "online_sse", label: "实时在线", count: 1 }],
+      roomGovernanceDistribution: [{ key: "free", label: "自由讨论", count: 1 }],
+      topActiveRooms: [],
+      topActiveUsers: [],
+      recentAuditLogs: [],
+    });
+    expect(parsedOverview.kpis.totalUsers).toBe(2);
+  });
+
+  it("validates email+password registration, login, reset, change-password schemas and auth error codes", () => {
+    expect(PasswordSchema.safeParse("1234567").success).toBe(false);
+    expect(PasswordSchema.safeParse("        ").success).toBe(false);
+    expect(PasswordSchema.safeParse("a".repeat(129)).success).toBe(false);
+    expect(PasswordSchema.parse("StrongPass2026!")).toBe("StrongPass2026!");
+
+    const reg = RegisterWithPasswordBodySchema.parse({
+      email: "  Alice@Example.COM ",
+      code: " 042819 ",
+      displayName: "  Alice  ",
+      password: "correct horse battery staple",
+    });
+    expect(reg.email).toBe("alice@example.com");
+    expect(reg.code).toBe("042819");
+    expect(reg.displayName).toBe("Alice");
+
+    const login = LoginWithPasswordBodySchema.parse({
+      email: "Bob@Example.COM",
+      password: "my-secret-password",
+    });
+    expect(login.email).toBe("bob@example.com");
+
+    expect(
+      ConfirmPasswordResetBodySchema.parse({
+        email: "Alice@Example.com",
+        code: "123456",
+        newPassword: "new-password-999",
+      }).email,
+    ).toBe("alice@example.com");
+
+    expect(ChangePasswordBodySchema.parse({ newPassword: "first-password-123" }).newPassword).toBe(
+      "first-password-123",
+    );
+
+    expect(OtpPurposeSchema.parse("register")).toBe("register");
+    expect(OtpPurposeSchema.parse("password_reset")).toBe("password_reset");
+    expect(OtpPurposeSchema.parse("login")).toBe("login");
+
+    const config = AuthPublicConfigResponseSchema.parse({
+      ok: true,
+      allowPublicSignup: true,
+      allowedEmailDomains: ["example.com"],
+      emailDeliveryMode: "smtp",
+      otpResendCooldownSec: 60,
+      otpTtlSec: 600,
+      passwordMinLength: 8,
+    });
+    expect(config.emailDeliveryMode).toBe("smtp");
+
+    for (const code of [
+      "INVALID_CREDENTIALS",
+      "EMAIL_ALREADY_REGISTERED",
+      "SIGNUP_DISABLED",
+      "EMAIL_DOMAIN_NOT_ALLOWED",
+      "OTP_INVALID_OR_EXPIRED",
+      "OTP_ATTEMPTS_EXCEEDED",
+      "AUTH_RATE_LIMITED",
+      "EMAIL_DELIVERY_FAILED",
+      "EMAIL_DELIVERY_UNAVAILABLE",
+    ] as const) {
+      expect(ErrorCodeSchema.parse(code)).toBe(code);
+    }
+
+    const legacyHuman = HumanUserDtoSchema.parse({
+      id: ownerA,
+      email: "legacy@example.com",
+      displayName: "Legacy",
+      createdAtIso: "2026-11-20T08:00:00.000Z",
+    });
+    expect(legacyHuman.emailVerified).toBe(true);
+    expect(legacyHuman.hasPassword).toBe(false);
   });
 });

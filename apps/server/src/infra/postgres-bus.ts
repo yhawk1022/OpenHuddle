@@ -19,7 +19,12 @@ import {
 import type pg from "pg";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { InMemoryRealtimeBus, type RealtimeBus, type UnsubscribeFn } from "./realtime-bus.js";
+import {
+  InMemoryRealtimeBus,
+  type RealtimeBus,
+  type RealtimeBusTelemetry,
+  type UnsubscribeFn,
+} from "./realtime-bus.js";
 
 /** PostgreSQL `LISTEN / NOTIFY` 统一广播通道名称 */
 export const OPENHUDDLE_PG_NOTIFY_CHANNEL = "openhuddle_events";
@@ -152,6 +157,16 @@ export class PostgresListenNotifyBus implements RealtimeBus {
     this.localBus.evictAgentSubscribers(agentId);
   }
 
+  /** {@inheritDoc RealtimeBus.evictRoomSubscribers} */
+  public evictRoomSubscribers(roomId: RoomId): void {
+    this.localBus.evictRoomSubscribers(roomId);
+  }
+
+  /** {@inheritDoc RealtimeBus.getTelemetry} */
+  public getTelemetry(): RealtimeBusTelemetry {
+    return this.localBus.getTelemetry();
+  }
+
   /** {@inheritDoc RealtimeBus.close} */
   public async close(): Promise<void> {
     this.closing = true;
@@ -196,6 +211,9 @@ export class PostgresListenNotifyBus implements RealtimeBus {
 
       if (envelope.scope === "room") {
         void this.localBus.publishToRoom(envelope.roomId, envelope.event);
+        if (envelope.event.type === "room.deleted") {
+          this.localBus.evictRoomSubscribers(envelope.roomId);
+        }
       } else {
         void this.localBus.publishToAgent(envelope.agentId, envelope.event);
       }

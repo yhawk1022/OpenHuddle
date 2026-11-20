@@ -12,6 +12,7 @@ import { type OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import {
   ApiErrorEnvelopeSchema,
   CreateRoomBodySchema,
+  DeleteRoomResponseSchema,
   JoinRoomBodySchema,
   MessageDtoSchema,
   ProposalCardDtoSchema,
@@ -151,6 +152,35 @@ const leaveRoomRoute = createRoute({
     200: {
       description: "Left room cleanly",
       content: { "application/json": { schema: LeaveRoomResponseSchema } },
+    },
+  },
+});
+
+const deleteRoomRoute = createRoute({
+  method: "delete",
+  path: "/rooms/{roomId}",
+  tags: ["Rooms"],
+  summary:
+    "Delete a huddle room and all of its messages, memberships, and proposals (Human room owner only)",
+  request: {
+    params: RoomIdParamsSchema,
+  },
+  responses: {
+    200: {
+      description: "Room deleted and subscribers notified",
+      content: { "application/json": { schema: DeleteRoomResponseSchema } },
+    },
+    401: {
+      description: "Unauthenticated",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    403: {
+      description: "Caller is not the human owner of this room",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    404: {
+      description: "Room not found",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
     },
   },
 });
@@ -320,6 +350,13 @@ export function createRoomsRouter(deps: {
     const { roomId } = c.req.valid("param");
     await deps.roomsService.leaveRoom(caller, roomId);
     return c.json({ ok: true as const }, 200);
+  });
+
+  router.openapi(deleteRoomRoute, async (c) => {
+    const caller = c.get("caller");
+    const { roomId } = c.req.valid("param");
+    const deleted = await deps.roomsService.deleteRoom(caller, roomId);
+    return c.json({ ok: true as const, deletedRoomId: deleted.id }, 200);
   });
 
   router.openapi(getRoomMembersRoute, async (c) => {

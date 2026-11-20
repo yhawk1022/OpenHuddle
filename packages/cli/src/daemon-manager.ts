@@ -11,6 +11,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, posix, resolve } from "node:path";
+import {
+  discoverUserCliBinDirs,
+  ensureLoopbackNoProxyValue,
+  resolveAntigravityManagedProxyEnv,
+  resolveShellWrapperEnvForBinary,
+} from "./host-env.js";
 import type { WakeExecutionTarget } from "./sse-listener.js";
 import { normalizeServerUrl, sanitizeTokenSlug } from "./token-store.js";
 
@@ -240,9 +246,13 @@ const PASSTHROUGH_DAEMON_ENV_KEYS: readonly string[] = [
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
   "NODE_EXTRA_CA_CERTS",
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_MODEL",
+  "ANTHROPIC_SMALL_FAST_MODEL",
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
   "OPENAI_BASE_URL",
@@ -257,37 +267,17 @@ const PASSTHROUGH_DAEMON_ENV_KEYS: readonly string[] = [
 ];
 
 /**
- * 确保 `NO_PROXY` 列表中始终包含本地回环地址，防止代理软件劫持本地 `localhost:3000` SSE 与 REST 请求。
+ * 从当前进程环境变量（及用户 Shell 配置文件、托管代理、CLI 包装函数回退）提取需要写入后台守护服务的代理与网关环境变量。
  *
- * @param existing - 原始 `NO_PROXY` 字符串
- * @returns 合并回环豁免后的逗号分隔字符串
- */
-function ensureLoopbackNoProxy(existing: string | undefined): string {
-  const required = ["localhost", "127.0.0.1", "::1"];
-  const items = (existing ?? "")
-    .split(",")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-  const lowerSet = new Set(items.map((item) => item.toLowerCase()));
-  for (const host of required) {
-    if (!lowerSet.has(host)) {
-      items.push(host);
-      lowerSet.add(host);
-    }
-  }
-  return items.join(",");
-}
-
-/**
- * 从当前进程环境变量（及用户 Shell 配置文件回退）提取需要写入后台守护服务的代理与网关环境变量。
- *
- * @param homeDir - 用户主目录（当进程未继承代理变量时用于轻量扫描 `~/.zshrc` 等静态 `export`）
+ * @param homeDir - 用户主目录（当进程未继承代理或隔离目录变量时用于扫描 `~/.zshrc` 与 Antigravity 托管代理）
  * @param sourceEnv - 源环境变量字典
+ * @param target - 可选目标唤醒预设（用于严格按预设隔离注入 Antigravity 专属代理或 `claude`/`codex` 包装函数变量）
  * @returns 去重且补齐回环 `NO_PROXY` 后的键值表
  */
 export function collectInheritedDaemonEnvVars(
   homeDir: string,
   sourceEnv: Readonly<NodeJS.ProcessEnv> = process.env,
+  target?: Readonly<WakeExecutionTarget>,
 ): Readonly<Record<string, string>> {
   const collected: Record<string, string> = {};
 
@@ -330,6 +320,48 @@ export function collectInheritedDaemonEnvVars(
         // 忽略不可读的 RC 文件
       }
     }
+
+    // 按预设精准补充托管代理与 Shell 包装函数隔离变量（防止 Antigravity 专属代理污染内网直连的 codex/claude）
+    if (target?.kind === "preset") {
+      switch (target.preset) {
+        case "antigravity": {
+          const agyProxy = resolveAntigravityManagedProxyEnv(homeDir, true);
+          for (const [key, val] of Object.entries(agyProxy)) {
+            collected[key] ??= val;
+          }
+          for (const [key, val] of Object.entries(
+            resolveShellWrapperEnvForBinary(homeDir, "agy"),
+          )) {
+            collected[key] ??= val;
+          }
+          break;
+        }
+        case "claude_code": {
+          for (const [key, val] of Object.entries(
+            resolveShellWrapperEnvForBinary(homeDir, "claude"),
+          )) {
+            collected[key] ??= val;
+          }
+          break;
+        }
+        case "codex": {
+          for (const [key, val] of Object.entries(
+            resolveShellWrapperEnvForBinary(homeDir, "codex"),
+          )) {
+            collected[key] ??= val;
+          }
+          break;
+        }
+        case "gemini": {
+          for (const [key, val] of Object.entries(
+            resolveShellWrapperEnvForBinary(homeDir, "gemini"),
+          )) {
+            collected[key] ??= val;
+          }
+          break;
+        }
+      }
+    }
   }
 
   const finalHasProxy =
@@ -352,7 +384,7 @@ export function collectInheritedDaemonEnvVars(
       collected.HTTPS_PROXY = upperHttps;
       collected.https_proxy = collected.https_proxy ?? upperHttps;
     }
-    const mergedNoProxy = ensureLoopbackNoProxy(collected.NO_PROXY ?? collected.no_proxy);
+    const mergedNoProxy = ensureLoopbackNoProxyValue(collected.NO_PROXY ?? collected.no_proxy);
     collected.NO_PROXY = mergedNoProxy;
     collected.no_proxy = mergedNoProxy;
   }
@@ -740,6 +772,7 @@ export function installDaemonService(
 ): DaemonControlReport {
   const platform = assertSupportedPlatform(deps.platform);
   const safeSlug = sanitizeTokenSlug(spec.slug);
+  const resolvedHomeDir = resolve(spec.homeDir || homedir());
   const hostEnvPath =
     spec.envPath !== undefined
       ? spec.envPath
@@ -747,7 +780,8 @@ export function installDaemonService(
         ? mergePosixPathSegments([
             extractPosixNodeBinDir(spec.nodeBinaryPath),
             process.env.PATH,
-            posix.join(resolve(spec.homeDir || homedir()).replace(/\\/g, "/"), ".local", "bin"),
+            ...discoverUserCliBinDirs(resolvedHomeDir).map((dir) => dir.replace(/\\/g, "/")),
+            posix.join(resolvedHomeDir.replace(/\\/g, "/"), ".local", "bin"),
             platform === "darwin" ? "/opt/homebrew/bin" : undefined,
             "/usr/local/bin",
             "/usr/bin",
@@ -757,12 +791,11 @@ export function installDaemonService(
           ])
         : undefined;
 
-  const resolvedHomeDir = resolve(spec.homeDir || homedir());
   const inheritedEnvVars =
     spec.envVars !== undefined
       ? spec.envVars
       : platform !== "win32"
-        ? collectInheritedDaemonEnvVars(resolvedHomeDir, process.env)
+        ? collectInheritedDaemonEnvVars(resolvedHomeDir, process.env, spec.target)
         : undefined;
 
   const normalizedSpec: DaemonServiceSpec = {

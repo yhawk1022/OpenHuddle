@@ -1,10 +1,11 @@
 /**
  * @module server/modules/rooms/service
- * @description 房间生命周期（创建、入群、退群、成员列表）与公开只读分享快照（`/share/:inviteToken`）编排服务。
+ * @description 房间生命周期（创建、入群、退群、删除、成员列表）与公开只读分享快照（`/share/:inviteToken`）编排服务。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 双模态建群归属：人类创建房间直接成为 `"owner"`；Agent 代主人创建房间时，自动将其归属主人添加为 `"owner"`，并将该 Agent 添加为 `"member"`，确保房间治理权永远掌握在人类手中。
- * 2. 公开分享零凭据泄露：仅 `visibility === "public_shareable"` 的房间可对外生成分享快照，且强制剥离 `inviteToken` 并使用中立匿名视角盖章。
+ * 2. Owner-First 删群防线与排他锁：仅房间的人类归属主人（`caller.kind === "human" && room.ownerUserId === caller.userId`）可删除群聊；事务内先 `FOR UPDATE` 锁定 `rooms` 行再级联删除，事务提交后广播 `room.deleted` 并清理订阅者。
+ * 3. 公开分享零凭据泄露：仅 `visibility === "public_shareable"` 的房间可对外生成分享快照，且强制剥离 `inviteToken` 并使用中立匿名视角盖章。
  */
 import {
   type AgentId,
@@ -20,6 +21,7 @@ import {
   asReadCursorSeq,
   createDefaultGovernanceState,
 } from "@openhuddle/protocol";
+import { assertHumanCaller } from "../../infra/auth-middleware.js";
 import { generateInviteToken, generateRoomId } from "../../infra/crypto.js";
 import { AppError } from "../../infra/errors.js";
 import { PUBLIC_NEUTRAL_VIEWER, toActorMemberKey } from "../../infra/identity-stamp.js";
@@ -30,7 +32,7 @@ import {
   type ProposalsRepository,
   stampRawProposalForViewer,
 } from "../proposals/proposals.repo.js";
-import { type RoomsRepository, buildRoomDetailDto } from "./rooms.repo.js";
+import { type RoomRecord, type RoomsRepository, buildRoomDetailDto } from "./rooms.repo.js";
 
 /**
  * 公开只读分享页完整返回载荷。
@@ -302,6 +304,55 @@ export class RoomsService {
     }
 
     await this.roomsRepo.removeMember(roomId, memberKey);
+  }
+
+  /**
+   * 彻底删除指定群聊房间（级联清理成员、消息、提案与投票，并保留各人类名下已绑定 Agent）。
+   *
+   * @param caller - 当前已认证调用者（必须为该房间的人类归属主人）
+   * @param roomId - 待删除的房间主键
+   * @returns 被删除的 `RoomRecord` 快照
+   * @throws {AppError} Agent 或非群主调用抛 `403 FORBIDDEN_NOT_OWNER`；房间不存在抛 `404 NOT_FOUND`
+   */
+  public async deleteRoom(
+    caller: Readonly<AuthenticatedCaller>,
+    roomId: RoomId,
+  ): Promise<RoomRecord> {
+    const human = assertHumanCaller(caller);
+
+    const deletedRoom = await this.roomsRepo.runInTransaction(async (txRepo) => {
+      // 并发控制点：先加排他行锁再校验群主与执行删除，串行化并发发言、治理修改或重复删除请求
+      const lockedRoom = await txRepo.lockRoomByIdForUpdate(roomId);
+      if (!lockedRoom) {
+        throw new AppError({
+          code: "NOT_FOUND",
+          statusCode: 404,
+          message: `Room "${roomId}" was not found.`,
+        });
+      }
+
+      // Owner-First 安全边界：仅房间的人类归属主人本人可执行物理删除，Agent 与普通群成员一律拒绝
+      if (lockedRoom.ownerUserId !== human.userId) {
+        throw new AppError({
+          code: "FORBIDDEN_NOT_OWNER",
+          statusCode: 403,
+          message: "Only the human room owner can delete this huddle room.",
+        });
+      }
+
+      await txRepo.clearPairingCodesForRoom(roomId);
+      await txRepo.deleteRoomById(roomId);
+      return lockedRoom;
+    });
+
+    // Post-Commit：事务提交成功后先向当前在线成员广播 room.deleted，再驱逐该房间的内存监听器集合
+    await this.realtimeBus.publishToRoom(roomId, {
+      type: "room.deleted",
+      roomId,
+    });
+    this.realtimeBus.evictRoomSubscribers(roomId);
+
+    return deletedRoom;
   }
 
   /**

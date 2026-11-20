@@ -106,18 +106,66 @@ export function isLoopbackServerUrl(publicBaseUrl: string): boolean {
 }
 
 /**
- * 构建用于探测本机 CLI 二进制的候选搜索目录列表（兼容 `nvm`、`Homebrew` 与 `~/.local/bin`）。
+ * 解析形如 `v24.17.0` 的语义版本号供降序排序（确保多版本 `nvm` 环境下优先命中最新 Node 全局 `bin`）。
+ */
+function parseNvmSemverTuple(dirName: string): readonly [number, number, number] {
+  const cleaned = dirName.replace(/^v/i, "");
+  const parts = cleaned.split(".");
+  const major = Number.parseInt(parts[0] ?? "0", 10);
+  const minor = Number.parseInt(parts[1] ?? "0", 10);
+  const patch = Number.parseInt(parts[2] ?? "0", 10);
+  return [
+    Number.isFinite(major) ? major : 0,
+    Number.isFinite(minor) ? minor : 0,
+    Number.isFinite(patch) ? patch : 0,
+  ];
+}
+
+/**
+ * 扫描用户 `~/.nvm/versions/node/<ver>/bin` 目录（按版本号降序排列），防止服务端运行在系统/旧版 Node 时漏检安装在其他 Node 版本的 `claude` / `codex`。
+ */
+function discoverNvmNodeBinDirectories(homeDir: string): readonly string[] {
+  const nvmVersionsDir = path.join(homeDir, ".nvm", "versions", "node");
+  if (!existsSync(nvmVersionsDir)) {
+    return [];
+  }
+  try {
+    return readdirSync(nvmVersionsDir)
+      .sort((a, b) => {
+        const [aMaj, aMin, aPat] = parseNvmSemverTuple(a);
+        const [bMaj, bMin, bPat] = parseNvmSemverTuple(b);
+        if (bMaj !== aMaj) return bMaj - aMaj;
+        if (bMin !== aMin) return bMin - aMin;
+        return bPat - aPat;
+      })
+      .map((ver) => path.join(nvmVersionsDir, ver, "bin"));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 构建用于探测本机 CLI 二进制的候选搜索目录列表（兼容多版本 `nvm`、`pnpm`、`Claude Installer`、`Homebrew` 与 `~/.local/bin`）。
  */
 function buildSearchDirectories(homeDir: string, pathEnv: string | undefined): readonly string[] {
   const sep = process.platform === "win32" ? ";" : ":";
-  // 测试显式注入 `pathEnv` 时严格限定在注入目录内探测，避免宿主机全局 `/opt/homebrew/bin` 污染沙箱断言
+  // 测试显式注入 `pathEnv` 时严格限定在注入目录内探测，避免宿主机全局 `/opt/homebrew/bin` 污染沙箱断言；
+  // 真实运行时 `pathEnv === undefined`，合并当前 Node 目录、`process.env.PATH`、全部 nvm 版本 bin 与常见包管理器目录。
   const rawDirs =
     pathEnv !== undefined
       ? pathEnv.split(sep)
       : [
           path.dirname(process.execPath),
           ...(process.env.PATH ?? "").split(sep),
+          ...discoverNvmNodeBinDirectories(homeDir),
+          path.join(homeDir, ".claude", "local"),
           path.join(homeDir, ".local", "bin"),
+          path.join(homeDir, "Library", "pnpm"),
+          path.join(homeDir, "Library", "pnpm", "bin"),
+          path.join(homeDir, ".local", "share", "pnpm"),
+          path.join(homeDir, ".volta", "bin"),
+          path.join(homeDir, ".bun", "bin"),
+          path.join(homeDir, ".yarn", "bin"),
           ...(process.platform === "darwin"
             ? ["/opt/homebrew/bin", "/usr/local/bin"]
             : ["/usr/local/bin"]),
@@ -265,7 +313,7 @@ export class LocalConnectService {
     this.messagesService = deps.messagesService;
     this.cliBundlePath = deps.cliBundlePath ?? DEFAULT_CLI_BUNDLE_PATH;
     this.homeDir = deps.homeDir ?? homedir();
-    this.pathEnv = deps.pathEnv ?? process.env.PATH;
+    this.pathEnv = deps.pathEnv;
     this.installDaemonFn =
       deps.installDaemonFn ??
       ((params) => {

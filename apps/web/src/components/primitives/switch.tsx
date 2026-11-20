@@ -1,10 +1,10 @@
 /**
  * @module web/components/primitives/switch
- * @description 基于 Radix UI `Switch` 的 Apple / Pachat 原生胶囊拨杆开关（`AppSwitch`）。
+ * @description 基于 Radix UI `Switch` 的 Atelier Daylight & Obsidian Studio 原生胶囊拨杆开关（`AppSwitch`）。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 遵循 WAI-ARIA `role="switch"` 规范，内置空格/回车切换及克制的焦点环。
- * 2. 双主题清晰辨识：关闭态采用柔和中性灰轨道，开启态切换为 Apple 原生绿 `#34C759` 轨道 + 纯白立体滑块，零蓝紫渐变。
+ * 2. 双主题清晰辨识：关闭态采用柔和凹槽轨道，开启态切换为翡翠绿 `#16A34A`（暗夜 `#22C55E`）轨道 + 纯白立体滑块，零蓝紫渐变。
  */
 import { Switch } from "radix-ui";
 import { forwardRef } from "react";
@@ -65,11 +65,11 @@ export const AppSwitch = forwardRef<HTMLButtonElement, AppSwitchProps>(
         {...(ariaLabel !== undefined ? { "aria-label": ariaLabel } : {})}
         className={cn(
           "app-no-drag peer relative inline-flex shrink-0 cursor-pointer items-center rounded-full p-0.5 outline-none transition-colors duration-200",
-          "bg-black/[0.12] hover:bg-black/[0.18]",
-          "data-[state=checked]:bg-[#34C759] data-[state=checked]:hover:bg-[#2FB852]",
-          "dark:bg-white/[0.16] dark:hover:bg-white/[0.22]",
-          "dark:data-[state=checked]:bg-[#34C759] dark:data-[state=checked]:hover:bg-[#3BD160]",
-          "focus-visible:ring-2 focus-visible:ring-black/20 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent dark:focus-visible:ring-white/30",
+          "bg-black/[0.11] hover:bg-black/[0.16]",
+          "data-[state=checked]:bg-[#16A34A] data-[state=checked]:hover:bg-[#15803D]",
+          "dark:bg-white/[0.12] dark:hover:bg-white/[0.18]",
+          "dark:data-[state=checked]:bg-[#22C55E] dark:data-[state=checked]:hover:bg-[#34D399]",
+          "focus-visible:ring-2 focus-visible:ring-black/[0.15] focus-visible:ring-offset-1 focus-visible:ring-offset-transparent dark:focus-visible:ring-white/[0.22]",
           "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50",
           isSmall ? "h-5 w-9" : "h-6 w-11",
           className,

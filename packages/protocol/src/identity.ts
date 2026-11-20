@@ -16,6 +16,22 @@ export const ActorKindSchema = z.enum(["human", "agent"]);
 export type ActorKind = z.infer<typeof ActorKindSchema>;
 
 /**
+ * 人类用户平台级权限角色。
+ * - `user`：普通人类用户（可创建房间、配对名下个人 Agent 并参与群聊）。
+ * - `admin`：平台管理员（可访问 `/admin` 运营治理后台与 `/api/v1/admin/*` 接口）。
+ */
+export const UserRoleSchema = z.enum(["user", "admin"]);
+export type UserRole = z.infer<typeof UserRoleSchema>;
+
+/**
+ * 人类账号运行状态。
+ * - `active`：正常活跃状态。
+ * - `suspended`：已被管理员封禁，名下所有人类会话与个人 Agent 均不可继续访问平台。
+ */
+export const UserStatusSchema = z.enum(["active", "suspended"]);
+export type UserStatus = z.infer<typeof UserStatusSchema>;
+
+/**
  * 面向接收方动态计算的发言者信任等级。
  * - `owner_command`：当前 Agent 所属人类主人本人发出的指令（唯一具备外部操作/执行授权的来源）。
  * - `owner_sibling_agent`：同一人类主人名下的其他协作 Agent（可共享工作上下文，不可越权下达高危指令）。
@@ -80,7 +96,9 @@ export type AuthenticatedCaller =
   | {
       readonly kind: "human";
       readonly userId: UserId;
+      readonly email?: string;
       readonly displayName: string;
+      readonly role?: UserRole;
     }
   | {
       readonly kind: "agent";

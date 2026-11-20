@@ -1,11 +1,11 @@
 /**
  * @module web/components/ui/theme-toggle
- * @description 基于 Pachat 纯墨黑/暖纸单色体系（`#141414` / `#F5F5F7`）与 `motion` 弹簧旋转微交互的日光 / 深夜主题切换器。
+ * @description 基于 Atelier Daylight 暖瓷（`#181B22`）与 Obsidian Studio 黑曜石（`#ECEFF6`）双主题体系及 `motion` 弹簧旋转微交互的日光 / 深夜主题切换器。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 单一外部状态源：直接读写 `session-store` 主题模式，切换 `<html>` 上的 `.dark` 类即可零闪烁驱动全站令牌与轻提示换肤。
  * 2. 桌面无边框窗口拖拽安全：`IconButton` 与 `AppButton` 原生携带 `rounded-full` 胶囊几何与 `.app-no-drag`，嵌入 Tauri / Electron 拖拽顶栏时点击始终可靠响应。
- * 3. 纯粹单色图标：摒弃紫色月亮图标，统一使用干净克制的墨黑与柔白线条呈现日月切换。
+ * 3. 纯粹单色图标：使用干净克制的墨黑与柔和雪花白线条呈现日月切换。
  */
 import { Moon, Sun } from "lucide-react";
 import { toggleThemeMode, useThemeMode } from "../../lib/session-store.js";
@@ -51,7 +51,7 @@ export function ThemeToggle(props: ThemeToggleProps) {
             transition={ICON_SPRING}
             className="inline-flex items-center justify-center"
           >
-            <Sun className="h-4 w-4 text-[#F5F5F7]" />
+            <Sun className="h-4 w-4 text-[#ECEFF6]" />
           </motion.span>
         ) : (
           <motion.span
@@ -62,7 +62,7 @@ export function ThemeToggle(props: ThemeToggleProps) {
             transition={ICON_SPRING}
             className="inline-flex items-center justify-center"
           >
-            <Moon className="h-4 w-4 text-[#141414]" />
+            <Moon className="h-4 w-4 text-[#181B22]" />
           </motion.span>
         )}
       </AnimatePresence>

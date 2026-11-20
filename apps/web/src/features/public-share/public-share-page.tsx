@@ -1,12 +1,12 @@
 /**
  * @module web/features/public-share/public-share-page
- * @description 免登录公开只读分享回放页（`/share/:inviteToken`）：以 Pachat 纯净白底聊天室实录 + 温润鼠尾草绿置顶结论便签的形态呈现多 Agent 讨论与人类拍板决议。
+ * @description 免登录公开只读分享回放页（`/share/:inviteToken`）：以 Apple Liquid Glass 顶栏 + 通透舞台实录 + 鼠尾草绿置顶结论便签的形态呈现多 Agent 讨论与人类拍板决议。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 零信任只读视图：复用纯展示型 `MessageBubble`（`readOnly={true}`）与 `ProposalCardView`（`interactive={false}`），不挂载任何写入或治理 Mutation。
  * 2. 四态完备体验：完整覆盖骨架加载态、未开启分享/404 错误态、空讨论态与富回放态。
  * 3. App Shell 与桌面拖拽约束：全局 `html/body/#root` 锁定 `100dvh + overflow: hidden`，本页自带 `h-dvh` 根容器与内部 `overflow-y-auto` 滚动区；顶栏同时声明 `data-tauri-drag-region` 与 `.app-drag-region`。
- * 4. 渲染纯函数化与去模板化视觉：日期分隔与连续消息分组仅基于消息自身的 `createdAtIso` 计算，绝不读取 `Date.now()`；全站统一 Pachat `#FFFFFF` / `#F5F5F7` / `#141414` 极简色阶，零蓝紫渐变。
+ * 4. 渲染纯函数化与光学协调：日期分隔与连续消息分组仅基于消息自身的 `createdAtIso` 计算，绝不读取 `Date.now()`；回放舞台使用轻透 `oh-stage-frame` 保障长对话 120Hz 顺滑滚动。
  */
 import type { MessageDto, ProposalCardDto, ProposalId, RoomMemberDto } from "@openhuddle/protocol";
 import { queryOptions, useQuery } from "@tanstack/react-query";
@@ -145,7 +145,7 @@ interface FinalDecisionCardProps {
 }
 
 /**
- * 渲染置顶的人类最终拍板决议卡（Pachat 温润鼠尾草绿 `#E3F3EC` 便签形态）。
+ * 渲染置顶的人类最终拍板决议卡（温润鼠尾草绿便签形态）。
  *
  * @param props - 已批准的提案与聚焦回调
  * @returns 决议便签卡
@@ -164,35 +164,38 @@ function FinalDecisionCard(props: FinalDecisionCardProps) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 420, damping: 32 }}
       onClick={() => props.onFocus(proposal.id)}
-      className="app-no-drag group block w-full cursor-pointer select-none rounded-[20px] bg-[#E3F3EC] p-4 text-left text-[#141414] ring-1 ring-inset ring-black/[0.05] transition hover:ring-black/[0.12] active:scale-[0.99] dark:bg-[#16271F] dark:text-[#E8F3EC] dark:ring-white/[0.08] dark:hover:ring-white/[0.16]"
+      className="app-no-drag group block w-full cursor-pointer select-none rounded-[20px] bg-[#E6F5EC] p-4 text-left text-[#111318] ring-1 ring-inset ring-emerald-900/[0.08] transition hover:ring-emerald-900/[0.16] active:scale-[0.99] dark:bg-[#1B2B23] dark:text-[#E6F4EC] dark:ring-emerald-400/[0.14] dark:hover:ring-emerald-400/[0.24]"
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1E5638] dark:text-[#86E0A6]">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#145335] dark:text-[#6EE7B7]">
           <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5" />
           <span>已拍板结论</span>
         </span>
-        <span className="text-[11px] text-[#456B56] dark:text-[#9ACBB0]">
+        <span className="text-[11px] text-[#2F6849] dark:text-[#9ACBB0]">
           {endorseCount}/{proposal.votes.length} Agent 赞成
         </span>
       </div>
       <p className="mt-1.5 text-sm font-semibold leading-snug">{proposal.draft.title}</p>
       {decidedOption !== undefined ? (
-        <div className="mt-2 rounded-[14px] bg-white/80 px-3 py-2 ring-1 ring-inset ring-black/[0.05] dark:bg-black/25 dark:ring-white/[0.08]">
-          <p className="text-xs font-semibold text-[#141414] dark:text-zinc-100">
+        <div className="mt-2 rounded-[14px] bg-white/85 px-3 py-2 ring-1 ring-inset ring-black/[0.05] dark:bg-black/25 dark:ring-white/[0.08]">
+          <p className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
             选定方案：{decidedOption.label}
           </p>
-          <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-[#5F5F64] dark:text-zinc-300">
+          <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-[#4B5565] dark:text-[#C4C4CA]">
             {decidedOption.summary}
           </p>
         </div>
       ) : null}
       {proposal.decisionNote !== undefined && proposal.decisionNote.length > 0 ? (
-        <p className="mt-2 text-xs leading-relaxed text-[#3E6B52] dark:text-[#B3D8C3]">
+        <p className="mt-2 text-xs leading-relaxed text-[#2F6849] dark:text-[#B3D8C3]">
           “{proposal.decisionNote}”
         </p>
       ) : null}
-      <p className="mt-2 flex items-center gap-1.5 text-[11px] text-[#456B56] dark:text-[#9ACBB0]">
-        <ShieldCheck aria-hidden="true" className="h-3.5 w-3.5 text-[#34C759]" />
+      <p className="mt-2 flex items-center gap-1.5 text-[11px] text-[#2F6849] dark:text-[#9ACBB0]">
+        <ShieldCheck
+          aria-hidden="true"
+          className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]"
+        />
         <span>
           {proposal.decidedBy !== undefined
             ? `${proposal.decidedBy.displayName} 拍板确认`
@@ -201,7 +204,7 @@ function FinalDecisionCard(props: FinalDecisionCardProps) {
             ? ` · ${formatMessageTimestamp(proposal.decidedAtIso)}`
             : ""}
         </span>
-        <span className="ml-auto font-medium text-[#1E5638] opacity-0 transition group-hover:opacity-100 dark:text-[#86E0A6]">
+        <span className="ml-auto font-medium text-[#145335] opacity-0 transition group-hover:opacity-100 dark:text-[#6EE7B7]">
           查看详情 →
         </span>
       </p>
@@ -291,11 +294,11 @@ export function PublicSharePage(props: PublicSharePageProps) {
         : "这个群聊不存在，或群主已关闭公开分享权限。";
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-[#F8F8FA] text-[#141414] dark:bg-[#0E0E10] dark:text-zinc-100">
-      {/* 顶部清爽标题栏：纯正 Figtree 粗体字标 + 胶囊按钮，支持 Tauri v2 与 Electron 无边框拖拽 */}
+    <div className="flex h-dvh flex-col overflow-hidden text-[#111318] dark:text-[#F2F2F4]">
+      {/* 顶部 Apple Liquid Glass 标题栏：支持 Tauri v2 与 Electron 无边框拖拽 */}
       <header
         data-tauri-drag-region=""
-        className="app-drag-region pt-safe z-20 shrink-0 select-none border-b border-black/[0.06] bg-white/95 backdrop-blur-md dark:border-white/[0.07] dark:bg-[#0E0E10]/95"
+        className="app-drag-region pt-safe relative liquid-glass-bar z-20 shrink-0 select-none"
       >
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <div className="flex min-w-0 items-center gap-2.5">
@@ -306,12 +309,12 @@ export function PublicSharePage(props: PublicSharePageProps) {
               className="app-no-drag flex cursor-pointer items-center gap-2 rounded-full px-1 py-0.5 transition hover:opacity-80 active:scale-[0.98]"
             >
               <BrandMark className="h-6 w-6 shrink-0" />
-              <span className="text-[17px] font-bold tracking-[-0.025em] text-[#141414] dark:text-white">
+              <span className="text-[17px] font-bold tracking-[-0.025em] text-[#111318] dark:text-white">
                 OpenHuddle
               </span>
             </button>
-            <span className="pointer-events-none hidden items-center gap-1 rounded-full bg-[#F5F5F7] px-2.5 py-0.5 text-[11px] font-medium text-[#5F5F64] sm:inline-flex dark:bg-[#1C1C1F] dark:text-zinc-300">
-              <Globe aria-hidden="true" className="h-3 w-3 text-[#34C759]" />
+            <span className="pointer-events-none hidden items-center gap-1 rounded-full bg-black/[0.05] px-2.5 py-0.5 text-[11px] font-medium text-[#4B5565] sm:inline-flex dark:bg-white/[0.07] dark:text-[#C4C4CA]">
+              <Globe aria-hidden="true" className="h-3 w-3 text-[#16A34A] dark:text-[#34D399]" />
               <span>公开回放</span>
             </span>
           </div>
@@ -324,7 +327,10 @@ export function PublicSharePage(props: PublicSharePageProps) {
                 size="sm"
                 leadingIcon={
                   copiedLink ? (
-                    <Check aria-hidden="true" className="h-3.5 w-3.5 text-[#34C759]" />
+                    <Check
+                      aria-hidden="true"
+                      className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]"
+                    />
                   ) : (
                     <Copy aria-hidden="true" className="h-3.5 w-3.5" />
                   )
@@ -370,15 +376,15 @@ export function PublicSharePage(props: PublicSharePageProps) {
               initial={{ opacity: 0, y: 12, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               transition={{ type: "spring", stiffness: 420, damping: 32 }}
-              className="rounded-[28px] bg-white p-7 text-center shadow-[0_20px_60px_rgba(0,0,0,0.06)] ring-1 ring-black/[0.07] dark:bg-[#151518] dark:ring-white/[0.09]"
+              className="relative liquid-glass-modal rounded-[28px] p-7 text-center"
             >
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#F5F5F7] text-[#141414] dark:bg-[#242428] dark:text-zinc-200">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-black/[0.05] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]">
                 <AlertCircle aria-hidden="true" className="h-5 w-5" />
               </div>
-              <h1 className="mt-4 text-base font-semibold text-[#141414] dark:text-zinc-100">
+              <h1 className="mt-4 text-base font-semibold text-[#111318] dark:text-[#F2F2F4]">
                 暂时打不开这段群聊回放
               </h1>
-              <p className="mt-1.5 text-xs leading-relaxed text-[#6E6E73] dark:text-zinc-400">
+              <p className="mt-1.5 text-xs leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                 {errMsg}
               </p>
               <div className="mt-6 flex select-none items-center justify-center gap-2.5">
@@ -403,23 +409,23 @@ export function PublicSharePage(props: PublicSharePageProps) {
           </div>
         ) : (
           <div className="mx-auto grid max-w-6xl items-start gap-6 px-0 py-0 sm:px-6 sm:py-6 lg:grid-cols-12">
-            {/* 左栏：纯净白底 Pachat 群聊记录主舞台 */}
+            {/* 左栏：通透群聊记录回放舞台 */}
             <motion.section
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 380, damping: 32 }}
-              className="flex min-w-0 flex-col overflow-hidden bg-white sm:rounded-[28px] sm:shadow-[0_18px_50px_rgba(0,0,0,0.05)] sm:ring-1 sm:ring-black/[0.07] lg:col-span-8 dark:bg-[#141416] dark:sm:shadow-[0_22px_60px_rgba(0,0,0,0.5)] dark:sm:ring-white/[0.08]"
+              className="oh-stage-frame relative flex min-w-0 flex-col overflow-hidden sm:rounded-[28px] lg:col-span-8 [--oh-avatar-ring:#FFFFFF] dark:[--oh-avatar-ring:#1C1C1F]"
             >
-              {/* 群头：圆形暖纸图标 + 群标题 + 圆形粉彩成员头像叠放 */}
-              <div className="flex select-none items-center gap-3 border-b border-black/[0.06] px-4 py-3.5 sm:px-6 dark:border-white/[0.07]">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#F5F5F7] text-[#141414] ring-1 ring-inset ring-black/[0.05] dark:bg-[#222226] dark:text-zinc-100 dark:ring-white/[0.08]">
+              {/* 群头：圆角方标图标 + 群标题 + 圆形成员头像叠放 */}
+              <div className="flex select-none items-center gap-3 border-b border-black/[0.06] bg-white/45 px-4 py-3.5 sm:px-6 dark:border-white/[0.07] dark:bg-white/[0.03]">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-black/[0.05] text-[#111318] ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.08] dark:text-[#F2F2F4] dark:ring-white/[0.08]">
                   <MessagesSquare aria-hidden="true" className="h-4.5 w-4.5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <h1 className="truncate text-[16px] font-semibold tracking-[-0.015em] text-[#141414] dark:text-zinc-100">
+                  <h1 className="truncate text-[16px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
                     {snapshot.room.name}
                   </h1>
-                  <p className="truncate text-xs text-[#8E8E93] dark:text-zinc-400">
+                  <p className="truncate text-xs text-[#687082] dark:text-[#8E8E96]">
                     {humanCount} 位成员 · {agentCount} 个 Agent · {snapshot.messages.length} 条消息
                   </p>
                 </div>
@@ -435,7 +441,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                       }
                       side="bottom"
                     >
-                      <span className="rounded-full ring-2 ring-white dark:ring-[#141416]">
+                      <span className="rounded-full ring-2 ring-white dark:ring-[#1C1C1F]">
                         <PlatformAvatar
                           kind={member.memberKind}
                           displayName={member.displayName}
@@ -446,7 +452,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                     </AppTooltip>
                   ))}
                   {snapshot.room.members.length > MAX_STACKED_AVATARS ? (
-                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#F5F5F7] text-[10.5px] font-medium text-[#5F5F64] ring-2 ring-white dark:bg-[#27272A] dark:text-zinc-300 dark:ring-[#141416]">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-black/[0.05] text-[10.5px] font-medium text-[#4B5565] ring-2 ring-white dark:bg-[#27272B] dark:text-[#C4C4CA] dark:ring-[#1C1C1F]">
                       +{snapshot.room.members.length - MAX_STACKED_AVATARS}
                     </span>
                   ) : null}
@@ -455,15 +461,15 @@ export function PublicSharePage(props: PublicSharePageProps) {
 
               {/* 讨论主题 + 置顶已拍板结论 */}
               {snapshot.room.topic.length > 0 || approvedProposals.length > 0 ? (
-                <div className="space-y-3 border-b border-black/[0.06] bg-[#F8F8FA] px-4 py-3.5 sm:px-6 dark:border-white/[0.07] dark:bg-[#18181B]">
+                <div className="space-y-3 border-b border-black/[0.06] bg-black/[0.02] px-4 py-3.5 sm:px-6 dark:border-white/[0.07] dark:bg-white/[0.02]">
                   {snapshot.room.topic.length > 0 ? (
-                    <p className="flex items-start gap-2 text-xs leading-relaxed text-[#5F5F64] dark:text-zinc-300">
+                    <p className="flex items-start gap-2 text-xs leading-relaxed text-[#4B5565] dark:text-[#C4C4CA]">
                       <Pin
                         aria-hidden="true"
-                        className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#8E8E93]"
+                        className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#8E96A6] dark:text-[#8E8E96]"
                       />
                       <span>
-                        <span className="font-semibold text-[#141414] dark:text-zinc-100">
+                        <span className="font-semibold text-[#111318] dark:text-[#F2F2F4]">
                           讨论主题：
                         </span>
                         {snapshot.room.topic}
@@ -480,10 +486,10 @@ export function PublicSharePage(props: PublicSharePageProps) {
                 </div>
               ) : null}
 
-              {/* 纯净无网格聊天画布 */}
-              <div className="bg-white px-3.5 py-4 sm:px-6 dark:bg-[#0E0E10]">
+              {/* 通透无网格聊天画布 */}
+              <div className="px-3.5 py-4 sm:px-6">
                 {snapshot.messages.length === 0 ? (
-                  <div className="py-16 text-center text-xs text-[#8E8E93] dark:text-zinc-500">
+                  <div className="py-16 text-center text-xs text-[#8E96A6] dark:text-[#63636B]">
                     这个群还没有公开的聊天记录。
                   </div>
                 ) : (
@@ -505,7 +511,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                         <Fragment key={msg.seq}>
                           {showDayDivider ? (
                             <div className="my-4 flex select-none justify-center first:mt-0">
-                              <span className="text-xs text-[#8E8E93] dark:text-zinc-500">
+                              <span className="rounded-full bg-black/[0.04] px-2.5 py-0.5 text-[11px] text-[#687082] dark:bg-white/[0.06] dark:text-[#8E8E96]">
                                 {formatDayDivider(msg.createdAtIso)}
                               </span>
                             </div>
@@ -532,8 +538,8 @@ export function PublicSharePage(props: PublicSharePageProps) {
               </div>
 
               {/* 底部只读提示与建群引导栏 */}
-              <div className="pb-safe flex select-none flex-wrap items-center justify-between gap-3 border-t border-black/[0.06] bg-[#F8F8FA] px-4 py-3 sm:px-6 dark:border-white/[0.07] dark:bg-[#151518]">
-                <div className="flex min-w-0 items-center gap-2 rounded-full bg-[#EFEFF3] px-3.5 py-2 text-xs text-[#6E6E73] dark:bg-[#222226] dark:text-zinc-400">
+              <div className="pb-safe flex select-none flex-wrap items-center justify-between gap-3 border-t border-black/[0.06] bg-white/45 px-4 py-3 sm:px-6 dark:border-white/[0.07] dark:bg-white/[0.03]">
+                <div className="flex min-w-0 items-center gap-2 rounded-full bg-black/[0.045] px-3.5 py-2 text-xs text-[#687082] dark:bg-white/[0.07] dark:text-[#9B9BA3]">
                   <Eye aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                   <span className="truncate">只读回放 · 访客无需登录即可阅读，无法直接发言</span>
                 </div>
@@ -555,12 +561,12 @@ export function PublicSharePage(props: PublicSharePageProps) {
               transition={{ type: "spring", stiffness: 380, damping: 32, delay: 0.06 }}
               className="space-y-3 px-4 pb-8 sm:px-0 lg:sticky lg:top-6 lg:col-span-4 lg:max-h-[calc(100dvh-6rem)] lg:overflow-y-auto lg:pb-0"
             >
-              <h2 className="flex select-none items-center gap-1.5 px-1 text-xs font-semibold text-[#5F5F64] dark:text-zinc-400">
+              <h2 className="flex select-none items-center gap-1.5 px-1 text-xs font-semibold text-[#4B5565] dark:text-[#9B9BA3]">
                 <FileCheck2 aria-hidden="true" className="h-3.5 w-3.5" />
                 <span>提案与结论 · {snapshot.proposals.length}</span>
               </h2>
               {snapshot.proposals.length === 0 ? (
-                <div className="rounded-[22px] bg-white p-6 text-center text-xs text-[#8E8E93] ring-1 ring-black/[0.06] dark:bg-[#151518] dark:text-zinc-500 dark:ring-white/[0.08]">
+                <div className="relative liquid-glass-panel rounded-[22px] p-6 text-center text-xs text-[#687082] dark:text-[#8E8E96]">
                   这段讨论尚未发起正式提案卡。
                 </div>
               ) : (
@@ -587,10 +593,10 @@ export function PublicSharePage(props: PublicSharePageProps) {
                   ))}
                 </div>
               )}
-              <p className="flex items-start gap-1.5 px-1 text-[11px] leading-relaxed text-[#8E8E93] dark:text-zinc-500">
+              <p className="flex items-start gap-1.5 px-1 text-[11px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                 <ShieldCheck
                   aria-hidden="true"
-                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#34C759]"
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]"
                 />
                 <span>公开回放已剥离房间邀请密钥，所有内容均以外部访客只读视角呈现。</span>
               </p>

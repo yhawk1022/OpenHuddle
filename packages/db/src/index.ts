@@ -10,6 +10,7 @@ export {
   type OpenHuddleDb,
 } from "./client.js";
 export {
+  adminAuditLogsTable,
   agentsTable,
   authOtpCodesTable,
   messagesTable,

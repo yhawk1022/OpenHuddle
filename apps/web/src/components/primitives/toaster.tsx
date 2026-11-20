@@ -1,9 +1,9 @@
 /**
  * @module web/components/primitives/toaster
- * @description 基于 `sonner` 的全局 Pachat 极简轻提示宿主（`AppToaster`）及 `toast` 触发函数重导出。
+ * @description 基于 `sonner` 的全局 Atelier Daylight & Obsidian Studio 轻提示宿主（`AppToaster`）及 `toast` 触发函数重导出。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 自动追踪 `.dark` 主题类：通过 `useSyncExternalStore` + `MutationObserver` 实时监听 `<html>` 的 `.dark` 类切换，轻提示胶囊在 `#FFFFFF` 与 `#18181B` 之间零延迟同步换肤。
+ * 1. 自动追踪 `.dark` 主题类：通过 `useSyncExternalStore` + `MutationObserver` 实时监听 `<html>` 的 `.dark` 类切换，轻提示胶囊在暖瓷白与黑曜石表面之间零延迟同步换肤。
  * 2. 不遮挡底部聊天输入舱：默认定位在 `"top-center"`，确保桌面与移动端的底部输入区始终畅通。
  */
 import { useSyncExternalStore } from "react";
@@ -74,12 +74,12 @@ export function AppToaster(props: AppToasterProps) {
       toastOptions={{
         classNames: {
           toast:
-            "app-no-drag !rounded-2xl !px-4 !py-3 !text-[13px] !font-medium !backdrop-blur-xl !shadow-[0_14px_38px_-10px_rgba(0,0,0,0.16)] !border !border-black/[0.08] !bg-white/98 !text-[#141414] dark:!bg-[#18181B]/98 dark:!text-zinc-100 dark:!border-white/[0.12] dark:!shadow-[0_18px_46px_-10px_rgba(0,0,0,0.75)]",
-          description: "!text-xs !text-[#6E6E73] dark:!text-zinc-400",
+            "app-no-drag !rounded-2xl !px-4 !py-3 !text-[13px] !font-medium !backdrop-blur-2xl !backdrop-saturate-180 !shadow-[0_16px_42px_-10px_rgba(15,23,42,0.18)] !border !border-white/50 !bg-white/82 !text-[#111318] dark:!bg-[#1E1E22]/88 dark:!text-[#F2F2F4] dark:!border-white/[0.12] dark:!shadow-[0_22px_54px_-12px_rgba(0,0,0,0.78)]",
+          description: "!text-xs !text-[#687082] dark:!text-[#7D869C]",
           actionButton:
-            "!rounded-full !bg-[#141414] !text-white dark:!bg-[#F5F5F7] dark:!text-[#141414] !text-xs !font-medium !px-3",
+            "!rounded-full !bg-[#181B22] !text-white dark:!bg-[#EAEEF6] dark:!text-[#111318] !text-xs !font-medium !px-3",
           cancelButton:
-            "!rounded-full !bg-[#F5F5F7] !text-[#141414] dark:!bg-white/10 dark:!text-zinc-200 !text-xs !px-3",
+            "!rounded-full !bg-black/[0.05] !text-[#111318] dark:!bg-white/[0.09] dark:!text-[#ECEFF6] !text-xs !px-3",
         },
       }}
     />

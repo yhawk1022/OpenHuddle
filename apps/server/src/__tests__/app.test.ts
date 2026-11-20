@@ -51,8 +51,14 @@ describe("@openhuddle/server — gateway & OpenAPI contract harness", () => {
 
     const openApiRes = await app.request("/api/openapi.json");
     expect(openApiRes.status).toBe(200);
-    const openApiSpec = (await openApiRes.json()) as { openapi: string };
+    const openApiSpec = (await openApiRes.json()) as {
+      openapi: string;
+      paths?: Record<string, Record<string, unknown>>;
+    };
     expect(openApiSpec.openapi).toBe("3.1.0");
+    expect(openApiSpec.paths?.["/api/v1/rooms/{roomId}"]?.delete).toBeDefined();
+    expect(openApiSpec.paths?.["/api/v1/admin/overview"]?.get).toBeDefined();
+    expect(openApiSpec.paths?.["/api/v1/admin/users"]?.get).toBeDefined();
 
     const missingRes = await app.request("/api/v1/non-existent", {
       headers: { "x-request-id": "req-404-check" },

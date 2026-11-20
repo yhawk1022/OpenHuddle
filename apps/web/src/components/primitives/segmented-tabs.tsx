@@ -1,9 +1,9 @@
 /**
  * @module web/components/primitives/segmented-tabs
- * @description 基于 `motion` 弹簧物理（`layoutId` 共享布局动画）的 Pachat / Apple 极简分段滑块控制器（`SegmentedTabs`）。
+ * @description 基于 `motion` 弹簧物理（`layoutId` 共享布局动画）的 Apple Liquid Glass 分段滑块控制器（`SegmentedTabs`）。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. Pachat 原生轨道与白卡片滑块：轨道采用暖中性 `#EFEFF3`（暗色 `dark:bg-white/[0.07]`），激活态滑块采用纯净 `#FFFFFF`（暗色 `dark:bg-[#27272A]`）弹簧滑动，零紫色徽章污染。
+ * 1. 通透玻璃凹槽与晶面滑块：轨道采用半透玻璃凹槽（日光 `bg-black/[0.045]` / 暗夜 `dark:bg-white/[0.05]` + 细内环），激活态滑块采用晶亮浮起卡片（`bg-white/92` / `dark:bg-white/[0.14]` + 顶部微高光），消除生硬框线。
  * 2. 实例隔离安全：未显式传入 `layoutId` 时自动通过 React 19 `useId()` 生成唯一布局命名空间，确保同一页面并存多个 `SegmentedTabs` 时滑块绝不跨组件乱飞。
  * 3. 无障碍语义与键盘导航：完整支持 `role="tablist"` / `role="tab"`、`aria-selected` 以及左右方向键（`ArrowLeft` / `ArrowRight`）循环切换。
  */
@@ -29,21 +29,21 @@ export interface SegmentedTabItem<T extends string = string> {
 export type SegmentedTabsSize = "xs" | "sm" | "md";
 
 const TRACK_SIZE_CLASS: Record<SegmentedTabsSize, string> = {
-  xs: "rounded-xl p-0.5",
-  sm: "rounded-xl p-1",
-  md: "rounded-xl p-1",
+  xs: "rounded-full p-0.5",
+  sm: "rounded-full p-1",
+  md: "rounded-full p-1",
 };
 
 const TAB_SIZE_CLASS: Record<SegmentedTabsSize, string> = {
-  xs: "h-6 rounded-[8px] px-2 text-[11px] gap-1",
-  sm: "h-7 rounded-[9px] px-2.5 text-xs gap-1.5",
-  md: "h-8 rounded-[9px] px-3 text-[13px] gap-1.5",
+  xs: "h-6 rounded-full px-2.5 text-[11px] gap-1",
+  sm: "h-7 rounded-full px-3 text-xs gap-1.5",
+  md: "h-8 rounded-full px-3.5 text-[13px] gap-1.5",
 };
 
 const PILL_RADIUS_CLASS: Record<SegmentedTabsSize, string> = {
-  xs: "rounded-[8px]",
-  sm: "rounded-[9px]",
-  md: "rounded-[9px]",
+  xs: "rounded-full",
+  sm: "rounded-full",
+  md: "rounded-full",
 };
 
 /** `SegmentedTabs` 入参属性 */
@@ -115,7 +115,7 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
       {...(ariaLabel !== undefined ? { "aria-label": ariaLabel } : {})}
       className={cn(
         "app-no-drag inline-flex select-none items-center",
-        "bg-[#EFEFF3] dark:bg-white/[0.07]",
+        "bg-black/[0.048] dark:bg-white/[0.055]",
         TRACK_SIZE_CLASS[size],
         fullWidth && "flex w-full",
         className,
@@ -140,13 +140,13 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
             }}
             className={cn(
               "relative z-0 inline-flex cursor-pointer items-center justify-center font-medium tracking-[-0.01em] outline-none transition-colors duration-150",
-              "focus-visible:ring-2 focus-visible:ring-black/20 dark:focus-visible:ring-white/30",
+              "focus-visible:ring-2 focus-visible:ring-black/[0.15] dark:focus-visible:ring-white/[0.22]",
               "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45",
               TAB_SIZE_CLASS[size],
               fullWidth && "min-w-0 flex-1",
               isActive
-                ? "font-semibold text-[#141414] dark:text-zinc-100"
-                : "text-[#6E6E73] hover:text-[#141414] dark:text-zinc-400 dark:hover:text-zinc-200",
+                ? "font-semibold text-[#111318] dark:text-[#F2F2F4]"
+                : "text-[#687082] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]",
             )}
           >
             {isActive ? (
@@ -156,8 +156,8 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
                 transition={{ type: "spring", stiffness: 520, damping: 36 }}
                 className={cn(
                   "pointer-events-none absolute inset-0 -z-10",
-                  "bg-white shadow-[0_1px_2px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.04]",
-                  "dark:bg-[#27272A] dark:shadow-[0_2px_5px_rgba(0,0,0,0.4)] dark:ring-white/[0.08]",
+                  "bg-white shadow-[0_1px_4px_rgba(15,23,42,0.07),0_1px_2px_rgba(15,23,42,0.03)]",
+                  "dark:bg-white/[0.13] dark:shadow-[0_2px_8px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.14)]",
                   PILL_RADIUS_CLASS[size],
                 )}
               />
@@ -172,10 +172,10 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
             {item.badge !== undefined ? (
               <span
                 className={cn(
-                  "inline-flex shrink-0 items-center justify-center rounded-full px-1.5 py-0.2 text-[10px] font-semibold leading-4",
+                  "inline-flex shrink-0 items-center justify-center rounded-full px-1.5 py-0.2 text-[10px] font-semibold leading-4 tabular-nums",
                   isActive
-                    ? "bg-[#141414] text-white dark:bg-[#F5F5F7] dark:text-[#141414]"
-                    : "bg-black/[0.06] text-[#6E6E73] dark:bg-white/[0.08] dark:text-zinc-400",
+                    ? "bg-[#181B22]/10 text-[#111318] dark:bg-white/[0.15] dark:text-[#F2F2F4]"
+                    : "bg-black/[0.05] text-[#687082] dark:bg-white/[0.07] dark:text-[#8E8E96]",
                 )}
               >
                 {item.badge}

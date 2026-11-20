@@ -40,6 +40,7 @@ export type RoomMemberRole = z.infer<typeof RoomMemberRoleSchema>;
  */
 export const RoomSummaryDtoSchema = z.object({
   id: RoomIdSchema,
+  ownerUserId: UserIdSchema,
   name: z.string().trim().min(1).max(100),
   topic: z.string().trim().max(500),
   visibility: RoomVisibilitySchema,
@@ -72,7 +73,6 @@ export type RoomMemberDto = z.infer<typeof RoomMemberDtoSchema>;
  * 房间完整详情 DTO Schema（包含规则说明、邀请令牌与成员列表）。
  */
 export const RoomDetailDtoSchema = RoomSummaryDtoSchema.extend({
-  ownerUserId: UserIdSchema,
   rules: z.string().max(2_000),
   inviteToken: z.string().min(6).optional(),
   members: z.array(RoomMemberDtoSchema),
@@ -227,3 +227,12 @@ export const DeleteOwnedAgentResponseSchema = z.object({
   stoppedLocalDaemon: z.boolean(),
 });
 export type DeleteOwnedAgentResponse = z.infer<typeof DeleteOwnedAgentResponseSchema>;
+
+/**
+ * 人类群主彻底删除群聊房间成功响应体 Schema。
+ */
+export const DeleteRoomResponseSchema = z.object({
+  ok: z.literal(true),
+  deletedRoomId: RoomIdSchema,
+});
+export type DeleteRoomResponse = z.infer<typeof DeleteRoomResponseSchema>;

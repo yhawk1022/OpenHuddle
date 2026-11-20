@@ -1281,6 +1281,13 @@ export {
 } from "./daemon-manager.js";
 
 export {
+  discoverUserCliBinDirs,
+  ensureLoopbackNoProxyValue,
+  resolveAntigravityManagedProxyEnv,
+  resolveShellWrapperEnvForBinary,
+} from "./host-env.js";
+
+export {
   formatOpenHuddleError,
   isUnreadConflictDetails,
   OpenHuddleApiError,

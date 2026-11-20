@@ -1,15 +1,14 @@
 /**
  * @module web/features/huddle-room/governance-bar
- * @description Pachat 68px 通透群聊顶栏（Airy Monochrome Chat Header）：
- * 左侧仅展示移动端 `<` 返回按钮、`17px` 粗体群名与 `12.5px` 自然议题副标题（彻底移除 `#` 频道方盒与噪音徽章）；
- * 右侧排列 Pachat 标志性 `#F5F5F7`（暗色 `dark:bg-white/[0.07]`）圆润胶囊组：
- * `👥 X 个 agent · Y 人`（开关右侧抽屉）、安静的 `轮次 X/Y`（打开 Radix `AppPopover` 治理浮层，仅在 `paused_budget` 时亮起暖琥珀色）、
- * `提案 · N` 与 `+ 邀请`。
+ * @description Apple Liquid Glass 悬浮双岛群聊顶栏（Spatial Floating Header Islands）：
+ * 左侧为圆润液态玻璃群标题胶囊（移动端返回键、`15.5px` 群名称与 `11.5px` 议题/可见性副标题），
+ * 右侧为同心圆角液态玻璃控制胶囊（成员抽屉开关、`轮次 X/Y` Radix 治理浮层、`提案 · N` 与 `+ 邀请`）；
+ * 两岛之间保留通透呼吸留白，消息流从下方滑过时透过 `liquid-glass-bar` 产生真实光学折射。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 留白与单行节制：主标题栏固定 `68px` 呼吸高度，所有治理开关均收纳进 Radix Portal 浮层，绝不出现任何原生下拉控件或紫色渐变。
- * 2. 异常才提醒：平时 `轮次 X/Y` 保持安静 `#F5F5F7` 中性底色；仅当 `status === "paused_budget"` 需要人类续期，或存在刚拍板通过的结论时，才按需平滑展开副横幅。
- * 3. Tauri v2 & Electron 双端无边框拖拽就绪：顶栏同时标记 `data-tauri-drag-region` 与 `.app-drag-region`，所有胶囊按钮均带 `.app-no-drag`。
+ * 1. 严格不嵌套重度模糊：外层胶囊挂载 `relative liquid-glass-bar`（含 135° 菲涅尔高光边框），内部子胶囊仅使用轻触态半透色阶，杜绝多层 `backdrop-filter` 叠加。
+ * 2. 异常才提醒：平时 `轮次 X/Y` 保持安静中性；仅当 `status === "paused_budget"` 需要人类续期，或存在刚拍板通过的结论时，才在双岛下方展开独立悬浮玻璃横幅。
+ * 3. Tauri v2 & Electron 双端无边框拖拽就绪：顶栏与玻璃岛标记 `data-tauri-drag-region` 与 `.app-drag-region`，交互按钮均带 `.app-no-drag`，且外层对空白处保持 `pointer-events-none` 以允许下方消息流自由滚动。
  */
 import type {
   GovernanceMode,
@@ -81,18 +80,21 @@ const MODE_TAB_ITEMS: ReadonlyArray<SegmentedTabItem<GovernanceMode>> = MODE_MET
 
 const BASE_TURN_CAPS: ReadonlyArray<number> = [3, 4, 6, 8, 10, 15, 25];
 
-/** Pachat 顶栏右侧统一柔和胶囊基础类名 */
-const HEADER_PILL_BASE_CLASS =
-  "app-no-drag inline-flex h-9 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-full px-3.5 text-[13px] font-medium transition-colors active:scale-[0.97]";
+/** 右侧控制胶囊内部子按钮基础类名（与外层 `h-12 p-1.5 rounded-full` 构成精确同心圆角） */
+const CONTROL_ITEM_BASE_CLASS =
+  "app-no-drag inline-flex h-9 shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium transition-colors active:scale-[0.97]";
 
-const HEADER_PILL_NEUTRAL_CLASS =
-  "bg-[#F5F5F7] text-[#141414] hover:bg-[#EBEBEF] dark:bg-white/[0.07] dark:text-zinc-100 dark:hover:bg-white/[0.12]";
+const CONTROL_ITEM_NEUTRAL_CLASS =
+  "text-[#181B22] hover:bg-black/[0.055] dark:text-[#ECECEF] dark:hover:bg-white/[0.09]";
+
+const CONTROL_ITEM_ACTIVE_CLASS =
+  "bg-black/[0.08] text-[#111318] shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:bg-white/[0.14] dark:text-white dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]";
 
 /**
- * 渲染 Pachat 68px 群聊顶栏、Radix 治理配置浮层及按需展开的预算检查点/拍板横幅。
+ * 渲染悬浮双岛 Apple Liquid Glass 群聊顶栏、Radix 治理配置浮层及按需展开的预算检查点/拍板横幅。
  *
  * @param props - 房间详情、实时治理快照、抽屉开关状态与各项治理回调
- * @returns 顶部 Pachat 群聊头组件
+ * @returns 顶部悬浮液态玻璃群聊头组件
  */
 export function GovernanceBar(props: GovernanceBarProps) {
   const { governance } = props;
@@ -191,36 +193,45 @@ export function GovernanceBar(props: GovernanceBarProps) {
   };
 
   return (
-    <header className="glass-bar relative z-20 shrink-0 select-none border-b border-black/[0.06] dark:border-white/[0.06]">
-      <div
-        data-tauri-drag-region=""
-        className="app-drag-region flex h-[68px] items-center justify-between gap-3 px-4 sm:px-6"
-      >
-        {/* 左：移动端 `<` 返回按钮 + 17px 粗体群名 + 12.5px 议题/可见性副标题 */}
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+    <header className="pointer-events-none relative z-20 shrink-0 select-none">
+      <div className="flex items-center justify-between gap-2 sm:gap-3">
+        {/* 左岛：修长单基线液态玻璃群标题胶囊（杜绝短文本时挤成粗短椭圆球） */}
+        <div
+          data-tauri-drag-region=""
+          className="app-drag-region pointer-events-auto relative liquid-glass-bar flex h-11 min-w-0 flex-1 items-center gap-2 rounded-full pr-4 pl-2.5 sm:max-w-[min(32rem,58%)] sm:flex-initial sm:px-4"
+        >
           <IconButton
             variant="ghost"
-            size="md"
+            size="sm"
             label="返回会话列表"
             onClick={props.onBackToList}
-            className="-ml-1.5 text-[#141414] md:hidden dark:text-zinc-100"
+            className="-ml-0.5 shrink-0 text-[#111318] md:hidden dark:text-[#F2F2F4]"
           >
             <ChevronLeft className="h-5 w-5" />
           </IconButton>
 
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-[17px] font-semibold tracking-[-0.015em] text-[#141414] dark:text-zinc-100">
+          <div className="flex min-w-0 flex-1 items-baseline gap-2">
+            <h1 className="shrink-0 max-w-[14rem] truncate text-[14.5px] font-semibold tracking-[-0.015em] text-[#111318] sm:max-w-[18rem] sm:text-[15px] dark:text-[#F2F2F4]">
               {props.room.name}
             </h1>
-            <p className="mt-0.5 truncate text-[12.5px] text-[#6E6E73] dark:text-zinc-400">
+            <span
+              aria-hidden="true"
+              className="hidden shrink-0 text-[12px] text-[#939BAD] sm:inline dark:text-[#63636B]"
+            >
+              ·
+            </span>
+            <p className="hidden min-w-0 flex-1 truncate text-[12.5px] text-[#687082] sm:block dark:text-[#8E8E96]">
               {subtitleText}
             </p>
           </div>
         </div>
 
-        {/* 右：Pachat `#F5F5F7` 圆角胶囊动作组 */}
-        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-          {/* 1. 成员与 Agent 人数胶囊（点击切换右侧 RoomInspector） */}
+        {/* 右岛：44px 同心圆角液态玻璃控制胶囊组（内距 4px 包裹 36px 按钮） */}
+        <div
+          data-tauri-drag-region=""
+          className="app-drag-region pointer-events-auto relative liquid-glass-bar flex h-11 shrink-0 items-center gap-0.5 rounded-full p-1 sm:gap-1"
+        >
+          {/* 1. 成员与 Agent 人数按钮（切换右侧 RoomInspector） */}
           <AppTooltip
             side="bottom"
             content={
@@ -234,22 +245,20 @@ export function GovernanceBar(props: GovernanceBarProps) {
               aria-pressed={props.isInspectorOpen}
               onClick={props.onToggleInspector}
               className={cn(
-                HEADER_PILL_BASE_CLASS,
-                "px-3 sm:px-3.5",
-                HEADER_PILL_NEUTRAL_CLASS,
-                props.isInspectorOpen &&
-                  "bg-[#E8E8ED] ring-1 ring-inset ring-black/15 dark:bg-white/[0.14] dark:ring-white/20",
+                CONTROL_ITEM_BASE_CLASS,
+                "px-2.5 sm:px-3",
+                props.isInspectorOpen ? CONTROL_ITEM_ACTIVE_CLASS : CONTROL_ITEM_NEUTRAL_CLASS,
               )}
             >
-              <Users className="h-3.5 w-3.5 shrink-0 text-[#5F5F64] dark:text-zinc-400" />
-              <span className="hidden sm:inline">
+              <Users className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#9B9BA3]" />
+              <span className="hidden lg:inline">
                 {agents.length} 个 agent · {humanCount} 人
               </span>
-              <span className="tabular-nums sm:hidden">{props.room.members.length}</span>
+              <span className="tabular-nums lg:hidden">{props.room.members.length}</span>
             </button>
           </AppTooltip>
 
-          {/* 2. 安静的 `轮次 X/Y` 治理胶囊（平时保持 `#F5F5F7` 中性，仅 `paused_budget` 变暖琥珀色） */}
+          {/* 2. `轮次 X/Y` 治理按钮（平时保持中性，仅 `paused_budget` 亮起暖琥珀提醒） */}
           <AppPopover
             open={governanceOpen}
             onOpenChange={setGovernanceOpen}
@@ -261,19 +270,17 @@ export function GovernanceBar(props: GovernanceBarProps) {
                 type="button"
                 aria-label="讨论轮次与群聊规则设置"
                 className={cn(
-                  HEADER_PILL_BASE_CLASS,
-                  "px-3 sm:px-3.5",
+                  CONTROL_ITEM_BASE_CLASS,
+                  "px-2.5 sm:px-3",
                   isPaused
-                    ? "bg-[#FFF1C2] text-[#5C4813] ring-1 ring-inset ring-[#D99B26]/35 hover:bg-[#FBE8A6] dark:bg-[#2C2718] dark:text-[#F2DF9D] dark:ring-[#E5B34B]/30 dark:hover:bg-[#362F1D]"
-                    : cn(
-                        HEADER_PILL_NEUTRAL_CLASS,
-                        governanceOpen &&
-                          "bg-[#E8E8ED] ring-1 ring-inset ring-black/15 dark:bg-white/[0.14] dark:ring-white/20",
-                      ),
+                    ? "bg-amber-500/16 text-[#78350F] ring-1 ring-inset ring-amber-500/35 hover:bg-amber-500/24 dark:bg-amber-400/16 dark:text-[#FCD34D] dark:ring-amber-400/30 dark:hover:bg-amber-400/24"
+                    : governanceOpen
+                      ? CONTROL_ITEM_ACTIVE_CLASS
+                      : CONTROL_ITEM_NEUTRAL_CLASS,
                 )}
               >
                 {isPaused ? (
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D99B26] dark:bg-[#E5B34B]" />
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D97706] dark:bg-[#FBBF24]" />
                 ) : null}
                 <span className="tabular-nums">
                   <span className="hidden sm:inline">轮次 </span>
@@ -285,7 +292,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
             {/* 讨论模式分段器 */}
             <div>
               <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-[11.5px] font-semibold text-[#5F5F64] dark:text-zinc-400">
+                <span className="text-[11.5px] font-semibold text-[#687082] dark:text-[#8E8E96]">
                   讨论节奏
                 </span>
               </div>
@@ -302,27 +309,27 @@ export function GovernanceBar(props: GovernanceBarProps) {
             {/* 连续 Agent 轮次预算与 Radix AppSelect */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-[11.5px] font-semibold text-[#5F5F64] dark:text-zinc-400">
+                <span className="text-[11.5px] font-semibold text-[#687082] dark:text-[#8E8E96]">
                   连续 Agent 发言上限
                 </span>
                 <span
                   className={cn(
                     "font-mono text-[11px] font-semibold tabular-nums",
                     isPaused
-                      ? "text-[#9A6700] dark:text-[#F2DF9D]"
-                      : "text-[#141414] dark:text-zinc-200",
+                      ? "text-[#9A6700] dark:text-[#FCD34D]"
+                      : "text-[#111318] dark:text-[#ECECEF]",
                   )}
                 >
                   已用 {usedTurns} / {maxTurns} 轮
                 </span>
               </div>
 
-              <div className="h-1.5 overflow-hidden rounded-full bg-[#EFEFF3] dark:bg-white/10">
+              <div className="h-1.5 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/[0.09]">
                 <div
                   style={{ width: `${String(ratio * 100)}%` }}
                   className={cn(
                     "h-full rounded-full transition-all duration-300",
-                    isPaused ? "bg-[#D99B26]" : "bg-[#141414] dark:bg-[#F5F5F7]",
+                    isPaused ? "bg-[#D97706] dark:bg-[#FBBF24]" : "bg-[#181B22] dark:bg-[#EAEEF6]",
                   )}
                 />
               </div>
@@ -362,15 +369,15 @@ export function GovernanceBar(props: GovernanceBarProps) {
                   className="flex min-w-0 flex-1 cursor-pointer items-start gap-2"
                 >
                   {config.allowAgentMentions ? (
-                    <AtSign className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#34C759]" />
+                    <AtSign className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
                   ) : (
-                    <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#FF3B30]" />
+                    <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#E5484D] dark:text-[#F87171]" />
                   )}
                   <span className="min-w-0">
-                    <span className="block font-medium text-[#141414] dark:text-zinc-100">
+                    <span className="block font-medium text-[#111318] dark:text-[#F2F2F4]">
                       Agent 互相 @ 自动唤醒
                     </span>
-                    <span className="block text-[10.5px] text-[#6E6E73] dark:text-zinc-400">
+                    <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
                       关闭后仅人类点名可唤醒 Agent
                     </span>
                   </span>
@@ -389,12 +396,12 @@ export function GovernanceBar(props: GovernanceBarProps) {
                   htmlFor="gov-bar-read-lock"
                   className="flex min-w-0 flex-1 cursor-pointer items-start gap-2"
                 >
-                  <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#5F5F64] dark:text-zinc-400" />
+                  <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
                   <span className="min-w-0">
-                    <span className="block font-medium text-[#141414] dark:text-zinc-100">
+                    <span className="block font-medium text-[#111318] dark:text-[#F2F2F4]">
                       先读后发保护
                     </span>
-                    <span className="block text-[10.5px] text-[#6E6E73] dark:text-zinc-400">
+                    <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
                       拦截未读最新消息的盲目抢话
                     </span>
                   </span>
@@ -410,25 +417,25 @@ export function GovernanceBar(props: GovernanceBarProps) {
             </div>
 
             {config.mode === "round_table" ? (
-              <p className="rounded-xl bg-[#F5F5F7] px-2.5 py-1.5 text-[11px] font-medium text-[#3A3A3C] dark:bg-white/[0.06] dark:text-zinc-300">
+              <p className="rounded-xl bg-black/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-[#3B414E] dark:bg-white/[0.06] dark:text-[#C4C4CA]">
                 本轮圆桌已发言：{governance.roundTableSpokenAgentIds.length} / {agents.length} 个
                 Agent
               </p>
             ) : null}
           </AppPopover>
 
-          {/* 3. `提案 · N` 胶囊（无提案时仍作为克制的入口胶囊触发提案抽屉） */}
+          {/* 3. `提案 · N` 按钮 */}
           <AppTooltip side="bottom" content="查看共识提案与拍板记录">
             <button
               type="button"
               onClick={props.onOpenProposals}
               className={cn(
-                HEADER_PILL_BASE_CLASS,
-                visibleProposalBadgeCount > 0 ? "px-3 sm:px-3.5" : "px-2.5 sm:px-3.5",
-                HEADER_PILL_NEUTRAL_CLASS,
+                CONTROL_ITEM_BASE_CLASS,
+                visibleProposalBadgeCount > 0 ? "px-2.5 sm:px-3" : "px-2.5",
+                CONTROL_ITEM_NEUTRAL_CLASS,
               )}
             >
-              <FileText className="h-3.5 w-3.5 shrink-0 text-[#5F5F64] sm:hidden dark:text-zinc-400" />
+              <FileText className="h-3.5 w-3.5 shrink-0 text-[#687082] sm:hidden dark:text-[#9B9BA3]" />
               <span className="hidden sm:inline">
                 {visibleProposalBadgeCount > 0
                   ? `提案 · ${String(visibleProposalBadgeCount)}`
@@ -440,18 +447,21 @@ export function GovernanceBar(props: GovernanceBarProps) {
               {props.openProposalsCount > 0 ? (
                 <span
                   aria-label="有待拍板提案"
-                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D99B26] dark:bg-[#E5B34B]"
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D97706] dark:bg-[#FBBF24]"
                 />
               ) : null}
             </button>
           </AppTooltip>
 
-          {/* 4. `+ 邀请` 胶囊 */}
+          {/* 4. `+ 邀请` 高对比主触点胶囊（对齐 macOS Tahoe 右上角动作胶囊） */}
           <AppTooltip side="bottom" content="邀请朋友或把你的 Agent 拉进群">
             <button
               type="button"
               onClick={props.onOpenAddAgentModal}
-              className={cn(HEADER_PILL_BASE_CLASS, "px-3 sm:px-3.5", HEADER_PILL_NEUTRAL_CLASS)}
+              className={cn(
+                CONTROL_ITEM_BASE_CLASS,
+                "bg-black/[0.06] px-2.5 text-[#111318] hover:bg-black/[0.10] sm:px-3.5 dark:bg-white/[0.09] dark:text-[#F2F2F4] dark:hover:bg-white/[0.15]",
+              )}
             >
               <Plus className="h-3.5 w-3.5 shrink-0 stroke-[2.2]" />
               <span className="hidden sm:inline">邀请</span>
@@ -460,20 +470,20 @@ export function GovernanceBar(props: GovernanceBarProps) {
         </div>
       </div>
 
-      {/* 按需平滑展开的副横幅（预算挂起检查点 / 最新拍板结论） */}
+      {/* 按需平滑展开的悬浮液态玻璃副横幅（预算挂起检查点 / 最新拍板结论） */}
       <AnimatePresence initial={false}>
         {isPaused ? (
           <motion.div
             key="banner-paused"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
-            className="overflow-hidden border-t border-[#D99B26]/20 bg-[#FFF8E6] dark:border-[#E5B34B]/20 dark:bg-[#241F14]"
+            className="pointer-events-auto relative liquid-glass-bar mx-auto mt-2 max-w-3xl overflow-hidden rounded-[18px]"
           >
-            <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs text-[#5C4813] sm:px-6 dark:text-[#F2DF9D]">
+            <div className="flex items-center justify-between gap-3 bg-amber-500/[0.08] px-3.5 py-2 text-xs text-[#6B4E12] sm:px-4 dark:bg-amber-400/[0.08] dark:text-[#F5DF9D]">
               <div className="flex min-w-0 items-center gap-2">
-                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[#D99B26] dark:text-[#E5B34B]" />
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[#D97706] dark:text-[#FBBF24]" />
                 <span className="truncate">
                   <strong>Agent 已连续讨论 {usedTurns} 轮，暂停等待你的意见</strong>
                   <span className="hidden opacity-80 sm:inline">
@@ -496,19 +506,19 @@ export function GovernanceBar(props: GovernanceBarProps) {
         ) : showDecided ? (
           <motion.div
             key="banner-decided"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
-            className="overflow-hidden border-t border-black/[0.05] bg-[#E3F3EC] dark:border-white/[0.06] dark:bg-[#16271F]"
+            className="pointer-events-auto relative liquid-glass-bar mx-auto mt-2 max-w-3xl overflow-hidden rounded-[18px]"
           >
-            <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs text-[#1B452D] sm:px-6 dark:text-[#C7E8D3]">
+            <div className="flex items-center justify-between gap-3 bg-emerald-500/[0.08] px-3.5 py-2 text-xs text-[#145335] sm:px-4 dark:bg-emerald-400/[0.08] dark:text-[#A7F3D0]">
               <button
                 type="button"
                 onClick={props.onOpenProposals}
                 className="app-no-drag flex min-w-0 cursor-pointer items-center gap-2 text-left transition hover:opacity-85"
               >
-                <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[#215236] dark:text-[#86E0A6]" />
+                <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
                 <span className="truncate">
                   <strong>已拍板：</strong>
                   {props.decidedProposalTitle}
@@ -519,7 +529,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
                 variant="ghost"
                 label="关闭已拍板提示"
                 onClick={() => setDismissedDecision(props.decidedProposalTitle)}
-                className="text-[#215236]/75 hover:bg-black/[0.05] dark:text-[#C7E8D3]/80 dark:hover:bg-white/[0.08]"
+                className="text-[#145335]/75 hover:bg-black/[0.05] dark:text-[#A7F3D0]/80 dark:hover:bg-white/[0.08]"
               >
                 <X className="h-3.5 w-3.5" />
               </IconButton>

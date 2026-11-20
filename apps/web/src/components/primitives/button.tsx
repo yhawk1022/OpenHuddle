@@ -1,9 +1,9 @@
 /**
  * @module web/components/primitives/button
- * @description Pachat 极简胶囊几何按钮原语（`AppButton` 与 `IconButton`）。
+ * @description Atelier Daylight & Obsidian Studio 胶囊几何按钮原语（`AppButton` 与 `IconButton`）。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 全胶囊几何（`rounded-full`）与纯墨黑主色（`#141414` / 暗色 `#F5F5F7`）：摒弃一切廉价紫蓝渐变，通过 `class-variance-authority` (CVA) 统一管控 `primary | secondary | soft | ghost | danger | dangerSoft` 六种语义表面。
+ * 1. 精致胶囊几何（`rounded-full`）与微立体明暗层级：日光主按钮 `#181B22`（悬停 `#252A35`），暗夜主按钮 `#EAEEF6`（悬停 `#FFFFFF`），辅以细腻内微光与柔和阴影，摒弃廉价渐变。
  * 2. 默认显式注入 `type="button"` 与 `.app-no-drag`：既杜绝表单内误触提交，又确保按钮嵌入 Electron/Tauri 自定义拖拽标题栏时点击事件不被窗口拖拽吞没。
  * 3. 原生触感微交互：内置 `active:scale-[0.97]` 按压回弹与 `isLoading` 旋转指示态，禁用或加载期间自动锁死按压形变与重复点击。
  */
@@ -29,40 +29,40 @@ export const appButtonVariants = cva(
     "app-no-drag relative inline-flex shrink-0 select-none items-center justify-center rounded-full font-medium tracking-[-0.01em]",
     "cursor-pointer transition-all duration-150 ease-out",
     "active:scale-[0.97] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
-    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent dark:focus-visible:ring-white/30",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/[0.15] focus-visible:ring-offset-1 focus-visible:ring-offset-transparent dark:focus-visible:ring-white/[0.22]",
   ],
   {
     variants: {
       variant: {
         primary: [
-          "bg-[#141414] text-white",
-          "hover:bg-black",
-          "dark:bg-[#F5F5F7] dark:text-[#141414] dark:hover:bg-white",
+          "bg-[#181B22] text-white shadow-[0_1px_2px_rgba(15,23,42,0.14),inset_0_1px_0_rgba(255,255,255,0.12)]",
+          "hover:bg-[#252A35]",
+          "dark:bg-[#EAEEF6] dark:text-[#111318] dark:shadow-[0_1px_4px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.75)] dark:hover:bg-white",
         ],
         secondary: [
-          "border border-black/15 bg-white text-[#141414]",
-          "hover:bg-black/[0.03] hover:border-black/25",
-          "dark:border-white/15 dark:bg-white/[0.05] dark:text-zinc-100 dark:hover:bg-white/[0.09] dark:hover:border-white/25",
+          "border border-black/[0.06] bg-white/92 text-[#111318] shadow-[0_1px_2px_rgba(15,23,42,0.03),inset_0_1px_0_#FFFFFF]",
+          "hover:bg-white hover:border-black/[0.10]",
+          "dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#ECEFF6] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] dark:hover:bg-white/[0.095] dark:hover:border-white/[0.14]",
         ],
         soft: [
-          "bg-black/[0.045] text-[#141414]",
-          "hover:bg-black/[0.075]",
-          "dark:bg-white/[0.08] dark:text-zinc-100 dark:hover:bg-white/[0.13]",
+          "bg-black/[0.045] text-[#111318]",
+          "hover:bg-black/[0.08]",
+          "dark:bg-white/[0.07] dark:text-[#ECEFF6] dark:hover:bg-white/[0.12]",
         ],
         ghost: [
-          "bg-transparent text-[#5F5F64]",
-          "hover:bg-black/[0.045] hover:text-[#141414]",
-          "dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100",
+          "bg-transparent text-[#687082]",
+          "hover:bg-black/[0.045] hover:text-[#111318]",
+          "dark:text-[#8E96AB] dark:hover:bg-white/[0.07] dark:hover:text-[#ECEFF6]",
         ],
         danger: [
-          "bg-[#FF3B30] text-white",
-          "hover:bg-[#E0352B]",
-          "dark:bg-[#FF453A] dark:text-white dark:hover:bg-[#FF594F]",
+          "bg-[#E5484D] text-white shadow-[0_1px_2px_rgba(229,72,77,0.22)]",
+          "hover:bg-[#DC3B40]",
+          "dark:bg-[#F05252] dark:text-white dark:hover:bg-[#F46464]",
         ],
         dangerSoft: [
-          "bg-[#FF3B30]/10 text-[#D70015]",
-          "hover:bg-[#FF3B30]/16",
-          "dark:bg-[#FF453A]/15 dark:text-[#FF6961] dark:hover:bg-[#FF453A]/22",
+          "bg-[#E5484D]/10 text-[#C6282E]",
+          "hover:bg-[#E5484D]/16",
+          "dark:bg-[#F05252]/14 dark:text-[#F88B8B] dark:hover:bg-[#F05252]/22",
         ],
       },
       size: {
@@ -92,40 +92,40 @@ export const iconButtonVariants = cva(
     "app-no-drag relative inline-flex shrink-0 select-none items-center justify-center rounded-full",
     "cursor-pointer transition-all duration-150 ease-out",
     "active:scale-[0.95] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
-    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20 dark:focus-visible:ring-white/30",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/[0.15] dark:focus-visible:ring-white/[0.22]",
   ],
   {
     variants: {
       variant: {
         primary: [
-          "bg-[#141414] text-white",
-          "hover:bg-black",
-          "dark:bg-[#F5F5F7] dark:text-[#141414] dark:hover:bg-white",
+          "bg-[#181B22] text-white shadow-[0_1px_2px_rgba(15,23,42,0.14)]",
+          "hover:bg-[#252A35]",
+          "dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white",
         ],
         secondary: [
-          "border border-black/15 bg-white text-[#141414]",
-          "hover:bg-black/[0.03] hover:border-black/25",
-          "dark:border-white/15 dark:bg-white/[0.05] dark:text-zinc-100 dark:hover:bg-white/[0.09]",
+          "border border-black/[0.10] bg-white text-[#111318] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
+          "hover:bg-[#F6F7FA] hover:border-black/[0.16]",
+          "dark:border-white/[0.10] dark:bg-white/[0.05] dark:text-[#ECEFF6] dark:hover:bg-white/[0.09]",
         ],
         soft: [
-          "bg-black/[0.045] text-[#141414]",
-          "hover:bg-black/[0.075]",
-          "dark:bg-white/[0.08] dark:text-zinc-100 dark:hover:bg-white/[0.13]",
+          "bg-black/[0.045] text-[#111318]",
+          "hover:bg-black/[0.08]",
+          "dark:bg-white/[0.07] dark:text-[#ECEFF6] dark:hover:bg-white/[0.12]",
         ],
         ghost: [
-          "bg-transparent text-[#6E6E73]",
-          "hover:bg-black/[0.05] hover:text-[#141414]",
-          "dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100",
+          "bg-transparent text-[#687082]",
+          "hover:bg-black/[0.05] hover:text-[#111318]",
+          "dark:text-[#8E96AB] dark:hover:bg-white/[0.07] dark:hover:text-[#ECEFF6]",
         ],
         danger: [
-          "bg-[#FF3B30] text-white",
-          "hover:bg-[#E0352B]",
-          "dark:bg-[#FF453A] dark:hover:bg-[#FF594F]",
+          "bg-[#E5484D] text-white",
+          "hover:bg-[#DC3B40]",
+          "dark:bg-[#F05252] dark:hover:bg-[#F46464]",
         ],
         dangerSoft: [
-          "bg-[#FF3B30]/10 text-[#D70015]",
-          "hover:bg-[#FF3B30]/16",
-          "dark:bg-[#FF453A]/15 dark:text-[#FF6961] dark:hover:bg-[#FF453A]/22",
+          "bg-[#E5484D]/10 text-[#C6282E]",
+          "hover:bg-[#E5484D]/16",
+          "dark:bg-[#F05252]/14 dark:text-[#F88B8B] dark:hover:bg-[#F05252]/22",
         ],
       },
       size: {

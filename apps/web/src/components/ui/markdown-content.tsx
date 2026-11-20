@@ -1,11 +1,11 @@
 /**
  * @module web/components/ui/markdown-content
- * @description 零 XSS 纯 React AST 消息 Markdown 与多方案对比表格渲染引擎（严禁使用 `dangerouslySetInnerHTML`），遵循 Pachat 自然纸感排版规范。
+ * @description 零 XSS 纯 React AST 消息 Markdown 与多方案对比表格渲染引擎（严禁使用 `dangerouslySetInnerHTML`），适配 Daylight & Midnight 双模式高对比阅读韵律。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 绝对零 XSS 攻击面：所有跨主理人 / 跨 Agent 群聊消息均视为不可信外部输入（Untrusted Input），仅构造受控 React 节点，外部超链接强制通过 `http:` / `https:` 协议白名单校验。
- * 2. Pachat 自然阅读韵律：正文统一采用 `15px`（`text-[15px] leading-[1.48]`）舒展字号；`@提及` 使用克制的鼠尾草深绿（`#2A7B59` / 暗夜 `#5ED3A2`）字重强调；围栏代码块采用低调纸面灰底（`bg-black/[0.04] dark:bg-white/[0.06]`）取代沉重花哨的彩色终端框。
- * 3. 向后兼容 `tone` 契约：无论本人象牙暖白气泡（`#F6F2EC` / `#272521`）还是对端气泡，默认 `tone="default"` 均保持天然墨色对比；保留 `inverted` 分支供深底特殊容器兼容调用。
+ * 2. 清晰阅读韵律：正文统一采用 `14.5px`（`text-[14.5px] leading-[1.58]`）舒展字号；`@提及` 使用轻盈翡翠芯片高亮；围栏代码块在暗色模式下采用深凹代码井（`#0C0F17`）与气泡形成利落层级。
+ * 3. 向后兼容 `tone` 契约：默认 `tone="default"` 自动适配双主题气泡；保留 `inverted` 分支供深底特殊容器兼容调用。
  */
 import { assertNever } from "@openhuddle/protocol";
 import { Check, Copy } from "lucide-react";
@@ -321,27 +321,28 @@ interface MarkdownToneStyles {
 const DEFAULT_TONE: MarkdownToneStyles = {
   rootText: "text-inherit",
   inlineCode:
-    "rounded-[5px] bg-black/[0.045] px-1.5 py-[1px] font-mono text-[0.86em] text-[#141414] ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.07] dark:text-zinc-100 dark:ring-white/[0.08]",
-  strong: "font-semibold text-[#141414] dark:text-white",
+    "rounded-[5px] bg-black/[0.05] px-1.5 py-[1px] font-mono text-[0.86em] text-[#111318] ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.08] dark:text-[#ECEFF6] dark:ring-white/[0.09]",
+  strong: "font-semibold text-[#111318] dark:text-white",
   em: "italic opacity-90",
-  link: "font-medium text-[#2F6FED] underline decoration-[#2F6FED]/35 underline-offset-[3px] transition-colors hover:decoration-[#2F6FED] dark:text-[#6EA3FF] dark:decoration-[#6EA3FF]/40",
-  mention: "font-medium text-[#2A7B59] dark:text-[#5ED3A2]",
-  hr: "my-2.5 border-t border-black/[0.08] dark:border-white/[0.08]",
-  headingStrong: "text-[#141414] dark:text-white",
-  headingSoft: "text-[#141414] dark:text-zinc-100",
+  link: "font-medium text-[#2563EB] underline decoration-[#2563EB]/35 underline-offset-[3px] transition-colors hover:decoration-[#2563EB] dark:text-[#60A5FA] dark:decoration-[#60A5FA]/40",
+  mention:
+    "rounded-[5px] bg-emerald-600/[0.09] px-1 py-px font-medium text-[#0E7B52] dark:bg-emerald-400/[0.13] dark:text-[#5EE0A8]",
+  hr: "my-2.5 border-t border-black/[0.07] dark:border-white/[0.08]",
+  headingStrong: "text-[#111318] dark:text-white",
+  headingSoft: "text-[#111318] dark:text-[#ECEFF6]",
   blockquote:
-    "border-l-2 border-black/20 pl-3 py-0.5 text-[14px] text-[#5F5F64] dark:border-white/25 dark:text-zinc-400",
-  tableWrap: "bg-black/[0.02] ring-1 ring-black/[0.07] dark:bg-white/[0.03] dark:ring-white/[0.08]",
-  tableDivide: "divide-black/[0.07] dark:divide-white/[0.08]",
-  thead: "bg-black/[0.035] text-[#141414] dark:bg-white/[0.05] dark:text-zinc-100",
+    "border-l-2 border-black/15 pl-3 py-0.5 text-[14px] text-[#687082] dark:border-white/20 dark:text-[#9BA5BE]",
+  tableWrap: "bg-[#F6F8FB]/75 ring-1 ring-black/[0.06] dark:bg-[#141417]/75 dark:ring-white/[0.08]",
+  tableDivide: "divide-black/[0.06] dark:divide-white/[0.07]",
+  thead: "bg-black/[0.03] text-[#111318] dark:bg-white/[0.04] dark:text-[#F2F2F4]",
   tbody: "bg-transparent",
   rowHover: "hover:bg-black/[0.025] dark:hover:bg-white/[0.03]",
-  td: "text-[#3A3A3C] dark:text-zinc-200",
+  td: "text-[#3B414E] dark:text-[#C4C4CA]",
   codeFence:
-    "bg-black/[0.04] ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]",
+    "bg-[#F6F8FB] ring-1 ring-inset ring-black/[0.06] dark:bg-[#141417] dark:ring-white/[0.08]",
   codeHeader:
-    "border-b border-black/[0.06] text-[#6E6E73] dark:border-white/[0.07] dark:text-zinc-400",
-  codeBody: "text-[#141414] dark:text-zinc-100",
+    "border-b border-black/[0.06] bg-black/[0.02] text-[#687082] dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-[#8E8E96]",
+  codeBody: "text-[#111318] dark:text-[#F2F2F4]",
 };
 
 const INVERTED_TONE: MarkdownToneStyles = {
@@ -503,10 +504,10 @@ function CodeFenceBlock(props: CodeFenceBlockProps) {
             variant="ghost"
             label="复制代码"
             onClick={handleCopy}
-            className="h-6 w-6 text-[#6E6E73] hover:bg-black/[0.05] hover:text-[#141414] dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100"
+            className="h-6 w-6 text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#7D869C] dark:hover:bg-white/[0.08] dark:hover:text-[#ECEFF6]"
           >
             {copied ? (
-              <Check className="h-3.5 w-3.5 text-[#34C759]" />
+              <Check className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
             ) : (
               <Copy className="h-3.5 w-3.5" />
             )}
@@ -555,7 +556,7 @@ export function MarkdownContent(props: MarkdownContentProps) {
   return (
     <div
       className={cn(
-        "select-text space-y-2 text-[15px] leading-[1.48] tracking-[-0.005em] break-words [overflow-wrap:anywhere]",
+        "select-text space-y-2 text-[14.5px] leading-[1.58] tracking-[-0.005em] break-words [overflow-wrap:anywhere]",
         styles.rootText,
         props.className,
       )}

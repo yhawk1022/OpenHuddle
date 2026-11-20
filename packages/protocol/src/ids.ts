@@ -28,6 +28,12 @@ export type RoomId = Brand<string, "RoomId">;
 /** 结构化提案卡片唯一标识（示例：`prp_01jk9x...`） */
 export type ProposalId = Brand<string, "ProposalId">;
 
+/** 人类 Web 登录会话唯一标识（示例：`ses_01jk9x...`） */
+export type SessionId = Brand<string, "SessionId">;
+
+/** 管理员操作审计日志唯一标识（示例：`aud_01jk9x...`） */
+export type AuditLogId = Brand<string, "AuditLogId">;
+
 /** 一次性短配对码（示例：`HUDDLE-8K3P-92M`） */
 export type PairingCode = Brand<string, "PairingCode">;
 
@@ -79,6 +85,26 @@ export const ProposalIdSchema = z
   .min(3)
   .max(64)
   .transform((val): ProposalId => val as ProposalId);
+
+/**
+ * 校验并品牌化 `SessionId` 的 Zod Schema。
+ */
+export const SessionIdSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(64)
+  .transform((val): SessionId => val as SessionId);
+
+/**
+ * 校验并品牌化 `AuditLogId` 的 Zod Schema。
+ */
+export const AuditLogIdSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(64)
+  .transform((val): AuditLogId => val as AuditLogId);
 
 /**
  * 校验并规范化（自动转大写）一次性配对码的 Zod Schema。

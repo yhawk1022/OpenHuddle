@@ -232,6 +232,8 @@ export class PairingRepository {
         id: usersTable.id,
         email: usersTable.email,
         displayName: usersTable.displayName,
+        role: usersTable.role,
+        status: usersTable.status,
         createdAt: usersTable.createdAt,
       })
       .from(usersTable)

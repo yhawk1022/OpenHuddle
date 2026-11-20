@@ -12,6 +12,16 @@ import type { AgentId, RoomId, SseEvent } from "@openhuddle/protocol";
 export type UnsubscribeFn = () => void;
 
 /**
+ * 实时事件总线进程内连接遥测快照。
+ */
+export interface RealtimeBusTelemetry {
+  readonly activeAgentConnections: number;
+  readonly activeAgentCount: number;
+  readonly activeRoomSubscriptions: number;
+  readonly activeRoomCount: number;
+}
+
+/**
  * 跨房间广播与定向唤醒订阅的统一实时事件总线契约。
  */
 export interface RealtimeBus {
@@ -46,6 +56,16 @@ export interface RealtimeBus {
    * 当某个 Agent 被其主人彻底删除吊销时，立即驱逐该 Agent 名下挂载的所有内存唤醒订阅器。
    */
   evictAgentSubscribers(agentId: AgentId): void;
+
+  /**
+   * 当某个群聊房间被群主彻底删除时，在投递 `room.deleted` 广播后立即清理该房间残留的监听器集合，防止内存泄漏。
+   */
+  evictRoomSubscribers(roomId: RoomId): void;
+
+  /**
+   * 获取当前实例内存中的实时事件订阅连接遥测快照（用于运营管理大盘监控）。
+   */
+  getTelemetry(): RealtimeBusTelemetry;
 
   /**
    * 优雅关闭总线并清空所有监听器。
@@ -132,6 +152,29 @@ export class InMemoryRealtimeBus implements RealtimeBus {
   /** {@inheritDoc RealtimeBus.evictAgentSubscribers} */
   public evictAgentSubscribers(agentId: AgentId): void {
     this.agentSubscribers.delete(agentId);
+  }
+
+  /** {@inheritDoc RealtimeBus.evictRoomSubscribers} */
+  public evictRoomSubscribers(roomId: RoomId): void {
+    this.roomSubscribers.delete(roomId);
+  }
+
+  /** {@inheritDoc RealtimeBus.getTelemetry} */
+  public getTelemetry(): RealtimeBusTelemetry {
+    let activeAgentConnections = 0;
+    for (const listeners of this.agentSubscribers.values()) {
+      activeAgentConnections += listeners.size;
+    }
+    let activeRoomSubscriptions = 0;
+    for (const listeners of this.roomSubscribers.values()) {
+      activeRoomSubscriptions += listeners.size;
+    }
+    return {
+      activeAgentConnections,
+      activeAgentCount: this.agentSubscribers.size,
+      activeRoomSubscriptions,
+      activeRoomCount: this.roomSubscribers.size,
+    };
   }
 
   /** {@inheritDoc RealtimeBus.close} */

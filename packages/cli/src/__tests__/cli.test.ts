@@ -6,7 +6,15 @@
  * 1. 全沙箱隔离：所有凭据读写、游标缓存与守护配置文件均落盘于临时目录（`mkdtempSync`），绝不触碰宿主机真实 `~/.openhuddle` 或系统 `launchctl`/`systemctl`。
  * 2. 跨平台全覆盖：在同一测试矩阵内对 macOS `launchd`、Linux `systemd --user` 与 Windows `schtasks` + PID 锁进行 100% 确定性断言。
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentId, MessageSeq, RoomId } from "@openhuddle/protocol";
@@ -26,6 +34,7 @@ import {
   buildWindowsSchtasksArgs,
   collectInheritedDaemonEnvVars,
   computeReconnectDelayMs,
+  discoverUserCliBinDirs,
   getDaemonPidFilePath,
   getRoomLastReadSeq,
   isPresetTimeoutError,
@@ -35,6 +44,8 @@ import {
   readDaemonPidFile,
   readSseFrames,
   readStoredCredentials,
+  resolveAntigravityManagedProxyEnv,
+  resolveShellWrapperEnvForBinary,
   runCli,
   startSseListener,
 } from "../cli.js";
@@ -1608,6 +1619,101 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       const systemdUnit = buildLinuxSystemdUnit(specWithProxy);
       expect(systemdUnit).toContain("Environment=HTTPS_PROXY=http://127.0.0.1:7897");
       expect(systemdUnit).toContain('Environment="NO_PROXY=localhost,127.0.0.1,::1"');
+    });
+
+    it("extracts Antigravity 2.x network-proxy.zsh ($PPID scoped) and zsh wrapper env vars (CLAUDE_CONFIG_DIR / CODEX_HOME) with strict per-preset isolation", () => {
+      // 模拟真实宿主机配置：
+      // 1. Antigravity 2.x 写入 ~/Library/Application Support/Antigravity/network-proxy.zsh（带 $PPID 分支与 $HTTP_PROXY 变量自引用）
+      const agySupportDir = join(tempHome, "Library", "Application Support", "Antigravity");
+      mkdirSync(agySupportDir, { recursive: true });
+      writeFileSync(
+        join(agySupportDir, "network-proxy.zsh"),
+        [
+          "# Antigravity-only local proxy",
+          'case "$(/bin/ps -ww -p "$PPID" -o comm= 2>/dev/null)" in',
+          "  /Applications/Antigravity.app/*)",
+          "    export HTTP_PROXY='http://127.0.0.1:7897'",
+          '    export HTTPS_PROXY="$HTTP_PROXY"',
+          '    export NO_PROXY="localhost,127.0.0.1"',
+          "    ;;",
+          "esac",
+        ].join("\n"),
+        "utf8",
+      );
+
+      // 2. ~/.zshrc 定义了 claude() 与 codex() 包装函数（内部网关隔离目录），顶层不导出全局 HTTP_PROXY
+      writeFileSync(
+        join(tempHome, ".zshrc"),
+        [
+          "claude() {",
+          '  CLAUDE_CONFIG_DIR="$HOME/.claude-cli-api" command claude "$@"',
+          "}",
+          "",
+          "codex() {",
+          "  unset OPENAI_API_KEY OPENAI_BASE_URL",
+          '  CODEX_HOME="$HOME/.codex-cli-api" command codex "$@"',
+          "}",
+        ].join("\n"),
+        "utf8",
+      );
+
+      // 3. 多版本 nvm 目录（验证 v24.17.0 优先于 v18.20.8）
+      mkdirSync(join(tempHome, ".nvm", "versions", "node", "v18.20.8", "bin"), {
+        recursive: true,
+      });
+      mkdirSync(join(tempHome, ".nvm", "versions", "node", "v24.17.0", "bin"), {
+        recursive: true,
+      });
+
+      const binDirs = discoverUserCliBinDirs(tempHome);
+      const v24Idx = binDirs.indexOf(join(tempHome, ".nvm", "versions", "node", "v24.17.0", "bin"));
+      const v18Idx = binDirs.indexOf(join(tempHome, ".nvm", "versions", "node", "v18.20.8", "bin"));
+      expect(v24Idx).toBeGreaterThanOrEqual(0);
+      expect(v18Idx).toBeGreaterThan(v24Idx);
+
+      const agyProxy = resolveAntigravityManagedProxyEnv(tempHome, false);
+      expect(agyProxy.HTTP_PROXY).toBe("http://127.0.0.1:7897");
+      expect(agyProxy.HTTPS_PROXY).toBe("http://127.0.0.1:7897");
+      expect(agyProxy.NO_PROXY).toBe("localhost,127.0.0.1,::1");
+
+      const claudeWrapper = resolveShellWrapperEnvForBinary(tempHome, "claude");
+      expect(claudeWrapper).toEqual({
+        CLAUDE_CONFIG_DIR: join(tempHome, ".claude-cli-api"),
+      });
+
+      const codexWrapper = resolveShellWrapperEnvForBinary(tempHome, "codex");
+      expect(codexWrapper).toEqual({
+        CODEX_HOME: join(tempHome, ".codex-cli-api"),
+      });
+
+      // 严格按预设隔离断言：antigravity 获得专属代理，claude_code / codex 绝不被污染代理
+      const agyDaemonEnv = collectInheritedDaemonEnvVars(
+        tempHome,
+        {},
+        { kind: "preset", preset: "antigravity" },
+      );
+      expect(agyDaemonEnv.HTTP_PROXY).toBe("http://127.0.0.1:7897");
+      expect(agyDaemonEnv.HTTPS_PROXY).toBe("http://127.0.0.1:7897");
+      expect(agyDaemonEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(agyDaemonEnv.CODEX_HOME).toBeUndefined();
+
+      const claudeDaemonEnv = collectInheritedDaemonEnvVars(
+        tempHome,
+        {},
+        { kind: "preset", preset: "claude_code" },
+      );
+      expect(claudeDaemonEnv.CLAUDE_CONFIG_DIR).toBe(join(tempHome, ".claude-cli-api"));
+      expect(claudeDaemonEnv.HTTP_PROXY).toBeUndefined();
+      expect(claudeDaemonEnv.CODEX_HOME).toBeUndefined();
+
+      const codexDaemonEnv = collectInheritedDaemonEnvVars(
+        tempHome,
+        {},
+        { kind: "preset", preset: "codex" },
+      );
+      expect(codexDaemonEnv.CODEX_HOME).toBe(join(tempHome, ".codex-cli-api"));
+      expect(codexDaemonEnv.HTTP_PROXY).toBeUndefined();
+      expect(codexDaemonEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
     });
 
     it("retries transient preset CLI failure once and posts a secret-redacted room diagnostic when unrecoverable", async () => {

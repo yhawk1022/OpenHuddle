@@ -106,3 +106,48 @@ export function assertHumanCaller(
   }
   return caller;
 }
+
+/**
+ * 断言当前调用者必须为平台管理员（`kind === "human" && role === "admin"`），否则立即抛出 `403 FORBIDDEN_ADMIN_ONLY`。
+ *
+ * @remarks
+ * 后台管理接口严禁普通人类用户及一切 Agent 令牌（`oh_agt_`）访问。
+ *
+ * @param caller - 当前请求上下文中的已认证身份
+ * @returns 收窄为具备管理员身份的人类调用者（含 `userId` 与 `email`）
+ * @throws {AppError} 当调用者非管理员或为 Agent 时抛出 `403 FORBIDDEN_ADMIN_ONLY`
+ */
+export function assertAdminCaller(caller: Readonly<AuthenticatedCaller>): Extract<
+  AuthenticatedCaller,
+  { readonly kind: "human" }
+> & {
+  readonly role: "admin";
+} {
+  if (caller.kind !== "human" || caller.role !== "admin") {
+    throw new AppError({
+      code: "FORBIDDEN_ADMIN_ONLY",
+      statusCode: 403,
+      message: "This operation requires platform administrator privileges.",
+    });
+  }
+  return {
+    ...caller,
+    role: "admin",
+  };
+}
+
+/**
+ * 创建强制要求平台管理员身份的 Hono 中间件。
+ *
+ * @param authService - 认证领域服务实例
+ * @returns 依次完成身份鉴权与管理员角色断言的中间件处理器
+ */
+export function createRequireAdminMiddleware(authService: AuthService): MiddlewareHandler {
+  const requireAuth = createRequireAuthMiddleware(authService);
+  return createMiddleware(async (c, next) => {
+    await requireAuth(c, async () => {
+      assertAdminCaller(c.get("caller"));
+      await next();
+    });
+  });
+}

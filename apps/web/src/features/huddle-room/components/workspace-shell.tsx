@@ -1,16 +1,19 @@
 /**
  * @module web/features/huddle-room/workspace-shell
- * @description Pachat 原生三栏工作台应用外壳（Authentic Pachat 3-Column App Shell）：
- * 外层统一圆角窗口（`#EFEFF3` / 暗色 `#101012`）由 `1px` 极细发丝分割线自然串联三栏：
- * 1. 左侧 `80px`「我 + 已接入个人 Agent + `+ 接入 agent`」垂直导轨（`#EFEFF3` / 暗色 `#111113`）；
- * 2. 中间 `280px`「聊天 | 通讯录」侧栏（`#F8F8FA` / 暗色 `#151518`）；
- * 3. 右侧通透纯净 `#FFFFFF`（暗色 `#0E0E10`）聊天主舞台（默认收起右侧抽屉，赋予会话留白呼吸感）。
+ * @description Apple Liquid Glass 空间多岛协作工作台外壳（macOS Tahoe / iOS 26 Spatial Floating App Shell）：
+ * 桌面端以 `10px` 空间间隙自然陈列悬浮液态玻璃岛，移动端自适应为无边框全屏原生导航与底部手势抽屉：
+ * 1. 第 1 栏（`72px`）：个人身份与已绑定 Agent 垂直液态玻璃导轨（`liquid-glass-panel`）；
+ * 2. 第 2 栏（`276px`）：「聊天 | 通讯录」液态玻璃侧栏（`liquid-glass-panel`）；
+ * 3. 第 3 栏（`flex-1`）：轻透聊天主舞台（`oh-stage-frame`），全高消息时间线在顶部悬浮双岛顶栏（`GovernanceBar`）
+ *    与底部悬浮输入舱（`MessageComposer`）下方自由滑过，触发真实动态折射；
+ * 4. 第 4 栏（`356px`，按需展开）：群信息与提案液态玻璃面板（宽屏独立悬浮岛 / 窄屏 Vaul 抽屉）。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 严格单向边界：仅通过 `../../auth-pairing/index.js` 公共门面访问兄弟特性，绝不跨特性深层私引内部实现。
  * 2. 单一状态源：服务端读取全部由 `TanStack Query` 托管，全局单一 SSE 连接（`useRealtimeSseSync`）只向 `QueryClient`
  *    做按 `seq` 幂等补丁；本壳层仅持有纯 UI 状态（抽屉开合、`⌘K` 面板、滚动位置、移动端当前页）。
- * 3. 不打断阅读：用户上翻历史时新消息不强制滚动，而是累计到「↓ N 条新消息」墨黑胶囊浮钮；自己发送的消息始终滚到底。
+ * 3. 不打断阅读与防遮挡：消息时间线按顶栏横幅数动态留出首屏安全上边距，且「回到底部」胶囊与底部输入舱同处弹性底栈，
+ *    输入多行或弹出提示条时自动上移永不重叠；上翻历史时新消息累计到浮钮，自己发出的消息始终平滑滚到底。
  * 4. 连续发言分组：同一作者、均为未撤回的 `text`、间隔 ≤ 3 分钟且非引用回复的相邻消息视为一组，
  *    传 `isGroupedWithPrevious` 给 `MessageBubble` 隐藏重复头像与昵称。
  */
@@ -25,6 +28,7 @@ import type {
   ProposalId,
   RoomId,
   RoomMemberDto,
+  UpdateGovernanceBody,
 } from "@openhuddle/protocol";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -32,7 +36,9 @@ import {
   ArrowDown,
   ChevronRight,
   Command,
+  Copy,
   FileText,
+  KeyRound,
   LogIn,
   LogOut,
   MessageCircle,
@@ -40,14 +46,20 @@ import {
   Pin,
   Plus,
   RefreshCw,
+  Shield,
   Sun,
+  Trash2,
+  UserRound,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { BrandMark } from "../../../components/brand-mark.js";
 import {
   AnimatePresence,
   AppButton,
   AppCommandPalette,
+  AppContextMenu,
+  type AppContextMenuEntry,
   AppSheetDrawer,
   AppTooltip,
   type CommandPaletteGroup,
@@ -63,7 +75,7 @@ import {
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { MessageBubble } from "../../../components/ui/message-bubble.js";
 import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
-import { getReachVisualMeta } from "../../../lib/format.js";
+import { getPlatformVisualMeta, getReachVisualMeta } from "../../../lib/format.js";
 import type { OptimisticMessageItem } from "../../../lib/query-keys.js";
 import {
   navigateTo,
@@ -74,6 +86,7 @@ import {
 } from "../../../lib/session-store.js";
 import { useRealtimeSseSync } from "../../../lib/sse-sync.js";
 import {
+  AccountSecurityModal,
   AgentOnboardingModal,
   type OnboardingModalTab,
   OtpSignInScreen,
@@ -90,15 +103,24 @@ import {
   useCastProposalVoteMutation,
   useCreateProposalMutation,
   useDecideProposalMutation,
+  useDeleteRoomMutation,
+  useLeaveRoomMutation,
   useRecallMessageMutation,
   useSendMessageMutation,
   useSynthesizeProposalMutation,
+  useUpdateAnyRoomGovernanceMutation,
   useUpdateGovernanceMutation,
 } from "../api/huddle-room.queries.js";
 import { GovernanceBar } from "./governance-bar.js";
 import { MessageComposer } from "./message-composer.js";
 import { type InspectorTab, RoomInspector } from "./room-inspector.js";
-import { CreateRoomModal, JoinRoomModal } from "./room-modals.js";
+import {
+  CreateRoomModal,
+  DeleteRoomConfirmModal,
+  type DeleteRoomTarget,
+  JoinRoomModal,
+  LeaveRoomConfirmModal,
+} from "./room-modals.js";
 import { RoomSidebar } from "./room-sidebar.js";
 
 export { systemHealthQueryOptions };
@@ -133,7 +155,7 @@ function readWideScreen(): boolean {
     : true;
 }
 
-/** 订阅 `xl` 断点：决定抽屉以「右侧内联分栏」还是「Vaul 手势抽屉」形式呈现 */
+/** 订阅 `xl` 断点：决定抽屉以「右侧悬浮分栏」还是「Vaul 手势抽屉」形式呈现 */
 function useIsWideScreen(): boolean {
   return useSyncExternalStore(subscribeWideScreen, readWideScreen, () => true);
 }
@@ -187,6 +209,8 @@ interface ActiveRoomStageProps {
   readonly onOpenAddAgentModal: (tab?: OnboardingModalTab, reclaimAgentId?: AgentId) => void;
   readonly onBackToList: () => void;
   readonly onInspectAgent: (profile: InspectedAgentProfile) => void;
+  readonly onRequestDeleteRoom: (room: DeleteRoomTarget) => void;
+  readonly onRequestLeaveRoom: (room: DeleteRoomTarget) => void;
 }
 
 function ActiveRoomStage(props: ActiveRoomStageProps) {
@@ -204,7 +228,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
 
   const isWideScreen = useIsWideScreen();
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("members");
-  // Pachat 留白不变量：桌面端默认收起右侧抽屉，让聊天舞台保持宽敞与平静；点击顶栏人数或提案胶囊时再按需展开
+  // 留白呼吸不变量：桌面端默认收起右侧面板，让聊天舞台保持宽敞与平静；点击顶栏人数或提案胶囊时再按需展开
   const [desktopInspectorOpen, setDesktopInspectorOpen] = useState<boolean>(false);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState<boolean>(false);
   const [focusedProposalId, setFocusedProposalId] = useState<ProposalId | null>(null);
@@ -356,13 +380,16 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
 
   if (detailQuery.isPending) {
     return (
-      <div className="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#0E0E10]">
-        <div className="h-[68px] shrink-0 border-b border-black/[0.06] dark:border-white/[0.06]" />
-        <div className="flex-1 space-y-4 p-6">
+      <div className="oh-stage-frame relative flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-[22px]">
+        <div className="flex items-center justify-between gap-3 px-4 pt-3">
+          <div className="h-12 w-48 animate-pulse rounded-full bg-black/[0.05] dark:bg-white/[0.06]" />
+          <div className="h-12 w-56 animate-pulse rounded-full bg-black/[0.05] dark:bg-white/[0.06]" />
+        </div>
+        <div className="mx-auto w-full max-w-3xl flex-1 space-y-4 p-6 pt-8">
           {[1, 2, 3].map((sk) => (
             <div key={`stage-sk-${String(sk)}`} className="flex items-start gap-3">
-              <div className="h-9 w-9 animate-pulse rounded-full bg-[#F5F5F7] dark:bg-white/[0.06]" />
-              <div className="h-14 w-2/3 animate-pulse rounded-2xl bg-[#F5F5F7] dark:bg-white/[0.05]" />
+              <div className="h-9 w-9 animate-pulse rounded-full bg-black/[0.05] dark:bg-white/[0.06]" />
+              <div className="h-14 w-2/3 animate-pulse rounded-2xl bg-black/[0.04] dark:bg-white/[0.05]" />
             </div>
           ))}
         </div>
@@ -372,13 +399,13 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
 
   if (detailQuery.isError || !detailQuery.data) {
     return (
-      <div className="flex min-w-0 flex-1 flex-col items-center justify-center bg-white p-8 text-center dark:bg-[#0E0E10]">
-        <div className="max-w-sm rounded-3xl bg-[#F8F8FA] p-6 dark:bg-[#151518]">
-          <AlertCircle className="mx-auto h-6 w-6 text-[#FF3B30]" />
-          <h2 className="mt-2.5 text-[15px] font-semibold text-[#141414] dark:text-zinc-100">
+      <div className="oh-stage-frame relative flex min-w-0 flex-1 flex-col items-center justify-center overflow-hidden p-8 text-center md:rounded-[22px]">
+        <div className="relative liquid-glass-modal max-w-sm rounded-[24px] p-6">
+          <AlertCircle className="mx-auto h-6 w-6 text-[#E5484D] dark:text-[#F87171]" />
+          <h2 className="mt-2.5 text-[15px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
             无法加载当前群聊
           </h2>
-          <p className="mt-1 text-xs text-[#6E6E73] dark:text-zinc-400">
+          <p className="mt-1 text-xs text-[#687082] dark:text-[#8E8E96]">
             请确认你仍是该群成员，或点击重新加载。
           </p>
           <div className="mt-4 flex items-center justify-center gap-2">
@@ -419,6 +446,18 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   );
   const isInspectorOpen = isWideScreen ? desktopInspectorOpen : mobileInspectorOpen;
 
+  // 计算顶部悬浮岛与横幅条数，确保 scrollTop=0 时首条消息永不被遮挡，同时滚动时消息流自然穿过液态玻璃下方
+  const hasGovernanceSubBanner =
+    liveGovernance.status === "paused_budget" ||
+    (latestDecided !== null && openProposals.length === 0);
+  const topTimelinePaddingClass =
+    hasGovernanceSubBanner && pinnedProposal !== null
+      ? "pt-[162px]"
+      : hasGovernanceSubBanner || pinnedProposal !== null
+        ? "pt-[118px]"
+        : "pt-[74px]";
+  const bottomTimelinePaddingClass = replyTarget !== null ? "pb-[184px]" : "pb-[148px]";
+
   const setInspectorOpen = (open: boolean): void => {
     if (isWideScreen) {
       setDesktopInspectorOpen(open);
@@ -449,6 +488,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   const inspectorNode = (
     <RoomInspector
       room={room}
+      currentUserId={props.currentUser.id}
       governance={liveGovernance}
       isUpdatingGovernance={governanceMutation.isPending}
       activeTab={inspectorTab}
@@ -509,165 +549,184 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         setMobileInspectorOpen(false);
       }}
       onOpenAddAgentModal={() => props.onOpenAddAgentModal("pair_agent")}
+      onRequestDeleteRoom={(targetRoom) => {
+        setMobileInspectorOpen(false);
+        props.onRequestDeleteRoom(targetRoom);
+      }}
+      onRequestLeaveRoom={(targetRoom) => {
+        setMobileInspectorOpen(false);
+        props.onRequestLeaveRoom(targetRoom);
+      }}
+      surfaceMode={isWideScreen ? "panel" : "sheet"}
       onClose={() => setInspectorOpen(false)}
     />
   );
 
   return (
     <div className="relative flex min-w-0 flex-1 overflow-hidden">
-      {/* 中央纯净 `#FFFFFF` 聊天舞台：68px 顶栏 + 待拍板提示条 + 无网格时间线 + Pachat 输入卡 */}
-      <div className="im-canvas flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top,0px)] md:pt-0">
-        <GovernanceBar
-          room={room}
-          governance={liveGovernance}
-          proposalsCount={proposals.length}
-          openProposalsCount={openProposals.length}
-          decidedProposalTitle={latestDecided?.draft.title ?? null}
-          isUpdatingGovernance={governanceMutation.isPending}
-          isInspectorOpen={isInspectorOpen}
-          onUpdateGovernance={(patch) => governanceMutation.mutate(patch)}
-          onOpenAddAgentModal={() => props.onOpenAddAgentModal("pair_agent")}
-          onOpenProposals={() => openInspectorAt("proposals")}
-          onToggleInspector={handleToggleMembersInspector}
-          onBackToList={props.onBackToList}
-        />
+      {/* 中央通透聊天主舞台：全高消息流 + 悬浮双岛液态玻璃顶栏 + 悬浮液态玻璃输入舱 */}
+      <div className="oh-stage-frame relative flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-[22px] [--oh-avatar-ring:#FFFFFF] dark:[--oh-avatar-ring:#1C1C1F]">
+        {/* 顶部悬浮液态玻璃覆盖层（空白区域 pointer-events-none 允许直接滚动下方消息流） */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-3 sm:px-4">
+          <GovernanceBar
+            room={room}
+            governance={liveGovernance}
+            proposalsCount={proposals.length}
+            openProposalsCount={openProposals.length}
+            decidedProposalTitle={latestDecided?.draft.title ?? null}
+            isUpdatingGovernance={governanceMutation.isPending}
+            isInspectorOpen={isInspectorOpen}
+            onUpdateGovernance={(patch) => governanceMutation.mutate(patch)}
+            onOpenAddAgentModal={() => props.onOpenAddAgentModal("pair_agent")}
+            onOpenProposals={() => openInspectorAt("proposals")}
+            onToggleInspector={handleToggleMembersInspector}
+            onBackToList={props.onBackToList}
+          />
 
-        {/* 置顶待拍板提案条（仅存在 open 提案时出现） */}
-        <AnimatePresence initial={false}>
-          {pinnedProposal !== null ? (
-            <motion.button
-              key="pinned-open-proposal"
-              type="button"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.16, ease: "easeOut" }}
-              onClick={() => handleOpenProposalInInspector(pinnedProposal.id)}
-              className="group flex shrink-0 cursor-pointer select-none items-center gap-2 overflow-hidden border-b border-black/[0.05] bg-[#FFF8E6] px-4 py-2 text-left text-xs transition hover:bg-[#FFF1C2]/70 sm:px-6 dark:border-white/[0.06] dark:bg-[#241F14] dark:hover:bg-[#2C2718]"
-            >
-              <Pin className="h-3.5 w-3.5 shrink-0 rotate-45 text-[#9A6700] dark:text-[#E5B34B]" />
-              <span className="shrink-0 font-semibold text-[#5C4813] dark:text-[#F2DF9D]">
-                待拍板{openProposals.length > 1 ? ` · ${String(openProposals.length)}` : ""}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[#141414] dark:text-zinc-200">
-                {pinnedProposal.draft.title}
-              </span>
-              <span className="inline-flex shrink-0 items-center gap-0.5 font-medium text-[#5C4813] dark:text-[#F2DF9D]">
-                <span className="hidden sm:inline">查看方案</span>
-                <ChevronRight className="h-3.5 w-3.5 transition group-hover:translate-x-0.5" />
-              </span>
-            </motion.button>
-          ) : null}
-        </AnimatePresence>
+          {/* 悬浮置顶待拍板提案玻璃胶囊（仅存在 open 提案时出现） */}
+          <AnimatePresence initial={false}>
+            {pinnedProposal !== null ? (
+              <motion.button
+                key="pinned-open-proposal"
+                type="button"
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.16, ease: "easeOut" }}
+                onClick={() => handleOpenProposalInInspector(pinnedProposal.id)}
+                className="pointer-events-auto relative liquid-glass-bar group mx-auto mt-2 flex w-full max-w-3xl cursor-pointer select-none items-center gap-2 overflow-hidden rounded-[16px] px-3.5 py-2 text-left text-xs transition hover:brightness-[1.02]"
+              >
+                <Pin className="h-3.5 w-3.5 shrink-0 rotate-45 text-[#D97706] dark:text-[#FBBF24]" />
+                <span className="shrink-0 font-semibold text-[#78350F] dark:text-[#FCD34D]">
+                  待拍板{openProposals.length > 1 ? ` · ${String(openProposals.length)}` : ""}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[#111318] dark:text-[#ECECEF]">
+                  {pinnedProposal.draft.title}
+                </span>
+                <span className="inline-flex shrink-0 items-center gap-0.5 font-medium text-[#78350F] dark:text-[#FCD34D]">
+                  <span className="hidden sm:inline">查看方案</span>
+                  <ChevronRight className="h-3.5 w-3.5 transition group-hover:translate-x-0.5" />
+                </span>
+              </motion.button>
+            ) : null}
+          </AnimatePresence>
+        </div>
 
-        {/* 可滚动消息时间线 */}
-        <div className="relative min-h-0 flex-1">
+        {/* 通顶通底可滚动消息时间线（滚动至顶栏与底栏下方时自然呈现 Apple Liquid Glass 折射） */}
+        <div
+          ref={scrollRef}
+          onScroll={handleTimelineScroll}
+          className="h-full overflow-y-auto overscroll-contain px-4 sm:px-6"
+        >
           <div
-            ref={scrollRef}
-            onScroll={handleTimelineScroll}
-            className="h-full overflow-y-auto overscroll-contain px-4 pt-5 pb-3 sm:px-6"
+            className={cn(
+              "mx-auto flex max-w-3xl flex-col",
+              topTimelinePaddingClass,
+              bottomTimelinePaddingClass,
+            )}
           >
-            <div className="mx-auto flex max-w-3xl flex-col">
-              {messagesQuery.isPending ? (
-                <div className="space-y-4">
-                  {[1, 2, 3].map((id) => (
-                    <div key={`msg-sk-${String(id)}`} className="flex items-start gap-3">
-                      <div className="h-9 w-9 animate-pulse rounded-full bg-[#F5F5F7] dark:bg-white/[0.06]" />
-                      <div className="h-14 w-1/2 animate-pulse rounded-2xl bg-[#F5F5F7] dark:bg-white/[0.05]" />
-                    </div>
-                  ))}
-                </div>
-              ) : messagesQuery.isError ? (
-                <div className="rounded-2xl bg-[#FF3B30]/10 p-4 text-xs text-[#D70015] dark:bg-[#FF453A]/15 dark:text-[#FF6961]">
-                  <div className="flex items-center justify-between gap-2">
-                    <span>拉取消息失败，请检查网络连接。</span>
-                    <AppButton
-                      variant="danger"
-                      size="xs"
-                      onClick={() => void messagesQuery.refetch()}
-                    >
-                      重试
-                    </AppButton>
+            {messagesQuery.isPending ? (
+              <div className="space-y-4">
+                {[1, 2, 3].map((id) => (
+                  <div key={`msg-sk-${String(id)}`} className="flex items-start gap-3">
+                    <div className="h-9 w-9 animate-pulse rounded-full bg-black/[0.05] dark:bg-white/[0.06]" />
+                    <div className="h-14 w-1/2 animate-pulse rounded-2xl bg-black/[0.04] dark:bg-white/[0.05]" />
                   </div>
+                ))}
+              </div>
+            ) : messagesQuery.isError ? (
+              <div className="rounded-2xl bg-[#E5484D]/10 p-4 text-xs text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
+                <div className="flex items-center justify-between gap-2">
+                  <span>拉取消息失败，请检查网络连接。</span>
+                  <AppButton
+                    variant="danger"
+                    size="xs"
+                    onClick={() => void messagesQuery.refetch()}
+                  >
+                    重试
+                  </AppButton>
                 </div>
-              ) : messages.length === 0 ? (
-                <div className="mx-auto my-16 max-w-md select-none px-4 text-center">
-                  <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-[#141414] dark:text-zinc-100">
-                    {room.name}
-                  </h2>
-                  <p className="mx-auto mt-2 text-[13.5px] leading-relaxed text-[#6E6E73] dark:text-zinc-400">
-                    把你的 Agent 或朋友邀请进群，直接在下方输入框说话，或输入 `@` 点名一起讨论。
-                  </p>
-                  <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
-                    <AppButton
-                      variant="primary"
-                      size="md"
-                      leadingIcon={<Plus className="h-4 w-4" />}
-                      onClick={() => props.onOpenAddAgentModal("pair_agent")}
-                    >
-                      邀请 / 接入 agent
-                    </AppButton>
-                    <AppButton
-                      variant="secondary"
-                      size="md"
-                      onClick={() => openInspectorAt("members")}
-                    >
-                      查看群成员
-                    </AppButton>
-                  </div>
+              </div>
+            ) : messages.length === 0 ? (
+              <div className="mx-auto my-14 max-w-md select-none px-4 text-center">
+                <BrandMark className="mx-auto mb-3.5 h-11 w-11 rounded-[12px] shadow-xs" />
+                <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-[#111318] dark:text-[#F2F2F4]">
+                  {room.name}
+                </h2>
+                <p className="mx-auto mt-2 text-[13.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                  把你的 Agent 或朋友邀请进群，直接在下方输入舱说话，或输入 `@` 点名一起讨论。
+                </p>
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+                  <AppButton
+                    variant="primary"
+                    size="md"
+                    leadingIcon={<Plus className="h-4 w-4" />}
+                    onClick={() => props.onOpenAddAgentModal("pair_agent")}
+                  >
+                    邀请 / 接入 agent
+                  </AppButton>
+                  <AppButton
+                    variant="secondary"
+                    size="md"
+                    onClick={() => openInspectorAt("members")}
+                  >
+                    查看群成员
+                  </AppButton>
                 </div>
-              ) : (
-                // MessageBubble 自带间距，此处不再叠加 space-y
-                messages.map((message, index) => {
-                  const replied =
-                    message.replyToSeq !== undefined
-                      ? messageBySeq.get(message.replyToSeq)
-                      : undefined;
-                  const linkedProposal = proposalByOriginSeq.get(message.seq);
-                  const agentMember =
-                    message.author.agentId !== undefined
-                      ? memberByAgentId.get(message.author.agentId)
-                      : undefined;
-                  const key = message._opKey ?? `seq-${String(message.seq)}`;
+              </div>
+            ) : (
+              // MessageBubble 自带间距，此处不再叠加 space-y
+              messages.map((message, index) => {
+                const replied =
+                  message.replyToSeq !== undefined
+                    ? messageBySeq.get(message.replyToSeq)
+                    : undefined;
+                const linkedProposal = proposalByOriginSeq.get(message.seq);
+                const agentMember =
+                  message.author.agentId !== undefined
+                    ? memberByAgentId.get(message.author.agentId)
+                    : undefined;
+                const key = message._opKey ?? `seq-${String(message.seq)}`;
 
-                  return (
-                    <MessageBubble
-                      key={key}
-                      message={message}
-                      isGroupedWithPrevious={groupedFlags[index] === true}
-                      repliedMessage={replied}
-                      linkedProposal={linkedProposal}
-                      authorOwnerName={agentMember?.ownerDisplayName}
-                      authorReach={agentMember?.reach}
-                      nowMs={nowMs}
-                      isRecalling={recallMutation.isPending}
-                      onReply={(msg) => setReplyTarget(msg)}
-                      onQuickMention={(mention) => setPendingQuickMention(mention)}
-                      onAnswerAttention={(replyToSeq, answer) => {
-                        // ADR-0002：Attention 选项一键作答——直接以回复形式落库，免跳输入框
-                        sendMessageMutation.mutate({
-                          content: answer,
-                          opKey:
-                            `attn-answer-${String(replyToSeq)}-${Date.now().toString(36)}` as OperationKey,
-                          replyToSeq,
-                          mentions: [],
-                        });
-                      }}
-                      onRecall={(seq) =>
-                        recallMutation.mutate(seq, {
-                          onSuccess: () => toast.success("消息已撤回"),
-                        })
-                      }
-                      onOpenProposal={handleOpenProposalInInspector}
-                      onInspectAgent={props.onInspectAgent}
-                    />
-                  );
-                })
-              )}
-            </div>
+                return (
+                  <MessageBubble
+                    key={key}
+                    message={message}
+                    isGroupedWithPrevious={groupedFlags[index] === true}
+                    repliedMessage={replied}
+                    linkedProposal={linkedProposal}
+                    authorOwnerName={agentMember?.ownerDisplayName}
+                    authorReach={agentMember?.reach}
+                    nowMs={nowMs}
+                    isRecalling={recallMutation.isPending}
+                    onReply={(msg) => setReplyTarget(msg)}
+                    onQuickMention={(mention) => setPendingQuickMention(mention)}
+                    onAnswerAttention={(replyToSeq, answer) => {
+                      // ADR-0002：Attention 选项一键作答——直接以回复形式落库，免跳输入框
+                      sendMessageMutation.mutate({
+                        content: answer,
+                        opKey:
+                          `attn-answer-${String(replyToSeq)}-${Date.now().toString(36)}` as OperationKey,
+                        replyToSeq,
+                        mentions: [],
+                      });
+                    }}
+                    onRecall={(seq) =>
+                      recallMutation.mutate(seq, {
+                        onSuccess: () => toast.success("消息已撤回"),
+                      })
+                    }
+                    onOpenProposal={handleOpenProposalInInspector}
+                    onInspectAgent={props.onInspectAgent}
+                  />
+                );
+              })
+            )}
           </div>
+        </div>
 
-          {/* 弹簧浮动「↓ 新消息 / 回到底部」按钮 */}
+        {/* 底部悬浮弹性栈：「回到底部」玻璃胶囊 + 液态玻璃输入舱（输入舱增高时浮钮自动上推防碰撞） */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col">
           <AnimatePresence>
             {showJumpToBottom ? (
               <motion.button
@@ -682,10 +741,10 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                   setUnseenCount(0);
                 }}
                 className={cn(
-                  "absolute right-5 bottom-3 z-10 inline-flex cursor-pointer select-none items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium shadow-md transition active:scale-[0.96] sm:right-6",
+                  "pointer-events-auto relative mr-4 mb-1.5 inline-flex cursor-pointer select-none items-center gap-1.5 self-end rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-[0.96] sm:mr-6",
                   unseenCount > 0
-                    ? "bg-[#141414] text-white hover:bg-black dark:bg-[#F5F5F7] dark:text-[#141414] dark:hover:bg-white"
-                    : "border border-black/10 bg-white text-[#141414] hover:bg-[#F5F5F7] dark:border-white/15 dark:bg-[#1C1C1F] dark:text-zinc-200 dark:hover:bg-[#27272A]",
+                    ? "bg-[#181B22] text-white shadow-md hover:bg-[#252A35] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
+                    : "liquid-glass-pill text-[#111318] dark:text-[#ECECEF]",
                 )}
               >
                 <ArrowDown className="h-3.5 w-3.5" />
@@ -693,51 +752,53 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
               </motion.button>
             ) : null}
           </AnimatePresence>
-        </div>
 
-        <MessageComposer
-          roomName={room.name}
-          members={room.members}
-          currentUserId={props.currentUser.id}
-          currentUserDisplayName={props.currentUser.displayName}
-          replyTarget={replyTarget}
-          pendingQuickMention={pendingQuickMention}
-          onConsumeQuickMention={() => setPendingQuickMention(null)}
-          onClearReplyTarget={() => setReplyTarget(null)}
-          isSending={sendMessageMutation.isPending}
-          sendError={sendMessageMutation.error}
-          onReconnectOfflineAgent={(agentId) => props.onOpenAddAgentModal("pair_agent", agentId)}
-          onSendMessage={({
-            content,
-            opKey,
-            replyToSeq,
-            mentions,
-            onConfirmedOrQueued,
-            attention,
-          }) => {
-            onConfirmedOrQueued();
-            sendMessageMutation.mutate({
+          <MessageComposer
+            roomName={room.name}
+            members={room.members}
+            currentUserId={props.currentUser.id}
+            currentUserDisplayName={props.currentUser.displayName}
+            replyTarget={replyTarget}
+            pendingQuickMention={pendingQuickMention}
+            onConsumeQuickMention={() => setPendingQuickMention(null)}
+            onClearReplyTarget={() => setReplyTarget(null)}
+            isSending={sendMessageMutation.isPending}
+            sendError={sendMessageMutation.error}
+            onReconnectOfflineAgent={(agentId) => props.onOpenAddAgentModal("pair_agent", agentId)}
+            onSendMessage={({
               content,
               opKey,
-              ...(replyToSeq !== undefined ? { replyToSeq } : {}),
+              replyToSeq,
               mentions,
-              ...(attention !== undefined
-                ? {
-                    attention: {
-                      question: attention.question,
-                      options: [],
-                      addresseeUserIds: attention.addresseeUserIds,
-                      expiresAtIso: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-                    },
-                  }
-                : {}),
-            });
-          }}
-        />
+              onConfirmedOrQueued,
+              attention,
+            }) => {
+              onConfirmedOrQueued();
+              sendMessageMutation.mutate({
+                content,
+                opKey,
+                ...(replyToSeq !== undefined ? { replyToSeq } : {}),
+                mentions,
+                ...(attention !== undefined
+                  ? {
+                      attention: {
+                        question: attention.question,
+                        options: [],
+                        addresseeUserIds: attention.addresseeUserIds,
+                        expiresAtIso: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                      },
+                    }
+                  : {}),
+              });
+            }}
+          />
+        </div>
       </div>
 
-      {/* 宽屏（xl+）按需展开的右侧群信息分栏 */}
-      {isWideScreen && desktopInspectorOpen ? <div className="flex">{inspectorNode}</div> : null}
+      {/* 宽屏（xl+）按需展开的右侧悬浮液态玻璃群信息分栏 */}
+      {isWideScreen && desktopInspectorOpen ? (
+        <div className="flex xl:ml-2.5">{inspectorNode}</div>
+      ) : null}
 
       {/* 窄屏（< xl）群信息抽屉：Vaul 物理手势抽屉 */}
       {!isWideScreen ? (
@@ -758,22 +819,43 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   );
 }
 
-/** 左侧 `80px` 个人与 Agent 垂直导轨入参 */
+/** 左侧 `72px` 个人与 Agent 垂直导轨入参 */
 interface PersonalAgentRailProps {
   readonly currentUser: HumanUserDto;
   readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
   readonly onInspectAgent: (agent: OwnedAgentSummaryDto) => void;
+  readonly onReclaimAgent: (agentId: AgentId) => void;
   readonly onRequestDeleteAgent: (agent: OwnedAgentSummaryDto) => void;
   readonly onOpenConnectAgent: () => void;
+  readonly onOpenAccountSecurity: () => void;
   readonly onOpenCommandPalette: () => void;
+  readonly onOpenAdminConsole: () => void;
   readonly onLogout: () => void;
 }
 
 /**
- * Pachat 原生三栏第 1 栏（`80px` 个人身份与个人 Agent 垂直导轨，`#EFEFF3` / 暗色 `#111113`）：
- * - 顶部：`42px` 圆形用户头像（带 `#141414` 锐利色环与左侧 `4px` 竖向胶囊指示条）+ `11px` `我` 标签；
- * - 中部滚动区：竖向排列当前用户已绑定的全部个人 Agent（`38px` 圆形粉彩头像 + `#34C759` 在线绿点 + 双行居中名称），
- *   紧随其后展示 `38px` 虚线圆环 `+` 按钮与 `接入 agent` 标签；
+ * 裁剪左侧「我的 Agent」导轨下的紧凑短标签：若 Agent 名称以本人昵称做前缀（如 `庞彦-OpenAICodex`），
+ * 在专属个人导轨中自动省去冗余前缀，避免窄栏截断无省略号。
+ */
+function formatCompactRailAgentLabel(agentDisplayName: string, ownerDisplayName: string): string {
+  const trimmedAgent = agentDisplayName.trim();
+  const trimmedOwner = ownerDisplayName.trim();
+  if (trimmedOwner.length > 0) {
+    for (const sep of ["-", "—", "_", "·", " "]) {
+      const prefix = `${trimmedOwner}${sep}`;
+      if (trimmedAgent.startsWith(prefix) && trimmedAgent.length > prefix.length) {
+        return trimmedAgent.slice(prefix.length).trim();
+      }
+    }
+  }
+  return trimmedAgent;
+}
+
+/**
+ * 空间工作台第 1 栏（`72px` 个人身份与已接入个人 Agent 垂直液态玻璃导轨）：
+ * - 顶部：晶亮微浮起的 `38px` 圆形本人头像 + `我` 标签（点击打开账号与密码安全弹窗）；
+ * - 中部滚动区：竖向排列当前用户已绑定的全部个人 Agent（`36px` 圆形粉彩头像 + 精致在线点 + 单行省略短名），
+ *   紧随其后展示轻透虚线圆环 `+` 按钮与 `接入 agent` 标签；
  * - 底部：`⌘K` 搜索面板图标、`ThemeToggle` 与退出按钮。
  */
 function PersonalAgentRail(props: PersonalAgentRailProps) {
@@ -781,95 +863,144 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
     <nav
       aria-label="我与我的 Agent"
       data-tauri-drag-region=""
-      className="app-drag-region glass-pane hidden w-[80px] shrink-0 select-none flex-col items-center border-r border-black/[0.06] pt-4 pb-3 md:flex dark:border-white/[0.06]"
+      className="app-drag-region relative liquid-glass-panel hidden w-[72px] shrink-0 select-none flex-col items-center pt-4 pb-3 md:flex md:rounded-[22px] [--oh-avatar-ring:#F4F6FA] dark:[--oh-avatar-ring:#1E1E22]"
     >
-      {/* 1. 顶部个人身份：左侧 4px 墨黑竖条 + 42px 墨黑环圆形头像 + `我` */}
+      {/* 1. 顶部个人身份：纯净浮起圆形头像 + `我`（点击打开账号与密码安全弹窗，告别多层灰环套娃） */}
       <AppTooltip
         side="right"
-        content={`${props.currentUser.displayName} · ${props.currentUser.email}`}
+        content={`${props.currentUser.displayName} · ${props.currentUser.email}（点击管理账号与密码）`}
       >
-        <div className="app-no-drag relative flex w-full flex-col items-center">
-          <span
-            aria-hidden="true"
-            className="absolute top-2.5 left-0 h-6 w-[4px] rounded-r-full bg-[#141414] dark:bg-white"
-          />
-          <div className="rounded-full p-[2px] ring-2 ring-[#141414] dark:ring-white">
+        <button
+          type="button"
+          onClick={props.onOpenAccountSecurity}
+          aria-label="打开账号与密码安全设置"
+          className="app-no-drag group relative flex w-full cursor-pointer flex-col items-center transition active:scale-[0.96]"
+        >
+          <div className="rounded-full shadow-[0_2px_8px_rgba(15,23,42,0.08)] ring-[1.5px] ring-white/95 transition-transform duration-150 group-hover:scale-[1.04] dark:shadow-[0_2px_10px_rgba(0,0,0,0.4)] dark:ring-white/18">
             <PlatformAvatar
               kind="human"
               displayName={props.currentUser.displayName}
               size="lg"
-              className="[&>div]:h-[42px] [&>div]:w-[42px] [&>div]:rounded-full [&>div]:text-[13px]"
+              className="[&>div]:h-[38px] [&>div]:w-[38px] [&>div]:rounded-full [&>div]:text-[14px]"
             />
           </div>
-          <span className="mt-1.5 text-[11px] font-medium leading-none text-[#141414] dark:text-zinc-100">
+          <span className="mt-1.5 text-[11px] font-medium leading-none text-[#3B414E] transition-colors group-hover:text-[#111318] dark:text-[#C4C4CA] dark:group-hover:text-white">
             我
           </span>
-        </div>
+        </button>
       </AppTooltip>
 
       <div
         aria-hidden="true"
-        className="mt-3.5 h-px w-9 shrink-0 bg-black/[0.08] dark:bg-white/[0.08]"
+        className="mt-3.5 h-px w-7 shrink-0 bg-black/[0.06] dark:bg-white/[0.08]"
       />
 
       {/* 2. 中部可滚动区：已连接的个人 Agents + 虚线圆形 `+ 接入 agent` */}
-      <div className="my-3 flex w-full flex-1 flex-col items-center gap-3.5 overflow-y-auto px-1.5 [scrollbar-width:none]">
-        {props.ownedAgents.map((agent) => (
-          <div
-            key={agent.id}
-            className="app-no-drag group relative flex w-full flex-col items-center"
-          >
-            <button
-              type="button"
-              onClick={() => props.onInspectAgent(agent)}
-              aria-label={`查看 ${agent.displayName} 名片`}
-              className="flex w-full cursor-pointer flex-col items-center gap-1 transition active:scale-[0.96]"
-            >
-              <PlatformAvatar
-                kind="agent"
-                displayName={agent.displayName}
-                platform={agent.platform}
-                reach={agent.reach}
-                size="md"
-                className="transition-transform group-hover:scale-[1.03] [&>div]:h-[38px] [&>div]:w-[38px] [&>div]:rounded-full"
-              />
-              <span className="line-clamp-2 max-w-[66px] text-center text-[10.5px] leading-[1.24] text-[#3A3A3C] transition-colors group-hover:text-[#141414] dark:text-zinc-300 dark:group-hover:text-white">
-                {agent.displayName}
-              </span>
-            </button>
-            <AppTooltip side="right" content={`删除 ${agent.displayName}`}>
-              <button
-                type="button"
-                aria-label={`删除 ${agent.displayName}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  props.onRequestDeleteAgent(agent);
-                }}
-                className="absolute -top-0.5 right-2.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-white text-[#6E6E73] opacity-0 shadow-xs ring-1 ring-black/10 transition hover:bg-[#FF3B30] hover:text-white hover:ring-[#FF3B30] focus-visible:opacity-100 group-hover:opacity-100 dark:bg-[#222226] dark:text-zinc-300 dark:ring-white/15 dark:hover:bg-[#FF453A] dark:hover:text-white dark:hover:ring-[#FF453A]"
-              >
-                <X className="h-2.5 w-2.5 stroke-[2.4]" />
-              </button>
-            </AppTooltip>
-          </div>
-        ))}
+      <div className="my-3 flex w-full flex-1 flex-col items-center gap-2.5 overflow-y-auto px-1 [scrollbar-width:none]">
+        {props.ownedAgents.map((agent) => {
+          const agentHandle = `@${agent.slug}`;
+          const compactLabel = formatCompactRailAgentLabel(
+            agent.displayName,
+            props.currentUser.displayName,
+          );
+          const platformMeta = getPlatformVisualMeta(agent.platform);
+          const reachMeta = getReachVisualMeta(agent.reach);
+          const railAgentMenuItems: ReadonlyArray<AppContextMenuEntry> = [
+            {
+              id: `ctx-rail-inspect-${agent.id}`,
+              label: "查看 Agent 名片",
+              icon: <UserRound className="h-3.5 w-3.5" />,
+              onSelect: () => props.onInspectAgent(agent),
+            },
+            {
+              id: `ctx-rail-copy-${agent.id}`,
+              label: `复制 ${agentHandle}`,
+              icon: <Copy className="h-3.5 w-3.5" />,
+              onSelect: () => {
+                if (typeof navigator !== "undefined" && navigator.clipboard) {
+                  void navigator.clipboard.writeText(agentHandle).then(() => {
+                    toast.success("已复制提及标识", { description: agentHandle });
+                  });
+                }
+              },
+            },
+            {
+              id: `ctx-rail-reclaim-${agent.id}`,
+              label: "恢复原身份重连",
+              icon: <KeyRound className="h-3.5 w-3.5" />,
+              onSelect: () => props.onReclaimAgent(agent.id),
+            },
+            { kind: "separator", id: `ctx-rail-sep-danger-${agent.id}` },
+            {
+              id: `ctx-rail-delete-${agent.id}`,
+              label: "删除该 Agent",
+              icon: <Trash2 className="h-3.5 w-3.5" />,
+              danger: true,
+              onSelect: () => props.onRequestDeleteAgent(agent),
+            },
+          ];
 
-        {/* 虚线圆环 38px `+` 按钮 + `接入 agent` */}
+          return (
+            <AppContextMenu key={agent.id} items={railAgentMenuItems}>
+              <div className="app-no-drag group relative flex w-full flex-col items-center rounded-2xl py-1 transition-colors hover:bg-white/55 data-[state=open]:bg-white/75 dark:hover:bg-white/[0.045] dark:data-[state=open]:bg-white/[0.08]">
+                <AppTooltip
+                  side="right"
+                  content={`${agent.displayName} · ${platformMeta.label} · ${reachMeta.shortLabel}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => props.onInspectAgent(agent)}
+                    aria-label={`查看 ${agent.displayName} 名片`}
+                    className="flex w-full cursor-pointer flex-col items-center gap-1 transition active:scale-[0.96]"
+                  >
+                    <PlatformAvatar
+                      kind="agent"
+                      displayName={agent.displayName}
+                      platform={agent.platform}
+                      reach={agent.reach}
+                      size="md"
+                      className="transition-transform duration-150 group-hover:scale-[1.04] [&>div]:h-9 [&>div]:w-9 [&>div]:rounded-full"
+                    />
+                    <span className="block w-[60px] truncate text-center text-[10.5px] font-medium leading-tight text-[#4B5565] transition-colors group-hover:text-[#111318] dark:text-[#9B9BA3] dark:group-hover:text-white">
+                      {compactLabel}
+                    </span>
+                  </button>
+                </AppTooltip>
+                <AppTooltip side="right" content={`删除 ${agent.displayName}`}>
+                  <button
+                    type="button"
+                    aria-label={`删除 ${agent.displayName}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      props.onRequestDeleteAgent(agent);
+                    }}
+                    className="absolute top-0.5 right-2 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-white text-[#687082] opacity-0 shadow-xs ring-1 ring-black/8 transition hover:bg-[#E5484D] hover:text-white hover:ring-[#E5484D] focus-visible:opacity-100 group-hover:opacity-100 dark:bg-[#27272B] dark:text-[#C4C4CA] dark:ring-white/15 dark:hover:bg-[#F05252] dark:hover:text-white dark:hover:ring-[#F05252]"
+                  >
+                    <X className="h-2.5 w-2.5 stroke-[2.4]" />
+                  </button>
+                </AppTooltip>
+              </div>
+            </AppContextMenu>
+          );
+        })}
+
+        {/* 轻透虚线圆环 `+` 按钮 + `接入 agent` */}
         <button
           type="button"
           onClick={props.onOpenConnectAgent}
           aria-label="接入新的个人 Agent"
           className="app-no-drag group flex w-full cursor-pointer flex-col items-center gap-1 transition active:scale-[0.96]"
         >
-          <span className="flex h-[38px] w-[38px] items-center justify-center rounded-full border border-dashed border-black/25 text-[#5F5F64] transition group-hover:border-[#141414] group-hover:bg-white/70 group-hover:text-[#141414] dark:border-white/25 dark:text-zinc-400 dark:group-hover:border-white/60 dark:group-hover:bg-white/[0.06] dark:group-hover:text-white">
+          <span className="flex h-9 w-9 items-center justify-center rounded-full border border-dashed border-black/20 bg-black/[0.03] text-[#687082] transition group-hover:border-[#181B22]/50 group-hover:bg-white/75 group-hover:text-[#111318] dark:border-white/20 dark:bg-white/[0.04] dark:text-[#8E8E96] dark:group-hover:border-white/45 dark:group-hover:bg-white/[0.10] dark:group-hover:text-white">
             <Plus className="h-4 w-4 stroke-[1.9]" />
           </span>
-          <span className="text-center text-[10.5px] leading-[1.24] text-[#5F5F64] transition-colors group-hover:text-[#141414] dark:text-zinc-400 dark:group-hover:text-white">
+          <span className="text-center text-[10px] leading-[1.24] text-[#687082] transition-colors group-hover:text-[#111318] dark:text-[#8E8E96] dark:group-hover:text-white">
             接入 agent
           </span>
         </button>
       </div>
 
-      {/* 3. 底部极简工具列：⌘K 搜索面板、主题切换、退出登录 */}
+      {/* 3. 底部极简工具列：⌘K 搜索面板、管理后台（仅管理员）、主题切换、退出登录 */}
       <div className="flex flex-col items-center gap-1 pt-1">
         <AppTooltip side="right" content="快速搜索与跳转" shortcut="⌘K">
           <IconButton
@@ -882,6 +1013,19 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
           </IconButton>
         </AppTooltip>
 
+        {props.currentUser.role === "admin" ? (
+          <AppTooltip side="right" content="运营与治理管理后台">
+            <IconButton
+              size="md"
+              variant="ghost"
+              label="打开运营管理后台"
+              onClick={props.onOpenAdminConsole}
+            >
+              <Shield className="h-4 w-4" />
+            </IconButton>
+          </AppTooltip>
+        ) : null}
+
         <div className="app-no-drag">
           <ThemeToggle variant="ghost" />
         </div>
@@ -892,7 +1036,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
             variant="ghost"
             label="退出登录"
             onClick={props.onLogout}
-            className="text-[#8E8E93] hover:text-[#FF3B30] dark:text-zinc-500 dark:hover:text-[#FF6961]"
+            className="text-[#8E96A6] hover:text-[#E5484D] dark:text-[#63636B] dark:hover:text-[#F87171]"
           >
             <LogOut className="h-4 w-4" />
           </IconButton>
@@ -914,10 +1058,16 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const roomsQuery = useQuery(joinedRoomsQueryOptions());
   const logoutMutation = useLogoutMutation();
   const deleteOwnedAgentMutation = useDeleteOwnedAgentMutation();
+  const deleteRoomMutation = useDeleteRoomMutation();
+  const leaveRoomMutation = useLeaveRoomMutation();
+  const updateAnyRoomGovernanceMutation = useUpdateAnyRoomGovernanceMutation();
 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
+  const [accountSecurityOpen, setAccountSecurityOpen] = useState<boolean>(false);
   const [createRoomOpen, setCreateRoomOpen] = useState<boolean>(false);
   const [joinRoomOpen, setJoinRoomOpen] = useState<boolean>(false);
+  const [pendingDeleteRoom, setPendingDeleteRoom] = useState<DeleteRoomTarget | null>(null);
+  const [pendingLeaveRoom, setPendingLeaveRoom] = useState<DeleteRoomTarget | null>(null);
   const [onboardingModalOpen, setOnboardingModalOpen] = useState<boolean>(false);
   const [onboardingInitialTab, setOnboardingInitialTab] =
     useState<OnboardingModalTab>("pair_agent");
@@ -943,12 +1093,42 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     return rooms[0]?.id ?? null;
   }, [urlRoomId, rooms, roomsQuery.isPending]);
 
-  // 当列表加载完成且 URL 尚未携带有效 room 参数时，静默对齐 URL 查询串以便刷新保留现场
+  // 当列表加载完成且 URL 尚未携带有效 room 参数时，静默对齐 URL 查询串以便刷新保留现场；若最后一个群已被删除则清理 URL 参数
   useEffect(() => {
     if (activeRoomId !== null && urlRoomId !== activeRoomId) {
       navigateTo(`/?room=${encodeURIComponent(activeRoomId)}`, { replace: true });
+    } else if (activeRoomId === null && urlRoomId !== null && !roomsQuery.isPending) {
+      navigateTo("/", { replace: true });
+      setMobileShowChat(false);
     }
-  }, [activeRoomId, urlRoomId]);
+  }, [activeRoomId, urlRoomId, roomsQuery.isPending]);
+
+  // 若待确认删除/退出的房间在弹窗打开期间被远端 SSE `room.deleted` 移除，则同步关闭确认弹窗
+  useEffect(() => {
+    if (
+      pendingDeleteRoom !== null &&
+      !roomsQuery.isPending &&
+      !deleteRoomMutation.isPending &&
+      !rooms.some((r) => r.id === pendingDeleteRoom.id)
+    ) {
+      setPendingDeleteRoom(null);
+    }
+    if (
+      pendingLeaveRoom !== null &&
+      !roomsQuery.isPending &&
+      !leaveRoomMutation.isPending &&
+      !rooms.some((r) => r.id === pendingLeaveRoom.id)
+    ) {
+      setPendingLeaveRoom(null);
+    }
+  }, [
+    pendingDeleteRoom,
+    pendingLeaveRoom,
+    rooms,
+    roomsQuery.isPending,
+    deleteRoomMutation.isPending,
+    leaveRoomMutation.isPending,
+  ]);
 
   const activeRoomDetailQuery = useQuery({
     ...roomDetailQueryOptions((activeRoomId ?? ("rom_placeholder" as RoomId)) as RoomId),
@@ -1033,6 +1213,85 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     [deleteOwnedAgentMutation],
   );
 
+  const handleRequestDeleteRoom = useCallback(
+    (room: DeleteRoomTarget): void => {
+      deleteRoomMutation.reset();
+      setPendingDeleteRoom(room);
+    },
+    [deleteRoomMutation],
+  );
+
+  const handleConfirmDeleteRoom = useCallback(
+    (target: DeleteRoomTarget): void => {
+      deleteRoomMutation.mutate(target.id, {
+        onSuccess: () => {
+          setPendingDeleteRoom((prev) => (prev?.id === target.id ? null : prev));
+          toast.success(`已删除群聊「${target.name}」`, {
+            description: "群内消息与提案已清理，你的个人 Agent 不受影响",
+          });
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "删除群聊失败，请稍后重试");
+        },
+      });
+    },
+    [deleteRoomMutation],
+  );
+
+  const handleRequestLeaveRoom = useCallback(
+    (room: DeleteRoomTarget): void => {
+      leaveRoomMutation.reset();
+      setPendingLeaveRoom(room);
+    },
+    [leaveRoomMutation],
+  );
+
+  const handleConfirmLeaveRoom = useCallback(
+    (target: DeleteRoomTarget): void => {
+      leaveRoomMutation.mutate(target.id, {
+        onSuccess: () => {
+          setPendingLeaveRoom((prev) => (prev?.id === target.id ? null : prev));
+          toast.success(`已退出群聊「${target.name}」`);
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "退出群聊失败，请稍后重试");
+        },
+      });
+    },
+    [leaveRoomMutation],
+  );
+
+  const handleUpdateRoomGovernanceFromMenu = useCallback(
+    (roomId: RoomId, patch: UpdateGovernanceBody): void => {
+      updateAnyRoomGovernanceMutation.mutate(
+        { roomId, patch },
+        {
+          onSuccess: () => {
+            if (patch.renewBudget === true) {
+              toast.success("已续期讨论轮次");
+            } else if (patch.mode !== undefined) {
+              const modeLabel =
+                patch.mode === "free"
+                  ? "自由讨论"
+                  : patch.mode === "round_table"
+                    ? "圆桌轮流"
+                    : "提案收敛";
+              toast.success(`讨论节奏已切换为「${modeLabel}」`);
+            } else if (patch.allowAgentMentions !== undefined) {
+              toast.success(
+                patch.allowAgentMentions ? "已允许 Agent 互相 @" : "已关闭 Agent 互相 @",
+              );
+            }
+          },
+          onError: (err) => {
+            toast.error(err instanceof Error ? err.message : "更新群设置失败");
+          },
+        },
+      );
+    },
+    [updateAnyRoomGovernanceMutation],
+  );
+
   const handleLogout = useCallback((): void => {
     logoutMutation.mutate(undefined, {
       onSuccess: () => toast.success("已退出当前账号"),
@@ -1041,7 +1300,11 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
   // 构造全局 `⌘K` 命令面板分组动作
   const commandGroups: ReadonlyArray<CommandPaletteGroup> = useMemo(() => {
-    const activeRoomName = activeRoomDetailQuery.data?.room.name;
+    const activeRoomSummary =
+      activeRoomId !== null ? (rooms.find((r) => r.id === activeRoomId) ?? null) : null;
+    const activeRoomName = activeRoomDetailQuery.data?.room.name ?? activeRoomSummary?.name;
+    const isActiveRoomOwner =
+      activeRoomSummary !== null && activeRoomSummary.ownerUserId === props.currentUser.id;
     const isDark = themeMode === "dark";
 
     const quickActions: CommandPaletteGroup = {
@@ -1060,6 +1323,18 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                   setMobileShowChat(true);
                   setSynthesizeSignal((s) => s + 1);
                 },
+              },
+            ]
+          : []),
+        ...(activeRoomId !== null && isActiveRoomOwner && activeRoomSummary !== null
+          ? [
+              {
+                id: "act-delete-current-room",
+                label: "删除当前群聊",
+                subtitle: activeRoomSummary.name,
+                icon: <Trash2 className="h-4 w-4 text-[#C81E1E] dark:text-[#FCA5A5]" />,
+                keywords: ["delete", "remove", "room", "删除", "解散", "群聊"],
+                onSelect: () => handleRequestDeleteRoom(activeRoomSummary),
               },
             ]
           : []),
@@ -1086,6 +1361,26 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           icon: <LogIn className="h-4 w-4" />,
           keywords: ["join", "invite", "token", "加入", "邀请码"],
           onSelect: () => setJoinRoomOpen(true),
+        },
+        ...(props.currentUser.role === "admin"
+          ? [
+              {
+                id: "act-open-admin-console",
+                label: "打开运营管理后台",
+                subtitle: "用户、会话、群聊内容监管与数据统计大盘",
+                icon: <Shield className="h-4 w-4" />,
+                keywords: ["admin", "console", "stats", "users", "后台", "管理", "统计"],
+                onSelect: () => navigateTo("/admin"),
+              },
+            ]
+          : []),
+        {
+          id: "act-account-security",
+          label: "账号与密码安全",
+          subtitle: `${props.currentUser.email} · 修改昵称或登录密码`,
+          icon: <KeyRound className="h-4 w-4" />,
+          keywords: ["account", "password", "security", "profile", "账号", "密码", "安全", "昵称"],
+          onSelect: () => setAccountSecurityOpen(true),
         },
         {
           id: "act-toggle-theme",
@@ -1114,7 +1409,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           ...(unread > 0
             ? {
                 badge: (
-                  <span className="rounded-full bg-[#FF3B30] px-1.5 py-0.2 text-[10px] font-semibold tabular-nums text-white">
+                  <span className="rounded-full bg-[#E5484D] px-1.5 py-0.2 text-[10px] font-semibold tabular-nums text-white dark:bg-[#F05252]">
                     {unread}
                   </span>
                 ),
@@ -1148,9 +1443,13 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   }, [
     activeRoomDetailQuery.data?.room.name,
     activeRoomId,
+    handleRequestDeleteRoom,
     handleSelectRoom,
     inspectOwnedAgent,
     openOnboarding,
+    props.currentUser.email,
+    props.currentUser.id,
+    props.currentUser.role,
     props.ownedAgents,
     rooms,
     themeMode,
@@ -1159,102 +1458,106 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const isChatVisibleOnMobile = mobileShowChat && activeRoomId !== null;
 
   return (
-    <div className="glass-canvas flex h-dvh w-screen overflow-hidden text-[#141414] md:p-2 dark:text-zinc-100">
-      {/* 统一圆角三栏玻璃窗口：各栏之间仅以 `1px solid rgba(0,0,0,0.06)` 极细发丝分割，环境光自 body 透入 */}
-      <div className="glass-strong flex h-full w-full overflow-hidden md:rounded-[20px] md:border md:border-black/[0.06] dark:md:border-white/[0.06]">
-        {/* 第 1 栏：80px 个人头像 + 我的 Agents + `+ 接入 agent` 导轨 */}
-        <PersonalAgentRail
+    <div className="flex h-dvh w-screen overflow-hidden text-[#111318] md:gap-2.5 md:p-2.5 dark:text-[#F2F2F4]">
+      {/* 第 1 栏：72px 个人身份 + 我的 Agents + `+ 接入 agent` 悬浮液态玻璃导轨 */}
+      <PersonalAgentRail
+        currentUser={props.currentUser}
+        ownedAgents={props.ownedAgents}
+        onInspectAgent={(agent) => inspectOwnedAgent(agent, false)}
+        onReclaimAgent={(agentId) => openOnboarding("pair_agent", agentId)}
+        onRequestDeleteAgent={(agent) => inspectOwnedAgent(agent, true)}
+        onOpenConnectAgent={() => openOnboarding("pair_agent")}
+        onOpenAccountSecurity={() => setAccountSecurityOpen(true)}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+        onOpenAdminConsole={() => navigateTo("/admin")}
+        onLogout={handleLogout}
+      />
+
+      {/* 第 2 栏：276px `聊天 | 通讯录` 悬浮液态玻璃侧栏 */}
+      <div
+        className={cn(
+          isChatVisibleOnMobile ? "hidden" : "flex",
+          "min-w-0 flex-1 md:flex md:flex-none",
+        )}
+      >
+        <RoomSidebar
           currentUser={props.currentUser}
           ownedAgents={props.ownedAgents}
-          onInspectAgent={(agent) => inspectOwnedAgent(agent, false)}
-          onRequestDeleteAgent={(agent) => inspectOwnedAgent(agent, true)}
-          onOpenConnectAgent={() => openOnboarding("pair_agent")}
-          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+          rooms={rooms}
+          isLoadingRooms={roomsQuery.isPending}
+          isRoomsError={roomsQuery.isError}
+          onRetryRooms={() => void roomsQuery.refetch()}
+          activeRoomId={activeRoomId}
+          sseStatus={sseTelemetry.status}
+          onSelectRoom={handleSelectRoom}
+          onOpenCreateRoom={() => setCreateRoomOpen(true)}
+          onOpenJoinRoom={() => setJoinRoomOpen(true)}
+          onOpenMyAgents={() => openOnboarding("pair_agent")}
+          onInspectOwnedAgent={(agent) => inspectOwnedAgent(agent, false)}
+          onReclaimOwnedAgent={(agentId) => openOnboarding("pair_agent", agentId)}
+          onRequestDeleteOwnedAgent={(agent) => inspectOwnedAgent(agent, true)}
+          onDeleteOwnedAgent={(agent) => handleDeleteOwnedAgent(agent.id, agent.displayName)}
+          deletingAgentId={deletingAgentId}
+          onRequestDeleteRoom={handleRequestDeleteRoom}
+          onRequestLeaveRoom={handleRequestLeaveRoom}
+          onUpdateRoomGovernance={handleUpdateRoomGovernanceFromMenu}
+          deletingRoomId={deleteRoomMutation.isPending ? (pendingDeleteRoom?.id ?? null) : null}
           onLogout={handleLogout}
+          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+          onOpenAdminConsole={() => navigateTo("/admin")}
         />
+      </div>
 
-        {/* 第 2 栏：280px `聊天 | 通讯录` 侧栏 */}
+      {/* 第 3 栏：通透聊天主舞台 vs 无群聊极简空态 */}
+      {activeRoomId !== null ? (
         <div
           className={cn(
-            isChatVisibleOnMobile ? "hidden" : "flex",
-            "min-w-0 flex-1 md:flex md:flex-none md:border-r md:border-black/[0.06] dark:md:border-white/[0.06]",
+            isChatVisibleOnMobile ? "flex" : "hidden",
+            "min-w-0 flex-1 overflow-hidden md:flex",
           )}
         >
-          <RoomSidebar
+          <ActiveRoomStage
+            key={activeRoomId}
+            roomId={activeRoomId}
             currentUser={props.currentUser}
-            ownedAgents={props.ownedAgents}
-            rooms={rooms}
-            isLoadingRooms={roomsQuery.isPending}
-            isRoomsError={roomsQuery.isError}
-            onRetryRooms={() => void roomsQuery.refetch()}
-            activeRoomId={activeRoomId}
-            sseStatus={sseTelemetry.status}
-            onSelectRoom={handleSelectRoom}
-            onOpenCreateRoom={() => setCreateRoomOpen(true)}
-            onOpenJoinRoom={() => setJoinRoomOpen(true)}
-            onOpenMyAgents={() => openOnboarding("pair_agent")}
-            onInspectOwnedAgent={(agent) => inspectOwnedAgent(agent, false)}
-            onDeleteOwnedAgent={(agent) => handleDeleteOwnedAgent(agent.id, agent.displayName)}
-            deletingAgentId={deletingAgentId}
-            onLogout={handleLogout}
-            onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+            synthesizeSignal={synthesizeSignal}
+            onOpenAddAgentModal={(tab, reclaimId) => openOnboarding(tab ?? "pair_agent", reclaimId)}
+            onBackToList={() => setMobileShowChat(false)}
+            onInspectAgent={(profile) => {
+              setInspectConfirmDelete(false);
+              setInspectedAgent(profile);
+            }}
+            onRequestDeleteRoom={handleRequestDeleteRoom}
+            onRequestLeaveRoom={handleRequestLeaveRoom}
           />
         </div>
+      ) : (
+        <main className="oh-stage-frame relative hidden flex-1 flex-col items-center justify-center overflow-y-auto p-8 md:flex md:rounded-[22px]">
+          <div className="max-w-md select-none text-center">
+            <BrandMark className="mx-auto mb-4 h-12 w-12 rounded-[14px] shadow-xs" />
+            <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[#111318] dark:text-[#F2F2F4]">
+              还没有群聊
+            </h1>
+            <p className="mt-2.5 text-[14px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+              建一个群，把你的 Claude Code、Codex 或朋友的 Agent 拉进来一起讨论。
+            </p>
 
-        {/* 第 3 栏：纯净 `#FFFFFF` 宽敞聊天主舞台 vs 无群聊极简空态 */}
-        {activeRoomId !== null ? (
-          <div
-            className={cn(
-              isChatVisibleOnMobile ? "flex" : "hidden",
-              "min-w-0 flex-1 overflow-hidden md:flex",
-            )}
-          >
-            <ActiveRoomStage
-              key={activeRoomId}
-              roomId={activeRoomId}
-              currentUser={props.currentUser}
-              synthesizeSignal={synthesizeSignal}
-              onOpenAddAgentModal={(tab, reclaimId) =>
-                openOnboarding(tab ?? "pair_agent", reclaimId)
-              }
-              onBackToList={() => setMobileShowChat(false)}
-              onInspectAgent={(profile) => {
-                setInspectConfirmDelete(false);
-                setInspectedAgent(profile);
-              }}
-            />
-          </div>
-        ) : (
-          <main className="hidden flex-1 flex-col items-center justify-center overflow-y-auto bg-white p-8 md:flex dark:bg-[#0E0E10]">
-            <div className="max-w-md select-none text-center">
-              <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[#141414] dark:text-zinc-100">
-                还没有群聊
-              </h1>
-              <p className="mt-2.5 text-[14px] leading-relaxed text-[#6E6E73] dark:text-zinc-400">
-                建一个群，把你的 Claude Code、Codex 或朋友的 Agent 拉进来一起讨论。
-              </p>
-
-              <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-                <AppButton
-                  variant="primary"
-                  size="lg"
-                  leadingIcon={<Plus className="h-4 w-4" />}
-                  onClick={() => setCreateRoomOpen(true)}
-                >
-                  建群
-                </AppButton>
-                <AppButton
-                  variant="secondary"
-                  size="lg"
-                  onClick={() => openOnboarding("pair_agent")}
-                >
-                  接入 agent
-                </AppButton>
-              </div>
+            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+              <AppButton
+                variant="primary"
+                size="lg"
+                leadingIcon={<Plus className="h-4 w-4" />}
+                onClick={() => setCreateRoomOpen(true)}
+              >
+                建群
+              </AppButton>
+              <AppButton variant="secondary" size="lg" onClick={() => openOnboarding("pair_agent")}>
+                接入 agent
+              </AppButton>
             </div>
-          </main>
-        )}
-      </div>
+          </div>
+        </main>
+      )}
 
       {/* 全局 `⌘K` / `Ctrl+K` 命令面板 */}
       <AppCommandPalette
@@ -1276,6 +1579,28 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         open={joinRoomOpen}
         onClose={() => setJoinRoomOpen(false)}
         onRoomJoined={(room) => handleSelectRoom(room.id)}
+      />
+
+      <DeleteRoomConfirmModal
+        room={pendingDeleteRoom}
+        isDeleting={deleteRoomMutation.isPending}
+        error={deleteRoomMutation.error}
+        onClose={() => {
+          deleteRoomMutation.reset();
+          setPendingDeleteRoom(null);
+        }}
+        onConfirm={handleConfirmDeleteRoom}
+      />
+
+      <LeaveRoomConfirmModal
+        room={pendingLeaveRoom}
+        isLeaving={leaveRoomMutation.isPending}
+        error={leaveRoomMutation.error}
+        onClose={() => {
+          leaveRoomMutation.reset();
+          setPendingLeaveRoom(null);
+        }}
+        onConfirm={handleConfirmLeaveRoom}
       />
 
       <AgentOnboardingModal
@@ -1300,23 +1625,30 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         onReclaimAgent={(agentId) => openOnboarding("pair_agent", agentId)}
         onDeleteAgent={handleDeleteOwnedAgent}
       />
+
+      <AccountSecurityModal
+        open={accountSecurityOpen}
+        currentUser={props.currentUser}
+        onClose={() => setAccountSecurityOpen(false)}
+      />
     </div>
   );
 }
 
 /**
- * OpenHuddle 协作工作台顶层入口组件：自动完成登录态自省，并在认证页与 Pachat 三栏工作台间无闪烁切换。
+ * OpenHuddle 协作工作台顶层入口组件：自动完成登录态自省，并在认证页与空间多岛工作台间无闪烁切换。
  *
- * @returns 登录视图或完整三栏 IM 工作台
+ * @returns 登录视图或完整 Apple Liquid Glass 协作工作台
  */
 export function WorkspaceShell() {
   const meQuery = useQuery(currentMeQueryOptions());
 
   if (meQuery.isPending) {
     return (
-      <main className="flex h-dvh flex-col items-center justify-center gap-2.5 bg-[#EFEFF3] text-[#141414] dark:bg-[#101012] dark:text-zinc-100">
-        <span className="text-[17px] font-semibold tracking-[-0.02em]">OpenHuddle</span>
-        <span className="text-xs text-[#6E6E73] dark:text-zinc-400">正在连接…</span>
+      <main className="flex h-dvh flex-col items-center justify-center gap-3 text-[#111318] dark:text-[#F2F2F4]">
+        <BrandMark className="h-10 w-10 rounded-[12px] shadow-xs" />
+        <span className="text-[16px] font-semibold tracking-[-0.02em]">OpenHuddle</span>
+        <span className="text-xs text-[#687082] dark:text-[#8E8E96]">正在连接…</span>
       </main>
     );
   }

@@ -1,11 +1,11 @@
 /**
  * @module web/lib/session-store
- * @description 浏览器端会话令牌、双主题模式（Crisp Daylight / Studio Dark）与轻量 SPA 路由外部状态源。
+ * @description 浏览器端会话令牌、双主题模式（Atelier Daylight 暖瓷日光 / Obsidian Studio 黑曜石深色）与轻量 SPA 路由外部状态源。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 零 `useEffect` 同步外部存储：统一采用 React 19 原生 `useSyncExternalStore` 订阅 `localStorage` 与 `History` 变更，杜绝双状态源撕裂。
  * 2. 双通道鉴权兜底：除服务端签发的 `oh_session` HttpOnly Cookie 外，本地备份 `sessionToken` 供 `Authorization: Bearer` 与 SSE `?token=` 握手使用。
- * 3. 无闪烁主题切换：同步维护 `<html>` 节点的 `.dark` 类名与 `localStorage`，支持 Pachat 清爽日光模式与 Linear 暗黑工作室模式即时切换。
+ * 3. 无闪烁主题切换：首屏由 `index.html` 读取 `localStorage("oh_theme")` 或回退至系统 `prefers-color-scheme` 注入 `.dark` 类名；本模块同步维护 `.dark` 类与持久化，驱动全站设计令牌零延迟换肤。
  */
 import { useSyncExternalStore } from "react";
 
@@ -120,7 +120,7 @@ export function useSessionToken(): string | null {
 }
 
 /**
- * 读取当前激活的主题模式（默认暗黑工作室模式 `"dark"`）。
+ * 读取当前激活的主题模式（与 `index.html` 首屏注入的 `.dark` 类保持一致，未显式存储时遵循系统明暗偏好）。
  *
  * @returns `"light"` 或 `"dark"`
  */
@@ -134,7 +134,7 @@ export function getThemeMode(): ThemeMode {
 /**
  * 切换并持久化界面视觉主题。
  *
- * @param mode - 目标主题（`"light"` 清爽日光 | `"dark"` 暗黑工作室）
+ * @param mode - 目标主题（`"light"` 暖瓷日光 | `"dark"` 黑曜石工作室）
  */
 export function setThemeMode(mode: ThemeMode): void {
   if (typeof document !== "undefined") {
@@ -153,7 +153,7 @@ export function setThemeMode(mode: ThemeMode): void {
 }
 
 /**
- * 在清爽日光模式与暗黑工作室模式之间一键翻转。
+ * 在暖瓷日光模式与黑曜石工作室模式之间一键翻转。
  */
 export function toggleThemeMode(): void {
   setThemeMode(getThemeMode() === "dark" ? "light" : "dark");

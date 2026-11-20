@@ -1,9 +1,9 @@
 /**
  * @module web/components/primitives/select
- * @description 基于 Radix UI `Select` 构建的 Pachat 极简浮层下拉选择器（`AppSelect`），彻底替代浏览器原生下拉框元素。
+ * @description 基于 Radix UI `Select` 构建的 Apple Liquid Glass 浮层下拉选择器（`AppSelect`），彻底替代浏览器原生下拉框元素。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 全平台视觉统一：通过 `Select.Portal` 将弹出菜单挂载至顶层视口，采用纯净 `#FFFFFF` / `#18181B` 暖中性浮层表面与墨黑对勾指示，零蓝紫高亮。
+ * 1. 全平台视觉统一：通过 `Select.Portal` 将弹出菜单挂载至顶层视口，采用 `liquid-glass-modal` 液态玻璃浮层与凹陷触发器，零紫蓝高亮。
  * 2. 泛型强类型推导：`AppSelect<T extends string>` 直接保持业务字面量联合类型（如 `GovernanceMode` 或 `AgentPlatform`），调用方无需做 `as` 类型强转。
  * 3. Radix 非空值约束：每个选项的 `value` 必须是非空字符串（若需表达“不选/无”，请使用如 `"__none__"` 哨兵值而非 `""`）。
  */
@@ -108,13 +108,13 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
         {...(ariaLabel !== undefined ? { "aria-label": ariaLabel } : {})}
         className={cn(
           "app-no-drag group inline-flex w-full min-w-0 cursor-pointer select-none items-center justify-between text-left font-medium outline-none transition-all duration-150",
-          "border border-black/[0.12] bg-white text-[#141414]",
-          "hover:bg-black/[0.02] hover:border-black/[0.20]",
-          "focus-visible:border-[#141414] focus-visible:ring-4 focus-visible:ring-black/[0.06] data-[state=open]:border-[#141414] data-[state=open]:ring-4 data-[state=open]:ring-black/[0.06]",
-          "dark:border-white/[0.12] dark:bg-[#18181B] dark:text-zinc-100",
-          "dark:hover:bg-[#1F1F23] dark:hover:border-white/[0.20]",
-          "dark:focus-visible:border-white/35 dark:focus-visible:ring-white/[0.07] dark:data-[state=open]:bg-[#1F1F23] dark:data-[state=open]:border-white/35 dark:data-[state=open]:ring-white/[0.07]",
-          "data-[placeholder]:text-[#8E8E93] dark:data-[placeholder]:text-zinc-500",
+          "border border-black/[0.10] bg-[#F6F7FA] text-[#111318]",
+          "hover:bg-white hover:border-black/[0.16]",
+          "focus-visible:bg-white focus-visible:border-[#181B22]/35 focus-visible:ring-[3px] focus-visible:ring-[#181B22]/[0.07] data-[state=open]:bg-white data-[state=open]:border-[#181B22]/35 data-[state=open]:ring-[3px] data-[state=open]:ring-[#181B22]/[0.07]",
+          "dark:border-white/[0.09] dark:bg-[#161619] dark:text-[#F2F2F4]",
+          "dark:hover:bg-[#1C1C20] dark:hover:border-white/[0.16]",
+          "dark:focus-visible:bg-[#1C1C20] dark:focus-visible:border-white/[0.25] dark:focus-visible:ring-white/[0.08] dark:data-[state=open]:bg-[#1C1C20] dark:data-[state=open]:border-white/[0.25] dark:data-[state=open]:ring-white/[0.08]",
+          "data-[placeholder]:text-[#939BAD] dark:data-[placeholder]:text-[#63636B]",
           "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-55",
           SELECT_TRIGGER_SIZE_CLASS[size],
           className,
@@ -124,7 +124,7 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
           {leadingIcon !== undefined ? (
             <span
               aria-hidden="true"
-              className="inline-flex shrink-0 items-center text-[#8E8E93] dark:text-zinc-500"
+              className="inline-flex shrink-0 items-center text-[#939BAD] dark:text-[#586075]"
             >
               {leadingIcon}
             </span>
@@ -136,7 +136,7 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
         <Select.Icon asChild>
           <ChevronDown
             aria-hidden="true"
-            className="h-3.5 w-3.5 shrink-0 text-[#8E8E93] transition-transform duration-150 group-data-[state=open]:rotate-180 dark:text-zinc-500"
+            className="h-3.5 w-3.5 shrink-0 text-[#939BAD] transition-transform duration-150 group-data-[state=open]:rotate-180 dark:text-[#586075]"
           />
         </Select.Icon>
       </Select.Trigger>
@@ -147,9 +147,9 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
           align={align}
           sideOffset={6}
           className={cn(
-            "glass-modal oh-floating-menu app-no-drag z-[95] max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-2xl p-1",
-            "text-[#141414]",
-            "dark:text-zinc-100",
+            "relative liquid-glass-modal oh-floating-menu app-no-drag z-[95] max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-2xl p-1",
+            "text-[#111318]",
+            "dark:text-[#ECEFF6]",
             contentClassName,
           )}
         >
@@ -161,9 +161,9 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
                 disabled={Boolean(option.disabled)}
                 className={cn(
                   "relative flex cursor-pointer select-none items-center gap-2 rounded-xl py-1.5 pr-8 pl-2.5 text-[13px] outline-none transition-colors",
-                  "text-[#3A3A3C] data-[highlighted]:bg-[#F5F5F7] data-[highlighted]:text-[#141414]",
-                  "dark:text-zinc-300 dark:data-[highlighted]:bg-white/[0.08] dark:data-[highlighted]:text-white",
-                  "data-[state=checked]:font-semibold data-[state=checked]:text-[#141414] dark:data-[state=checked]:text-white",
+                  "text-[#3B414E] data-[highlighted]:bg-black/[0.04] data-[highlighted]:text-[#111318]",
+                  "dark:text-[#B4BCD0] dark:data-[highlighted]:bg-white/[0.07] dark:data-[highlighted]:text-[#ECEFF6]",
+                  "data-[state=checked]:font-semibold data-[state=checked]:text-[#111318] dark:data-[state=checked]:text-white",
                   "data-[disabled]:pointer-events-none data-[disabled]:opacity-45",
                 )}
               >
@@ -175,12 +175,12 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
                 <div className="min-w-0 flex-1">
                   <Select.ItemText>{option.label}</Select.ItemText>
                   {option.description !== undefined ? (
-                    <p className="mt-0.5 truncate text-[11px] font-normal text-[#8E8E93] dark:text-zinc-400">
+                    <p className="mt-0.5 truncate text-[11px] font-normal text-[#687082] dark:text-[#7D869C]">
                       {option.description}
                     </p>
                   ) : null}
                 </div>
-                <Select.ItemIndicator className="absolute right-2.5 inline-flex items-center justify-center text-[#141414] dark:text-zinc-100">
+                <Select.ItemIndicator className="absolute right-2.5 inline-flex items-center justify-center text-[#111318] dark:text-[#ECEFF6]">
                   <Check aria-hidden="true" className="h-3.5 w-3.5 stroke-[2.5]" />
                 </Select.ItemIndicator>
               </Select.Item>

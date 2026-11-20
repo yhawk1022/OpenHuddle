@@ -1,15 +1,15 @@
 /**
  * @module web/features/huddle-room/message-composer
- * @description Pachat 原生消息输入区（Speaking-As Header + Rounded-20px Paper Input Card）：
- * 输入卡上方呈现 `20px` 迷你圆形本人头像与 `以 <名字> 的身份发言` 提示，以及行内可清除的引用回复与 `@提及` 胶囊；
- * 输入卡主体采用 `rounded-[20px]` 干净白纸边框与墨黑聚焦光晕（暗色恒为 `#18181B`），内置自适应高度文本域、
- * 行内 `@` 键盘联想浮层、底部 `18px` `@` 队友点名面板与右侧 `32px` 墨黑圆形 `ArrowUp` 发送键。
+ * @description Apple Liquid Glass 悬浮液态玻璃消息输入舱（Floating Liquid Glass Composer Capsule）：
+ * 摒弃横跨聊天区的生硬白边分割线，以 `rounded-[24px]` `liquid-glass-composer` 悬浮胶囊形态停驻于舞台底部；
+ * 内部整合行内可清除的引用回复与 `@提及` 微胶囊、自适应高度文本域、键盘 `@` 联想重玻璃浮层、
+ * 底部工具栏（`@` 队友面板、提问模式开关、`@全体` 快捷胶囊、本人发言身份微标）与圆形高对比发送键。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 结构化提及严格对齐：无论通过 `@` 浮层点选、`@全体` 胶囊、行内键盘联想还是手打精确昵称，
  *    最终提交的 `MessageMention[]` 只包含正文中仍真实保留 `@昵称` 的成员，杜绝删字后派发幽灵 `wake` 事件。
  * 2. 乐观防丢字：提交前生成唯一幂等 `OperationKey`；网络或治理拦截异常时草稿完整保留并展示错误提示。
- * 3. 双主题高对比度安全：暗色下输入卡固定为 `dark:bg-[#18181B]`，绝不触发白底白字缺陷。
+ * 3. 暗色光学协调与点击穿透：外层渐变遮罩设为 `pointer-events-none`，仅悬浮玻璃输入舱与浮层开启 `pointer-events-auto`；暗色下保持中性烟熏石墨半透玻璃，绝不触发白底白字。
  */
 import type {
   AgentId,
@@ -52,7 +52,7 @@ export interface MessageComposerProps {
   readonly roomName: string;
   readonly members: ReadonlyArray<RoomMemberDto>;
   readonly currentUserId?: UserId | undefined;
-  /** 当前登录用户的展示昵称（用于渲染输入卡上方「以 <名字> 的身份发言」） */
+  /** 当前登录用户的展示昵称（用于渲染输入舱内本人发言身份提示） */
   readonly currentUserDisplayName?: string | undefined;
   readonly replyTarget: MessageDto | null;
   readonly pendingQuickMention: MessageMention | null;
@@ -189,10 +189,10 @@ function detectMentionTrigger(draft: string, caret: number): MentionTrigger | nu
 }
 
 /**
- * 渲染 Pachat 原生底部消息输入器（上方身份行 + 行内回复/提及胶囊 + `rounded-[20px]` 输入卡 + 圆形发送键）。
+ * 渲染悬浮 Apple Liquid Glass 底部消息输入舱。
  *
  * @param props - 群成员列表、当前用户昵称、回复目标与乐观发送回调
- * @returns 底部聊天输入区组件
+ * @returns 底部液态玻璃聊天输入舱组件
  */
 export function MessageComposer(props: MessageComposerProps) {
   const [draft, setDraft] = useState<string>("");
@@ -518,11 +518,12 @@ export function MessageComposer(props: MessageComposerProps) {
 
   const canSend = draft.trim().length > 0 && !props.isSending;
   const hasAnyTeammate = agentMembers.length > 0 || humanMembers.length > 0;
+  const hasContextChips = props.replyTarget !== null || activeChipMentions.length > 0;
 
   return (
-    <footer className="glass-bar app-no-drag relative z-10 shrink-0 px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6">
+    <footer className="app-no-drag pointer-events-none relative z-10 shrink-0 bg-gradient-to-t from-[var(--oh-stage-scrim)] via-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
       <div className="relative mx-auto max-w-3xl">
-        {/* 1. 发送异常告警条（草稿完整保留） */}
+        {/* 1. 发送异常告警或离线 Agent 自动补回提示胶囊（草稿完整保留） */}
         <AnimatePresence initial={false}>
           {errorText !== null ? (
             <motion.div
@@ -532,9 +533,11 @@ export function MessageComposer(props: MessageComposerProps) {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 4 }}
               transition={{ duration: 0.16 }}
-              className="mb-2 rounded-2xl bg-[#FF3B30]/10 px-3.5 py-2 text-xs font-medium text-[#D70015] dark:bg-[#FF453A]/15 dark:text-[#FF6961]"
+              className="pointer-events-auto relative liquid-glass-bar mb-2 overflow-hidden rounded-[18px]"
             >
-              发送失败（草稿已保留）：{errorText}
+              <div className="bg-[#E5484D]/[0.10] px-3.5 py-2 text-xs font-medium text-[#C81E1E] dark:bg-[#F05252]/[0.14] dark:text-[#FCA5A5]">
+                发送失败（草稿已保留）：{errorText}
+              </div>
             </motion.div>
           ) : null}
           {offlineMentionedAgents.length > 0 ? (
@@ -544,40 +547,42 @@ export function MessageComposer(props: MessageComposerProps) {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 2 }}
               transition={{ duration: 0.14 }}
-              className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[#FFF8E6] px-3.5 py-2 text-xs text-[#5C4813] ring-1 ring-inset ring-black/[0.05] dark:bg-[#241F14] dark:text-[#F2DF9D] dark:ring-white/[0.08]"
+              className="pointer-events-auto relative liquid-glass-bar mb-2 overflow-hidden rounded-[18px]"
             >
-              <span>
-                {offlineMentionedAgents.map((m) => `@${m.displayName}`).join("、")}{" "}
-                当前未开启本地监听（离线），发出后会在它上线时自动补回。
-              </span>
-              {(() => {
-                const reconnectableOwn = offlineMentionedAgents.find(
-                  (m) =>
-                    m.agentId !== undefined &&
-                    (props.currentUserId === undefined || m.ownerUserId === props.currentUserId),
-                );
-                if (
-                  props.onReconnectOfflineAgent === undefined ||
-                  reconnectableOwn?.agentId === undefined
-                ) {
-                  return null;
-                }
-                const targetId = reconnectableOwn.agentId;
-                return (
-                  <button
-                    type="button"
-                    onClick={() => props.onReconnectOfflineAgent?.(targetId)}
-                    className="shrink-0 cursor-pointer rounded-full bg-[#141414] px-2.5 py-1 text-[11px] font-medium text-white transition hover:bg-black dark:bg-[#F5F5F7] dark:text-[#141414] dark:hover:bg-white"
-                  >
-                    重连开启监听
-                  </button>
-                );
-              })()}
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-500/[0.08] px-3.5 py-2 text-xs text-[#6B4E12] dark:bg-amber-400/[0.08] dark:text-[#F5DF9D]">
+                <span>
+                  {offlineMentionedAgents.map((m) => `@${m.displayName}`).join("、")}{" "}
+                  当前未开启本地监听（离线），发出后会在它上线时自动补回。
+                </span>
+                {(() => {
+                  const reconnectableOwn = offlineMentionedAgents.find(
+                    (m) =>
+                      m.agentId !== undefined &&
+                      (props.currentUserId === undefined || m.ownerUserId === props.currentUserId),
+                  );
+                  if (
+                    props.onReconnectOfflineAgent === undefined ||
+                    reconnectableOwn?.agentId === undefined
+                  ) {
+                    return null;
+                  }
+                  const targetId = reconnectableOwn.agentId;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => props.onReconnectOfflineAgent?.(targetId)}
+                      className="shrink-0 cursor-pointer rounded-full bg-[#181B22] px-2.5 py-1 text-[11px] font-medium text-white transition hover:bg-[#252A35] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
+                    >
+                      重连开启监听
+                    </button>
+                  );
+                })()}
+              </div>
             </motion.div>
           ) : null}
         </AnimatePresence>
 
-        {/* 2. 行内手打 `@` 触发的键盘联想浮层 */}
+        {/* 2. 行内手打 `@` 触发的键盘联想重玻璃浮层 */}
         <AnimatePresence>
           {isSuggestOpen ? (
             <motion.div
@@ -587,9 +592,9 @@ export function MessageComposer(props: MessageComposerProps) {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 4, scale: 0.98 }}
               transition={{ type: "spring", stiffness: 520, damping: 36 }}
-              className="absolute right-0 bottom-full left-0 z-30 mb-2 max-w-sm overflow-hidden rounded-2xl border border-black/[0.08] bg-white p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.12)] dark:border-white/[0.1] dark:bg-[#18181B] dark:shadow-[0_20px_52px_rgba(0,0,0,0.65)]"
+              className="pointer-events-auto absolute right-0 bottom-full left-0 z-30 mb-2 max-w-sm overflow-hidden rounded-[20px] p-1.5 liquid-glass-modal"
             >
-              <div className="px-2.5 pt-1 pb-1.5 text-[11px] font-medium text-[#8E8E93] dark:text-zinc-500">
+              <div className="px-2.5 pt-1 pb-1.5 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
                 选择要提及的对象 · ↑↓ 切换 · Enter 确认
               </div>
               <div className="space-y-0.5">
@@ -609,18 +614,18 @@ export function MessageComposer(props: MessageComposerProps) {
                       className={cn(
                         "flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition-colors",
                         isActive
-                          ? "bg-[#F5F5F7] text-[#141414] dark:bg-white/[0.1] dark:text-zinc-100"
-                          : "text-[#3A3A3C] hover:bg-black/[0.03] dark:text-zinc-200 dark:hover:bg-white/[0.05]",
+                          ? "bg-black/[0.06] text-[#111318] dark:bg-white/[0.11] dark:text-[#F2F2F4]"
+                          : "text-[#3B414E] hover:bg-black/[0.035] dark:text-[#C4C4CA] dark:hover:bg-white/[0.06]",
                       )}
                     >
                       <span
                         className={cn(
                           "relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
                           candidate.kind === "all"
-                            ? "bg-[#141414] text-white dark:bg-[#F5F5F7] dark:text-[#141414]"
+                            ? "bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]"
                             : candidate.kind === "agent"
-                              ? "bg-[#EFEFF3] text-[#141414] dark:bg-white/[0.1] dark:text-zinc-200"
-                              : "bg-[#E3F3EC] text-[#1B452D] dark:bg-[#16271F] dark:text-[#C7E8D3]",
+                              ? "bg-black/[0.06] text-[#111318] dark:bg-white/[0.10] dark:text-[#ECECEF]"
+                              : "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]",
                         )}
                       >
                         {candidate.kind === "all" ? (
@@ -631,7 +636,7 @@ export function MessageComposer(props: MessageComposerProps) {
                         {candidate.dotClass !== null ? (
                           <span
                             className={cn(
-                              "absolute -right-0.5 -bottom-0.5 h-2 w-2 rounded-full ring-2 ring-white dark:ring-[#18181B]",
+                              "absolute -right-0.5 -bottom-0.5 h-2 w-2 rounded-full ring-2 ring-white dark:ring-[#1E1E22]",
                               candidate.dotClass,
                             )}
                           />
@@ -641,7 +646,7 @@ export function MessageComposer(props: MessageComposerProps) {
                         <span className="block truncate text-xs font-semibold">
                           @{candidate.label}
                         </span>
-                        <span className="block truncate text-[10.5px] text-[#6E6E73] dark:text-zinc-400">
+                        <span className="block truncate text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
                           {candidate.sublabel}
                         </span>
                       </span>
@@ -653,25 +658,14 @@ export function MessageComposer(props: MessageComposerProps) {
           ) : null}
         </AnimatePresence>
 
-        {/* 3. 输入卡上方：20px 迷你用户头像 + `以 <名字> 的身份发言` + 行内回复/提及胶囊 */}
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1">
-          <div className="flex min-w-0 items-center gap-1.5 select-none">
-            <PlatformAvatar
-              kind="human"
-              displayName={senderDisplayName}
-              size="sm"
-              className="[&>div]:h-5 [&>div]:w-5 [&>div]:rounded-full [&>div]:text-[9.5px]"
-            />
-            <span className="truncate text-[12.5px] text-[#5F5F64] dark:text-zinc-400">
-              以 {senderDisplayName} 的身份发言
-            </span>
-          </div>
-
-          {props.replyTarget !== null || activeChipMentions.length > 0 ? (
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        {/* 3. Apple Liquid Glass 悬浮输入舱主体 */}
+        <div className="pointer-events-auto relative liquid-glass-composer rounded-[24px] px-4 pt-3 pb-2.5">
+          {/* 舱内顶部上下文微胶囊条（引用回复 & 已点名成员，无内容时完全不占高度） */}
+          {hasContextChips ? (
+            <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 border-b border-black/[0.06] pb-2 dark:border-white/[0.07]">
               {props.replyTarget !== null ? (
-                <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-full bg-[#F5F5F7] py-0.5 pr-1 pl-2.5 text-[11.5px] text-[#141414] dark:bg-white/[0.08] dark:text-zinc-200">
-                  <CornerUpLeft className="h-3 w-3 shrink-0 text-[#6E6E73] dark:text-zinc-400" />
+                <span className="inline-flex max-w-[18rem] items-center gap-1.5 rounded-full bg-black/[0.05] py-0.5 pr-1 pl-2.5 text-[11.5px] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]">
+                  <CornerUpLeft className="h-3 w-3 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
                   <span className="truncate">
                     回复 <strong>{props.replyTarget.author.displayName}</strong>：
                     {props.replyTarget.content.replace(/\s+/gu, " ").slice(0, 42)}
@@ -680,7 +674,7 @@ export function MessageComposer(props: MessageComposerProps) {
                     type="button"
                     aria-label="取消引用回复"
                     onClick={props.onClearReplyTarget}
-                    className="inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#6E6E73] transition hover:bg-black/10 hover:text-[#141414] dark:text-zinc-400 dark:hover:bg-white/15 dark:hover:text-white"
+                    className="inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
                   >
                     <X className="h-2.5 w-2.5" />
                   </button>
@@ -695,8 +689,8 @@ export function MessageComposer(props: MessageComposerProps) {
                     className={cn(
                       "inline-flex items-center gap-1 rounded-full py-0.5 pr-1 pl-2 text-[11.5px] font-medium",
                       isAgent
-                        ? "bg-[#F5F5F7] text-[#141414] dark:bg-white/[0.08] dark:text-zinc-200"
-                        : "bg-[#E3F3EC] text-[#1B452D] dark:bg-[#16271F] dark:text-[#C7E8D3]",
+                        ? "bg-black/[0.05] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]"
+                        : "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]",
                     )}
                   >
                     <span className="max-w-[8.5rem] truncate">@{mention.displayName}</span>
@@ -713,10 +707,7 @@ export function MessageComposer(props: MessageComposerProps) {
               })}
             </div>
           ) : null}
-        </div>
 
-        {/* 4. Pachat `rounded-[20px]` 输入卡主体 */}
-        <div className="rounded-[20px] border border-black/[0.13] bg-white px-4 pt-3 pb-2.5 transition focus-within:border-[#141414] focus-within:shadow-[0_0_0_4px_rgba(0,0,0,0.05)] dark:border-white/[0.13] dark:bg-[#18181B] dark:focus-within:border-white/35 dark:focus-within:shadow-[0_0_0_4px_rgba(255,255,255,0.04)]">
           <textarea
             ref={textareaRef}
             rows={1}
@@ -733,11 +724,11 @@ export function MessageComposer(props: MessageComposerProps) {
             onFocus={() => setSuggestDismissed(false)}
             onKeyDown={handleKeyDown}
             aria-label={`在 ${props.roomName} 发言`}
-            placeholder="以你自己的身份说点什么"
-            className="block max-h-[168px] min-h-[28px] w-full resize-none border-0 bg-transparent p-0 text-[15px] leading-[1.48] text-[#141414] caret-[#141414] outline-none placeholder:text-[#8E8E93] dark:text-zinc-100 dark:caret-zinc-100 dark:placeholder:text-zinc-500"
+            placeholder={`以 ${senderDisplayName} 的身份说点什么…（输入 @ 点名队友）`}
+            className="block max-h-[168px] min-h-[26px] w-full resize-none border-0 bg-transparent p-0 text-[14.5px] leading-[1.5] text-[#111318] caret-[#111318] outline-none placeholder:text-[#8E96A6] dark:text-[#F2F2F4] dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]"
           />
 
-          {/* 卡内底部工具行：左 18px `@` 按钮 + 可选 `@全体` 胶囊；右 32px 墨黑圆形发送键 */}
+          {/* 舱内底部工具栏：左侧 `@` 点名、提问模式、`@全体` 与身份微标；右侧圆形发送键 */}
           <div className="mt-2 flex select-none items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1.5">
               <AppPopover
@@ -755,20 +746,20 @@ export function MessageComposer(props: MessageComposerProps) {
                     className={cn(
                       "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95] disabled:cursor-not-allowed disabled:opacity-40",
                       pickerOpen
-                        ? "bg-[#EFEFF3] text-[#141414] dark:bg-white/[0.12] dark:text-white"
-                        : "text-[#5F5F64] hover:bg-black/[0.05] hover:text-[#141414] dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100",
+                        ? "bg-black/[0.08] text-[#111318] dark:bg-white/[0.14] dark:text-white"
+                        : "text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]",
                     )}
                   >
-                    <AtSign className="h-[18px] w-[18px] stroke-[1.9]" />
+                    <AtSign className="h-[17px] w-[17px] stroke-[1.9]" />
                   </button>
                 }
               >
                 <div className="space-y-1">
                   <div className="flex items-center justify-between px-2 py-1">
-                    <span className="text-[11.5px] font-medium text-[#6E6E73] dark:text-zinc-400">
+                    <span className="text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
                       提及群成员
                     </span>
-                    <span className="text-[11px] font-medium text-[#215236] dark:text-[#86E0A6]">
+                    <span className="text-[11px] font-medium text-[#16A34A] dark:text-[#34D399]">
                       {onlineAgentCount}/{agentMembers.length} 个 Agent 在线
                     </span>
                   </div>
@@ -777,14 +768,14 @@ export function MessageComposer(props: MessageComposerProps) {
                     <button
                       type="button"
                       onClick={handleMentionAllAgents}
-                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl bg-[#F5F5F7] px-2.5 py-2 text-left text-xs font-medium text-[#141414] transition hover:bg-[#EBEBEF] dark:bg-white/[0.07] dark:text-zinc-100 dark:hover:bg-white/[0.12]"
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl bg-black/[0.04] px-2.5 py-2 text-left text-xs font-medium text-[#111318] transition hover:bg-black/[0.07] dark:bg-white/[0.06] dark:text-[#F2F2F4] dark:hover:bg-white/[0.11]"
                     >
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#141414] text-white dark:bg-[#F5F5F7] dark:text-[#141414]">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
                         <Users className="h-3.5 w-3.5" />
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate font-semibold">@全体 Agent</span>
-                        <span className="block text-[10.5px] text-[#6E6E73] dark:text-zinc-400">
+                        <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
                           同时叫醒全部 {agentMembers.length} 个 Agent 参与讨论
                         </span>
                       </span>
@@ -807,15 +798,15 @@ export function MessageComposer(props: MessageComposerProps) {
                           className={cn(
                             "flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition-colors",
                             checked
-                              ? "bg-[#F5F5F7] text-[#141414] dark:bg-white/[0.1] dark:text-zinc-100"
-                              : "text-[#3A3A3C] hover:bg-black/[0.035] dark:text-zinc-200 dark:hover:bg-white/[0.05]",
+                              ? "bg-black/[0.06] text-[#111318] dark:bg-white/[0.10] dark:text-[#F2F2F4]"
+                              : "text-[#3B414E] hover:bg-black/[0.035] dark:text-[#C4C4CA] dark:hover:bg-white/[0.06]",
                           )}
                         >
-                          <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#EFEFF3] text-[11px] font-semibold text-[#141414] dark:bg-white/[0.1] dark:text-zinc-200">
+                          <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black/[0.06] text-[11px] font-semibold text-[#111318] dark:bg-white/[0.10] dark:text-[#ECECEF]">
                             {member.displayName.slice(0, 1).toUpperCase()}
                             <span
                               className={cn(
-                                "absolute -right-0.5 -bottom-0.5 h-2 w-2 rounded-full ring-2 ring-white dark:ring-[#18181B]",
+                                "absolute -right-0.5 -bottom-0.5 h-2 w-2 rounded-full ring-2 ring-white dark:ring-[#1E1E22]",
                                 reachMeta.dotClass,
                               )}
                             />
@@ -824,12 +815,12 @@ export function MessageComposer(props: MessageComposerProps) {
                             <span className="block truncate text-xs font-semibold">
                               @{member.displayName}
                             </span>
-                            <span className="block truncate text-[10.5px] text-[#6E6E73] dark:text-zinc-400">
+                            <span className="block truncate text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
                               {member.ownerDisplayName} 的 Agent · {reachMeta.shortLabel}
                             </span>
                           </span>
                           {checked ? (
-                            <Check className="h-3.5 w-3.5 shrink-0 text-[#141414] dark:text-zinc-100" />
+                            <Check className="h-3.5 w-3.5 shrink-0 text-[#111318] dark:text-[#F2F2F4]" />
                           ) : null}
                         </button>
                       );
@@ -849,23 +840,23 @@ export function MessageComposer(props: MessageComposerProps) {
                           className={cn(
                             "flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition-colors",
                             checked
-                              ? "bg-[#E3F3EC] text-[#1B452D] dark:bg-[#16271F] dark:text-[#C7E8D3]"
-                              : "text-[#3A3A3C] hover:bg-black/[0.035] dark:text-zinc-200 dark:hover:bg-white/[0.05]",
+                              ? "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]"
+                              : "text-[#3B414E] hover:bg-black/[0.035] dark:text-[#C4C4CA] dark:hover:bg-white/[0.06]",
                           )}
                         >
-                          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#E3F3EC] text-[#1B452D] dark:bg-[#16271F] dark:text-[#C7E8D3]">
+                          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]">
                             <User className="h-3.5 w-3.5" />
                           </span>
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-xs font-semibold">
                               @{member.displayName}
                             </span>
-                            <span className="block truncate text-[10.5px] text-[#6E6E73] dark:text-zinc-400">
+                            <span className="block truncate text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
                               群成员
                             </span>
                           </span>
                           {checked ? (
-                            <Check className="h-3.5 w-3.5 shrink-0 text-[#215236] dark:text-[#86E0A6]" />
+                            <Check className="h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
                           ) : null}
                         </button>
                       );
@@ -873,6 +864,7 @@ export function MessageComposer(props: MessageComposerProps) {
                   </div>
                 </div>
               </AppPopover>
+
               {/* ADR-0002 提问模式开关：开启后本条消息以 attention 形式发出，等待人类作答 */}
               <button
                 type="button"
@@ -887,10 +879,10 @@ export function MessageComposer(props: MessageComposerProps) {
                   "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95]",
                   askMode
                     ? "bg-amber-500/15 text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-300"
-                    : "text-[#5F5F64] hover:bg-black/[0.05] hover:text-[#141414] dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100",
+                    : "text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]",
                 )}
               >
-                <Hand className="h-[18px] w-[18px] stroke-[1.9]" />
+                <Hand className="h-[17px] w-[17px] stroke-[1.9]" />
               </button>
               {askMode ? (
                 <span className="hidden select-none rounded-full bg-amber-500/12 px-2 py-0.5 text-[10.5px] font-medium text-amber-700 sm:inline dark:text-amber-300">
@@ -903,11 +895,24 @@ export function MessageComposer(props: MessageComposerProps) {
                   type="button"
                   onClick={handleMentionAllAgents}
                   title="同时点名群内所有 Agent"
-                  className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-[#F5F5F7] px-2.5 text-[12px] font-medium text-[#141414] transition-colors hover:bg-[#EBEBEF] active:scale-[0.97] dark:bg-white/[0.07] dark:text-zinc-200 dark:hover:bg-white/[0.12]"
+                  className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-black/[0.05] px-2.5 text-[12px] font-medium text-[#181B22] transition-colors hover:bg-black/[0.09] active:scale-[0.97] dark:bg-white/[0.07] dark:text-[#ECECEF] dark:hover:bg-white/[0.12]"
                 >
                   <span>@全体</span>
                 </button>
               ) : null}
+
+              {/* 安静的本人发言身份微标（宽屏展示，不额外挤占纵向对话空间） */}
+              <div className="ml-1 hidden min-w-0 items-center gap-1.5 border-l border-black/[0.07] pl-2.5 sm:flex dark:border-white/[0.08]">
+                <PlatformAvatar
+                  kind="human"
+                  displayName={senderDisplayName}
+                  size="sm"
+                  className="[&>div]:h-4.5 [&>div]:w-4.5 [&>div]:rounded-full [&>div]:text-[9px]"
+                />
+                <span className="max-w-[9rem] truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
+                  {senderDisplayName}
+                </span>
+              </div>
             </div>
 
             <AppTooltip side="top" content="发送消息" shortcut="Enter">
@@ -921,8 +926,8 @@ export function MessageComposer(props: MessageComposerProps) {
                 className={cn(
                   "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-black/25 focus-visible:outline-none dark:focus-visible:ring-white/35",
                   canSend
-                    ? "cursor-pointer bg-[#141414] text-white hover:bg-black dark:bg-[#F5F5F7] dark:text-[#141414] dark:hover:bg-white"
-                    : "cursor-not-allowed bg-black/15 text-white dark:bg-white/15 dark:text-zinc-500",
+                    ? "cursor-pointer bg-[#181B22] text-white shadow-xs hover:bg-[#252A35] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
+                    : "cursor-not-allowed bg-black/[0.08] text-black/30 dark:bg-white/[0.08] dark:text-white/25",
                 )}
               >
                 {props.isSending ? (

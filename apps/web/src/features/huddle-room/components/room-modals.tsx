@@ -1,11 +1,11 @@
 /**
  * @module web/features/huddle-room/room-modals
- * @description Pachat 极简风格「新建群聊」与「加入群聊」模态窗组件。
+ * @description Apple Liquid Glass 协调风格「新建群聊」、「加入群聊」、「删除群聊确认」与「退出群聊确认」模态窗组件。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 新建即防护：默认预填 `maxConsecutiveAgentTurns = 6` 与防抢话乐观读锁（`requireReadBeforeSend = true`），创建时可一键选择自由聊、轮流聊或提案收敛模式。
  * 2. 智能入群解析：同时兼容粘贴纯邀请码（`inv_xxx`）或完整 `/share/inv_xxx` 回放链接，自动提取并解码纯净 `inviteToken`。
- * 3. Pachat 单色极简与暗色安全：全量采用 `AppInput`、`AppTextarea`、`SegmentedTabs`、`AppSelect` 与 `rounded-full` `AppButton`，零原生下拉框、零蓝紫渐变，暗色输入框恒保持 `#18181B` 深色底面。
+ * 3. 中性烟熏石墨与暖瓷协调表面：宿主 `ModalDialog` 承载 `liquid-glass-modal`，内部卡片与芯片采用轻透协调分层，零原生下拉框、暗色输入框恒保持深中性石墨底面。
  */
 import {
   type AgentId,
@@ -13,9 +13,22 @@ import {
   type GovernanceMode,
   type OwnedAgentSummaryDto,
   type RoomDetailDto,
+  type RoomId,
   type RoomVisibility,
 } from "@openhuddle/protocol";
-import { CheckCircle2, Globe, Hash, Link2, Lock, LogIn, MessagesSquare, Plus } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Globe,
+  Hash,
+  Link2,
+  Lock,
+  LogIn,
+  LogOut,
+  MessagesSquare,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { type FormEvent, useState } from "react";
 import {
   AnimatePresence,
@@ -36,7 +49,7 @@ import { ApiClientError } from "../../../lib/api-client.js";
 import { getPlatformVisualMeta } from "../../../lib/format.js";
 import { useCreateRoomMutation, useJoinRoomMutation } from "../api/huddle-room.queries.js";
 
-const LABEL_CLASS = "block text-xs font-medium text-[#3A3A3C] dark:text-zinc-300";
+const LABEL_CLASS = "block text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]";
 
 /** 房间讨论组织模式候选项 */
 const GOVERNANCE_MODE_OPTIONS: ReadonlyArray<{
@@ -185,28 +198,28 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
       icon={<MessagesSquare className="h-4 w-4" />}
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        {/* 群聊即时预览卡片：纯正 Pachat 暖白/浅灰纸面 + 圆形墨黑头像 */}
-        <div className="flex select-none items-center gap-3 rounded-[18px] bg-[#F5F5F7] p-3 ring-1 ring-inset ring-black/[0.05] dark:bg-[#222226] dark:ring-white/[0.07]">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#141414] text-white dark:bg-[#F5F5F7] dark:text-[#141414]">
+        {/* 群聊即时预览卡片 */}
+        <div className="flex select-none items-center gap-3 rounded-[18px] bg-black/[0.035] p-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.05] dark:ring-white/[0.08]">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
             <Hash aria-hidden="true" className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <p className="truncate text-sm font-semibold text-[#141414] dark:text-zinc-100">
+              <p className="truncate text-sm font-semibold text-[#111318] dark:text-[#F2F2F4]">
                 {previewName}
               </p>
               <span
                 className={cn(
                   "inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium",
                   visibility === "public_shareable"
-                    ? "bg-[#E4F4EA] text-[#215236] dark:bg-[#192920] dark:text-[#86E0A6]"
-                    : "bg-black/[0.06] text-[#5F5F64] dark:bg-white/[0.09] dark:text-zinc-300",
+                    ? "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]"
+                    : "bg-black/[0.06] text-[#4B5565] dark:bg-white/[0.09] dark:text-[#C4C4CA]",
                 )}
               >
                 {visibility === "public_shareable" ? "可公开回放" : "仅受邀"}
               </span>
             </div>
-            <p className="mt-0.5 truncate text-[11.5px] text-[#6E6E73] dark:text-zinc-400">
+            <p className="mt-0.5 truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
               {topic.trim().length > 0 ? topic.trim() : "写一句群主题，大家进群就知道聊什么"}
             </p>
           </div>
@@ -214,7 +227,7 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
 
         <div>
           <label htmlFor="create-room-name" className={LABEL_CLASS}>
-            群名称 <span className="text-[#FF3B30]">*</span>
+            群名称 <span className="text-[#E5484D]">*</span>
           </label>
           <AppInput
             id="create-room-name"
@@ -235,7 +248,7 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
           <div>
             <span className={LABEL_CLASS}>
               直接拉入我的 Agent{" "}
-              <span className="font-normal text-[#8E8E93] dark:text-zinc-500">
+              <span className="font-normal text-[#8E96A6] dark:text-[#63636B]">
                 （建群即入群，可选）
               </span>
             </span>
@@ -252,8 +265,8 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
                     className={cn(
                       "app-no-drag flex cursor-pointer items-center gap-2 rounded-full px-2.5 py-1.5 text-left text-xs font-medium transition-all duration-150 active:scale-[0.98]",
                       isSelected
-                        ? "bg-[#F5F5F7] text-[#141414] ring-[1.5px] ring-[#141414] dark:bg-[#27272A] dark:text-zinc-100 dark:ring-[#F5F5F7]"
-                        : "bg-white text-[#3A3A3C] ring-1 ring-inset ring-black/[0.08] hover:bg-[#F8F8FA] dark:bg-[#18181B] dark:text-zinc-300 dark:ring-white/[0.1] dark:hover:bg-[#222226]",
+                        ? "bg-[#181B22]/8 text-[#111318] ring-[1.5px] ring-[#181B22] dark:bg-white/[0.11] dark:text-[#F2F2F4] dark:ring-[#EAEEF6]"
+                        : "bg-white/80 text-[#3B414E] ring-1 ring-inset ring-black/[0.08] hover:bg-white dark:bg-white/[0.04] dark:text-[#C4C4CA] dark:ring-white/[0.09] dark:hover:bg-white/[0.08]",
                     )}
                   >
                     <span
@@ -294,7 +307,7 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
         <div>
           <label htmlFor="create-room-rules" className={LABEL_CLASS}>
             群内约定{" "}
-            <span className="font-normal text-[#8E8E93] dark:text-zinc-500">
+            <span className="font-normal text-[#8E96A6] dark:text-[#63636B]">
               （所有进群的 Agent 都会先读一遍）
             </span>
           </label>
@@ -309,7 +322,7 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
           />
         </div>
 
-        {/* 可见范围：使用 motion 弹簧滑动胶囊 SegmentedTabs */}
+        {/* 可见范围：使用全胶囊 SegmentedTabs */}
         <div>
           <span className={LABEL_CLASS}>谁能看到这个群</span>
           <SegmentedTabs
@@ -323,7 +336,7 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
           />
         </div>
 
-        {/* 讨论组织模式：纯墨黑选中态三栏卡片 */}
+        {/* 讨论组织模式：高对比三栏卡片 */}
         <fieldset>
           <legend className={LABEL_CLASS}>聊天节奏</legend>
           <div className="mt-1.5 grid grid-cols-3 gap-2">
@@ -338,8 +351,8 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
                   className={cn(
                     "app-no-drag cursor-pointer select-none rounded-[14px] px-3 py-2.5 text-left transition-all duration-150 active:scale-[0.98]",
                     selected
-                      ? "bg-[#141414] text-white ring-1 ring-[#141414] dark:bg-[#F5F5F7] dark:text-[#141414] dark:ring-[#F5F5F7]"
-                      : "bg-[#F5F5F7] text-[#141414] ring-1 ring-inset ring-black/[0.06] hover:bg-[#EFEFF3] dark:bg-[#222226] dark:text-zinc-100 dark:ring-white/[0.08] dark:hover:bg-[#2A2A2F]",
+                      ? "bg-[#181B22] text-white ring-1 ring-[#181B22] dark:bg-[#EAEEF6] dark:text-[#111318] dark:ring-[#EAEEF6]"
+                      : "bg-black/[0.035] text-[#111318] ring-1 ring-inset ring-black/[0.06] hover:bg-black/[0.06] dark:bg-white/[0.05] dark:text-[#F2F2F4] dark:ring-white/[0.08] dark:hover:bg-white/[0.09]",
                   )}
                 >
                   <span className="block text-xs font-semibold">{option.title}</span>
@@ -347,8 +360,8 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
                     className={cn(
                       "mt-0.5 block text-[10.5px]",
                       selected
-                        ? "text-white/75 dark:text-[#141414]/70"
-                        : "text-[#6E6E73] dark:text-zinc-400",
+                        ? "text-white/75 dark:text-[#111318]/70"
+                        : "text-[#687082] dark:text-[#8E8E96]",
                     )}
                   >
                     {option.hint}
@@ -378,13 +391,13 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
         {errMsg ? (
           <div
             role="alert"
-            className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
+            className="rounded-2xl border border-[#E5484D]/25 bg-[#E5484D]/[0.08] px-3.5 py-2.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/12 dark:text-[#FCA5A5]"
           >
             {errMsg}
           </div>
         ) : null}
 
-        <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.07] pt-3.5 dark:border-white/[0.08]">
+        <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.06] pt-3.5 dark:border-white/[0.08]">
           <AppButton variant="ghost" size="md" onClick={props.onClose}>
             取消
           </AppButton>
@@ -474,7 +487,7 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label htmlFor="join-room-token-input" className={LABEL_CLASS}>
-            邀请码或分享链接 <span className="text-[#FF3B30]">*</span>
+            邀请码或分享链接 <span className="text-[#E5484D]">*</span>
           </label>
           <AppInput
             id="join-room-token-input"
@@ -496,7 +509,7 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -3 }}
                 transition={{ duration: 0.14 }}
-                className="mt-2 flex items-center gap-1.5 text-[11.5px] font-medium text-[#215236] dark:text-[#86E0A6]"
+                className="mt-2 flex items-center gap-1.5 text-[11.5px] font-medium text-[#145335] dark:text-[#6EE7B7]"
               >
                 <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">
@@ -510,7 +523,7 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.12 }}
-                className="mt-1.5 text-[11.5px] text-[#6E6E73] dark:text-zinc-400"
+                className="mt-1.5 text-[11.5px] text-[#687082] dark:text-[#8E8E96]"
               >
                 直接粘贴完整的 /share/ 链接也可以，会自动提取邀请码。
               </motion.p>
@@ -521,13 +534,13 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
         {errMsg ? (
           <div
             role="alert"
-            className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
+            className="rounded-2xl border border-[#E5484D]/25 bg-[#E5484D]/[0.08] px-3.5 py-2.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/12 dark:text-[#FCA5A5]"
           >
             {errMsg}
           </div>
         ) : null}
 
-        <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.07] pt-3.5 dark:border-white/[0.08]">
+        <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.06] pt-3.5 dark:border-white/[0.08]">
           <AppButton variant="ghost" size="md" onClick={props.onClose}>
             取消
           </AppButton>
@@ -543,6 +556,185 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
           </AppButton>
         </div>
       </form>
+    </ModalDialog>
+  );
+}
+
+/** 待删除群聊弹窗所需的最小房间投影 */
+export interface DeleteRoomTarget {
+  readonly id: RoomId;
+  readonly name: string;
+  readonly topic: string;
+}
+
+/** `DeleteRoomConfirmModal` 入参属性 */
+export interface DeleteRoomConfirmModalProps {
+  readonly room: DeleteRoomTarget | null;
+  readonly isDeleting: boolean;
+  readonly error?: unknown;
+  readonly onClose: () => void;
+  readonly onConfirm: (room: DeleteRoomTarget) => void;
+}
+
+/**
+ * 人类群主永久删除群聊前的二次危险确认模态窗。
+ *
+ * @param props - 待删除群聊目标、删除请求加载状态与取消/确认回调
+ * @returns 删除群聊确认弹窗
+ */
+export function DeleteRoomConfirmModal(props: DeleteRoomConfirmModalProps) {
+  const targetRoom = props.room;
+  const errMsg = resolveMutationErrorMessage(props.error);
+
+  return (
+    <ModalDialog
+      open={targetRoom !== null}
+      onClose={props.isDeleting ? () => undefined : props.onClose}
+      title="删除群聊"
+      subtitle="此操作不可撤销，请确认后继续"
+      maxWidthClass="max-w-md"
+      icon={<Trash2 aria-hidden="true" className="h-4 w-4 text-[#C81E1E] dark:text-[#FCA5A5]" />}
+    >
+      {targetRoom !== null ? (
+        <div className="space-y-4">
+          {/* 目标群聊预览卡 */}
+          <div className="flex select-none items-center gap-3 rounded-[18px] bg-black/[0.035] p-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.05] dark:ring-white/[0.08]">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
+              <Hash aria-hidden="true" className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                {targetRoom.name}
+              </p>
+              <p className="mt-0.5 truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
+                {targetRoom.topic.trim().length > 0 ? targetRoom.topic : "未设置讨论主题"}
+              </p>
+            </div>
+          </div>
+
+          {/* 影响范围与不可逆提示 */}
+          <div className="space-y-2 rounded-2xl bg-[#E5484D]/[0.08] p-3.5 text-xs leading-relaxed text-[#7F1D1D] ring-1 ring-inset ring-[#E5484D]/20 dark:bg-[#F05252]/[0.12] dark:text-[#FECACA] dark:ring-[#F05252]/25">
+            <div className="flex items-center gap-1.5 font-semibold text-[#C81E1E] dark:text-[#FCA5A5]">
+              <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+              <span>确定永久删除「{targetRoom.name}」吗？</span>
+            </div>
+            <ul className="list-disc space-y-1 pl-4">
+              <li>永久删除群聊及全部消息、提案卡片与投票记录；</li>
+              <li>所有群成员与 Agent 将同步移出该群，邀请码与公开只读分享链接立即失效；</li>
+              <li>你名下已绑定的个人 Agent 不会被删除，仍可在其他群聊中继续使用。</li>
+            </ul>
+          </div>
+
+          {errMsg ? (
+            <div
+              role="alert"
+              className="rounded-2xl border border-[#E5484D]/25 bg-[#E5484D]/[0.08] px-3.5 py-2.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/12 dark:text-[#FCA5A5]"
+            >
+              {errMsg}
+            </div>
+          ) : null}
+
+          <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.06] pt-3.5 dark:border-white/[0.08]">
+            <AppButton
+              variant="ghost"
+              size="md"
+              disabled={props.isDeleting}
+              onClick={props.onClose}
+            >
+              取消
+            </AppButton>
+            <AppButton
+              variant="danger"
+              size="md"
+              isLoading={props.isDeleting}
+              leadingIcon={<Trash2 aria-hidden="true" className="h-3.5 w-3.5" />}
+              onClick={() => props.onConfirm(targetRoom)}
+            >
+              确认永久删除
+            </AppButton>
+          </div>
+        </div>
+      ) : null}
+    </ModalDialog>
+  );
+}
+
+/** `LeaveRoomConfirmModal` 入参属性 */
+export interface LeaveRoomConfirmModalProps {
+  readonly room: DeleteRoomTarget | null;
+  readonly isLeaving: boolean;
+  readonly error?: unknown;
+  readonly onClose: () => void;
+  readonly onConfirm: (room: DeleteRoomTarget) => void;
+}
+
+/**
+ * 非群主成员退出群聊前的二次确认模态窗。
+ *
+ * @param props - 待退出群聊目标、退出请求加载状态与取消/确认回调
+ * @returns 退出群聊确认弹窗
+ */
+export function LeaveRoomConfirmModal(props: LeaveRoomConfirmModalProps) {
+  const targetRoom = props.room;
+  const errMsg = resolveMutationErrorMessage(props.error);
+
+  return (
+    <ModalDialog
+      open={targetRoom !== null}
+      onClose={props.isLeaving ? () => undefined : props.onClose}
+      title="退出群聊"
+      subtitle="退出后需要重新使用邀请码才能再次加入"
+      maxWidthClass="max-w-md"
+      icon={<LogOut aria-hidden="true" className="h-4 w-4 text-[#C81E1E] dark:text-[#FCA5A5]" />}
+    >
+      {targetRoom !== null ? (
+        <div className="space-y-4">
+          {/* 目标群聊预览卡 */}
+          <div className="flex select-none items-center gap-3 rounded-[18px] bg-black/[0.035] p-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.05] dark:ring-white/[0.08]">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
+              <Hash aria-hidden="true" className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                {targetRoom.name}
+              </p>
+              <p className="mt-0.5 truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
+                {targetRoom.topic.trim().length > 0 ? targetRoom.topic : "未设置讨论主题"}
+              </p>
+            </div>
+          </div>
+
+          <p className="rounded-2xl bg-black/[0.03] px-3.5 py-3 text-xs leading-relaxed text-[#3B414E] ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.045] dark:text-[#C4C4CA] dark:ring-white/[0.07]">
+            确定退出「{targetRoom.name}
+            」吗？历史讨论记录与其他成员不受影响；若你此前已拉入自己的
+            Agent，它们仍保留在群内直到你单独移出或删除。
+          </p>
+
+          {errMsg ? (
+            <div
+              role="alert"
+              className="rounded-2xl border border-[#E5484D]/25 bg-[#E5484D]/[0.08] px-3.5 py-2.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/12 dark:text-[#FCA5A5]"
+            >
+              {errMsg}
+            </div>
+          ) : null}
+
+          <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.06] pt-3.5 dark:border-white/[0.08]">
+            <AppButton variant="ghost" size="md" disabled={props.isLeaving} onClick={props.onClose}>
+              取消
+            </AppButton>
+            <AppButton
+              variant="danger"
+              size="md"
+              isLoading={props.isLeaving}
+              leadingIcon={<LogOut aria-hidden="true" className="h-3.5 w-3.5" />}
+              onClick={() => props.onConfirm(targetRoom)}
+            >
+              确认退出群聊
+            </AppButton>
+          </div>
+        </div>
+      ) : null}
     </ModalDialog>
   );
 }

@@ -7,9 +7,8 @@
  * 2. 路由极简隔离：`/share/:inviteToken` 走公开只读会话回放视图，其余路径走认证多智能体 IM 工作台。
  */
 import { QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode } from "react";
+import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
-import { GlassFilterDefs } from "./components/glass-filter-defs.js";
 import { AppToaster, AppTooltipProvider } from "./components/primitives/index.js";
 import { WorkspaceShell } from "./features/huddle-room/components/workspace-shell.js";
 import { PublicSharePage } from "./features/public-share/index.js";
@@ -19,10 +18,17 @@ import "./styles.css";
 
 const queryClient = createAppQueryClient();
 
+// 按需独立拆包加载管理后台，确保普通用户访问聊天工作台零额外体积负担
+const LazyAdminConsolePage = lazy(() =>
+  import("./features/admin-console/index.js").then((m) => ({
+    default: m.AdminConsolePage,
+  })),
+);
+
 /**
  * 顶层客户端路由分发器。
  *
- * @returns 公开分享只读页或认证 IM 协作工作台
+ * @returns 公开分享只读页、运营管理后台或认证 IM 协作工作台
  */
 export function AppRoot() {
   const location = useBrowserLocation();
@@ -30,6 +36,21 @@ export function AppRoot() {
 
   if (shareMatch?.[1] !== undefined) {
     return <PublicSharePage inviteToken={decodeURIComponent(shareMatch[1])} />;
+  }
+
+  if (/^\/admin(\/|$)/.test(location.pathname)) {
+    return (
+      <Suspense
+        fallback={
+          <main className="flex h-dvh flex-col items-center justify-center gap-2 bg-app-frame text-im-fg">
+            <span className="text-[15px] font-semibold tracking-[-0.015em]">OpenHuddle</span>
+            <span className="text-xs text-im-muted">正在加载管理后台…</span>
+          </main>
+        }
+      >
+        <LazyAdminConsolePage />
+      </Suspense>
+    );
   }
 
   return <WorkspaceShell />;
@@ -42,7 +63,6 @@ if (rootElement) {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <AppTooltipProvider delayDuration={150}>
-          <GlassFilterDefs />
           <AppRoot />
           <AppToaster />
         </AppTooltipProvider>

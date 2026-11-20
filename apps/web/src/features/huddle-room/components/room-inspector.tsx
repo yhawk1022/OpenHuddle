@@ -1,13 +1,13 @@
 /**
  * @module web/features/huddle-room/room-inspector
- * @description Pachat 极简中性群信息与共识提案抽屉（`#141414` 墨黑 + `#F5F5F7` 暖灰纸感面板）：
- * 顶部 `68px` 标题栏与聊天头对齐，通过 `SegmentedTabs` 在「成员」与「提案」间切换；
- * 成员页按人类主理人树形分组展示个人 Agent（在线状态、平台微标签、一键 `@` 点名）、邀请码分享及折叠治理开关；
+ * @description Apple Liquid Glass 群信息与共识提案面板（Neutral Smoked Graphite & Porcelain Inspector）：
+ * 顶部 `60px` 标题栏与侧栏对齐，通过全胶囊 `SegmentedTabs` 在「成员」与「提案」间切换；
+ * 成员页按人类主理人树形分组展示个人 Agent（在线状态、平台微标签、一键 `@` 点名）、邀请码分享、折叠治理开关与群主管理区；
  * 提案页承载讨论提炼、手动多方案表单与人类拍板闭环。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 权威归属展示：每个 Agent 严格挂在服务端盖章的 `ownerUserId` 主理人名下展示，绝不依据昵称猜测归属；点击 Agent 打开完整名片。
- * 2. 零原生粗糙控件与零紫色污染：全文件仅使用 Radix `AppSelect`、`AppSwitch`、`SegmentedTabs`、`AppInput` 与 `AppTextarea`，彻底剔除 `#seq` 序号与廉价 AI 图标。
+ * 2. 防多层模糊叠加：桌面端独立分栏（`surfaceMode="panel"`）挂载 `relative liquid-glass-panel`；窄屏嵌入 `AppSheetDrawer`（`surfaceMode="sheet"`）时回落透明底色以直接复用抽屉自身的 `liquid-glass-modal`。
  * 3. 人机决策闭环：支持一键调用服务端主持人模型或当次透传 BYOK 密钥（前端不落盘）整理多方案对比卡，由人类最终拍板。
  */
 import {
@@ -37,10 +37,12 @@ import {
   FileText,
   Globe,
   Lock,
+  LogOut,
   Plus,
   RefreshCw,
   Settings2,
   Trash2,
+  UserRound,
   Users,
   X,
 } from "lucide-react";
@@ -48,6 +50,8 @@ import { type FormEvent, useMemo, useState } from "react";
 import {
   AnimatePresence,
   AppButton,
+  AppContextMenu,
+  type AppContextMenuEntry,
   AppInput,
   AppSelect,
   type AppSelectOption,
@@ -79,6 +83,10 @@ const MODE_OPTIONS: ReadonlyArray<SegmentedTabItem<GovernanceMode>> = [
 
 const BASE_TURN_CAPS: ReadonlyArray<number> = [3, 4, 6, 8, 10, 15, 25];
 
+/** 面板内分区卡片的统一半透表面类名 */
+const SECTION_CARD_CLASS =
+  "rounded-[18px] bg-white/65 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.045] dark:ring-white/[0.07]";
+
 interface EditableOptionDraft {
   readonly localId: string;
   readonly optionKey: string;
@@ -100,6 +108,7 @@ interface OwnerTeamGroup {
 /** `RoomInspector` 入参属性 */
 export interface RoomInspectorProps {
   readonly room: RoomDetailDto;
+  readonly currentUserId: UserId;
   readonly governance: RoomGovernanceState;
   readonly isUpdatingGovernance: boolean;
   readonly activeTab: InspectorTab;
@@ -123,6 +132,12 @@ export interface RoomInspectorProps {
   readonly onInspectAgent: (profile: InspectedAgentProfile) => void;
   readonly onQuickMention: (mention: MessageMention) => void;
   readonly onOpenAddAgentModal: () => void;
+  /** 仅群主可见的「删除群聊」回调 */
+  readonly onRequestDeleteRoom?: ((room: RoomDetailDto) => void) | undefined;
+  /** 非群主成员可见的「退出群聊」回调 */
+  readonly onRequestLeaveRoom?: ((room: RoomDetailDto) => void) | undefined;
+  /** 宿主承载模式：`panel` 为桌面独立悬浮玻璃岛，`sheet` 为嵌入 Vaul 抽屉内部（免重复叠加模糊） */
+  readonly surfaceMode?: "panel" | "sheet" | undefined;
   /** 关闭抽屉（桌面端收起侧栏 / 窄屏关闭 Vaul 抽屉） */
   readonly onClose: () => void;
 }
@@ -217,12 +232,13 @@ function roleLabel(role: RoomMemberDto["role"]): string {
 }
 
 /**
- * 渲染右侧 Pachat 极简群信息与提案抽屉。
+ * 渲染右侧 Apple Liquid Glass 群信息与提案面板。
  *
  * @param props - 房间详情、实时治理快照、提案列表与全部治理/决策动作回调
- * @returns 右侧群信息抽屉视图
+ * @returns 右侧群信息与提案面板视图
  */
 export function RoomInspector(props: RoomInspectorProps) {
+  const surfaceMode = props.surfaceMode ?? "panel";
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
 
@@ -255,6 +271,7 @@ export function RoomInspector(props: RoomInspectorProps) {
     [props.proposals],
   );
   const { config } = props.governance;
+  const isRoomOwner = props.room.ownerUserId === props.currentUserId;
 
   const turnCapOptions: ReadonlyArray<AppSelectOption<string>> = useMemo(() => {
     const current = config.maxConsecutiveAgentTurns;
@@ -300,6 +317,15 @@ export function RoomInspector(props: RoomInspectorProps) {
       window.setTimeout(() => {
         setCopiedKey((prev) => (prev === key ? null : prev));
       }, 1_800);
+    });
+  };
+
+  const copyPlainText = (text: string, toastMessage: string, description?: string): void => {
+    if (typeof navigator === "undefined" || !navigator.clipboard) {
+      return;
+    }
+    void navigator.clipboard.writeText(text).then(() => {
+      toast.success(toastMessage, description !== undefined ? { description } : undefined);
     });
   };
 
@@ -394,29 +420,36 @@ export function RoomInspector(props: RoomInspectorProps) {
         : null;
 
   return (
-    <aside className="glass-pane flex h-full min-h-0 w-full flex-1 shrink-0 flex-col border-l border-black/[0.06] xl:w-[360px] xl:flex-none dark:border-white/[0.06]">
-      {/* 1. 68px 抽屉顶栏（对齐聊天头高度，兼容 Tauri v2 + Electron 拖拽） */}
+    <aside
+      className={cn(
+        "relative flex h-full min-h-0 w-full flex-1 shrink-0 flex-col overflow-hidden [--oh-avatar-ring:#F4F5F8] dark:[--oh-avatar-ring:#1E1E22]",
+        surfaceMode === "panel"
+          ? "liquid-glass-panel xl:w-[356px] xl:flex-none xl:rounded-[22px]"
+          : "bg-transparent",
+      )}
+    >
+      {/* 1. 60px 面板顶栏（兼容 Tauri v2 + Electron 拖拽） */}
       <div
         data-tauri-drag-region=""
-        className="app-drag-region flex h-[68px] shrink-0 select-none items-center justify-between gap-2 border-b border-black/[0.06] px-4 dark:border-white/[0.06]"
+        className="app-drag-region flex h-[60px] shrink-0 select-none items-center justify-between gap-2 border-b border-black/[0.06] px-4 dark:border-white/[0.07]"
       >
         <div className="min-w-0">
-          <p className="text-[15px] font-semibold tracking-[-0.01em] text-[#141414] dark:text-zinc-100">
+          <p className="text-[14.5px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
             群信息
           </p>
-          <p className="mt-0.5 truncate text-[12px] text-[#6E6E73] dark:text-zinc-400">
+          <p className="mt-0.5 truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
             {props.room.name}
           </p>
         </div>
         <AppTooltip side="bottom" content="收起面板">
-          <IconButton size="md" variant="ghost" label="收起群信息面板" onClick={props.onClose}>
+          <IconButton size="sm" variant="ghost" label="收起群信息面板" onClick={props.onClose}>
             <X className="h-4 w-4" />
           </IconButton>
         </AppTooltip>
       </div>
 
-      {/* 2. 弹簧滑块分段导航：成员 ⇄ 提案 */}
-      <div className="shrink-0 select-none px-4 pt-3 pb-2">
+      {/* 2. 全胶囊弹簧滑块分段导航：成员 ⇄ 提案 */}
+      <div className="shrink-0 select-none px-4 pt-3 pb-2.5">
         <SegmentedTabs
           value={props.activeTab}
           onValueChange={props.onChangeTab}
@@ -428,13 +461,13 @@ export function RoomInspector(props: RoomInspectorProps) {
       </div>
 
       {/* 3. 主体滚动内容区 */}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-1 pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-0.5 pb-[max(1rem,env(safe-area-inset-bottom))]">
         {props.activeTab === "members" ? (
-          <div className="space-y-4">
+          <div className="space-y-3.5">
             {/* 3.1 群成员与挂载的 Agent */}
             <section className="space-y-2.5">
               <div className="flex select-none items-center justify-between px-0.5">
-                <h3 className="text-[12px] font-medium text-[#6E6E73] dark:text-zinc-400">
+                <h3 className="text-[12px] font-medium text-[#687082] dark:text-[#8E8E96]">
                   {onlineAgentCount}/{agentMembers.length} 个 Agent 在线
                 </h3>
                 <AppButton
@@ -451,164 +484,241 @@ export function RoomInspector(props: RoomInspectorProps) {
                 <button
                   type="button"
                   onClick={props.onOpenAddAgentModal}
-                  className="im-press flex w-full cursor-pointer flex-col items-center gap-1 rounded-2xl border border-dashed border-black/20 bg-[#F8F8FA] p-4 text-center transition hover:border-[#141414] hover:bg-[#F5F5F7] dark:border-white/20 dark:bg-[#151518] dark:hover:border-white/40 dark:hover:bg-[#1C1C1F]"
+                  className="im-press flex w-full cursor-pointer flex-col items-center gap-1 rounded-[18px] border border-dashed border-black/18 bg-white/50 p-4 text-center transition hover:border-black/35 hover:bg-white/80 dark:border-white/18 dark:bg-white/[0.035] dark:hover:border-white/35 dark:hover:bg-white/[0.07]"
                 >
-                  <Plus className="h-5 w-5 text-[#141414] dark:text-zinc-200" />
-                  <span className="text-[13px] font-medium text-[#141414] dark:text-zinc-100">
+                  <Plus className="h-5 w-5 text-[#111318] dark:text-[#ECECEF]" />
+                  <span className="text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
                     把你的第一个 Agent 拉进群
                   </span>
-                  <span className="text-[11.5px] text-[#6E6E73] dark:text-zinc-400">
+                  <span className="text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
                     支持 Claude Code、Codex、Cursor、Antigravity、DeepSeek
                   </span>
                 </button>
               ) : null}
 
               <div className="space-y-2">
-                {teamGroups.map((group) => (
-                  <div
-                    key={`team-${group.ownerUserId}`}
-                    className="rounded-2xl bg-[#F5F5F7] p-2 dark:bg-[#18181B]"
-                  >
-                    {/* 主理人头行 */}
-                    <div className="flex items-center justify-between gap-2 px-1.5 py-1">
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <PlatformAvatar
-                          kind="human"
-                          displayName={group.ownerDisplayName}
-                          size="sm"
-                          className="[&>div]:rounded-full"
-                        />
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <p className="truncate text-[13px] font-semibold text-[#141414] dark:text-zinc-100">
-                              {group.ownerDisplayName}
-                            </p>
-                            {group.human ? (
-                              <span className="shrink-0 rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] font-medium text-[#5F5F64] dark:bg-white/[0.08] dark:text-zinc-300">
-                                {roleLabel(group.human.role)}
-                              </span>
-                            ) : null}
+                {teamGroups.map((group) => {
+                  const humanMember = group.human;
+                  const humanMenuItems: ReadonlyArray<AppContextMenuEntry> =
+                    humanMember?.userId !== undefined
+                      ? (() => {
+                          const targetUserId = humanMember.userId;
+                          const targetName = humanMember.displayName;
+                          return [
+                            {
+                              id: `ctx-insp-human-mention-${targetUserId}`,
+                              label: `@ ${targetName}`,
+                              icon: <AtSign className="h-3.5 w-3.5" />,
+                              onSelect: () =>
+                                props.onQuickMention({
+                                  kind: "human",
+                                  userId: targetUserId,
+                                  displayName: targetName,
+                                }),
+                            },
+                            {
+                              id: `ctx-insp-human-copy-${targetUserId}`,
+                              label: "复制昵称",
+                              icon: <Copy className="h-3.5 w-3.5" />,
+                              onSelect: () =>
+                                copyPlainText(targetName, "已复制成员昵称", targetName),
+                            },
+                          ];
+                        })()
+                      : [];
+
+                  return (
+                    <div
+                      key={`team-${group.ownerUserId}`}
+                      className={cn(SECTION_CARD_CLASS, "p-2.5")}
+                    >
+                      {/* 主理人头行 */}
+                      <AppContextMenu items={humanMenuItems}>
+                        <div className="flex items-center justify-between gap-2 rounded-xl px-1.5 py-1 transition-colors data-[state=open]:bg-black/[0.06] dark:data-[state=open]:bg-white/[0.09]">
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            <PlatformAvatar
+                              kind="human"
+                              displayName={group.ownerDisplayName}
+                              size="sm"
+                              className="[&>div]:rounded-full"
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <p className="truncate text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                                  {group.ownerDisplayName}
+                                </p>
+                                {group.human ? (
+                                  <span className="shrink-0 rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] font-medium text-[#4B5565] dark:bg-white/[0.08] dark:text-[#C4C4CA]">
+                                    {roleLabel(group.human.role)}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <p className="mt-0.5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                                {group.human ? "群成员" : "未以本人账号进群"}
+                                {group.agents.length > 0
+                                  ? ` · 接入 ${String(group.agents.length)} 个 Agent`
+                                  : ""}
+                              </p>
+                            </div>
                           </div>
-                          <p className="mt-0.5 text-[11px] text-[#6E6E73] dark:text-zinc-400">
-                            {group.human ? "群成员" : "未以本人账号进群"}
-                            {group.agents.length > 0
-                              ? ` · 接入 ${String(group.agents.length)} 个 Agent`
-                              : ""}
-                          </p>
+
+                          {group.human?.userId !== undefined && group.human !== null
+                            ? (() => {
+                                const humanUserId = group.human.userId;
+                                const humanName = group.human.displayName;
+                                return (
+                                  <AppTooltip side="left" content={`在输入框 @${humanName}`}>
+                                    <IconButton
+                                      size="sm"
+                                      variant="ghost"
+                                      label={`点名 @${humanName}`}
+                                      onClick={() =>
+                                        props.onQuickMention({
+                                          kind: "human",
+                                          userId: humanUserId,
+                                          displayName: humanName,
+                                        })
+                                      }
+                                    >
+                                      <AtSign className="h-3.5 w-3.5" />
+                                    </IconButton>
+                                  </AppTooltip>
+                                );
+                              })()
+                            : null}
                         </div>
-                      </div>
+                      </AppContextMenu>
 
-                      {group.human?.userId !== undefined && group.human !== null
-                        ? (() => {
-                            const humanUserId = group.human.userId;
-                            const humanName = group.human.displayName;
+                      {/* 名下个人 Agent 列表 */}
+                      {group.agents.length > 0 ? (
+                        <ul className="mt-1.5 ml-3.5 space-y-1 border-l border-black/[0.08] pl-2.5 dark:border-white/[0.10]">
+                          {group.agents.map((agent) => {
+                            const reachMeta = getReachVisualMeta(agent.reach);
+                            const agentId = agent.agentId;
+                            const agentMentionText = `@${agent.displayName}`;
+                            const agentMemberMenuItems: ReadonlyArray<AppContextMenuEntry> = [
+                              ...(agentId !== undefined
+                                ? [
+                                    {
+                                      id: `ctx-insp-agt-mention-${agentId}`,
+                                      label: `@ ${agent.displayName}`,
+                                      icon: <AtSign className="h-3.5 w-3.5" />,
+                                      onSelect: () =>
+                                        props.onQuickMention({
+                                          kind: "agent",
+                                          agentId,
+                                          displayName: agent.displayName,
+                                        }),
+                                    } satisfies AppContextMenuEntry,
+                                  ]
+                                : []),
+                              {
+                                id: `ctx-insp-agt-inspect-${agentId ?? agent.displayName}`,
+                                label: "查看 Agent 名片",
+                                icon: <UserRound className="h-3.5 w-3.5" />,
+                                onSelect: () => handleInspectMemberAgent(agent),
+                              },
+                              {
+                                id: `ctx-insp-agt-copy-${agentId ?? agent.displayName}`,
+                                label: `复制 ${agentMentionText}`,
+                                icon: <Copy className="h-3.5 w-3.5" />,
+                                onSelect: () =>
+                                  copyPlainText(
+                                    agentMentionText,
+                                    "已复制提及标识",
+                                    agentMentionText,
+                                  ),
+                              },
+                            ];
+
                             return (
-                              <AppTooltip side="left" content={`在输入框 @${humanName}`}>
-                                <IconButton
-                                  size="sm"
-                                  variant="ghost"
-                                  label={`点名 @${humanName}`}
-                                  onClick={() =>
-                                    props.onQuickMention({
-                                      kind: "human",
-                                      userId: humanUserId,
-                                      displayName: humanName,
-                                    })
-                                  }
-                                >
-                                  <AtSign className="h-3.5 w-3.5" />
-                                </IconButton>
-                              </AppTooltip>
-                            );
-                          })()
-                        : null}
-                    </div>
-
-                    {/* 名下个人 Agent 列表 */}
-                    {group.agents.length > 0 ? (
-                      <ul className="mt-1.5 ml-3.5 space-y-1 border-l border-black/[0.08] pl-2.5 dark:border-white/[0.1]">
-                        {group.agents.map((agent) => {
-                          const reachMeta = getReachVisualMeta(agent.reach);
-                          const agentId = agent.agentId;
-                          return (
-                            <li
-                              key={`mem-agt-${agent.agentId ?? agent.displayName}`}
-                              className="group flex items-center justify-between gap-1.5 rounded-xl bg-white px-2.5 py-1.5 transition hover:bg-white/90 dark:bg-[#202024] dark:hover:bg-[#27272C]"
-                            >
-                              <button
-                                type="button"
-                                onClick={() => handleInspectMemberAgent(agent)}
-                                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left"
+                              <AppContextMenu
+                                key={`mem-agt-${agent.agentId ?? agent.displayName}`}
+                                items={agentMemberMenuItems}
                               >
-                                <PlatformAvatar
-                                  kind="agent"
-                                  displayName={agent.displayName}
-                                  platform={agent.platform}
-                                  reach={agent.reach}
-                                  size="sm"
-                                  className="[&>div]:rounded-full"
-                                />
-                                <span className="min-w-0 flex-1">
-                                  <span className="flex items-center gap-1.5">
-                                    <span className="truncate text-[12.5px] font-semibold text-[#141414] dark:text-zinc-100">
-                                      {agent.displayName}
-                                    </span>
-                                    {agent.platform ? (
-                                      <PlatformTagPill platform={agent.platform} compact={true} />
-                                    ) : null}
-                                  </span>
-                                  <span
-                                    title={reachMeta.description}
-                                    className="mt-0.5 flex items-center gap-1 text-[11px] text-[#6E6E73] dark:text-zinc-400"
+                                <li className="group flex items-center justify-between gap-1.5 rounded-xl bg-white/85 px-2.5 py-1.5 ring-1 ring-inset ring-black/[0.04] transition hover:bg-white data-[state=open]:bg-black/[0.06] data-[state=open]:ring-black/15 dark:bg-white/[0.05] dark:ring-white/[0.06] dark:hover:bg-white/[0.09] dark:data-[state=open]:bg-white/[0.11] dark:data-[state=open]:ring-white/20">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleInspectMemberAgent(agent)}
+                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left"
                                   >
-                                    <span
-                                      className={cn("h-1.5 w-1.5 rounded-full", reachMeta.dotClass)}
+                                    <PlatformAvatar
+                                      kind="agent"
+                                      displayName={agent.displayName}
+                                      platform={agent.platform}
+                                      reach={agent.reach}
+                                      size="sm"
+                                      className="[&>div]:rounded-full"
                                     />
-                                    <span>{reachMeta.shortLabel}</span>
-                                  </span>
-                                </span>
-                              </button>
+                                    <span className="min-w-0 flex-1">
+                                      <span className="flex items-center gap-1.5">
+                                        <span className="truncate text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                                          {agent.displayName}
+                                        </span>
+                                        {agent.platform ? (
+                                          <PlatformTagPill
+                                            platform={agent.platform}
+                                            compact={true}
+                                          />
+                                        ) : null}
+                                      </span>
+                                      <span
+                                        title={reachMeta.description}
+                                        className="mt-0.5 flex items-center gap-1 text-[11px] text-[#687082] dark:text-[#8E8E96]"
+                                      >
+                                        <span
+                                          className={cn(
+                                            "h-1.5 w-1.5 rounded-full",
+                                            reachMeta.dotClass,
+                                          )}
+                                        />
+                                        <span>{reachMeta.shortLabel}</span>
+                                      </span>
+                                    </span>
+                                  </button>
 
-                              {agentId !== undefined ? (
-                                <AppButton
-                                  variant="soft"
-                                  size="xs"
-                                  onClick={() =>
-                                    props.onQuickMention({
-                                      kind: "agent",
-                                      agentId,
-                                      displayName: agent.displayName,
-                                    })
-                                  }
-                                  className="h-6 px-2.5 text-[11px]"
-                                >
-                                  @TA
-                                </AppButton>
-                              ) : null}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    ) : null}
-                  </div>
-                ))}
+                                  {agentId !== undefined ? (
+                                    <AppButton
+                                      variant="soft"
+                                      size="xs"
+                                      onClick={() =>
+                                        props.onQuickMention({
+                                          kind: "agent",
+                                          agentId,
+                                          displayName: agent.displayName,
+                                        })
+                                      }
+                                      className="h-6 px-2.5 text-[11px]"
+                                    >
+                                      @TA
+                                    </AppButton>
+                                  ) : null}
+                                </li>
+                              </AppContextMenu>
+                            );
+                          })}
+                        </ul>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
             </section>
 
             {/* 3.2 邀请码与公开只读回放分享 */}
-            <section className="space-y-2.5 rounded-2xl bg-[#F5F5F7] p-3.5 dark:bg-[#18181B]">
+            <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
               <div className="flex items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-1.5 font-semibold text-[#141414] dark:text-zinc-100">
+                <div className="flex items-center gap-1.5 font-semibold text-[#111318] dark:text-[#F2F2F4]">
                   {props.room.visibility === "public_shareable" ? (
-                    <Globe className="h-3.5 w-3.5 text-[#34C759]" />
+                    <Globe className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
                   ) : (
-                    <Lock className="h-3.5 w-3.5 text-[#8E8E93]" />
+                    <Lock className="h-3.5 w-3.5 text-[#8E96A6] dark:text-[#8E8E96]" />
                   )}
                   <span>邀请与公开分享</span>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-[#6E6E73] dark:text-zinc-400">
+                  <span className="text-[11px] text-[#687082] dark:text-[#8E8E96]">
                     {props.room.visibility === "public_shareable" ? "公开可分享" : "仅限邀请"}
                   </span>
                   <AppSwitch
@@ -629,7 +739,7 @@ export function RoomInspector(props: RoomInspectorProps) {
 
               {props.room.inviteToken ? (
                 <div className="flex items-center gap-1.5">
-                  <code className="min-w-0 flex-1 truncate rounded-xl border border-black/[0.08] bg-white px-2.5 py-1.5 font-mono text-[11.5px] text-[#141414] dark:border-white/[0.1] dark:bg-[#121215] dark:text-zinc-200">
+                  <code className="min-w-0 flex-1 truncate rounded-xl border border-black/[0.07] bg-white/90 px-2.5 py-1.5 font-mono text-[11.5px] text-[#111318] dark:border-white/[0.09] dark:bg-[#141417] dark:text-[#ECECEF]">
                     {props.room.inviteToken}
                   </code>
                   <AppButton
@@ -637,7 +747,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                     size="sm"
                     leadingIcon={
                       copiedKey === "inv" ? (
-                        <Check className="h-3.5 w-3.5 text-[#34C759]" />
+                        <Check className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
                       ) : (
                         <Copy className="h-3.5 w-3.5" />
                       )
@@ -685,20 +795,20 @@ export function RoomInspector(props: RoomInspectorProps) {
             </section>
 
             {/* 3.3 可折叠「群设置与讨论规则」（全套 Radix 原语，零原生下拉框） */}
-            <section className="overflow-hidden rounded-2xl bg-[#F5F5F7] dark:bg-[#18181B]">
+            <section className={cn(SECTION_CARD_CLASS, "overflow-hidden")}>
               <button
                 type="button"
                 onClick={() => setSettingsOpen((prev) => !prev)}
                 aria-expanded={settingsOpen}
-                className="flex w-full cursor-pointer select-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-[#141414] transition hover:bg-black/[0.03] dark:text-zinc-100 dark:hover:bg-white/[0.04]"
+                className="flex w-full cursor-pointer select-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-[#111318] transition hover:bg-black/[0.03] dark:text-[#F2F2F4] dark:hover:bg-white/[0.04]"
               >
                 <span className="inline-flex items-center gap-1.5">
-                  <Settings2 className="h-3.5 w-3.5 text-[#6E6E73] dark:text-zinc-400" />
+                  <Settings2 className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
                   <span>群设置与讨论规则</span>
                 </span>
                 <ChevronDown
                   className={cn(
-                    "h-3.5 w-3.5 text-[#6E6E73] transition-transform duration-200 dark:text-zinc-400",
+                    "h-3.5 w-3.5 text-[#687082] transition-transform duration-200 dark:text-[#8E8E96]",
                     settingsOpen && "rotate-180",
                   )}
                 />
@@ -712,11 +822,11 @@ export function RoomInspector(props: RoomInspectorProps) {
                     animate={{ height: "auto", opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}
                     transition={{ duration: 0.18, ease: "easeOut" }}
-                    className="overflow-hidden border-t border-black/[0.06] dark:border-white/[0.06]"
+                    className="overflow-hidden border-t border-black/[0.06] dark:border-white/[0.07]"
                   >
                     <div className="space-y-3.5 p-3.5 text-xs">
                       <div>
-                        <p className="mb-1.5 text-[11.5px] font-medium text-[#6E6E73] dark:text-zinc-400">
+                        <p className="mb-1.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
                           讨论节奏
                         </p>
                         <SegmentedTabs
@@ -739,7 +849,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                       <div className="flex items-center justify-between gap-3">
                         <label
                           htmlFor="insp-turn-cap"
-                          className="font-medium text-[#141414] dark:text-zinc-200"
+                          className="font-medium text-[#111318] dark:text-[#ECECEF]"
                         >
                           连续 Agent 发言上限
                         </label>
@@ -771,10 +881,10 @@ export function RoomInspector(props: RoomInspectorProps) {
                           htmlFor="insp-switch-mentions"
                           className="min-w-0 flex-1 cursor-pointer"
                         >
-                          <span className="block font-medium text-[#141414] dark:text-zinc-200">
+                          <span className="block font-medium text-[#111318] dark:text-[#ECECEF]">
                             Agent 互相 @ 唤醒
                           </span>
-                          <span className="block text-[11px] text-[#6E6E73] dark:text-zinc-400">
+                          <span className="block text-[11px] text-[#687082] dark:text-[#8E8E96]">
                             关闭后仅人类发言可唤醒 Agent
                           </span>
                         </label>
@@ -797,10 +907,10 @@ export function RoomInspector(props: RoomInspectorProps) {
                           htmlFor="insp-switch-readlock"
                           className="min-w-0 flex-1 cursor-pointer"
                         >
-                          <span className="block font-medium text-[#141414] dark:text-zinc-200">
+                          <span className="block font-medium text-[#111318] dark:text-[#ECECEF]">
                             先读后发保护
                           </span>
-                          <span className="block text-[11px] text-[#6E6E73] dark:text-zinc-400">
+                          <span className="block text-[11px] text-[#687082] dark:text-[#8E8E96]">
                             拦截未读最新消息的盲目抢答
                           </span>
                         </label>
@@ -817,11 +927,11 @@ export function RoomInspector(props: RoomInspectorProps) {
                       </div>
 
                       {props.room.rules.trim().length > 0 ? (
-                        <div className="rounded-xl bg-white p-2.5 dark:bg-[#121215]">
-                          <p className="mb-1 text-[11px] font-medium text-[#6E6E73] dark:text-zinc-400">
+                        <div className="rounded-xl bg-white/85 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#141417] dark:ring-white/[0.07]">
+                          <p className="mb-1 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
                             群约定
                           </p>
-                          <p className="whitespace-pre-wrap text-xs leading-relaxed text-[#3A3A3C] dark:text-zinc-300">
+                          <p className="whitespace-pre-wrap text-xs leading-relaxed text-[#3B414E] dark:text-[#C4C4CA]">
                             {props.room.rules}
                           </p>
                         </div>
@@ -831,12 +941,55 @@ export function RoomInspector(props: RoomInspectorProps) {
                 ) : null}
               </AnimatePresence>
             </section>
+
+            {/* 3.4 群主删除 / 成员退出操作区 */}
+            {isRoomOwner && props.onRequestDeleteRoom !== undefined ? (
+              <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
+                <div>
+                  <h3 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                    群主管理
+                  </h3>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                    永久删除当前群聊及其全部消息与提案，此操作不可撤销。
+                  </p>
+                </div>
+                <AppButton
+                  variant="dangerSoft"
+                  size="sm"
+                  fullWidth={true}
+                  leadingIcon={<Trash2 className="h-3.5 w-3.5" />}
+                  onClick={() => props.onRequestDeleteRoom?.(props.room)}
+                >
+                  删除群聊
+                </AppButton>
+              </section>
+            ) : !isRoomOwner && props.onRequestLeaveRoom !== undefined ? (
+              <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
+                <div>
+                  <h3 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                    成员操作
+                  </h3>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                    退出当前群聊后需凭邀请码重新加入，群内历史消息会保留。
+                  </p>
+                </div>
+                <AppButton
+                  variant="dangerSoft"
+                  size="sm"
+                  fullWidth={true}
+                  leadingIcon={<LogOut className="h-3.5 w-3.5" />}
+                  onClick={() => props.onRequestLeaveRoom?.(props.room)}
+                >
+                  退出群聊
+                </AppButton>
+              </section>
+            ) : null}
           </div>
         ) : (
           /* Tab 2: 结构化共识提案与人类拍板闭环 */
           <div className="space-y-3.5">
             {/* 自动整理 + BYOK + 手动新建 */}
-            <div className="space-y-2.5 rounded-2xl bg-[#F5F5F7] p-3 dark:bg-[#18181B]">
+            <div className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3")}>
               <div className="flex items-center gap-1.5">
                 <AppButton
                   variant="primary"
@@ -882,15 +1035,15 @@ export function RoomInspector(props: RoomInspectorProps) {
                     transition={{ duration: 0.16 }}
                     className="overflow-hidden"
                   >
-                    <div className="space-y-2 rounded-xl border border-black/[0.07] bg-white p-2.5 text-xs dark:border-white/[0.08] dark:bg-[#121215]">
-                      <p className="font-medium text-[#141414] dark:text-zinc-200">
+                    <div className="space-y-2 rounded-xl border border-black/[0.06] bg-white/90 p-2.5 text-xs dark:border-white/[0.08] dark:bg-[#141417]">
+                      <p className="font-medium text-[#111318] dark:text-[#ECECEF]">
                         消息窗口与可选自定义模型（留空使用服务端默认）
                       </p>
                       <div className="grid grid-cols-2 gap-2">
                         <div>
                           <label
                             htmlFor="synth-window-limit"
-                            className="mb-1 block text-[10.5px] text-[#6E6E73] dark:text-zinc-400"
+                            className="mb-1 block text-[10.5px] text-[#687082] dark:text-[#8E8E96]"
                           >
                             读取最近消息条数
                           </label>
@@ -911,7 +1064,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                         <div>
                           <label
                             htmlFor="synth-model"
-                            className="mb-1 block text-[10.5px] text-[#6E6E73] dark:text-zinc-400"
+                            className="mb-1 block text-[10.5px] text-[#687082] dark:text-[#8E8E96]"
                           >
                             自定义模型 ID
                           </label>
@@ -947,7 +1100,7 @@ export function RoomInspector(props: RoomInspectorProps) {
               </AnimatePresence>
 
               {synthErr ? (
-                <p className="rounded-xl bg-[#FF3B30]/10 px-2.5 py-1.5 text-[11.5px] text-[#D70015] dark:bg-[#FF453A]/15 dark:text-[#FF6961]">
+                <p className="rounded-xl bg-[#E5484D]/10 px-2.5 py-1.5 text-[11.5px] text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
                   整理失败：{synthErr}
                 </p>
               ) : null}
@@ -963,10 +1116,10 @@ export function RoomInspector(props: RoomInspectorProps) {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -4 }}
                   transition={{ duration: 0.16 }}
-                  className="space-y-2.5 rounded-2xl border border-black/[0.08] bg-white p-3.5 dark:border-white/[0.1] dark:bg-[#151518]"
+                  className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}
                 >
                   <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-semibold text-[#141414] dark:text-zinc-100">
+                    <h4 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
                       手写对比提案
                     </h4>
                     <AppButton variant="ghost" size="xs" onClick={() => setManualFormOpen(false)}>
@@ -1000,7 +1153,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                     {optionDrafts.map((opt, idx) => (
                       <div
                         key={opt.localId}
-                        className="space-y-1.5 rounded-xl bg-[#F5F5F7] p-2.5 dark:bg-[#1C1C1F]"
+                        className="space-y-1.5 rounded-xl bg-white/80 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.04] dark:ring-white/[0.07]"
                       >
                         <div className="flex items-center gap-1.5">
                           <AppInput
@@ -1034,7 +1187,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                               onClick={() =>
                                 setOptionDrafts((prev) => prev.filter((_, i) => i !== idx))
                               }
-                              className="text-[#8E8E93] hover:text-[#FF3B30]"
+                              className="text-[#8E96A6] hover:text-[#E5484D]"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                             </IconButton>
@@ -1109,7 +1262,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                     <div className="flex items-center gap-1.5 text-xs">
                       <label
                         htmlFor="manual-recommended-key"
-                        className="text-[#6E6E73] dark:text-zinc-400"
+                        className="text-[#687082] dark:text-[#8E8E96]"
                       >
                         推荐方案
                       </label>
@@ -1126,7 +1279,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                   </div>
 
                   {createPropErr ? (
-                    <p className="text-xs text-[#D70015] dark:text-[#FF6961]">{createPropErr}</p>
+                    <p className="text-xs text-[#C81E1E] dark:text-[#FCA5A5]">{createPropErr}</p>
                   ) : null}
 
                   <AppButton
@@ -1148,12 +1301,12 @@ export function RoomInspector(props: RoomInspectorProps) {
                 {[1, 2].map((sk) => (
                   <div
                     key={`prop-sk-${String(sk)}`}
-                    className="h-36 animate-pulse rounded-2xl bg-[#F5F5F7] dark:bg-white/[0.05]"
+                    className="h-36 animate-pulse rounded-[18px] bg-black/[0.05] dark:bg-white/[0.05]"
                   />
                 ))}
               </div>
             ) : props.isProposalsError ? (
-              <div className="rounded-2xl bg-[#FF3B30]/10 p-3.5 text-xs text-[#D70015] dark:bg-[#FF453A]/15 dark:text-[#FF6961]">
+              <div className="rounded-[18px] bg-[#E5484D]/10 p-3.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
                 <div className="flex items-center gap-1.5 font-semibold">
                   <AlertCircle className="h-4 w-4" />
                   <span>加载提案列表失败</span>
@@ -1169,12 +1322,12 @@ export function RoomInspector(props: RoomInspectorProps) {
                 </AppButton>
               </div>
             ) : props.proposals.length === 0 ? (
-              <div className="rounded-2xl bg-[#F8F8FA] p-6 text-center dark:bg-[#151518]">
-                <FileText className="mx-auto h-5 w-5 text-[#8E8E93] dark:text-zinc-500" />
-                <p className="mt-2 text-[13px] font-medium text-[#141414] dark:text-zinc-100">
+              <div className={cn(SECTION_CARD_CLASS, "p-6 text-center")}>
+                <FileText className="mx-auto h-5 w-5 text-[#8E96A6] dark:text-[#63636B]" />
+                <p className="mt-2 text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
                   还没有提案
                 </p>
-                <p className="mt-1 text-[12px] leading-relaxed text-[#6E6E73] dark:text-zinc-400">
+                <p className="mt-1 text-[12px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                   等群里的讨论差不多有了眉目，点击上方「整理近期讨论为提案」对比优劣再拍板。
                 </p>
               </div>

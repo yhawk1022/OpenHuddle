@@ -1,11 +1,11 @@
 /**
  * @module web/components/ui/agent-profile-dialog
- * @description Pachat 极简联系人名片弹窗：圆形暖粉彩头像 + 实时在线状态胶囊 + 主人归属关系卡 + 连接详情 + 一键胶囊操作按钮。
+ * @description 极简通透的个人 Agent 联系人名片弹窗：圆形暖粉彩头像 + 实时在线状态胶囊 + 主人归属关系卡 + 连接详情 + 一键胶囊操作按钮。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 透明归属溯源（Lineage Transparency）：始终清晰展示「由 @Owner 绑定」，消除多 Agent 群聊中“不知道这是谁的 AI”的信任盲区；Owner 字段仅源自服务端权威成员视图，绝不从消息正文推断。
  * 2. 纯 Props 驱动：支持从群成员侧栏、消息气泡头像或通讯录面板统一唤起，组件自身零网络请求。
- * 3. Pachat 去模板化克制视觉：摒弃廉价紫色渐变封面横幅，采用纯净 `#FFFFFF` / `#18181B` 纸面、`#F5F5F7` 柔和信息卡、圆形粉彩头像与 `#141414` 胶囊按钮。
+ * 3. 中性石墨液态玻璃层次：依托 `AppModal` 的 `liquid-glass-modal` 表面，内部信息卡片使用柔和半透衬底（`bg-black/[0.035]` / `dark:bg-white/[0.055]`），零硬边碎片灰。
  */
 import {
   type AgentId,
@@ -98,8 +98,8 @@ function resolveReachPill(
         text: "实时在线",
         hint: "群里 @ 后即刻唤醒",
         className:
-          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#86E0A6]",
-        dotClassName: "bg-[#34C759]",
+          "border-black/[0.06] bg-[#E6F5EC] text-[#145335] dark:border-white/[0.08] dark:bg-[#1B2B23] dark:text-[#6EE7B7]",
+        dotClassName: "bg-[#16A34A] dark:bg-[#34D399]",
         pulse: true,
       };
     case "hosted_ready":
@@ -107,8 +107,8 @@ function resolveReachPill(
         text: "云端在线",
         hint: "托管模型已就绪，随时响应",
         className:
-          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#86E0A6]",
-        dotClassName: "bg-[#34C759]",
+          "border-black/[0.06] bg-[#E6F5EC] text-[#145335] dark:border-white/[0.08] dark:bg-[#1B2B23] dark:text-[#6EE7B7]",
+        dotClassName: "bg-[#16A34A] dark:bg-[#34D399]",
         pulse: true,
       };
     case "webhook":
@@ -116,8 +116,8 @@ function resolveReachPill(
         text: "实时在线",
         hint: "Webhook 实时推送唤醒",
         className:
-          "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1B2433] dark:text-[#9EC5FF]",
-        dotClassName: "bg-[#2F6FED]",
+          "border-black/[0.06] bg-[#E1ECFF] text-[#1E40AF] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#93C5FD]",
+        dotClassName: "bg-[#2563EB] dark:bg-[#60A5FA]",
         pulse: true,
       };
     case "polling":
@@ -128,8 +128,8 @@ function resolveReachPill(
             ? `约每 ${checkinIntervalMin} 分钟看一次群消息`
             : "下一个巡检窗口回复",
         className:
-          "border-black/[0.06] bg-[#FFF1C2] text-[#5C4813] dark:border-white/[0.08] dark:bg-[#2C2718] dark:text-[#F2DF9D]",
-        dotClassName: "bg-[#D99B26] dark:bg-[#E5B34B]",
+          "border-black/[0.06] bg-[#FEF3C7] text-[#78350F] dark:border-white/[0.08] dark:bg-[#2E2516] dark:text-[#FCD34D]",
+        dotClassName: "bg-[#D97706] dark:bg-[#FBBF24]",
         pulse: false,
       };
     case "offline":
@@ -137,8 +137,8 @@ function resolveReachPill(
         text: "暂不在线",
         hint: "等待主人运行 listen 唤醒",
         className:
-          "border-black/[0.06] bg-[#F5F5F7] text-[#6E6E73] dark:border-white/[0.08] dark:bg-[#242428] dark:text-zinc-400",
-        dotClassName: "bg-[#C7C7CC] dark:bg-zinc-500",
+          "border-black/[0.06] bg-black/[0.045] text-[#687082] dark:border-white/[0.08] dark:bg-white/[0.06] dark:text-[#8E8E96]",
+        dotClassName: "bg-[#CBD2DE] dark:bg-[#63636B]",
         pulse: false,
       };
     default:
@@ -229,7 +229,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
             <AppTooltip content={reachMeta.label} side="right">
               <span
                 className={cn(
-                  "absolute right-0.5 bottom-0.5 h-3.5 w-3.5 rounded-full ring-[3px] ring-white dark:ring-[#18181B]",
+                  "absolute right-0.5 bottom-0.5 h-3.5 w-3.5 rounded-full ring-[3px] ring-white dark:ring-[#1E1E22]",
                   reachPill.dotClassName,
                 )}
               />
@@ -276,11 +276,11 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
 
         {/* 昵称、@handle 一键复制与唤醒说明 */}
         <div>
-          <h3 className="truncate text-[19px] font-semibold tracking-[-0.02em] text-[#141414] dark:text-zinc-100">
+          <h3 className="truncate text-[19px] font-semibold tracking-[-0.02em] text-[#111318] dark:text-[#F2F2F4]">
             {profile.displayName}
           </h3>
-          <div className="mt-1 flex items-center gap-1.5 text-xs text-[#6E6E73] dark:text-zinc-400">
-            <span className="truncate font-mono text-[11.5px] text-[#3A3A3C] dark:text-zinc-300">
+          <div className="mt-1 flex items-center gap-1.5 text-xs text-[#687082] dark:text-[#8E8E96]">
+            <span className="truncate font-mono text-[11.5px] text-[#3B414E] dark:text-[#C4C4CA]">
               {handleText}
             </span>
             <AppTooltip content="复制 @ 标识" side="top">
@@ -291,68 +291,74 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
                 onClick={handleCopyMentionTag}
               >
                 {copiedHandle ? (
-                  <Check aria-hidden="true" className="h-3 w-3 text-[#34C759]" />
+                  <Check
+                    aria-hidden="true"
+                    className="h-3 w-3 text-[#16A34A] dark:text-[#34D399]"
+                  />
                 ) : (
                   <Copy aria-hidden="true" className="h-3 w-3" />
                 )}
               </IconButton>
             </AppTooltip>
-            <span className="text-[#C7C7CC] dark:text-zinc-600">·</span>
+            <span className="text-[#CBD2DE] dark:text-[#63636B]">·</span>
             <span className="truncate">{reachPill.hint}</span>
           </div>
         </div>
 
-        {/* Owner 授权血统溯源卡：温润鼠尾草绿 / 浅灰纸面 */}
+        {/* Owner 授权血统溯源卡 */}
         <motion.div
           initial={{ opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ type: "spring", stiffness: 420, damping: 32, delay: 0.03 }}
-          className="flex items-center gap-3 rounded-[18px] bg-[#F5F5F7] px-3.5 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-[#222226] dark:ring-white/[0.07]"
+          className="flex items-center gap-3 rounded-[18px] bg-black/[0.035] px-3.5 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]"
         >
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#F6F2EC] text-xs font-semibold text-[#141414] ring-1 ring-inset ring-black/[0.06] dark:bg-[#272521] dark:text-[#F4F4F2] dark:ring-white/[0.08]">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#F4EFE6] text-xs font-semibold text-[#111318] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2E2E34] dark:text-[#F5F5F7] dark:ring-white/[0.10]">
             {getInitials(profile.ownerDisplayName)}
           </div>
           <div className="min-w-0 flex-1">
-            <p className="flex items-center gap-1 text-[13px] font-semibold text-[#141414] dark:text-zinc-100">
+            <p className="flex items-center gap-1 text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
               <span className="truncate">{profile.ownerDisplayName} 的个人 Agent</span>
-              <BadgeCheck aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-[#34C759]" />
+              <BadgeCheck
+                aria-hidden="true"
+                className="h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]"
+              />
             </p>
-            <p className="mt-0.5 text-[11.5px] leading-snug text-[#6E6E73] dark:text-zinc-400">
+            <p className="mt-0.5 text-[11.5px] leading-snug text-[#687082] dark:text-[#8E8E96]">
               只听从主人的指令，群内其他成员发言仅作参考
             </p>
           </div>
           {isOwnedByMe ? (
-            <span className="shrink-0 rounded-full bg-[#141414] px-2.5 py-0.5 text-[10.5px] font-medium text-white dark:bg-[#F5F5F7] dark:text-[#141414]">
+            <span className="shrink-0 rounded-full bg-[#181B22] px-2.5 py-0.5 text-[10.5px] font-medium text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
               我的
             </span>
           ) : null}
         </motion.div>
 
         {/* 角色简介 Bio */}
-        <div className="rounded-[18px] bg-[#F5F5F7] px-3.5 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-[#222226] dark:ring-white/[0.07]">
-          <h4 className="text-[11px] font-medium text-[#8E8E93] dark:text-zinc-400">简介</h4>
-          <p className="mt-1 select-text text-[13px] leading-relaxed text-[#141414] dark:text-zinc-200">
+        <div className="rounded-[18px] bg-black/[0.035] px-3.5 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
+          <h4 className="text-[11px] font-medium text-[#939BAD] dark:text-[#8E8E96]">简介</h4>
+          <p className="mt-1 select-text text-[13px] leading-relaxed text-[#111318] dark:text-[#F2F2F4]">
             {bioText}
           </p>
         </div>
 
         {/* 连接与活跃信息双栏格 */}
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="rounded-[16px] bg-[#F5F5F7] px-3 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#222226] dark:ring-white/[0.07]">
-            <p className="flex items-center gap-1 text-[11px] text-[#8E8E93] dark:text-zinc-400">
+          <div className="rounded-[16px] bg-black/[0.035] px-3 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
+            <p className="flex items-center gap-1 text-[11px] text-[#939BAD] dark:text-[#8E8E96]">
               <Radio aria-hidden="true" className="h-3 w-3" />
               <span>连接方式</span>
             </p>
-            <p className="mt-1 truncate font-medium text-[#141414] dark:text-zinc-100">
+            <p className="mt-1 truncate font-medium text-[#111318] dark:text-[#F2F2F4]">
               {reachMeta.label}
             </p>
           </div>
-          <div className="rounded-[16px] bg-[#F5F5F7] px-3 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#222226] dark:ring-white/[0.07]">
-            <p className="flex items-center gap-1 text-[11px] text-[#8E8E93] dark:text-zinc-400">
+          <div className="rounded-[16px] bg-black/[0.035] px-3 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
+            <p className="flex items-center gap-1 text-[11px] text-[#939BAD] dark:text-[#8E8E96]">
               <Clock aria-hidden="true" className="h-3 w-3" />
               <span>{profile.checkinIntervalMin !== undefined ? "巡检频率" : "最近在线"}</span>
             </p>
-            <p className="mt-1 truncate font-medium text-[#141414] dark:text-zinc-100">
+            <p className="mt-1 truncate font-medium text-[#111318] dark:text-[#F2F2F4]">
               {profile.checkinIntervalMin !== undefined
                 ? `每 ${profile.checkinIntervalMin} 分钟`
                 : profile.lastSeenAtIso !== undefined
@@ -363,13 +369,16 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
         </div>
 
         {profile.checkinIntervalMin !== undefined && profile.lastSeenAtIso !== undefined ? (
-          <p className="text-right text-[11px] text-[#8E8E93] dark:text-zinc-500">
+          <p className="text-right text-[11px] text-[#939BAD] dark:text-[#63636B]">
             最近在线 {formatMessageTimestamp(profile.lastSeenAtIso)}
           </p>
         ) : null}
 
-        <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-[#8E8E93] dark:text-zinc-500">
-          <ShieldCheck aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#34C759]" />
+        <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-[#939BAD] dark:text-[#63636B]">
+          <ShieldCheck
+            aria-hidden="true"
+            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]"
+          />
           <span>身份由服务端凭独立 oh_agt_ 令牌核验，改昵称也无法冒充主人归属。</span>
         </p>
 
@@ -408,8 +417,8 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
 
             {isOwnedByMe && props.onDeleteAgent ? (
               confirmingDelete ? (
-                <div className="space-y-2.5 rounded-[18px] bg-[#FF3B30]/[0.07] px-3.5 py-3 ring-1 ring-inset ring-[#FF3B30]/20 dark:bg-[#FF453A]/[0.12] dark:ring-[#FF453A]/25">
-                  <p className="text-[12px] leading-relaxed text-[#8A1C14] dark:text-[#FFB4AE]">
+                <div className="space-y-2.5 rounded-[18px] bg-[#E5484D]/[0.08] px-3.5 py-3 ring-1 ring-inset ring-[#E5484D]/20 dark:bg-[#F05252]/[0.12] dark:ring-[#F05252]/25">
+                  <p className="text-[12px] leading-relaxed text-[#8A1C14] dark:text-[#FCA5A5]">
                     确定彻底删除「{profile.displayName}
                     」？将自动移出所有群聊、吊销令牌并停止本机监听（群内历史消息会安全保留）。
                   </p>

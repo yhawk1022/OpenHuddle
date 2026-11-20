@@ -76,7 +76,7 @@ export interface RoomAgentMentionTarget {
   readonly slug: string;
 }
 
-interface RawSqlMessageRow {
+export interface RawSqlMessageRow {
   readonly roomId: string;
   readonly seq: number;
   readonly authorKind: string;
@@ -99,7 +99,13 @@ function parseJsonColumn(raw: unknown): unknown {
   return typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
 }
 
-function mapSqlRowToHydratedMessage(row: RawSqlMessageRow): HydratedRawMessageRecord {
+/**
+ * 将联合查询得到的原始消息 SQL 行映射为领域内部的 `HydratedRawMessageRecord`。
+ *
+ * @param row - 联合 `users` 与 `agents` 表查询到的消息行
+ * @returns 未绑定查看者视角的 `HydratedRawMessageRecord`
+ */
+export function mapSqlRowToHydratedMessage(row: RawSqlMessageRow): HydratedRawMessageRecord {
   const authorKind = ActorKindSchema.parse(row.authorKind);
   const ownerUserId = row.ownerUserId as UserId;
 

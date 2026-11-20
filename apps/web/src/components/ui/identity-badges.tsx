@@ -1,11 +1,11 @@
 /**
  * @module web/components/ui/identity-badges
- * @description Pachat 极简暖粉彩圆形头像（`PlatformAvatar`）、微信/Pachat 四宫格群聊组合头像（`RoomCompositeAvatar`）、克制灰字微身份标签（`AuthorMicroTag`）与服务端验签状态徽章。
+ * @description 极简通透暖粉彩圆形头像（`PlatformAvatar`）、群聊组合头像（`RoomCompositeAvatar`）、克制灰字微身份标签（`AuthorMicroTag`）与服务端验签状态徽章。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 防伪视觉隔离边界：`SecurityTrustBadge` 与 `AuthorMicroTag` 仅消费服务端动态签发的 `AuthorStamp.trustLevel`，
  *    任何外部 Agent 即使修改昵称也无法伪造主理人或兄弟 Agent 的验签说明。
- * 2. 全圆形暖粉彩头像（Circular Pastel Identity）：人类与 Agent 统一采用 Pachat 标志性圆形（`rounded-full`）与低饱和暖纸粉彩底色（Claude `#F4ECDD`、Codex `#E1ECFF`、Antigravity `#EFEAFF`、OpenClaw `#E3F3EC`、Cursor `#FFF1C2`、DeepSeek `#FBE3D9`），搭配利落几何矢量字标与 `#34C759` 在线圆点。
+ * 2. 自适应镂空在线圆点：`PlatformAvatar` 的状态圆点外圈使用 `ring-[var(--oh-avatar-ring,var(--oh-im-canvas))]`，在悬浮玻璃导轨、侧栏与聊天画布上均能无缝贴合背景，消除暗夜黑圈违和感。
  * 3. 反「徽章汤」排版纪律：`AuthorMicroTag` 采用无背景框、无霓虹圆点的克制中性灰微排版（如 `庞彦的 Agent`、`外部协作者`），悬停通过 `AppTooltip` 按需披露完整验签边界。
  */
 import {
@@ -59,28 +59,28 @@ function getAvatarSizeMeta(size: AvatarSize): AvatarSizeMeta {
       };
     case "sm":
       return {
-        box: "h-7 w-7 text-[10.5px]",
+        box: "h-7 w-7 text-[12px]",
         glyph: "h-3.5 w-3.5",
-        dot: "h-2.5 w-2.5",
+        dot: "h-2 w-2",
         dotRing: "ring-[1.5px]",
         corner: "h-3.5 w-3.5",
         cornerIcon: "h-2 w-2",
       };
     case "md":
       return {
-        box: "h-9 w-9 text-[12px]",
+        box: "h-9 w-9 text-[13.5px]",
         glyph: "h-[17px] w-[17px]",
         dot: "h-2.5 w-2.5",
-        dotRing: "ring-2",
+        dotRing: "ring-[1.5px]",
         corner: "h-4 w-4",
         cornerIcon: "h-2.5 w-2.5",
       };
     case "lg":
       return {
-        box: "h-10 w-10 text-[13px]",
+        box: "h-10 w-10 text-[15px]",
         glyph: "h-[19px] w-[19px]",
-        dot: "h-3 w-3",
-        dotRing: "ring-2",
+        dot: "h-2.5 w-2.5",
+        dotRing: "ring-[1.5px]",
         corner: "h-4 w-4",
         cornerIcon: "h-2.5 w-2.5",
       };
@@ -90,16 +90,15 @@ function getAvatarSizeMeta(size: AvatarSize): AvatarSizeMeta {
 }
 
 /**
- * Pachat 暖粉彩调色板（用于人类昵称哈希与自定义 Agent 稳定取色）。
- * 明暗双主题均维持低饱和纸感对比度，杜绝刺眼荧光色。
+ * 双主题高通透粉彩调色板（用于人类昵称哈希与自定义 Agent 稳定取色）。
  */
 const PASTEL_PALETTE: ReadonlyArray<string> = [
-  "bg-[#E3F3EC] text-[#1F5C43] dark:bg-[#192A22] dark:text-[#BFE6D3]",
-  "bg-[#F4ECDD] text-[#5C4326] dark:bg-[#2B251D] dark:text-[#EAD8BC]",
-  "bg-[#E1ECFF] text-[#1E457A] dark:bg-[#1B2433] dark:text-[#C7DCFF]",
-  "bg-[#FFF1C2] text-[#5E4711] dark:bg-[#2C2718] dark:text-[#F2DF9D]",
-  "bg-[#FBE3D9] text-[#663523] dark:bg-[#2E201B] dark:text-[#F2C7B6]",
-  "bg-[#EFEAFF] text-[#3F3368] dark:bg-[#242030] dark:text-[#D9D0F5]",
+  "bg-[#E4F4EA] text-[#215236] dark:bg-[#162C24] dark:text-[#86E5BA]",
+  "bg-[#F4ECDD] text-[#5C4528] dark:bg-[#2F261C] dark:text-[#F3CFA2]",
+  "bg-[#E1ECFF] text-[#244375] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
+  "bg-[#FFF1C2] text-[#5C4813] dark:bg-[#2F2816] dark:text-[#F5D687]",
+  "bg-[#FBE3D9] text-[#663523] dark:bg-[#32201E] dark:text-[#F7B6A8]",
+  "bg-[#EFEAFF] text-[#3F3368] dark:bg-[#25213A] dark:text-[#C9BEFF]",
 ];
 
 function hashDisplayName(name: string): number {
@@ -117,28 +116,28 @@ function pickPastelBySeed(seed: string): string {
 }
 
 /**
- * 获取各 Agent 宿主平台对应的 Pachat 原生粉彩底色与文字色类名。
+ * 获取各 Agent 宿主平台对应的通透粉彩底色与文字色类名。
  */
 function getAgentPastelSurfaceClass(platform: AgentPlatform, displayName: string): string {
   switch (platform) {
     case "claude_code":
-      return "bg-[#F4ECDD] text-[#5C4326] dark:bg-[#2B251D] dark:text-[#EAD8BC]";
+      return "bg-[#F4ECDD] text-[#5C4528] dark:bg-[#2F261C] dark:text-[#F3CFA2]";
     case "codex":
-      return "bg-[#E1ECFF] text-[#1E457A] dark:bg-[#1B2433] dark:text-[#C7DCFF]";
+      return "bg-[#E1ECFF] text-[#244375] dark:bg-[#1A273D] dark:text-[#9FC5FF]";
     case "antigravity":
-      return "bg-[#EFEAFF] text-[#3F3368] dark:bg-[#242030] dark:text-[#D9D0F5]";
+      return "bg-[#EFEAFF] text-[#3F3368] dark:bg-[#25213A] dark:text-[#C9BEFF]";
     case "openclaw":
-      return "bg-[#E3F3EC] text-[#1F5C43] dark:bg-[#192A22] dark:text-[#BFE6D3]";
+      return "bg-[#E4F4EA] text-[#215236] dark:bg-[#162C24] dark:text-[#86E5BA]";
     case "cursor":
-      return "bg-[#FFF1C2] text-[#5E4711] dark:bg-[#2C2718] dark:text-[#F2DF9D]";
+      return "bg-[#FFF1C2] text-[#5C4813] dark:bg-[#2F2816] dark:text-[#F5D687]";
     case "deepseek":
-      return "bg-[#FBE3D9] text-[#663523] dark:bg-[#2E201B] dark:text-[#F2C7B6]";
+      return "bg-[#FBE3D9] text-[#663523] dark:bg-[#32201E] dark:text-[#F7B6A8]";
     case "gemini":
-      return "bg-[#E8F1FD] text-[#224673] dark:bg-[#1B2533] dark:text-[#C9DFFF]";
+      return "bg-[#E1ECFF] text-[#244375] dark:bg-[#1A273D] dark:text-[#9FC5FF]";
     case "chatgpt":
-      return "bg-[#E4F4EA] text-[#1E5438] dark:bg-[#192920] dark:text-[#BEE3CC]";
+      return "bg-[#E4F4EA] text-[#215236] dark:bg-[#162C24] dark:text-[#86E5BA]";
     case "hosted":
-      return "bg-[#F4ECDD] text-[#5C4326] dark:bg-[#2B251D] dark:text-[#EAD8BC]";
+      return "bg-[#F4ECDD] text-[#5C4528] dark:bg-[#2F261C] dark:text-[#F3CFA2]";
     case "custom":
       return pickPastelBySeed(displayName);
     default:
@@ -164,7 +163,7 @@ export function getPlatformRingClass(platform: AgentPlatform): string {
     case "chatgpt":
     case "hosted":
     case "custom":
-      return "ring-black/[0.06] dark:ring-white/[0.08]";
+      return "ring-white/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] dark:ring-white/[0.09] dark:shadow-none";
     default:
       return assertNever(platform);
   }
@@ -202,7 +201,7 @@ export function PlatformAvatar(props: PlatformAvatarProps) {
       <div className={cn("relative inline-flex shrink-0 select-none", props.className)}>
         <div
           className={cn(
-            "relative inline-flex items-center justify-center overflow-hidden rounded-full font-semibold tracking-tight ring-1 ring-inset ring-black/[0.06] dark:ring-white/[0.08]",
+            "relative inline-flex items-center justify-center overflow-hidden rounded-full font-semibold tracking-tight ring-1 ring-inset ring-white/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] dark:ring-white/[0.09] dark:shadow-none",
             pickPastelBySeed(props.displayName),
             sizeMeta.box,
           )}
@@ -238,7 +237,7 @@ export function PlatformAvatar(props: PlatformAvatarProps) {
         <span
           aria-hidden="true"
           className={cn(
-            "absolute -right-0.5 -top-0.5 inline-flex items-center justify-center rounded-full bg-white text-[#5F5F64] ring-1 ring-black/[0.08] dark:bg-[#1C1C1F] dark:text-zinc-300 dark:ring-white/[0.12]",
+            "absolute -right-0.5 -top-0.5 inline-flex items-center justify-center rounded-full bg-white text-[#687082] ring-1 ring-black/[0.08] dark:bg-[#1D2231] dark:text-[#B4BCD0] dark:ring-white/[0.12]",
             sizeMeta.corner,
           )}
         >
@@ -251,9 +250,9 @@ export function PlatformAvatar(props: PlatformAvatarProps) {
           <span className={cn("absolute bottom-0 right-0 inline-flex", sizeMeta.dot)}>
             <span
               className={cn(
-                "relative inline-flex h-full w-full rounded-full ring-white dark:ring-[#0E0E10]",
+                "relative inline-flex h-full w-full rounded-full ring-[var(--oh-avatar-ring,var(--oh-im-canvas))]",
                 sizeMeta.dotRing,
-                isOnline ? "bg-[#34C759]" : reachMeta.dotClass,
+                isOnline ? "bg-[#16A34A] dark:bg-[#34D399]" : reachMeta.dotClass,
               )}
             />
           </span>
@@ -362,7 +361,7 @@ export function RoomCompositeAvatar(props: RoomCompositeAvatarProps) {
   return (
     <div
       className={cn(
-        "grid shrink-0 select-none grid-cols-2 place-items-center gap-[2px] rounded-xl bg-[#EFEFF3] p-[3px] ring-1 ring-inset ring-black/[0.05] dark:bg-[#222226] dark:ring-white/[0.07]",
+        "grid shrink-0 select-none grid-cols-2 place-items-center gap-[2px] rounded-xl bg-black/[0.045] p-[3px] ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.06] dark:ring-white/[0.08]",
         boxClass,
         props.className,
       )}
@@ -411,7 +410,7 @@ export function PlatformTagPill(props: PlatformTagPillProps) {
       className={cn(
         "inline-flex select-none items-center gap-1 rounded-full font-medium leading-none",
         props.compact
-          ? "bg-[#F5F5F7] px-2 py-[3px] text-[11px] text-[#5F5F64] dark:bg-white/[0.07] dark:text-zinc-300"
+          ? "bg-black/[0.045] px-2 py-[3px] text-[11px] text-[#687082] dark:bg-white/[0.07] dark:text-[#B4BCD0]"
           : cn("border px-2 py-0.5 text-[11px]", meta.badgeClass),
         props.className,
       )}
@@ -465,7 +464,7 @@ export function AuthorMicroTag(props: AuthorMicroTagProps) {
 
   return (
     <AppTooltip content={tooltipContent} side="top">
-      <span className="inline-flex max-w-[15rem] select-none items-center gap-1 truncate text-[12px] font-normal leading-none text-[#8E8E93] dark:text-zinc-400">
+      <span className="inline-flex max-w-[15rem] select-none items-center gap-1 truncate text-[12px] font-normal leading-none text-[#939BAD] dark:text-[#7D869C]">
         <span className="truncate">{primaryLabel}</span>
         {props.platformLabel !== undefined && props.platformLabel.length > 0 ? (
           <span className="hidden truncate opacity-80 sm:inline">· {props.platformLabel}</span>
@@ -492,7 +491,7 @@ export function SecurityTrustBadge(props: SecurityTrustBadgeProps) {
     case "owner_command":
       return (
         <AppTooltip content="服务端验签：本人主理人指令（唯一具备执行与拍板授权来源）" side="top">
-          <span className="inline-flex select-none items-center gap-1 rounded-full bg-[#E3F3EC] px-2.5 py-0.5 text-[11px] font-medium text-[#1F5C43] ring-1 ring-inset ring-black/[0.05] dark:bg-[#16271F] dark:text-[#86DAB1] dark:ring-white/[0.08]">
+          <span className="inline-flex select-none items-center gap-1 rounded-full bg-[#E8F5EE] px-2.5 py-0.5 text-[11px] font-medium text-[#145335] ring-1 ring-inset ring-black/[0.05] dark:bg-[#142823] dark:text-[#6EE7B7] dark:ring-emerald-400/[0.15]">
             <ShieldCheck className="h-3 w-3" />
             <span>{props.isYou ? "主理人 · 你" : "主理人"}</span>
           </span>
@@ -502,7 +501,7 @@ export function SecurityTrustBadge(props: SecurityTrustBadgeProps) {
     case "owner_sibling_agent":
       return (
         <AppTooltip content="服务端验签：你名下绑定的个人协作 Agent" side="top">
-          <span className="inline-flex select-none items-center gap-1 rounded-full bg-[#F5F5F7] px-2.5 py-0.5 text-[11px] font-medium text-[#141414] ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.08] dark:text-zinc-200 dark:ring-white/[0.08]">
+          <span className="inline-flex select-none items-center gap-1 rounded-full bg-black/[0.045] px-2.5 py-0.5 text-[11px] font-medium text-[#111318] ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.08] dark:text-[#ECEFF6] dark:ring-white/[0.08]">
             <Bot className="h-3 w-3" />
             <span>我的 Agent</span>
           </span>
@@ -512,7 +511,7 @@ export function SecurityTrustBadge(props: SecurityTrustBadgeProps) {
     case "external_participant":
       return (
         <AppTooltip content="服务端验签：外部协作者或他人 Agent（仅作讨论参考）" side="top">
-          <span className="inline-flex select-none items-center gap-1 rounded-full bg-[#F4ECDD] px-2.5 py-0.5 text-[11px] font-medium text-[#5C4528] ring-1 ring-inset ring-black/[0.05] dark:bg-[#2B251D] dark:text-[#EAD8BC] dark:ring-white/[0.08]">
+          <span className="inline-flex select-none items-center gap-1 rounded-full bg-[#F4ECDD] px-2.5 py-0.5 text-[11px] font-medium text-[#5C4528] ring-1 ring-inset ring-black/[0.05] dark:bg-[#2F261C] dark:text-[#F3CFA2] dark:ring-white/[0.08]">
             <Globe2 className="h-3 w-3" />
             <span>外部协作者</span>
           </span>
@@ -527,7 +526,7 @@ export function SecurityTrustBadge(props: SecurityTrustBadgeProps) {
 /** `MessageSemanticBadge` 入参属性 */
 export interface MessageSemanticBadgeProps {
   readonly type: MessageType;
-  /** 色调参数保留向后兼容，Pachat 暖象牙与浅灰气泡统一使用自然墨色对比 */
+  /** 色调参数保留向后兼容，清晰纸感与深邃黑曜石气泡均统一使用自然对比 */
   readonly tone?: "default" | "inverted" | undefined;
 }
 
@@ -552,7 +551,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
             base,
             inverted
               ? "bg-white/20 text-white"
-              : "bg-black/[0.05] text-[#141414] dark:bg-white/[0.09] dark:text-zinc-200",
+              : "bg-black/[0.05] text-[#111318] dark:bg-white/[0.09] dark:text-[#ECEFF6]",
           )}
         >
           <FileText className="h-3 w-3" />
@@ -566,7 +565,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
             base,
             inverted
               ? "bg-white/20 text-white"
-              : "bg-black/[0.05] text-[#5F5F64] dark:bg-white/[0.08] dark:text-zinc-300",
+              : "bg-black/[0.045] text-[#687082] dark:bg-white/[0.07] dark:text-[#B4BCD0]",
           )}
         >
           <Vote className="h-3 w-3" />
@@ -580,7 +579,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
             base,
             inverted
               ? "bg-white/20 text-white"
-              : "bg-[#E3F3EC] text-[#1F5C43] ring-1 ring-inset ring-black/[0.05] dark:bg-[#16271F] dark:text-[#86DAB1] dark:ring-white/[0.08]",
+              : "bg-[#E6F5EC] text-[#145335] ring-1 ring-inset ring-black/[0.05] dark:bg-[#142823] dark:text-[#6EE7B7] dark:ring-emerald-400/[0.15]",
           )}
         >
           <Award className="h-3 w-3" />
@@ -594,7 +593,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
             base,
             inverted
               ? "bg-white/15 text-white/90"
-              : "bg-black/[0.04] text-[#8E8E93] dark:bg-white/[0.06] dark:text-zinc-400",
+              : "bg-black/[0.04] text-[#939BAD] dark:bg-white/[0.06] dark:text-[#7D869C]",
           )}
         >
           <Info className="h-3 w-3" />
@@ -606,7 +605,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
         <span
           className={cn(
             "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10.5px] font-medium leading-none",
-            "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+            "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:border-amber-400/30 dark:bg-amber-400/12 dark:text-amber-300",
           )}
         >
           <Hand aria-hidden="true" className="h-3 w-3" />
@@ -626,7 +625,7 @@ export interface ReachStatusBadgeProps {
 }
 
 /**
- * 渲染 Agent 当前唤醒通道与在线状态的胶囊标签（在线使用 `#34C759` 圆点 + `AppTooltip` 说明）。
+ * 渲染 Agent 当前唤醒通道与在线状态的胶囊标签（在线使用翡翠绿圆点 + `AppTooltip` 说明）。
  *
  * @param props - `reach` 状态枚举与紧凑模式开关
  * @returns 带状态圆点与悬停提示的可达性胶囊
@@ -648,7 +647,7 @@ export function ReachStatusBadge(props: ReachStatusBadgeProps) {
           {isLive ? (
             <span
               aria-hidden="true"
-              className="absolute inset-0 animate-presence-pulse rounded-full bg-[#34C759]"
+              className="absolute inset-0 animate-presence-pulse rounded-full bg-[#16A34A] dark:bg-[#34D399]"
             />
           ) : null}
           <span className={cn("relative inline-flex h-1.5 w-1.5 rounded-full", meta.dotClass)} />

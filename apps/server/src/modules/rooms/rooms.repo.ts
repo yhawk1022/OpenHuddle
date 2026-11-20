@@ -6,7 +6,7 @@
  * 1. 行级并发保护：涉及房间治理状态或可见性变更时，必须通过 `lockRoomByIdForUpdate` 获取排他行锁后再计算新快照。
  * 2. 透明可达性聚合：查询房间成员列表时单次关联人类与 Agent 所属主人昵称，并结合 `RealtimeBus` 实时计算每个 Agent 的 `reach` 状态灯，绝不暴露 `token_hash`。
  */
-import { type OpenHuddleDb, roomMembersTable, roomsTable } from "@openhuddle/db";
+import { type OpenHuddleDb, pairingCodesTable, roomMembersTable, roomsTable } from "@openhuddle/db";
 import {
   ActorKindSchema,
   type AgentId,
@@ -224,6 +224,7 @@ export class RoomsRepository {
     const rows = await this.db
       .select({
         id: roomsTable.id,
+        ownerUserId: roomsTable.ownerUserId,
         name: roomsTable.name,
         topic: roomsTable.topic,
         visibility: roomsTable.visibility,
@@ -239,6 +240,7 @@ export class RoomsRepository {
 
     return rows.map((row) => ({
       id: row.id as RoomId,
+      ownerUserId: row.ownerUserId as UserId,
       name: row.name,
       topic: row.topic,
       visibility: RoomVisibilitySchema.parse(row.visibility),
@@ -362,6 +364,41 @@ export class RoomsRepository {
     await this.db
       .delete(roomMembersTable)
       .where(and(eq(roomMembersTable.roomId, roomId), eq(roomMembersTable.memberKey, memberKey)));
+  }
+
+  /**
+   * 清空指向待删除房间的待用配对码自动入群引用（`pairing_codes.auto_join_room_id = NULL`）。
+   *
+   * @remarks
+   * `pairing_codes.auto_join_room_id` 无数据库外键约束；删除房间时一并置空，避免未使用的配对码仍持有已删除房间 ID 引用，同时保留配对码本身可正常完成账号绑定。
+   *
+   * @param roomId - 待删除的房间主键
+   */
+  public async clearPairingCodesForRoom(roomId: RoomId): Promise<void> {
+    await this.db
+      .update(pairingCodesTable)
+      .set({ autoJoinRoomId: null })
+      .where(eq(pairingCodesTable.autoJoinRoomId, roomId));
+  }
+
+  /**
+   * 按主键彻底物理删除房间记录。
+   *
+   * @remarks
+   * 依托数据库外键级联规则：
+   * - `room_members.room_id`、`messages.room_id`、`proposals.room_id` 均为 `ON DELETE CASCADE`；
+   * - `proposal_votes.proposal_id` 为 `ON DELETE CASCADE`；
+   * - `agents` 表无房间外键，主人名下已绑定的个人 Agent 身份与令牌完全不受影响。
+   *
+   * @param roomId - 待删除的房间主键
+   * @returns 若实际删除了房间行则返回 `true`
+   */
+  public async deleteRoomById(roomId: RoomId): Promise<boolean> {
+    const deleted = await this.db
+      .delete(roomsTable)
+      .where(eq(roomsTable.id, roomId))
+      .returning({ id: roomsTable.id });
+    return deleted.length > 0;
   }
 
   /**

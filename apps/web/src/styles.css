@@ -1,172 +1,226 @@
 /**
  * @module web/styles
- * @description OpenHuddle 全局设计系统（Tailwind CSS v4 + Pachat 暖白/墨黑极简令牌 + Liquid Glass 玻璃液态层 + Radix 动效）。
+ * @description OpenHuddle 全局设计系统（Tailwind CSS v4 + Neutral Apple Liquid Glass 液态玻璃光学引擎，支持 Daylight 暖瓷日光 & Midnight 烟熏石墨深夜双模式）。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. Pachat 去 AI 模板化视觉语言（Monochrome & Warm Paper Minimalism）：摒弃廉价蓝紫渐变与点阵网格背景，主强调色在日光下恒为纯墨黑 `#141414`、暗夜下恒为暖白 `#F5F5F7`；墨色强调与三色气泡体系不变——暖象牙本人气泡（`#F6F2EC` / `#272521`）、鼠尾草绿同伴气泡（`#E3F3EC` / `#16271F`）、柔灰 Agent 气泡（`#F5F5F7` / `#1C1C1F`）。
- * 2. Liquid Glass 玻璃液态层：`body::before` 固定暖调单色环境光（日光琥珀+鼠尾草 / 暗夜暖金+鼠尾草，杜绝蓝紫）为 blur 提供折射底，`glass-canvas/pane/bar/strong` 四级半透明磨砂表面按层级递增 alpha 形成可视台阶。铁律：玻璃表面上的 Tailwind `shadow-[...]` 工具类会整体覆盖复合 box-shadow（含 inset 顶边高光与发丝环），禁止叠加。
- * 3. 暗色模式输入框绝不变白：`--oh-im-input`（`#18181B`）与 `--oh-im-input-focus`（`#1F1F23`）在 `.dark` 下恒为暖中性深色表面，且文件底部保留非分层（unlayered）兜底规则，彻底阻断白底白字缺陷。
- * 4. Tauri v2 & Electron 跨端原生壳就绪：视口严格锁定 `100dvh`，同时兼容 `.app-drag-region` 与 `[data-tauri-drag-region]` 无边框标题栏拖拽，且所有交互控件默认豁免拖拽。
- * 5. 动效克制与无障碍：Radix 浮层（`data-state="open|closed"`）、气泡入场及引用定位闪烁严格遵守 `prefers-reduced-motion: reduce`。
+ * 1. 中性烟熏石墨与有机柔雾协调体系：暗色模式采用纯中性烟熏石墨灰（`#111113` / `#18181B` / `#1B1B1F` / `#222226` / `#2E2E34`），杜绝偏冷藏青蓝底色；`body::before` 提供有机柔雾光场，使半透玻璃自然折射周围环境层次。
+ * 2. Apple Liquid Glass 严格分层：Liquid Glass 仅作用于悬浮在内容之上的导航/控制/浮层（导轨、侧栏、群信息抽屉、悬浮双岛顶栏、悬浮输入舱、模态弹窗与胶囊控件），消息气泡保持清晰通透，绝不对气泡逐条加 `backdrop-blur` 或多层玻璃套娃。
+ * 3. 135° 菲涅尔对角晶面高光边缘：所有 `liquid-glass-*` 工具类通过 `::before` + `mask-composite: exclude` 绘制 `1px` 对角菲涅尔高光边框，彻底消除刺眼的均匀纯白横线。
+ * 4. CSS 定位铁律：`liquid-glass-*` 工具类本身不声明 `position: relative`（避免覆盖 `fixed` / `absolute`）；凡挂载 `liquid-glass-*` 的宿主元素必须显式具备 `relative`、`absolute` 或 `fixed` 定位上下文。
+ * 5. 多环境自适应兜底：除暗色输入框防白底兜底外，内建 `@media (prefers-reduced-transparency: reduce)` 与 `@supports not (backdrop-filter: blur(1px))` 实色回落规则，以及 `@media (prefers-reduced-motion: reduce)` 无障碍支持。
  */
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ─────────────────────────────────────────────────────────────
- * 1. Pachat 暖纸极简语义令牌（Light = 纯净日光暖纸 / Dark = 暖中性深黑）
+ * 1. Daylight Porcelain & Midnight Smoked Graphite 光学与语义令牌
  * ───────────────────────────────────────────────────────────── */
 :root {
   color-scheme: light;
 
-  /* 三栏骨架表面：左侧导轨 #EFEFF3 -> 会话侧栏 #F8F8FA -> 纯白聊天主舞台 #FFFFFF */
-  --oh-app-frame: #efeff3;
-  --oh-rail-surface: #efeff3;
-  --oh-sidebar-surface: #f8f8fa;
-  --oh-island-surface: #ffffff;
-  --oh-island-canvas: #ffffff;
-  --oh-island-ring: rgba(0, 0, 0, 0.07);
+  /* 外框与空间背景阶梯：浅色使用清透雾灰瓷底，使纯白活跃项依靠自然明度与柔影浮起，无需深灰硬描边 */
+  --oh-app-frame: #ebeef3;
+  --oh-rail-surface: #f2f4f8;
+  --oh-sidebar-surface: #f5f7fb;
 
-  /* 画布与面板（纯色无点阵） */
+  /* 舞台画布与渐隐遮罩（供通顶滚动的消息流在悬浮顶栏/输入舱下方自然消隐） */
+  --oh-stage-surface: rgba(255, 255, 255, 0.84);
+  --oh-stage-scrim: rgba(249, 250, 253, 0.9);
+  --oh-stage-scrim-mid: rgba(249, 250, 253, 0.56);
+
+  /* 画布与分级卡片表面 */
   --oh-im-canvas: #ffffff;
   --oh-im-surface: #ffffff;
-  --oh-im-surface-muted: #f5f5f7;
-  --oh-im-border: rgba(0, 0, 0, 0.07);
-  --oh-im-border-strong: rgba(0, 0, 0, 0.14);
+  --oh-im-surface-muted: #f2f4f8;
+  --oh-im-surface-elevated: #eaeef4;
+
+  /* Apple Liquid Glass 光学表面令牌（日光下全白折射高光边缘，彻底剔除转角脏灰阴影色标） */
+  --oh-lg-panel-bg: rgba(245, 247, 251, 0.74);
+  --oh-lg-bar-bg: rgba(255, 255, 255, 0.78);
+  --oh-lg-composer-bg: rgba(255, 255, 255, 0.84);
+  --oh-lg-pill-bg: rgba(255, 255, 255, 0.78);
+  --oh-lg-pill-hover: rgba(255, 255, 255, 0.95);
+  --oh-lg-modal-bg: rgba(252, 253, 255, 0.9);
+  --oh-lg-sheen: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.65) 0%,
+    rgba(255, 255, 255, 0.18) 45%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  --oh-lg-rim: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.98) 0%,
+    rgba(255, 255, 255, 0.62) 42%,
+    rgba(255, 255, 255, 0.36) 72%,
+    rgba(255, 255, 255, 0.88) 100%
+  );
+  --oh-lg-rim-subtle: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.94) 0%,
+    rgba(255, 255, 255, 0.5) 50%,
+    rgba(255, 255, 255, 0.8) 100%
+  );
+  --oh-lg-inner: inset 0 1px 0.5px rgba(255, 255, 255, 0.92);
+  --oh-lg-shadow-panel: 0 10px 30px -10px rgba(15, 23, 42, 0.065), 0 1px 3px rgba(15, 23, 42, 0.025);
+  --oh-lg-shadow-bar: 0 8px 24px -8px rgba(15, 23, 42, 0.075), 0 1px 3px rgba(15, 23, 42, 0.03);
+  --oh-lg-shadow-modal: 0 24px 64px -14px rgba(15, 23, 42, 0.16), 0 4px 16px -4px
+    rgba(15, 23, 42, 0.05);
+
+  /* 分割线与细边框 */
+  --oh-im-border: rgba(15, 23, 42, 0.07);
+  --oh-im-border-strong: rgba(15, 23, 42, 0.12);
 
   /* 文本层级 */
-  --oh-im-fg: #141414;
-  --oh-im-fg-soft: #3a3a3c;
-  --oh-im-muted: #6e6e73;
-  --oh-im-subtle: #8e8e93;
+  --oh-im-fg: #111318;
+  --oh-im-fg-soft: #3b414e;
+  --oh-im-muted: #687082;
+  --oh-im-subtle: #939bad;
 
-  /* 气泡表面：Agent 柔灰 #F5F5F7 / 其他人类同伴柔鼠尾草绿 #E3F3EC / 本人暖象牙白 #F6F2EC */
-  --oh-im-peer: #f5f5f7;
-  --oh-im-peer-fg: #141414;
-  --oh-im-peer-border: rgba(0, 0, 0, 0.05);
-  --oh-im-human: #e3f3ec;
-  --oh-im-human-fg: #141414;
-  --oh-im-self: #f6f2ec;
-  --oh-im-self-fg: #141414;
-  --oh-im-self-muted: #6e6e73;
+  /* 三角色对话气泡表面：Agent 清冷瓷白 / 同伴清透鼠尾草 / 本人暖亚麻瓷 */
+  --oh-im-peer: #ffffff;
+  --oh-im-peer-fg: #111318;
+  --oh-im-peer-border: rgba(15, 23, 42, 0.06);
+  --oh-im-human: #e6f5ec;
+  --oh-im-human-fg: #111318;
+  --oh-im-human-border: rgba(16, 120, 76, 0.09);
+  --oh-im-self: #f4efe6;
+  --oh-im-self-fg: #111318;
+  --oh-im-self-border: rgba(24, 27, 34, 0.06);
+  --oh-im-self-muted: #687082;
 
-  /* 输入框（纯净白底 + 纯墨黑焦点描边，零蓝紫光晕） */
-  --oh-im-input: #ffffff;
+  /* 代码块与凹陷输入框 */
+  --oh-im-code: #f6f8fb;
+  --oh-im-input: #f6f7fa;
   --oh-im-input-focus: #ffffff;
-  --oh-im-input-fg: #141414;
-  --oh-im-input-border: rgba(0, 0, 0, 0.12);
-  --oh-im-input-ring: rgba(0, 0, 0, 0.06);
-  --oh-im-placeholder: #8e8e93;
+  --oh-im-input-fg: #111318;
+  --oh-im-input-border: rgba(15, 23, 42, 0.1);
+  --oh-im-input-ring: rgba(24, 27, 34, 0.07);
+  --oh-im-placeholder: #939bad;
 
-  /* 系统提示与悬浮菜单 */
-  --oh-im-system: #f5f5f7;
-  --oh-im-system-fg: #8e8e93;
-  --oh-im-floating: rgba(255, 255, 255, 0.8);
+  /* 系统提示与悬浮表面 */
+  --oh-im-system: #f3f4f6;
+  --oh-im-system-fg: #939bad;
+  --oh-im-floating: rgba(255, 255, 255, 0.86);
 
-  /* 主强调色（纯墨黑 #141414）与仅有的三个功能色 */
-  --oh-im-accent: #141414;
-  --oh-im-accent-hover: #000000;
+  /* 主强调色与功能语义色 */
+  --oh-im-accent: #181b22;
+  --oh-im-accent-hover: #252a35;
   --oh-im-accent-fg: #ffffff;
-  --oh-im-accent-soft: rgba(20, 20, 20, 0.06);
-  --oh-link-blue: #2f6fed;
-  --oh-live-green: #34c759;
-  --oh-unread-coral: #ff3b30;
+  --oh-im-accent-soft: rgba(24, 27, 34, 0.06);
+  --oh-link-blue: #2563eb;
+  --oh-live-green: #16a34a;
+  --oh-unread-coral: #e5484d;
 
-  /* 精致滚动条 */
-  --oh-scrollbar-thumb: rgba(20, 20, 20, 0.16);
-  --oh-scrollbar-thumb-hover: rgba(20, 20, 20, 0.3);
-
-  /* 玻璃液态层（Liquid Glass over Pachat）：日光 = 磨砂暖白玻璃（按层级递增 alpha 形成可视台阶） */
-  --oh-glass-canvas: rgba(255, 255, 255, 0.55);
-  --oh-glass-pane: rgba(255, 255, 255, 0.6);
-  --oh-glass-bar: rgba(255, 255, 255, 0.68);
-  --oh-glass-strong: rgba(255, 255, 255, 0.48);
-  --oh-glass-blur: 10px;
-  --oh-glass-saturate: 165%;
-  --oh-glass-border: rgba(20, 20, 20, 0.1);
-  --oh-glass-edge: rgba(255, 255, 255, 1);
-  --oh-glass-modal: rgba(255, 255, 255, 0.94);
-  --oh-glass-shadow: 0 8px 32px rgba(20, 20, 20, 0.07), 0 1px 2px rgba(20, 20, 20, 0.04);
+  /* 精致细滚动条 */
+  --oh-scrollbar-thumb: rgba(15, 23, 42, 0.14);
+  --oh-scrollbar-thumb-hover: rgba(15, 23, 42, 0.26);
 }
 
 .dark {
   color-scheme: dark;
 
-  /* 暖中性 Apple/Linear 暗色层级（绝不使用偏蓝紫底色） */
-  --oh-app-frame: #101012;
-  --oh-rail-surface: #101012;
-  --oh-sidebar-surface: #151518;
-  --oh-island-surface: #0e0e10;
-  --oh-island-canvas: #0e0e10;
-  --oh-island-ring: rgba(255, 255, 255, 0.08);
+  /* 纯中性烟熏石墨阶梯（对齐 macOS Liquid Glass 暗色协调美学） */
+  --oh-app-frame: #111113;
+  --oh-rail-surface: #18181b;
+  --oh-sidebar-surface: #1b1b1f;
 
-  --oh-im-canvas: #0e0e10;
-  --oh-im-surface: #151518;
-  --oh-im-surface-muted: #1c1c1f;
-  --oh-im-border: rgba(255, 255, 255, 0.08);
-  --oh-im-border-strong: rgba(255, 255, 255, 0.15);
+  --oh-stage-surface: rgba(24, 24, 27, 0.56);
+  --oh-stage-scrim: rgba(20, 20, 23, 0.88);
+  --oh-stage-scrim-mid: rgba(20, 20, 23, 0.48);
 
-  --oh-im-fg: #f5f5f7;
-  --oh-im-fg-soft: #d1d1d6;
-  --oh-im-muted: #98989f;
-  --oh-im-subtle: #6e6e73;
+  --oh-im-canvas: #1c1c1f;
+  --oh-im-surface: #222226;
+  --oh-im-surface-muted: #27272b;
+  --oh-im-surface-elevated: #2e2e33;
 
-  --oh-im-peer: #1c1c1f;
+  /* 暗夜 Neutral Smoked Graphite Liquid Glass 光学表面令牌 */
+  --oh-lg-panel-bg: rgba(30, 30, 34, 0.68);
+  --oh-lg-bar-bg: rgba(22, 22, 26, 0.72);
+  --oh-lg-composer-bg: rgba(28, 28, 32, 0.78);
+  --oh-lg-pill-bg: rgba(22, 22, 26, 0.68);
+  --oh-lg-pill-hover: rgba(42, 42, 48, 0.82);
+  --oh-lg-modal-bg: rgba(26, 26, 30, 0.86);
+  --oh-lg-sheen: linear-gradient(
+    155deg,
+    rgba(255, 255, 255, 0.08) 0%,
+    rgba(255, 255, 255, 0.02) 38%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  --oh-lg-rim: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.26) 0%,
+    rgba(255, 255, 255, 0.07) 32%,
+    rgba(255, 255, 255, 0.025) 65%,
+    rgba(255, 255, 255, 0.13) 100%
+  );
+  --oh-lg-rim-subtle: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.19) 0%,
+    rgba(255, 255, 255, 0.04) 50%,
+    rgba(255, 255, 255, 0.09) 100%
+  );
+  --oh-lg-inner: inset 0 1px 0.5px rgba(255, 255, 255, 0.12), inset 0 -1px 1px rgba(0, 0, 0, 0.28);
+  --oh-lg-shadow-panel: 0 18px 46px -12px rgba(0, 0, 0, 0.56), 0 2px 8px rgba(0, 0, 0, 0.32);
+  --oh-lg-shadow-bar: 0 14px 36px -8px rgba(0, 0, 0, 0.58), 0 2px 8px rgba(0, 0, 0, 0.34);
+  --oh-lg-shadow-modal: 0 32px 84px -14px rgba(0, 0, 0, 0.8), 0 4px 18px rgba(0, 0, 0, 0.45);
+
+  --oh-im-border: rgba(255, 255, 255, 0.07);
+  --oh-im-border-strong: rgba(255, 255, 255, 0.13);
+
+  /* 中性柔白文本层级（久看不刺眼） */
+  --oh-im-fg: #f2f2f4;
+  --oh-im-fg-soft: #c4c4ca;
+  --oh-im-muted: #8e8e96;
+  --oh-im-subtle: #63636b;
+
+  /* 三角色对话气泡（与中性烟熏石墨完美协调） */
+  --oh-im-peer: #222226;
   --oh-im-peer-fg: #ececef;
   --oh-im-peer-border: rgba(255, 255, 255, 0.07);
-  --oh-im-human: #16271f;
-  --oh-im-human-fg: #e8f3ec;
-  --oh-im-self: #272521;
-  --oh-im-self-fg: #f4f4f2;
-  --oh-im-self-muted: #a1a1aa;
+  --oh-im-human: #1b2b23;
+  --oh-im-human-fg: #e6f4ec;
+  --oh-im-human-border: rgba(74, 222, 128, 0.13);
+  --oh-im-self: #2e2e34;
+  --oh-im-self-fg: #f5f5f7;
+  --oh-im-self-border: rgba(255, 255, 255, 0.11);
+  --oh-im-self-muted: #9b9ba3;
 
-  /* 不变量：暗色输入框（含聚焦态）永远保持暖深灰 #18181B -> #1F1F23，严禁出现白色 */
-  --oh-im-input: #18181b;
-  --oh-im-input-focus: #1f1f23;
-  --oh-im-input-fg: #f5f5f7;
-  --oh-im-input-border: rgba(255, 255, 255, 0.12);
-  --oh-im-input-ring: rgba(255, 255, 255, 0.07);
-  --oh-im-placeholder: #71717a;
+  /* 不变量：暗色凹陷代码井与输入框永远保持深中性石墨，绝不出现白底 */
+  --oh-im-code: #141417;
+  --oh-im-input: #161619;
+  --oh-im-input-focus: #1c1c20;
+  --oh-im-input-fg: #f2f2f4;
+  --oh-im-input-border: rgba(255, 255, 255, 0.09);
+  --oh-im-input-ring: rgba(255, 255, 255, 0.08);
+  --oh-im-placeholder: #63636b;
 
-  --oh-im-system: #1c1c1f;
-  --oh-im-system-fg: #8e8e93;
-  --oh-im-floating: rgba(24, 24, 27, 0.72);
+  --oh-im-system: #27272b;
+  --oh-im-system-fg: #63636b;
+  --oh-im-floating: rgba(26, 26, 30, 0.86);
 
-  --oh-im-accent: #f5f5f7;
+  --oh-im-accent: #eaeef6;
   --oh-im-accent-hover: #ffffff;
-  --oh-im-accent-fg: #141414;
-  --oh-im-accent-soft: rgba(245, 245, 247, 0.1);
-  --oh-link-blue: #4f8cff;
-  --oh-live-green: #34c759;
-  --oh-unread-coral: #ff453a;
+  --oh-im-accent-fg: #111318;
+  --oh-im-accent-soft: rgba(242, 242, 244, 0.09);
+  --oh-link-blue: #60a5fa;
+  --oh-live-green: #34d399;
+  --oh-unread-coral: #f05252;
 
-  --oh-scrollbar-thumb: rgba(255, 255, 255, 0.16);
-  --oh-scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
-
-  /* 玻璃液态层（Liquid Glass over Pachat）：暗夜 = 白纱叠熏黑玻璃（提亮卡体、透出环境色相，不引入蓝紫） */
-  --oh-glass-canvas: rgba(14, 14, 16, 0.45);
-  --oh-glass-pane: rgba(255, 255, 255, 0.045);
-  --oh-glass-bar: rgba(255, 255, 255, 0.06);
-  --oh-glass-strong: rgba(255, 255, 255, 0.08);
-  --oh-glass-blur: 12px;
-  --oh-glass-saturate: 150%;
-  --oh-glass-border: rgba(255, 255, 255, 0.22);
-  --oh-glass-edge: rgba(255, 255, 255, 0.45);
-  --oh-glass-modal: rgba(24, 24, 27, 0.94);
-  --oh-glass-shadow: 0 10px 36px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --oh-scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --oh-scrollbar-thumb-hover: rgba(255, 255, 255, 0.26);
 }
 
-/* 将设计令牌暴露为 Tailwind 工具类：bg-app-frame, bg-im-*, text-im-*, border-im-* 等 */
+/* 将语义令牌暴露为 Tailwind 工具类：bg-app-frame, bg-rail-surface, bg-sidebar-surface, bg-im-*, border-im-* */
 @theme inline {
   --color-app-frame: var(--oh-app-frame);
   --color-rail-surface: var(--oh-rail-surface);
   --color-sidebar-surface: var(--oh-sidebar-surface);
-  --color-island-surface: var(--oh-island-surface);
-  --color-island-canvas: var(--oh-island-canvas);
-  --color-island-ring: var(--oh-island-ring);
   --color-im-canvas: var(--oh-im-canvas);
   --color-im-surface: var(--oh-im-surface);
   --color-im-surface-muted: var(--oh-im-surface-muted);
+  --color-im-surface-elevated: var(--oh-im-surface-elevated);
+  --color-im-code: var(--oh-im-code);
   --color-im-border: var(--oh-im-border);
   --color-im-border-strong: var(--oh-im-border-strong);
   --color-im-fg: var(--oh-im-fg);
@@ -178,8 +232,10 @@
   --color-im-peer-border: var(--oh-im-peer-border);
   --color-im-human: var(--oh-im-human);
   --color-im-human-fg: var(--oh-im-human-fg);
+  --color-im-human-border: var(--oh-im-human-border);
   --color-im-self: var(--oh-im-self);
   --color-im-self-fg: var(--oh-im-self-fg);
+  --color-im-self-border: var(--oh-im-self-border);
   --color-im-self-muted: var(--oh-im-self-muted);
   --color-im-input: var(--oh-im-input);
   --color-im-input-focus: var(--oh-im-input-focus);
@@ -284,11 +340,6 @@
       var(--radix-select-content-transform-origin, center top)
     )
   );
-  /* 玻璃液态层：悬浮菜单统一磨砂折射（配合 `--oh-im-floating` 半透明令牌） */
-  -webkit-backdrop-filter: blur(calc(var(--oh-glass-blur) + 8px)) saturate(var(--oh-glass-saturate));
-  backdrop-filter: blur(calc(var(--oh-glass-blur) + 8px)) saturate(var(--oh-glass-saturate));
-  box-shadow: inset 0 1px 0 var(--oh-glass-edge), 0 0 0 1px var(--oh-glass-border),
-    var(--oh-glass-shadow);
 }
 
 .oh-floating-menu[data-state="open"] {
@@ -309,10 +360,8 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
- * 2. 原生 App 外壳（Web + Tauri v2 + Electron + Capacitor 多端就绪）
- * ─────────────────────────────────────────────────────────────
- * 为什么锁定视口：IM 客户端应像原生桌面/移动应用一样只在内部面板滚动；文档级滚动会导致
- * macOS/iOS 橡皮筋回弹、无边框桌面窗口整体被拉扯、移动端地址栏抖动。 */
+ * 2. 原生 App 外壳与有机自然柔雾衬底
+ * ───────────────────────────────────────────────────────────── */
 html,
 body,
 #root {
@@ -331,11 +380,31 @@ html {
 
 body {
   margin: 0;
-  background-color: var(--oh-im-canvas);
+  background-color: var(--oh-app-frame);
   color: var(--oh-im-fg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+/* 有机自然柔雾衬底：日光为清透雾蓝+暖香槟+薄荷雾+柔灰；暗夜为雾灰天光+暖陶沙+林间墨绿 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(56rem 42rem at 28% 6%, rgba(176, 202, 222, 0.3), transparent 65%),
+    radial-gradient(50rem 40rem at 88% 22%, rgba(226, 208, 178, 0.26), transparent 65%),
+    radial-gradient(54rem 44rem at 76% 94%, rgba(164, 212, 184, 0.22), transparent 66%),
+    radial-gradient(48rem 38rem at 12% 88%, rgba(212, 216, 228, 0.22), transparent 66%);
+}
+
+.dark body::before {
+  background: radial-gradient(58rem 44rem at 48% 4%, rgba(128, 154, 168, 0.2), transparent 64%),
+    radial-gradient(48rem 42rem at 82% 46%, rgba(162, 148, 128, 0.14), transparent 66%),
+    radial-gradient(52rem 40rem at 74% 94%, rgba(54, 122, 84, 0.18), transparent 64%),
+    radial-gradient(46rem 36rem at 14% 88%, rgba(92, 98, 114, 0.12), transparent 64%);
 }
 
 /* Tauri v2 (`data-tauri-drag-region`) 与 Electron (`-webkit-app-region: drag`) 无边框标题栏拖拽支持 */
@@ -373,46 +442,10 @@ body {
 }
 
 /* ─────────────────────────────────────────────────────────────
- * 3. 可复用 Pachat IM 原子工具类
- * ───────────────────────────────────────────────────────────── */
-
-/* 主舞台干净面板 */
-@utility app-island {
-  background-color: var(--oh-island-surface);
-  box-shadow: 0 0 0 1px var(--oh-island-ring);
-}
-
-/* Pachat 标志性胶囊主按钮（#141414 纯墨黑 / 暗夜 #F5F5F7） */
-@utility btn-dark {
-  border-radius: 9999px;
-  background-color: var(--oh-im-accent);
-  color: var(--oh-im-accent-fg);
-  transition: transform 120ms ease, background-color 150ms ease, opacity 150ms ease;
-
-  &:hover:not(:disabled) {
-    background-color: var(--oh-im-accent-hover);
-  }
-}
-
-/* Pachat 柔和浅灰胶囊按钮 */
-@utility btn-light {
-  border-radius: 9999px;
-  background-color: rgba(0, 0, 0, 0.045);
-  color: var(--oh-im-fg);
-  transition: transform 120ms ease, background-color 150ms ease, opacity 150ms ease;
-
-  &:hover:not(:disabled) {
-    background-color: rgba(0, 0, 0, 0.075);
-  }
-
-  &:where(.dark, .dark *) {
-    background-color: rgba(255, 255, 255, 0.08);
-
-    &:hover:not(:disabled) {
-      background-color: rgba(255, 255, 255, 0.13);
-    }
-  }
-}
+ * 3. Apple Liquid Glass 五大光学表面原语 + 主舞台框架
+ * ─────────────────────────────────────────────────────────────
+ * 铁律：工具类自身绝不声明 `position: relative`（以免覆盖 `fixed` / `absolute`），
+ * 宿主组件须自带 `relative` / `absolute` / `fixed` 以正确约束 `::before` 135° 菲涅尔高光边框。 */
 
 /* 原生触感按压反馈：<button className="im-press"> */
 @utility im-press {
@@ -426,129 +459,209 @@ body {
   }
 }
 
-/* 主题安全输入框：日光纯白底深字；暗色 #18181B -> 聚焦 #1F1F23，永不变白 */
-@utility im-input {
-  background-color: var(--oh-im-input);
-  color: var(--oh-im-input-fg);
-  border: 1px solid var(--oh-im-input-border);
-  caret-color: var(--oh-im-fg);
-  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+/* 主聊天舞台底壳（轻透底色 + 纯净高光边，不施加重度 blur 以确保消息流 120Hz 顺滑） */
+@utility oh-stage-frame {
+  background-color: var(--oh-stage-surface);
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  box-shadow: 0 10px 30px -10px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.025);
 
-  &::placeholder {
-    color: var(--oh-im-placeholder);
-  }
-
-  &:focus,
-  &:focus-visible {
-    outline: none;
-    background-color: var(--oh-im-input-focus);
-    border-color: var(--oh-im-accent);
-    box-shadow: 0 0 0 4px var(--oh-im-input-ring);
-  }
-
-  &:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
+  &:where(.dark, .dark *) {
+    border-color: rgba(255, 255, 255, 0.065);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 20px 52px -14px rgba(0, 0, 0, 0.56);
   }
 }
 
-/* 主题安全输入容器（聊天输入舱等 focus-within 场景） */
-@utility im-input-shell {
-  background-color: var(--oh-im-input);
-  color: var(--oh-im-input-fg);
-  border: 1px solid var(--oh-im-input-border);
-  transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+/* 数据看板与管理卡片浮起表面（供多卡片密集区使用，免重度 blur 且保持与液态玻璃一致的微高光色阶） */
+@utility oh-elevated-card {
+  background-color: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--oh-im-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 8px 24px -8px rgba(15, 23, 42, 0.06), 0 1px
+    3px rgba(15, 23, 42, 0.03);
+
+  &:where(.dark, .dark *) {
+    background-color: rgba(30, 30, 34, 0.76);
+    border-color: rgba(255, 255, 255, 0.075);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 12px 32px -10px rgba(0, 0, 0, 0.48), 0
+      2px 6px rgba(0, 0, 0, 0.25);
+  }
+}
+
+@utility oh-shell-frame {
+  background-color: var(--oh-lg-panel-bg);
+  background-image: var(--oh-lg-sheen);
+  -webkit-backdrop-filter: blur(28px) saturate(185%);
+  backdrop-filter: blur(28px) saturate(185%);
+  border: 1px solid var(--oh-im-border);
+  box-shadow: var(--oh-lg-inner), var(--oh-lg-shadow-panel);
+}
+
+@utility oh-bar-frosted {
+  background-color: var(--oh-lg-bar-bg);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
+  backdrop-filter: blur(24px) saturate(190%);
+}
+
+/* 1) 悬浮玻璃导轨、侧栏与右侧群信息抽屉 */
+@utility liquid-glass-panel {
+  background-color: var(--oh-lg-panel-bg);
+  background-image: var(--oh-lg-sheen);
+  -webkit-backdrop-filter: blur(28px) saturate(185%);
+  backdrop-filter: blur(28px) saturate(185%);
+  box-shadow: var(--oh-lg-inner), var(--oh-lg-shadow-panel);
+
+  &:where(.dark, .dark *) {
+    -webkit-backdrop-filter: blur(28px) saturate(185%) brightness(1.06);
+    backdrop-filter: blur(28px) saturate(185%) brightness(1.06);
+  }
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: var(--oh-lg-rim-subtle);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: 1;
+  }
+}
+
+/* 2) 悬浮玻璃顶栏胶囊（消息流从下方滑过时真实折射着彩） */
+@utility liquid-glass-bar {
+  background-color: var(--oh-lg-bar-bg);
+  background-image: var(--oh-lg-sheen);
+  -webkit-backdrop-filter: blur(24px) saturate(195%);
+  backdrop-filter: blur(24px) saturate(195%);
+  box-shadow: var(--oh-lg-inner), var(--oh-lg-shadow-bar);
+
+  &:where(.dark, .dark *) {
+    -webkit-backdrop-filter: blur(26px) saturate(185%) brightness(1.07);
+    backdrop-filter: blur(26px) saturate(185%) brightness(1.07);
+  }
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: var(--oh-lg-rim);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: 1;
+  }
+}
+
+/* 3) 悬浮液态玻璃输入舱（带平滑聚焦晶亮光环） */
+@utility liquid-glass-composer {
+  background-color: var(--oh-lg-composer-bg);
+  background-image: var(--oh-lg-sheen);
+  -webkit-backdrop-filter: blur(26px) saturate(195%);
+  backdrop-filter: blur(26px) saturate(195%);
+  box-shadow: var(--oh-lg-inner), var(--oh-lg-shadow-bar);
+  transition: background-color 180ms ease, box-shadow 180ms ease;
+
+  &:where(.dark, .dark *) {
+    -webkit-backdrop-filter: blur(28px) saturate(190%) brightness(1.07);
+    backdrop-filter: blur(28px) saturate(190%) brightness(1.07);
+  }
 
   &:focus-within {
-    background-color: var(--oh-im-input-focus);
-    border-color: var(--oh-im-accent);
-    box-shadow: 0 0 0 4px var(--oh-im-input-ring);
+    background-color: rgba(255, 255, 255, 0.88);
+    box-shadow: var(--oh-lg-inner), 0 0 0 3px rgba(24, 27, 34, 0.06), var(--oh-lg-shadow-bar);
+
+    &:where(.dark, .dark *) {
+      background-color: rgba(34, 34, 40, 0.86);
+      box-shadow: inset 0 1px 0.5px rgba(255, 255, 255, 0.18), inset 0 -1px 1px rgba(0, 0, 0, 0.28),
+        0 0 0 3px rgba(255, 255, 255, 0.06), var(--oh-lg-shadow-bar);
+    }
+  }
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: var(--oh-lg-rim);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: 1;
   }
 }
 
-/* 聊天画布背景：纯净无网格实色背景（日光 #FFFFFF / 暗夜 #0E0E10） */
-@utility im-canvas {
-  background-color: transparent;
+/* 4) 悬浮交互玻璃胶囊（气泡操作条、回到底部浮钮、顶栏状态胶囊） */
+@utility liquid-glass-pill {
+  background-color: var(--oh-lg-pill-bg);
+  background-image: var(--oh-lg-sheen);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  backdrop-filter: blur(18px) saturate(180%);
+  box-shadow: var(--oh-lg-inner), 0 4px 14px -4px rgba(15, 23, 42, 0.1);
+  transition: background-color 150ms ease, box-shadow 150ms ease, transform 120ms ease;
+
+  &:where(.dark, .dark *) {
+    -webkit-backdrop-filter: blur(18px) saturate(180%) brightness(1.06);
+    backdrop-filter: blur(18px) saturate(180%) brightness(1.06);
+    box-shadow: var(--oh-lg-inner), 0 6px 18px -4px rgba(0, 0, 0, 0.5);
+  }
+
+  &:is(button, a, [role="button"]):hover:not(:disabled) {
+    background-color: var(--oh-lg-pill-hover);
+  }
+
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: var(--oh-lg-rim-subtle);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: 1;
+  }
 }
 
-/* ─────────────────────────────────────────────────────────────
- * 3.5 玻璃液态层（Liquid Glass over Pachat Minimalism）
- * ------------------
- * 分层策略：`body::before` 固定环境光（暖调单色微光，杜绝蓝紫）→ 玻璃表面
- * （磨砂 blur + 饱和度提升 + 顶部高光描边）按透明度梯度叠层。所有玻璃表面
- * 恒定保持 Pachat 墨色文本对比度，且暗色玻璃永不变白。
- * ───────────────────────────────────────────────────────────── */
+/* 5) 模态窗 / Popover / Select / Dropdown / 命令面板 / 登录卡片重玻璃表面 */
+@utility liquid-glass-modal {
+  background-color: var(--oh-lg-modal-bg);
+  background-image: var(--oh-lg-sheen);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  backdrop-filter: blur(36px) saturate(195%);
+  box-shadow: var(--oh-lg-inner), var(--oh-lg-shadow-modal);
 
-/* 环境光画布：为 blur 提供可折射的底层微光（非纯色，无点阵） */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background: radial-gradient(48rem 36rem at 8% 10%, rgba(198, 178, 132, 0.85), transparent 66%),
-    radial-gradient(46rem 38rem at 94% 14%, rgba(147, 198, 170, 0.8), transparent 68%),
-    radial-gradient(60rem 50rem at 45% 58%, rgba(226, 200, 172, 0.34), transparent 72%),
-    radial-gradient(52rem 42rem at 82% 92%, rgba(226, 200, 172, 0.62), transparent 70%),
-    radial-gradient(52rem 40rem at 16% 96%, rgba(20, 20, 20, 0.05), transparent 66%);
-}
+  &:where(.dark, .dark *) {
+    -webkit-backdrop-filter: blur(36px) saturate(195%) brightness(1.06);
+    backdrop-filter: blur(36px) saturate(195%) brightness(1.06);
+  }
 
-.dark body::before {
-  background: radial-gradient(52rem 40rem at 12% 8%, rgba(140, 132, 104, 0.4), transparent 68%),
-    radial-gradient(58rem 46rem at 84% 44%, rgba(94, 132, 114, 0.44), transparent 70%),
-    radial-gradient(54rem 42rem at 30% 94%, rgba(148, 126, 90, 0.32), transparent 70%),
-    radial-gradient(52rem 40rem at 16% 96%, rgba(245, 245, 247, 0.04), transparent 66%);
-}
-
-/* 主画布：轻磨砂大表面（不加 blur，环境光直接透出） */
-@utility glass-canvas {
-  background-color: var(--oh-glass-canvas);
-}
-
-/* 侧栏等全高玻璃面板 */
-@utility glass-pane {
-  background-color: var(--oh-glass-pane);
-  -webkit-backdrop-filter: blur(var(--oh-glass-blur)) saturate(var(--oh-glass-saturate));
-  backdrop-filter: blur(var(--oh-glass-blur)) saturate(var(--oh-glass-saturate));
-  /* 降级级联：Chromium 渲染边缘折射（滤镜定义见 GlassFilterDefs），不支持的浏览器保持上一行磨砂 */
-  backdrop-filter: url(#oh-refract) blur(var(--oh-glass-blur)) saturate(var(--oh-glass-saturate));
-  box-shadow: inset 0 1px 0 var(--oh-glass-edge);
-}
-
-/* 顶栏/输入舱等水平玻璃条带 */
-@utility glass-bar {
-  background-color: var(--oh-glass-bar);
-  -webkit-backdrop-filter: blur(calc(var(--oh-glass-blur) + 6px)) saturate(var(--oh-glass-saturate));
-  backdrop-filter: blur(calc(var(--oh-glass-blur) + 6px)) saturate(var(--oh-glass-saturate));
-  backdrop-filter: url(#oh-refract) blur(calc(var(--oh-glass-blur) + 6px))
-    saturate(var(--oh-glass-saturate));
-  box-shadow: inset 0 1px 0 var(--oh-glass-edge);
-}
-
-/* 弹窗/卡片等浮层玻璃（最高不透明度 + 完整投影） */
-@utility glass-strong {
-  background-color: var(--oh-glass-strong);
-  -webkit-backdrop-filter: blur(calc(var(--oh-glass-blur) + 10px))
-    saturate(var(--oh-glass-saturate));
-  backdrop-filter: blur(calc(var(--oh-glass-blur) + 10px)) saturate(var(--oh-glass-saturate));
-  backdrop-filter: url(#oh-refract) blur(calc(var(--oh-glass-blur) + 10px))
-    saturate(var(--oh-glass-saturate));
-  box-shadow: inset 0 1px 0 var(--oh-glass-edge), 0 0 0 1px var(--oh-glass-border),
-    var(--oh-glass-shadow);
-}
-
-/* 文字密集型对话框专用重玻璃：近乎不透明，文字清晰度优先，玻璃感仅保留在边缘折射与高光。
- * 为什么独立于 glass-strong：表单弹窗（Agent 接入等）处于"半透明文字发虚、不透明又不通透"的
- * 最差中间态；浮起感交给加深遮罩与投影，而非降低填充不透明度。 */
-@utility glass-modal {
-  background-color: var(--oh-glass-modal);
-  -webkit-backdrop-filter: blur(calc(var(--oh-glass-blur) + 12px))
-    saturate(var(--oh-glass-saturate));
-  backdrop-filter: blur(calc(var(--oh-glass-blur) + 12px)) saturate(var(--oh-glass-saturate));
-  backdrop-filter: url(#oh-refract) blur(calc(var(--oh-glass-blur) + 12px))
-    saturate(var(--oh-glass-saturate));
-  box-shadow: inset 0 1px 0 var(--oh-glass-edge), 0 0 0 1px var(--oh-glass-border), 0 24px 70px
-    rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0, 0, 0, 0.1);
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: var(--oh-lg-rim);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: 1;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -604,7 +717,55 @@ body::before {
 }
 
 /* ─────────────────────────────────────────────────────────────
- * 6. 无障碍：尊重系统「减少动态效果」偏好
+ * 6. 多环境自适应兜底：减少透明度偏好 & 无 backdrop-filter 浏览器降级
+ * ───────────────────────────────────────────────────────────── */
+/* biome-ignore lint/correctness/noUnknownMediaFeatureName: W3C Media Queries Level 5 规范特性，适配 macOS / iOS 系统「降低透明度」设置 */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --oh-stage-surface: rgba(255, 255, 255, 0.96);
+    --oh-lg-panel-bg: rgba(249, 250, 251, 0.96);
+    --oh-lg-bar-bg: rgba(255, 255, 255, 0.96);
+    --oh-lg-composer-bg: rgba(255, 255, 255, 0.98);
+    --oh-lg-pill-bg: rgba(255, 255, 255, 0.95);
+    --oh-lg-pill-hover: #ffffff;
+    --oh-lg-modal-bg: rgba(255, 255, 255, 0.98);
+  }
+
+  .dark {
+    --oh-stage-surface: rgba(24, 24, 27, 0.96);
+    --oh-lg-panel-bg: rgba(27, 27, 31, 0.96);
+    --oh-lg-bar-bg: rgba(26, 26, 30, 0.96);
+    --oh-lg-composer-bg: rgba(28, 28, 32, 0.98);
+    --oh-lg-pill-bg: rgba(30, 30, 34, 0.95);
+    --oh-lg-pill-hover: rgba(46, 46, 52, 0.98);
+    --oh-lg-modal-bg: rgba(26, 26, 30, 0.98);
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --oh-stage-surface: rgba(255, 255, 255, 0.96);
+    --oh-lg-panel-bg: rgba(249, 250, 251, 0.96);
+    --oh-lg-bar-bg: rgba(255, 255, 255, 0.96);
+    --oh-lg-composer-bg: rgba(255, 255, 255, 0.98);
+    --oh-lg-pill-bg: rgba(255, 255, 255, 0.95);
+    --oh-lg-pill-hover: #ffffff;
+    --oh-lg-modal-bg: rgba(255, 255, 255, 0.98);
+  }
+
+  .dark {
+    --oh-stage-surface: rgba(24, 24, 27, 0.96);
+    --oh-lg-panel-bg: rgba(27, 27, 31, 0.96);
+    --oh-lg-bar-bg: rgba(26, 26, 30, 0.96);
+    --oh-lg-composer-bg: rgba(28, 28, 32, 0.98);
+    --oh-lg-pill-bg: rgba(30, 30, 34, 0.95);
+    --oh-lg-pill-hover: rgba(46, 46, 52, 0.98);
+    --oh-lg-modal-bg: rgba(26, 26, 30, 0.98);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * 7. 无障碍：尊重系统「减少动态效果」偏好
  * ───────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,

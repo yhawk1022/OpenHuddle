@@ -19,8 +19,13 @@ import { ZodError } from "zod";
 import type { ServerEnv } from "./infra/env.js";
 import { AppError } from "./infra/errors.js";
 import { createRequestContextMiddleware, createRootLogger } from "./infra/logger.js";
+import { type EmailMailer, createMailerFromEnv } from "./infra/mailer.js";
 import { createOpenApiRouter } from "./infra/openapi-router.js";
+import { SlidingWindowRateLimiter } from "./infra/rate-limiter.js";
 import type { RealtimeBus } from "./infra/realtime-bus.js";
+import { AdminRepository } from "./modules/admin/admin.repo.js";
+import { createAdminRouter } from "./modules/admin/admin.routes.js";
+import { AdminService } from "./modules/admin/admin.service.js";
 import { AiModeratorService } from "./modules/ai-moderator/ai-moderator.service.js";
 import { AuthRepository } from "./modules/auth/auth.repo.js";
 import { createAuthRouter } from "./modules/auth/auth.routes.js";
@@ -74,6 +79,8 @@ export interface AppDependencies {
   readonly env: ServerEnv;
   readonly database: ManagedDatabase;
   readonly realtimeBus: RealtimeBus;
+  readonly mailer?: EmailMailer;
+  readonly authRateLimiter?: SlidingWindowRateLimiter;
   readonly cliBundlePath?: string;
   readonly webDistDir?: string;
   readonly localConnectHomeDir?: string;
@@ -126,12 +133,29 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
   const roomsRepo = new RoomsRepository(deps.database.db);
   const messagesRepo = new MessagesRepository(deps.database.db);
   const proposalsRepo = new ProposalsRepository(deps.database.db);
+  const adminRepo = new AdminRepository(deps.database.db);
+  const startedAtMs = Date.now();
 
-  // 2. 初始化领域编排服务层（Services）
+  // 2. 初始化基础设施与领域编排服务层（Services）
+  const mailer = deps.mailer ?? createMailerFromEnv(deps.env, rootLogger);
+  const authRateLimiter = deps.authRateLimiter ?? new SlidingWindowRateLimiter();
+  if (
+    deps.env.NODE_ENV === "production" &&
+    !mailer.isConfigured &&
+    deps.env.ALLOW_DEV_OTP_ECHO !== "true"
+  ) {
+    rootLogger.warn(
+      "Production mode started without SMTP configuration; registration and password-reset verification emails will return 503 EMAIL_DELIVERY_UNAVAILABLE until SMTP_* or SMTP_CREDENTIALS_FILE is set.",
+    );
+  }
+
   const authService = new AuthService({
     repo: authRepo,
     env: deps.env,
     realtimeBus: deps.realtimeBus,
+    mailer,
+    rateLimiter: authRateLimiter,
+    logger: rootLogger,
   });
   const pairingService = new PairingService({
     repo: pairingRepo,
@@ -180,6 +204,16 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
     aiModerator,
     realtimeBus: deps.realtimeBus,
   });
+  const adminService = new AdminService({
+    adminRepo,
+    authRepo,
+    roomsRepo,
+    proposalsRepo,
+    realtimeBus: deps.realtimeBus,
+    env: deps.env,
+    databaseDriver: deps.database.driver,
+    startedAtMs,
+  });
 
   app.use("*", createRequestContextMiddleware(rootLogger));
 
@@ -199,6 +233,7 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
   apiV1.route("/", createMessagesRouter({ authService, messagesService }));
   apiV1.route("/", createEventsRouter({ authService, eventsService }));
   apiV1.route("/", createProposalsRouter({ authService, proposalsService }));
+  apiV1.route("/", createAdminRouter({ authService, adminService }));
 
   app.route("/api/v1", apiV1);
 

@@ -1,10 +1,10 @@
 /**
  * @module web/components/primitives/command-palette
- * @description 基于 `cmdk` + Radix `Dialog` + `motion` 构建的 Pachat 极简全局命令面板（`AppCommandPalette`）。
+ * @description 基于 `cmdk` + Radix `Dialog` + `motion` 构建的 Apple Liquid Glass 全局命令面板（`AppCommandPalette`）。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 全局快捷键唤醒：默认监听 `⌘K`（macOS）与 `Ctrl+K`（Windows/Linux），一键呼出或收起群聊切换、创建/加入群、接入 Agent、触发提案归纳与主题切换。
- * 2. 双主题纯净表面：采用 `#FFFFFF` / `#18181B` 暖中性面板与 `#F5F5F7` 柔和选中高亮，彻底免疫暗黑模式白底白字与廉价紫光污染。
+ * 2. 晶莹浮层与 135° 高光边框：采用 `liquid-glass-modal` 液态玻璃表面与柔和聚焦选中态，彻底免疫暗黑模式白底白字与廉价紫光污染。
  * 3. 无障碍与键盘优先：内置 `cmdk` 模糊检索评分、上下方向键循环导航、`Enter` 立即执行与 `Escape` 关闭。
  */
 import { Command } from "cmdk";
@@ -105,7 +105,7 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.14 }}
-            className="app-no-drag fixed inset-0 z-[98] bg-black/45 backdrop-blur-[2px] dark:bg-black/75"
+            className="app-no-drag fixed inset-0 z-[98] bg-[#090A0E]/35 backdrop-blur-[4px] dark:bg-[#050609]/65 dark:backdrop-blur-[6px]"
           />
         </Dialog.Overlay>
         <Dialog.Content asChild>
@@ -114,9 +114,9 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             transition={{ type: "spring", stiffness: 520, damping: 36 }}
             className={cn(
-              "glass-modal app-no-drag fixed inset-x-0 top-[13vh] z-[99] mx-auto w-[calc(100%-1.5rem)] max-w-[560px] overflow-hidden rounded-[22px] outline-none",
-              "text-[#141414]",
-              "dark:text-zinc-100",
+              "liquid-glass-modal app-no-drag fixed inset-x-0 top-[13vh] z-[99] mx-auto w-[calc(100%-1.5rem)] max-w-[560px] overflow-hidden rounded-[22px] outline-none",
+              "text-[#111318]",
+              "dark:text-[#ECEFF6]",
             )}
           >
             <div className="sr-only">
@@ -126,20 +126,20 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
 
             <Command label="OpenHuddle 全局命令面板" loop={true} className="flex flex-col">
               {/* 顶部搜索栏 */}
-              <div className="flex items-center gap-2.5 border-b border-black/[0.07] px-4 py-3 dark:border-white/[0.08]">
+              <div className="flex items-center gap-2.5 border-b border-black/[0.06] px-4 py-3 dark:border-white/[0.07]">
                 <Search
                   aria-hidden="true"
-                  className="h-4 w-4 shrink-0 text-[#8E8E93] dark:text-zinc-400"
+                  className="h-4 w-4 shrink-0 text-[#939BAD] dark:text-[#7D869C]"
                 />
                 <Command.Input
                   placeholder={placeholder}
-                  className="h-6 w-full flex-1 border-0 bg-transparent p-0 text-[14px] font-medium text-[#141414] caret-[#141414] outline-none placeholder:text-[#8E8E93] dark:text-zinc-100 dark:caret-zinc-100 dark:placeholder:text-zinc-500"
+                  className="h-6 w-full flex-1 border-0 bg-transparent p-0 text-[14px] font-medium text-[#111318] caret-[#181B22] outline-none placeholder:text-[#939BAD] dark:text-[#ECEFF6] dark:caret-[#ECEFF6] dark:placeholder:text-[#586075]"
                 />
                 <Dialog.Close asChild>
                   <button
                     type="button"
                     aria-label="关闭搜索面板"
-                    className="shrink-0 cursor-pointer rounded-full bg-[#F5F5F7] px-2 py-0.5 font-mono text-[10.5px] font-semibold text-[#6E6E73] transition hover:bg-black/[0.08] hover:text-[#141414] dark:bg-white/[0.08] dark:text-zinc-400 dark:hover:bg-white/14 dark:hover:text-zinc-100"
+                    className="shrink-0 cursor-pointer rounded-full bg-black/[0.05] px-2 py-0.5 font-mono text-[10.5px] font-semibold text-[#687082] transition hover:bg-black/[0.09] hover:text-[#111318] dark:bg-white/[0.08] dark:text-[#7D869C] dark:hover:bg-white/[0.14] dark:hover:text-[#ECEFF6]"
                   >
                     ESC
                   </button>
@@ -148,7 +148,7 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
 
               {/* 检索候选列表 */}
               <Command.List className="max-h-[340px] overflow-y-auto overscroll-contain p-2">
-                <Command.Empty className="py-10 text-center text-xs text-[#8E8E93] dark:text-zinc-400">
+                <Command.Empty className="py-10 text-center text-xs text-[#939BAD] dark:text-[#7D869C]">
                   {emptyText}
                 </Command.Empty>
 
@@ -157,7 +157,7 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
                     <Command.Group
                       key={group.id}
                       heading={group.heading}
-                      className="[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-[#8E8E93] [&_[cmdk-group-heading]]:uppercase dark:[&_[cmdk-group-heading]]:text-zinc-500"
+                      className="[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:text-[11px] [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-[#939BAD] [&_[cmdk-group-heading]]:uppercase dark:[&_[cmdk-group-heading]]:text-[#586075]"
                     >
                       {group.items.map((item) => {
                         const keywordList = item.keywords ? [...item.keywords] : undefined;
@@ -173,15 +173,15 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
                             }}
                             className={cn(
                               "group flex cursor-pointer select-none items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] outline-none transition-colors",
-                              "text-[#3A3A3C] data-[selected=true]:bg-[#F5F5F7] data-[selected=true]:text-[#141414]",
-                              "dark:text-zinc-300 dark:data-[selected=true]:bg-white/[0.08] dark:data-[selected=true]:text-white",
+                              "text-[#3B414E] data-[selected=true]:bg-black/[0.045] data-[selected=true]:text-[#111318]",
+                              "dark:text-[#B4BCD0] dark:data-[selected=true]:bg-white/[0.07] dark:data-[selected=true]:text-[#ECEFF6]",
                               "data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-45",
                             )}
                           >
                             {item.icon !== undefined ? (
                               <span
                                 aria-hidden="true"
-                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#F5F5F7] text-[#5F5F64] transition-colors group-data-[selected=true]:bg-[#141414] group-data-[selected=true]:text-white dark:bg-white/[0.06] dark:text-zinc-400 dark:group-data-[selected=true]:bg-[#F5F5F7] dark:group-data-[selected=true]:text-[#141414]"
+                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-black/[0.045] text-[#687082] transition-colors group-data-[selected=true]:bg-[#181B22] group-data-[selected=true]:text-white dark:bg-white/[0.06] dark:text-[#7D869C] dark:group-data-[selected=true]:bg-[#EAEEF6] dark:group-data-[selected=true]:text-[#111318]"
                               >
                                 {item.icon}
                               </span>
@@ -191,7 +191,7 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
                               <div className="flex items-center gap-2">
                                 <span className="truncate font-medium">{item.label}</span>
                                 {item.subtitle !== undefined ? (
-                                  <span className="truncate text-xs text-[#8E8E93] group-data-[selected=true]:text-[#6E6E73] dark:text-zinc-500 dark:group-data-[selected=true]:text-zinc-300">
+                                  <span className="truncate text-xs text-[#939BAD] group-data-[selected=true]:text-[#687082] dark:text-[#586075] dark:group-data-[selected=true]:text-[#B4BCD0]">
                                     {item.subtitle}
                                   </span>
                                 ) : null}
@@ -203,7 +203,7 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
                             ) : null}
 
                             {item.shortcut !== undefined ? (
-                              <kbd className="shrink-0 rounded-full bg-black/[0.05] px-2 py-0.5 font-mono text-[10.5px] font-medium text-[#6E6E73] group-data-[selected=true]:bg-black/[0.09] group-data-[selected=true]:text-[#141414] dark:bg-white/[0.07] dark:text-zinc-400 dark:group-data-[selected=true]:bg-white/15 dark:group-data-[selected=true]:text-zinc-100">
+                              <kbd className="shrink-0 rounded-full bg-black/[0.05] px-2 py-0.5 font-mono text-[10.5px] font-medium text-[#687082] group-data-[selected=true]:bg-black/[0.09] group-data-[selected=true]:text-[#111318] dark:bg-white/[0.07] dark:text-[#7D869C] dark:group-data-[selected=true]:bg-white/[0.14] dark:group-data-[selected=true]:text-[#ECEFF6]">
                                 {item.shortcut}
                               </kbd>
                             ) : null}
@@ -216,7 +216,7 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
               </Command.List>
 
               {/* 底部键盘操作提示栏 */}
-              <div className="flex select-none items-center justify-between border-t border-black/[0.07] bg-[#F8F8FA] px-4 py-2 text-[11px] text-[#8E8E93] dark:border-white/[0.08] dark:bg-[#151518] dark:text-zinc-500">
+              <div className="flex select-none items-center justify-between border-t border-black/[0.06] bg-black/[0.025] px-4 py-2 text-[11px] text-[#939BAD] dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-[#586075]">
                 <div className="truncate">{footerHint ?? "快速跳转与操作"}</div>
                 <div className="flex items-center gap-3">
                   <span className="inline-flex items-center gap-1">

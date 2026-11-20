@@ -28,6 +28,7 @@ import type {
   ConnectLocalAgentResponse,
   CreatePairingCodeResponse,
   DeleteOwnedAgentResponse,
+  DeleteRoomResponse,
   InboxResponse,
   LocalAgentsStatusResponse,
   MeResponse,
@@ -36,6 +37,7 @@ import type {
   ProposalCardDto,
   RoomDetailDto,
   RoomGovernanceState,
+  RoomSummaryDto,
   UnreadConflictDetails,
   VerifyOtpResponse,
 } from "@openhuddle/protocol";
@@ -1164,7 +1166,27 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
       expect(historyAfterDelete.messages[0]?.seq).toBe(1);
       expect(historyAfterDelete.messages[0]?.author.kind).toBe("agent");
 
-      // 5. 公网域名部署时，拒绝一键本机直连（available=false & POST 返回 403）
+      // 5. 当未显式限定 pathEnv 时（真实生产运行路径），自动扫描 ~/.nvm/versions/node/<ver>/bin 发现 claude
+      const nvmClaudeBinDir = join(tempHome, ".nvm", "versions", "node", "v24.17.0", "bin");
+      mkdirSync(nvmClaudeBinDir, { recursive: true });
+      const nvmClaudeBinPath = join(nvmClaudeBinDir, "claude");
+      writeFileSync(nvmClaudeBinPath, "#!/bin/sh\nexit 0\n", "utf8");
+      chmodSync(nvmClaudeBinPath, 0o755);
+
+      const nvmDiscoveryApp = createServerApp({
+        env: localEnv,
+        database,
+        realtimeBus: bus,
+        localConnectHomeDir: tempHome,
+      });
+      const nvmStatusRes = await nvmDiscoveryApp.request("/api/v1/local-agents/status", {
+        headers: { authorization: `Bearer ${ownerSession.sessionToken}` },
+      });
+      expect(nvmStatusRes.status).toBe(200);
+      const nvmStatus = (await nvmStatusRes.json()) as LocalAgentsStatusResponse;
+      expect(nvmStatus.clis.find((c) => c.platform === "claude_code")?.installed).toBe(true);
+
+      // 6. 公网域名部署时，拒绝一键本机直连（available=false & POST 返回 403）
       const remoteEnv = parseServerEnv({
         NODE_ENV: "test",
         LOG_LEVEL: "silent",
@@ -1200,5 +1222,289 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     } finally {
       rmSync(tempHome, { recursive: true, force: true });
     }
+  });
+
+  it("allows only the human room owner to delete a room, cascades room data, preserves owned agents, and broadcasts room.deleted via SSE", async () => {
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      DATABASE_URL: "memory://",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus });
+
+    const alice = await loginHumanViaOtp(app, "alice-del-room@example.com", "Alice");
+    const bob = await loginHumanViaOtp(app, "bob-del-room@example.com", "Bob");
+
+    // 1. Alice 创建两个房间（其中 targetRoom 开启公开只读分享），Bob 创建或加入 targetRoom
+    const createTargetRes = await app.request("/api/v1/rooms", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${alice.sessionToken}`,
+      },
+      body: JSON.stringify({
+        name: "待删除讨论群",
+        topic: "验证删除群聊级联清理与 SSE 广播",
+        visibility: "public_shareable",
+      }),
+    });
+    expect(createTargetRes.status).toBe(201);
+    const { room: targetRoom } = (await createTargetRes.json()) as { room: RoomDetailDto };
+    const inviteToken = targetRoom.inviteToken ?? "";
+    expect(inviteToken.length).toBeGreaterThan(4);
+
+    const createKeepRes = await app.request("/api/v1/rooms", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${alice.sessionToken}`,
+      },
+      body: JSON.stringify({
+        name: "保留测试群",
+        topic: "验证其余群聊与个人 Agent 不受影响",
+      }),
+    });
+    expect(createKeepRes.status).toBe(201);
+    const { room: keepRoom } = (await createKeepRes.json()) as { room: RoomDetailDto };
+
+    // 2. 为 Alice 绑定一个 Agent，并将其与 Bob 一并加入 targetRoom
+    const pairCodeForTargetRes = await app.request("/api/v1/pairing-codes", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${alice.sessionToken}`,
+      },
+      body: JSON.stringify({ autoJoinRoomId: targetRoom.id }),
+    });
+    expect(pairCodeForTargetRes.status).toBe(201);
+    const pairCodeForTarget = (await pairCodeForTargetRes.json()) as CreatePairingCodeResponse;
+
+    const pairedAgentRes = await app.request("/api/v1/pair", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code: pairCodeForTarget.code,
+        name: "Alice Worker",
+        platform: "codex",
+      }),
+    });
+    expect(pairedAgentRes.status).toBe(201);
+    const pairedAgent = (await pairedAgentRes.json()) as PairAgentResponse;
+
+    // 签发一个尚未消费、且绑定 autoJoinRoomId = targetRoom.id 的配对码，验证删群后仍可正常绑定（不会因悬空房间报错）
+    const unusedCodeRes = await app.request("/api/v1/pairing-codes", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${alice.sessionToken}`,
+      },
+      body: JSON.stringify({ autoJoinRoomId: targetRoom.id }),
+    });
+    expect(unusedCodeRes.status).toBe(201);
+    const unusedCode = (await unusedCodeRes.json()) as CreatePairingCodeResponse;
+
+    const bobJoinRes = await app.request("/api/v1/join", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${bob.sessionToken}`,
+      },
+      body: JSON.stringify({ inviteToken }),
+    });
+    expect(bobJoinRes.status).toBe(200);
+
+    // 3. 在 targetRoom 中写入消息、提案与投票，确保级联删除覆盖全部子表
+    const msgRes = await app.request(`/api/v1/rooms/${targetRoom.id}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${alice.sessionToken}`,
+      },
+      body: JSON.stringify({
+        content: "准备删除前的一条消息",
+        mentions: [],
+        ignoreUnread: true,
+      }),
+    });
+    expect(msgRes.status).toBe(201);
+
+    const propRes = await app.request(`/api/v1/rooms/${targetRoom.id}/proposals`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${alice.sessionToken}`,
+      },
+      body: JSON.stringify({
+        title: "待删除群聊中的提案",
+        contextSummary: "验证级联清理提案与投票",
+        options: [
+          {
+            optionKey: "A",
+            label: "方案 A",
+            summary: "仅用于级联清理验证",
+            pros: ["简洁"],
+            cons: [],
+            risks: [],
+          },
+        ],
+      }),
+    });
+    expect(propRes.status).toBe(201);
+    const { proposal } = (await propRes.json()) as { proposal: ProposalCardDto };
+
+    const voteRes = await app.request(`/api/v1/proposals/${proposal.id}/votes`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${pairedAgent.token}`,
+      },
+      body: JSON.stringify({
+        stance: "endorse",
+        preferredOptionKey: "A",
+        rationale: "支持验证",
+      }),
+    });
+    expect(voteRes.status).toBe(200);
+
+    // 4. Bob 建立 SSE 长连，准备接收实时的 `room.deleted` 通知
+    const abortController = new AbortController();
+    try {
+      const sseRes = await app.request(`/api/v1/events?token=${bob.sessionToken}`, {
+        signal: abortController.signal,
+      });
+      expect(sseRes.status).toBe(200);
+      const reader = sseRes.body?.getReader();
+      expect(reader).toBeDefined();
+      const decoder = new TextDecoder();
+
+      if (reader) {
+        const connectedChunk = await reader.read();
+        expect(decoder.decode(connectedChunk.value)).toContain("event: connected");
+      }
+
+      // 5. 权限矩阵红队检验：未认证 401、Agent 403、非群主人类 Bob 403、不存在房间 404
+      const unauthDeleteRes = await app.request(`/api/v1/rooms/${targetRoom.id}`, {
+        method: "DELETE",
+      });
+      expect(unauthDeleteRes.status).toBe(401);
+
+      const agentDeleteRes = await app.request(`/api/v1/rooms/${targetRoom.id}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${pairedAgent.token}` },
+      });
+      expect(agentDeleteRes.status).toBe(403);
+      expect(((await agentDeleteRes.json()) as ApiErrorEnvelope).error.code).toBe(
+        "FORBIDDEN_NOT_OWNER",
+      );
+
+      const bobDeleteRes = await app.request(`/api/v1/rooms/${targetRoom.id}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${bob.sessionToken}` },
+      });
+      expect(bobDeleteRes.status).toBe(403);
+      expect(((await bobDeleteRes.json()) as ApiErrorEnvelope).error.code).toBe(
+        "FORBIDDEN_NOT_OWNER",
+      );
+
+      const missingRoomDeleteRes = await app.request("/api/v1/rooms/rom_not_exists_999", {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${alice.sessionToken}` },
+      });
+      expect(missingRoomDeleteRes.status).toBe(404);
+      expect(((await missingRoomDeleteRes.json()) as ApiErrorEnvelope).error.code).toBe(
+        "NOT_FOUND",
+      );
+
+      // 6. 人类群主 Alice 执行删除 -> 200 & SSE 推送 room.deleted
+      const ownerDeleteRes = await app.request(`/api/v1/rooms/${targetRoom.id}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${alice.sessionToken}` },
+      });
+      expect(ownerDeleteRes.status).toBe(200);
+      const deleteBody = (await ownerDeleteRes.json()) as DeleteRoomResponse;
+      expect(deleteBody).toEqual({
+        ok: true,
+        deletedRoomId: targetRoom.id,
+      });
+
+      if (reader) {
+        const deletedChunk = await reader.read();
+        const deletedText = decoder.decode(deletedChunk.value);
+        expect(deletedText).toContain("event: room.deleted");
+        expect(deletedText).toContain(targetRoom.id);
+      }
+    } finally {
+      abortController.abort();
+    }
+
+    // 7. 删后一致性校验：房间列表已剔除且保留房间含 ownerUserId；详情/消息/提案/分享/邀请入群/重复删除全返回 404
+    const aliceRoomsRes = await app.request("/api/v1/rooms", {
+      headers: { authorization: `Bearer ${alice.sessionToken}` },
+    });
+    expect(aliceRoomsRes.status).toBe(200);
+    const aliceRooms = (await aliceRoomsRes.json()) as { rooms: readonly RoomSummaryDto[] };
+    expect(aliceRooms.rooms.map((r) => r.id)).toEqual([keepRoom.id]);
+    expect(aliceRooms.rooms[0]?.ownerUserId).toBe(alice.user.id);
+
+    const bobRoomsRes = await app.request("/api/v1/rooms", {
+      headers: { authorization: `Bearer ${bob.sessionToken}` },
+    });
+    expect(bobRoomsRes.status).toBe(200);
+    const bobRooms = (await bobRoomsRes.json()) as { rooms: readonly RoomSummaryDto[] };
+    expect(bobRooms.rooms).toEqual([]);
+
+    const agentRoomsRes = await app.request("/api/v1/rooms", {
+      headers: { authorization: `Bearer ${pairedAgent.token}` },
+    });
+    expect(agentRoomsRes.status).toBe(200);
+    const agentRooms = (await agentRoomsRes.json()) as { rooms: readonly RoomSummaryDto[] };
+    expect(agentRooms.rooms).toEqual([]);
+
+    for (const check of [
+      app.request(`/api/v1/rooms/${targetRoom.id}`, {
+        headers: { authorization: `Bearer ${alice.sessionToken}` },
+      }),
+      app.request(`/api/v1/rooms/${targetRoom.id}/messages`, {
+        headers: { authorization: `Bearer ${alice.sessionToken}` },
+      }),
+      app.request(`/api/v1/rooms/${targetRoom.id}/proposals`, {
+        headers: { authorization: `Bearer ${alice.sessionToken}` },
+      }),
+      app.request("/api/v1/join", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${bob.sessionToken}`,
+        },
+        body: JSON.stringify({ inviteToken }),
+      }),
+      app.request(`/api/v1/share/${inviteToken}`),
+      app.request(`/api/v1/rooms/${targetRoom.id}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${alice.sessionToken}` },
+      }),
+    ]) {
+      const res = await check;
+      expect(res.status).toBe(404);
+    }
+
+    // 8. 个人 Agent 令牌完全保留有效，且此前关联了被删除房间的未使用配对码仍可正常绑定（autoJoinedRoomId 为空）
+    const agentMeRes = await app.request("/api/v1/me", {
+      headers: { authorization: `Bearer ${pairedAgent.token}` },
+    });
+    expect(agentMeRes.status).toBe(200);
+
+    const redeemUnusedRes = await app.request("/api/v1/pair", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code: unusedCode.code,
+        name: "Alice Claude",
+        platform: "claude_code",
+      }),
+    });
+    expect(redeemUnusedRes.status).toBe(201);
+    const redeemedBody = (await redeemUnusedRes.json()) as PairAgentResponse;
+    expect(redeemedBody.autoJoinedRoomId).toBeUndefined();
   });
 });

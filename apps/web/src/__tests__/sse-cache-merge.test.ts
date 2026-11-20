@@ -6,13 +6,15 @@ import {
   type MessageDto,
   type OperationKey,
   type RoomId,
+  type RoomSummaryDto,
   type UserId,
   asMessageSeq,
+  asReadCursorSeq,
   createDefaultGovernanceState,
 } from "@openhuddle/protocol";
 import { describe, expect, it } from "vitest";
 import type { RoomMessagesCacheData } from "../lib/query-keys.js";
-import { mergeConfirmedMessageIntoCache } from "../lib/sse-sync.js";
+import { mergeConfirmedMessageIntoCache, removeRoomFromSummaryListCache } from "../lib/sse-sync.js";
 
 const ROOM_ID = "rom_test_web_01" as RoomId;
 const USER_ID = "usr_owner_01" as UserId;
@@ -70,5 +72,34 @@ describe("@openhuddle/web — SSE & optimistic QueryClient cache merge invariant
 
     expect(afterHttpConfirm.latestSeq).toBe(3);
     expect(afterHttpConfirm.messages.map((m) => m.seq)).toEqual([1, 2, 3]);
+  });
+
+  it("removes a deleted room immutably from the room summary cache and stays idempotent", () => {
+    const otherRoomId = "rom_test_web_02" as RoomId;
+    const makeRoomSummary = (id: RoomId, name: string): RoomSummaryDto => ({
+      id,
+      ownerUserId: USER_ID,
+      name,
+      topic: "Topic",
+      visibility: "invite_only",
+      lastSeq: asReadCursorSeq(2),
+      yourLastReadSeq: asReadCursorSeq(1),
+      governance: createDefaultGovernanceState(),
+      createdAtIso: "2026-11-20T08:00:00.000Z",
+    });
+
+    const initialRooms = {
+      ok: true as const,
+      rooms: [makeRoomSummary(ROOM_ID, "Room 1"), makeRoomSummary(otherRoomId, "Room 2")],
+    };
+
+    const afterDelete = removeRoomFromSummaryListCache(initialRooms, ROOM_ID);
+    expect(afterDelete.rooms.map((r) => r.id)).toEqual([otherRoomId]);
+    // 不可变校验：原缓存数组不受影响
+    expect(initialRooms.rooms).toHaveLength(2);
+
+    // 幂等性校验：重复移除同一不存在的 roomId 不会报错或误删其他房间
+    const afterRepeat = removeRoomFromSummaryListCache(afterDelete, ROOM_ID);
+    expect(afterRepeat.rooms.map((r) => r.id)).toEqual([otherRoomId]);
   });
 });

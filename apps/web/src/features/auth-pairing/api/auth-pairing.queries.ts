@@ -1,10 +1,10 @@
 /**
  * @module web/features/auth-pairing/api
- * @description 人类 OTP 登录认证、双层身份自省（`/api/v1/me`）与个人 Agent 配对码签发的 TanStack Query 契约层。
+ * @description 人类邮箱+密码注册与登录、找回/修改密码、旧版 OTP 兼容、双层身份自省（`/api/v1/me`）与个人 Agent 配对码签发的 TanStack Query 契约层。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 登录态单点收敛：`currentMeQueryOptions` 设置 `retry: false`，确保未登录或令牌失效时零延迟切换至 OTP 登录视图。
- * 2. 登录即预热：`verifyEmailOtp` 成功后同步写入本地备份 `sessionToken` 并立即水合 `["me"]` 缓存，消除二次往返白屏。
+ * 1. 登录态单点收敛：`currentMeQueryOptions` 设置 `retry: false`，确保未登录或令牌失效时零延迟切换至认证视图。
+ * 2. 登录/注册/改密即水合：任意会话签发成功后均同步持久化备份 `sessionToken` 并失效刷新 `["me"]` 与 `["rooms"]` 缓存，消除二次往返白屏。
  */
 import type {
   AgentId,
@@ -17,18 +17,40 @@ import type {
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   type CreatePairingCodeInput,
+  changePassword,
+  confirmPasswordReset,
   connectLocalAgent,
   createPairingCode,
   deleteOwnedAgent,
+  fetchAuthConfig,
   fetchCurrentMe,
   fetchLocalAgentsStatus,
+  loginWithPassword,
   logoutSession,
+  registerWithPassword,
   requestEmailOtp,
+  requestPasswordResetCode,
+  requestRegisterCode,
+  updateCurrentMe,
   updateRoomGovernance,
   verifyEmailOtp,
 } from "../../../lib/api-client.js";
 import { huddleQueryKeys } from "../../../lib/query-keys.js";
 import { setStoredSessionToken } from "../../../lib/session-store.js";
+
+/**
+ * 构造认证与注册公开策略配置（`/api/v1/auth/config`）的 `queryOptions`。
+ *
+ * @returns 公开注册开关、邮箱域名白名单、邮件投递模式与冷却参数查询配置
+ */
+export function authConfigQueryOptions() {
+  return queryOptions({
+    queryKey: huddleQueryKeys.authConfig(),
+    queryFn: () => fetchAuthConfig(),
+    staleTime: 60_000,
+    retry: 1,
+  });
+}
 
 /**
  * 构造当前人类身份与名下个人 Agent 列表的 `queryOptions`。
@@ -46,7 +68,111 @@ export function currentMeQueryOptions() {
 }
 
 /**
- * 请求邮箱 6 位一次性登录验证码的 Mutation Hook。
+ * 注册前请求发送 6 位邮箱激活验证码的 Mutation Hook。
+ *
+ * @returns TanStack `useMutation` 实例
+ */
+export function useRequestRegisterCodeMutation() {
+  return useMutation({
+    mutationFn: requestRegisterCode,
+  });
+}
+
+/**
+ * 校验 6 位邮箱激活码并完成新用户注册的 Mutation Hook。
+ *
+ * @returns 注册成功后自动持久化会话令牌并刷新全局身份与房间列表的 `useMutation` 实例
+ */
+export function useRegisterWithPasswordMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: registerWithPassword,
+    onSuccess: (data) => {
+      setStoredSessionToken(data.sessionToken);
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+    },
+  });
+}
+
+/**
+ * 邮箱 + 密码日常登录的 Mutation Hook。
+ *
+ * @returns 登录成功后自动持久化会话令牌并刷新全局身份与房间列表的 `useMutation` 实例
+ */
+export function useLoginWithPasswordMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: loginWithPassword,
+    onSuccess: (data) => {
+      setStoredSessionToken(data.sessionToken);
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+    },
+  });
+}
+
+/**
+ * 忘记密码时请求发送 6 位邮箱重置验证码的 Mutation Hook。
+ *
+ * @returns TanStack `useMutation` 实例
+ */
+export function useRequestPasswordResetCodeMutation() {
+  return useMutation({
+    mutationFn: requestPasswordResetCode,
+  });
+}
+
+/**
+ * 核验 6 位重置验证码并重设登录密码的 Mutation Hook。
+ *
+ * @returns 重置成功后自动持久化新会话令牌并刷新全局身份与房间列表的 `useMutation` 实例
+ */
+export function useConfirmPasswordResetMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: confirmPasswordReset,
+    onSuccess: (data) => {
+      setStoredSessionToken(data.sessionToken);
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+    },
+  });
+}
+
+/**
+ * 已登录用户修改登录密码（或补设初始密码）并轮换会话的 Mutation Hook。
+ *
+ * @returns 改密成功后自动持久化新会话令牌并刷新 `["me"]` 缓存的 `useMutation` 实例
+ */
+export function useChangePasswordMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: changePassword,
+    onSuccess: (data) => {
+      setStoredSessionToken(data.sessionToken);
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
+    },
+  });
+}
+
+/**
+ * 更新当前人类用户展示昵称的 Mutation Hook。
+ *
+ * @returns 更新成功后自动同步 `["me"]` 缓存的 `useMutation` 实例
+ */
+export function useUpdateMeMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateCurrentMe,
+    onSuccess: (data) => {
+      queryClient.setQueryData(huddleQueryKeys.me(), data);
+    },
+  });
+}
+
+/**
+ * [兼容旧版 OTP 路由] 请求邮箱 6 位一次性登录验证码的 Mutation Hook。
  *
  * @returns TanStack `useMutation` 实例
  */
@@ -57,7 +183,7 @@ export function useRequestOtpMutation() {
 }
 
 /**
- * 校验 6 位验证码并完成人类会话登录的 Mutation Hook。
+ * [兼容旧版 OTP 路由] 校验 6 位验证码并完成人类会话登录的 Mutation Hook。
  *
  * @returns 登录成功后自动持久化备份令牌并刷新全局身份与房间列表的 `useMutation` 实例
  */
@@ -110,7 +236,8 @@ export function localAgentsStatusQueryOptions() {
     queryKey: huddleQueryKeys.localAgentsStatus(),
     queryFn: () => fetchLocalAgentsStatus(),
     retry: false,
-    staleTime: 30_000,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 }
 

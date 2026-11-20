@@ -33,12 +33,14 @@ import {
   createHuddleRoom,
   createRoomProposal,
   decideProposal,
+  deleteHuddleRoom,
   fetchJoinedRooms,
   fetchRoomDetail,
   fetchRoomMessages,
   fetchRoomProposals,
   fetchSystemHealth,
   joinRoomByInvite,
+  leaveHuddleRoom,
   recallRoomMessage,
   sendRoomMessage,
   synthesizeRoomProposal,
@@ -49,7 +51,11 @@ import {
   type RoomMessagesCacheData,
   huddleQueryKeys,
 } from "../../../lib/query-keys.js";
-import { mergeConfirmedMessageIntoCache, mergeProposalIntoCache } from "../../../lib/sse-sync.js";
+import {
+  evictDeletedRoomFromQueryClient,
+  mergeConfirmedMessageIntoCache,
+  mergeProposalIntoCache,
+} from "../../../lib/sse-sync.js";
 
 /**
  * 构造系统健康探针的标准化 `queryOptions`。
@@ -152,6 +158,81 @@ export function useJoinRoomMutation() {
     onSuccess: (res) => {
       queryClient.setQueryData(huddleQueryKeys.roomDetail(res.room.id), res);
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+    },
+  });
+}
+
+/**
+ * 人类群主永久删除群聊并清理列表与房间子缓存的 Mutation Hook。
+ *
+ * @returns 删除群聊 `useMutation` 实例
+ */
+export function useDeleteRoomMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (roomId: RoomId) => deleteHuddleRoom(roomId),
+    onSuccess: (res) => {
+      evictDeletedRoomFromQueryClient(queryClient, res.deletedRoomId);
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+    },
+  });
+}
+
+/**
+ * 主动退出指定群聊并同步清理本地房间列表与子缓存的 Mutation Hook。
+ *
+ * @returns 退出群聊 `useMutation` 实例
+ */
+export function useLeaveRoomMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (roomId: RoomId) => leaveHuddleRoom(roomId),
+    onSuccess: (_res, roomId) => {
+      evictDeletedRoomFromQueryClient(queryClient, roomId);
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+    },
+  });
+}
+
+/**
+ * 从任意房间条目（例如左侧会话列表右键菜单）直接热更新目标房间治理参数的 Mutation Hook。
+ *
+ * @returns 同步更新目标房间详情、消息治理栏与左侧列表的 `useMutation` 实例
+ */
+export function useUpdateAnyRoomGovernanceMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { readonly roomId: RoomId; readonly patch: UpdateGovernanceBody }) =>
+      updateRoomGovernance(params.roomId, params.patch),
+    onSuccess: (res, params) => {
+      const { roomId } = params;
+      queryClient.setQueryData<{ readonly ok: true; readonly room: RoomDetailDto }>(
+        huddleQueryKeys.roomDetail(roomId),
+        res,
+      );
+      queryClient.setQueryData<RoomMessagesCacheData>(
+        huddleQueryKeys.roomMessages(roomId),
+        (prev) => (prev ? { ...prev, governance: res.room.governance } : undefined),
+      );
+      queryClient.setQueryData<{
+        readonly ok: true;
+        readonly rooms: ReadonlyArray<RoomSummaryDto>;
+      }>(huddleQueryKeys.rooms(), (prev) =>
+        prev
+          ? {
+              ok: true,
+              rooms: prev.rooms.map((r) =>
+                r.id === roomId
+                  ? {
+                      ...r,
+                      visibility: res.room.visibility,
+                      governance: res.room.governance,
+                    }
+                  : r,
+              ),
+            }
+          : undefined,
+      );
     },
   });
 }

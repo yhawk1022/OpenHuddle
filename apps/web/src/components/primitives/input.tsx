@@ -1,9 +1,9 @@
 /**
  * @module web/components/primitives/input
- * @description Pachat 暖中性高对比度文本输入原语（`AppInput` 与 `AppTextarea`）。
+ * @description Atelier Daylight & Obsidian Studio 凹陷微质感高对比度文本输入原语（`AppInput` 与 `AppTextarea`）。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 双主题对比度铁律：日光模式下为纯白底 + `border-black/[0.12]` 聚焦纯墨黑 `#141414`；暗色模式下恒定为 `#18181B` -> 聚焦 `#1F1F23` 暖深灰表面，彻底杜绝暗黑模式白底白字缺陷。
+ * 1. 双主题对比度铁律：日光模式下为微凹暖瓷表面 `#F6F7FA` -> 聚焦纯白 `#FFFFFF`；暗色模式下恒定为 `#0F1219` -> 聚焦 `#131722` 深凹表面，搭配 3px 柔和聚焦光晕，彻底杜绝暗黑模式白底白字缺陷。
  * 2. 稳定 DOM 结构：`AppInput` 恒定采用外层容器承载可选 `leadingIcon` 与 `trailingSlot`，槽位动态显隐时 `<input>` 节点永不卸载失焦。
  * 3. Electron/Tauri 拖拽免疫：输入容器默认标记 `.app-no-drag`，在桌面端标题栏或工具条内始终可聚焦输入。
  */
@@ -26,16 +26,16 @@ const INPUT_SHELL_SIZE_CLASS: Record<AppInputSize, string> = {
 
 const SURFACE_BASE_CLASS = [
   "app-no-drag transition-all duration-150",
-  "border border-black/[0.12] bg-white text-[#141414]",
-  "hover:border-black/[0.20]",
-  "focus-within:border-[#141414] focus-within:ring-4 focus-within:ring-black/[0.06]",
-  "dark:border-white/[0.12] dark:bg-[#18181B] dark:text-zinc-100",
-  "dark:hover:border-white/[0.20]",
-  "dark:focus-within:bg-[#1F1F23] dark:focus-within:border-white/35 dark:focus-within:ring-white/[0.07]",
+  "border border-black/[0.07] bg-black/[0.03] text-[#111318]",
+  "hover:bg-black/[0.04] hover:border-black/[0.11]",
+  "focus-within:bg-white focus-within:border-[#181B22]/25 focus-within:ring-[3px] focus-within:ring-[#181B22]/[0.06]",
+  "dark:border-white/[0.08] dark:bg-[#161619] dark:text-[#F2F2F4]",
+  "dark:hover:border-white/[0.14]",
+  "dark:focus-within:bg-[#1C1C20] dark:focus-within:border-white/[0.22] dark:focus-within:ring-white/[0.07]",
 ].join(" ");
 
 const INVALID_BORDER_CLASS =
-  "border-[#FF3B30]/65 focus-within:border-[#FF3B30] focus-within:ring-[#FF3B30]/12 dark:border-[#FF453A]/65 dark:focus-within:border-[#FF453A] dark:focus-within:ring-[#FF453A]/15";
+  "border-[#E5484D]/65 focus-within:border-[#E5484D] focus-within:ring-[#E5484D]/12 dark:border-[#F05252]/65 dark:focus-within:border-[#F05252] dark:focus-within:ring-[#F05252]/15";
 
 /** `AppInput` 入参属性 */
 export interface AppInputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "size"> {
@@ -83,7 +83,7 @@ export const AppInput = forwardRef<HTMLInputElement, AppInputProps>(function App
       {leadingIcon !== undefined ? (
         <span
           aria-hidden="true"
-          className="inline-flex shrink-0 items-center text-[#8E8E93] dark:text-zinc-500"
+          className="inline-flex shrink-0 items-center text-[#939BAD] dark:text-[#586075]"
         >
           {leadingIcon}
         </span>
@@ -93,7 +93,7 @@ export const AppInput = forwardRef<HTMLInputElement, AppInputProps>(function App
         disabled={disabled}
         aria-invalid={invalid || undefined}
         className={cn(
-          "h-full w-full min-w-0 flex-1 border-0 bg-transparent p-0 text-inherit caret-[#141414] outline-none placeholder:text-[#8E8E93] disabled:cursor-not-allowed dark:caret-zinc-100 dark:placeholder:text-zinc-500",
+          "h-full w-full min-w-0 flex-1 border-0 bg-transparent p-0 text-inherit caret-[#181B22] outline-none placeholder:text-[#939BAD] disabled:cursor-not-allowed dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]",
           className,
         )}
         {...rest}
@@ -129,13 +129,13 @@ export const AppTextarea = forwardRef<HTMLTextAreaElement, AppTextareaProps>(
         aria-invalid={invalid || undefined}
         className={cn(
           "app-no-drag block w-full min-w-0 resize-y rounded-xl px-3 py-2.5 text-[13px] leading-relaxed outline-none transition-all duration-150",
-          "border border-black/[0.12] bg-white text-[#141414] placeholder:text-[#8E8E93]",
-          "hover:border-black/[0.20] focus:border-[#141414] focus:ring-4 focus:ring-black/[0.06]",
-          "dark:border-white/[0.12] dark:bg-[#18181B] dark:text-zinc-100 dark:placeholder:text-zinc-500",
-          "dark:hover:border-white/[0.20] dark:focus:bg-[#1F1F23] dark:focus:border-white/35 dark:focus:ring-white/[0.07]",
-          "caret-[#141414] dark:caret-zinc-100",
+          "border border-black/[0.10] bg-[#F6F7FA] text-[#111318] placeholder:text-[#939BAD]",
+          "hover:border-black/[0.16] focus:bg-white focus:border-[#181B22]/35 focus:ring-[3px] focus:ring-[#181B22]/[0.07]",
+          "dark:border-white/[0.09] dark:bg-[#161619] dark:text-[#F2F2F4] dark:placeholder:text-[#63636B]",
+          "dark:hover:border-white/[0.16] dark:focus:bg-[#1C1C20] dark:focus:border-white/[0.25] dark:focus:ring-white/[0.08]",
+          "caret-[#181B22] dark:caret-[#F2F2F4]",
           invalid &&
-            "border-[#FF3B30]/65 focus:border-[#FF3B30] focus:ring-[#FF3B30]/12 dark:border-[#FF453A]/65 dark:focus:border-[#FF453A] dark:focus:ring-[#FF453A]/15",
+            "border-[#E5484D]/65 focus:border-[#E5484D] focus:ring-[#E5484D]/12 dark:border-[#F05252]/65 dark:focus:border-[#F05252] dark:focus:ring-[#F05252]/15",
           Boolean(disabled) && "cursor-not-allowed opacity-60",
           className,
         )}

@@ -1,10 +1,10 @@
 /**
  * @module web/lib/format
- * @description 平台暖色粉彩头像/徽章元数据映射、自然可达状态文案、时间格式化、2 分钟撤回窗口计算与幂等键生成纯工具库。
+ * @description 平台低饱和粉彩头像/徽章元数据映射、自然可达状态文案、时间格式化、2 分钟撤回窗口计算与幂等键生成纯工具库。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 纯确定性无副作用：所有展示映射函数均使用 `assertNever` 对协议枚举做编译期穷尽检查，新增宿主平台或可达状态时编译器自动告警。
- * 2. Pachat 低饱和暖粉彩体系：摒弃高饱和霓虹渐变与廉价紫光阴影，统一采用 `#F4ECDD`、`#FFF1C2`、`#FBE3D9`、`#E1ECFF`、`#E4F4EA`、`#EFEAFF` 等温润纸感底色与克制的暗色对应色。
+ * 2. 双主题高通透粉彩体系：日光下采用低饱和暖纸/清冷粉彩底色；暗夜下采用通透柔和的 Obsidian 深色粉彩调色板，保证平台之间色相可辨而不刺眼。
  * 3. 撤回时效对齐：前端撤回按钮显隐严格对齐后端 120 秒（2 分钟）业务窗口，避免无效点击。
  */
 import {
@@ -53,9 +53,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "Antigravity",
         monogram: "AG",
         badgeClass:
-          "border-black/[0.06] bg-[#EFEAFF] text-[#3F3368] dark:border-white/[0.08] dark:bg-[#242030] dark:text-[#D9D0F5]",
+          "border-black/[0.06] bg-[#EFEAFF] text-[#3F3368] dark:border-white/[0.08] dark:bg-[#25213A] dark:text-[#C9BEFF]",
         avatarClass:
-          "bg-[#EFEAFF] text-[#352A59] ring-1 ring-inset ring-black/[0.06] dark:bg-[#242030] dark:text-[#DFD7F7] dark:ring-white/[0.08]",
+          "bg-[#EFEAFF] text-[#352A59] ring-1 ring-inset ring-black/[0.06] dark:bg-[#25213A] dark:text-[#C9BEFF] dark:ring-white/[0.08]",
         cliHint: "读取 /install.md 自动完成绑定，支持本地 SSE 实时唤醒",
       };
     case "codex":
@@ -63,9 +63,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "Codex",
         monogram: "CX",
         badgeClass:
-          "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1B2433] dark:text-[#C7DCFF]",
+          "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
         avatarClass:
-          "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1B2433] dark:text-[#CFE1FF] dark:ring-white/[0.08]",
+          "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1A273D] dark:text-[#9FC5FF] dark:ring-white/[0.08]",
         cliHint: "支持零依赖单文件 CLI 监听并自动拉起 Codex 回复群消息",
       };
     case "claude_code":
@@ -73,9 +73,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "Claude Code",
         monogram: "CC",
         badgeClass:
-          "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2B251D] dark:text-[#E7D3B5]",
+          "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2F261C] dark:text-[#F3CFA2]",
         avatarClass:
-          "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2B251D] dark:text-[#EAD8BC] dark:ring-white/[0.08]",
+          "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F261C] dark:text-[#F3CFA2] dark:ring-white/[0.08]",
         cliHint: "在终端粘贴一句话引导词即可进群，支持后台实时唤醒",
       };
     case "cursor":
@@ -83,9 +83,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "Cursor",
         monogram: "CR",
         badgeClass:
-          "border-black/[0.06] bg-[#FFF1C2] text-[#5C4813] dark:border-white/[0.08] dark:bg-[#2C2718] dark:text-[#F2DF9D]",
+          "border-black/[0.06] bg-[#FFF1C2] text-[#5C4813] dark:border-white/[0.08] dark:bg-[#2F2816] dark:text-[#F5D687]",
         avatarClass:
-          "bg-[#FFF1C2] text-[#4F3D0E] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2C2718] dark:text-[#F5E4AA] dark:ring-white/[0.08]",
+          "bg-[#FFF1C2] text-[#4F3D0E] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F2816] dark:text-[#F5D687] dark:ring-white/[0.08]",
         cliHint: "支持在 IDE Composer 直接粘贴引导词或挂载 MCP 工具进群",
       };
     case "deepseek":
@@ -93,9 +93,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "DeepSeek",
         monogram: "DS",
         badgeClass:
-          "border-black/[0.06] bg-[#FBE3D9] text-[#663523] dark:border-white/[0.08] dark:bg-[#2E201B] dark:text-[#F2C7B6]",
+          "border-black/[0.06] bg-[#FBE3D9] text-[#663523] dark:border-white/[0.08] dark:bg-[#32201E] dark:text-[#F7B6A8]",
         avatarClass:
-          "bg-[#FBE3D9] text-[#572B1B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2E201B] dark:text-[#F5CEBF] dark:ring-white/[0.08]",
+          "bg-[#FBE3D9] text-[#572B1B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#32201E] dark:text-[#F7B6A8] dark:ring-white/[0.08]",
         cliHint: "擅长交叉核对事实与逻辑推演，支持 CLI 与 MCP 双通道接入",
       };
     case "openclaw":
@@ -103,9 +103,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "OpenClaw",
         monogram: "OC",
         badgeClass:
-          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#BEE3CC]",
+          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#162C24] dark:text-[#86E5BA]",
         avatarClass:
-          "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#192920] dark:text-[#C7E8D3] dark:ring-white/[0.08]",
+          "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#162C24] dark:text-[#86E5BA] dark:ring-white/[0.08]",
         cliHint: "支持常驻后台守护监听群内 @ 提及与定时巡检",
       };
     case "gemini":
@@ -113,9 +113,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "Gemini",
         monogram: "GM",
         badgeClass:
-          "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1B2433] dark:text-[#C7DCFF]",
+          "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
         avatarClass:
-          "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1B2433] dark:text-[#CFE1FF] dark:ring-white/[0.08]",
+          "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1A273D] dark:text-[#9FC5FF] dark:ring-white/[0.08]",
         cliHint: "支持在 Gemini CLI 粘贴引导词绑定个人身份进群",
       };
     case "chatgpt":
@@ -123,9 +123,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "ChatGPT",
         monogram: "GP",
         badgeClass:
-          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#BEE3CC]",
+          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#162C24] dark:text-[#86E5BA]",
         avatarClass:
-          "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#192920] dark:text-[#C7E8D3] dark:ring-white/[0.08]",
+          "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#162C24] dark:text-[#86E5BA] dark:ring-white/[0.08]",
         cliHint: "支持通过 Remote MCP 或桌面端工具连接参与群内讨论",
       };
     case "hosted":
@@ -133,9 +133,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "Hosted",
         monogram: "AI",
         badgeClass:
-          "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2B251D] dark:text-[#E7D3B5]",
+          "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2F261C] dark:text-[#F3CFA2]",
         avatarClass:
-          "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2B251D] dark:text-[#EAD8BC] dark:ring-white/[0.08]",
+          "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F261C] dark:text-[#F3CFA2] dark:ring-white/[0.08]",
         cliHint: "服务端托管 BYOK 模型角色，无需本地守护即可直接响应",
       };
     case "custom":
@@ -143,9 +143,9 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
         label: "Custom",
         monogram: "CA",
         badgeClass:
-          "border-black/[0.06] bg-[#EFEFF3] text-[#3A3A3C] dark:border-white/[0.08] dark:bg-[#27272A] dark:text-zinc-300",
+          "border-black/[0.06] bg-[#ECEEF3] text-[#3B414E] dark:border-white/[0.08] dark:bg-[#27272B] dark:text-[#D4D4DA]",
         avatarClass:
-          "bg-[#EFEFF3] text-[#141414] ring-1 ring-inset ring-black/[0.06] dark:bg-[#27272A] dark:text-zinc-200 dark:ring-white/[0.08]",
+          "bg-[#ECEEF3] text-[#181B22] ring-1 ring-inset ring-black/[0.06] dark:bg-[#27272B] dark:text-[#D4D4DA] dark:ring-white/[0.08]",
         cliHint: "支持任意兼容 HTTP、CLI 或 MCP 协议的自定义脚本接入",
       };
     default:
@@ -157,7 +157,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
  * 获取 Agent 在线可达状态（`reach`）的克制指示圆点与自然中文说明。
  *
  * @param reach - Agent 当前实时可达状态（缺省按 `offline` 处理）
- * @returns 圆点颜色（在线使用 `#34C759`）、胶囊类名与自然说明文案
+ * @returns 圆点颜色、胶囊类名与自然说明文案
  */
 export function getReachVisualMeta(reach: AgentReachState | undefined): ReachVisualMeta {
   const effective = reach ?? "offline";
@@ -167,45 +167,45 @@ export function getReachVisualMeta(reach: AgentReachState | undefined): ReachVis
         label: "实时在线",
         shortLabel: "在线",
         description: "本地守护已建立实时连接，群内 @ 提及可立即唤醒回复",
-        dotClass: "bg-[#34C759]",
+        dotClass: "bg-[#16A34A] dark:bg-[#34D399]",
         pillClass:
-          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#86E0A6]",
+          "border-black/[0.06] bg-[#E8F5EE] text-[#145335] dark:border-white/[0.08] dark:bg-[#162923] dark:text-[#6EE7B7]",
       };
     case "hosted_ready":
       return {
         label: "云端在线",
         shortLabel: "在线",
         description: "服务端托管模型已就绪，可随时响应讨论与提案表决",
-        dotClass: "bg-[#34C759]",
+        dotClass: "bg-[#16A34A] dark:bg-[#34D399]",
         pillClass:
-          "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#192920] dark:text-[#86E0A6]",
+          "border-black/[0.06] bg-[#E8F5EE] text-[#145335] dark:border-white/[0.08] dark:bg-[#162923] dark:text-[#6EE7B7]",
       };
     case "webhook":
       return {
         label: "Webhook 在线",
         shortLabel: "Webhook",
         description: "通过已注册的 HTTPS Webhook 实时接收房间唤醒事件",
-        dotClass: "bg-[#2F6FED]",
+        dotClass: "bg-[#2563EB] dark:bg-[#60A5FA]",
         pillClass:
-          "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1B2433] dark:text-[#9EC5FF]",
+          "border-black/[0.06] bg-[#E1ECFF] text-[#1E40AF] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#93C5FD]",
       };
     case "polling":
       return {
         label: "定时巡检",
         shortLabel: "巡检中",
         description: "处于周期性收件箱检查模式，将在下次巡检窗口回复",
-        dotClass: "bg-[#D99B26] dark:bg-[#E5B34B]",
+        dotClass: "bg-[#D97706] dark:bg-[#FBBF24]",
         pillClass:
-          "border-black/[0.06] bg-[#FFF1C2] text-[#5C4813] dark:border-white/[0.08] dark:bg-[#2C2718] dark:text-[#F2DF9D]",
+          "border-black/[0.06] bg-[#FEF3C7] text-[#78350F] dark:border-white/[0.08] dark:bg-[#2E2516] dark:text-[#FCD34D]",
       };
     case "offline":
       return {
         label: "暂不在线",
         shortLabel: "离线",
         description: "当前未检测到活跃的实时连接，可在终端运行 listen 唤醒",
-        dotClass: "bg-[#C7C7CC] dark:bg-zinc-600",
+        dotClass: "bg-[#CBD2DE] dark:bg-[#63636B]",
         pillClass:
-          "border-black/[0.06] bg-[#F5F5F7] text-[#6E6E73] dark:border-white/[0.08] dark:bg-[#1C1C1F] dark:text-zinc-400",
+          "border-black/[0.06] bg-[#F3F4F7] text-[#687082] dark:border-white/[0.08] dark:bg-[#222226] dark:text-[#8E8E96]",
       };
     default:
       return assertNever(effective);
@@ -213,23 +213,34 @@ export function getReachVisualMeta(reach: AgentReachState | undefined): ReachVis
 }
 
 /**
- * 提取显示名称的首字母缩写（支持中英文混合名称）。
+ * 提取显示名称的首字/首字母缩写（针对中文与西文分别优化视觉留白）。
  *
- * @param displayName - 用户或 Agent 的展示昵称
- * @returns 1–2 字符大写缩写
+ * @remarks
+ * 中文全角汉字宽度约为西文大写字母的 1.7 倍，若在小尺寸圆形/方标头像中强塞 2 个汉字会贴边拥挤；
+ * 因此以汉字开头的名称提取首汉字（1 字居中呼吸留白），西文多词提取双首字母、单词提取前 2 字母。
+ *
+ * @param displayName - 用户、房间或 Agent 的展示名称
+ * @returns 视觉均衡的 1 个汉字或 1–2 个大写西文字母
  */
 export function getInitials(displayName: string): string {
   const trimmed = displayName.trim();
   if (trimmed.length === 0) {
     return "OH";
   }
-  const parts = trimmed.split(/\s+/).filter((part) => part.length > 0);
+  const firstChar = Array.from(trimmed)[0] ?? "";
+  if (/^\p{Script=Han}/u.test(firstChar)) {
+    return firstChar;
+  }
+  const parts = trimmed.split(/[\s_-]+/).filter((part) => part.length > 0);
   if (parts.length >= 2) {
-    const first = parts[0]?.[0] ?? "";
-    const second = parts[1]?.[0] ?? "";
+    const first = Array.from(parts[0] ?? "")[0] ?? "";
+    const second = Array.from(parts[1] ?? "")[0] ?? "";
+    if (/^\p{Script=Han}/u.test(first)) {
+      return first;
+    }
     return `${first}${second}`.toUpperCase();
   }
-  return trimmed.slice(0, 2).toUpperCase();
+  return Array.from(trimmed).slice(0, 2).join("").toUpperCase();
 }
 
 /**

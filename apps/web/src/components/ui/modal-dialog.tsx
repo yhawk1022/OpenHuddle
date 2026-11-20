@@ -1,6 +1,6 @@
 /**
  * @module web/components/ui/modal-dialog
- * @description 通用无障碍 Pachat 极简模态弹窗门面：100% 保持 `ModalDialogProps` 向后兼容，内部委托给 `AppModal`（移动端 `< 640px` 自动切换为 `Vaul` iOS 物理阻尼底部抽屉，桌面端渲染为 Radix `Dialog` + `motion` 弹簧纯净 `#FFFFFF` / `#18181B` 居中窗口）。
+ * @description 通用无障碍 Apple Liquid Glass 模态弹窗门面：100% 保持 `ModalDialogProps` 向后兼容，内部委托给 `AppModal`（移动端 `< 640px` 自动切换为 `Vaul` iOS 物理阻尼底部抽屉，桌面端渲染为 Radix `Dialog` + `motion` 弹簧 `liquid-glass-modal` 居中窗口）。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 契约零破坏兼容：完整保留既有 `ModalDialogProps`（`open` / `onClose` / `title` / `subtitle` / `maxWidthClass` / `icon` / `children`），并透传可选 `footer` / `hideHeader` / `bodyClassName` 扩展槽位。

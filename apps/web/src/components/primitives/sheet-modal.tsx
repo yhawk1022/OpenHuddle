@@ -1,9 +1,9 @@
 /**
  * @module web/components/primitives/sheet-modal
- * @description 响应式 Pachat 极简模态窗与抽屉原语（`AppModal` 与 `AppSheetDrawer`）。
+ * @description 响应式 Apple Liquid Glass 模态窗与抽屉原语（`AppModal` 与 `AppSheetDrawer`）。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 多端物理自适应：在小屏视口（`< 640px`）下自动切换为 `vaul` 原生 iOS 物理阻尼下拉手势底栏（Bottom Sheet）；在桌面视口（`>= 640px`）下渲染为 Radix `Dialog` + `motion` 弹簧居中窗口，统一使用纯净 `#FFFFFF` / `#18181B` 表面。
+ * 1. 多端物理自适应：在小屏视口（`< 640px`）下自动切换为 `vaul` 原生 iOS 物理阻尼下拉手势底栏（Bottom Sheet）；在桌面视口（`>= 640px`）下渲染为 Radix `Dialog` + `motion` 弹簧居中窗口，统一采用 `liquid-glass-modal` 晶莹玻璃表面与柔和遮罩。
  * 2. 视口锁定保护：向 `Vaul` 显式传入 `noBodyStyles={true}`，防止其篡改 `body` 样式破坏全局 `100dvh` IM 原生壳锁定。
  * 3. 零 `useEffect` 媒体查询：采用 React 19 `useSyncExternalStore` 订阅 `(max-width: 639px)` 断点，杜绝首帧状态撕裂。
  * 4. 严格 ARIA 合规：无论是否展示可视化头部，始终向 Radix / Vaul 提供 `Title` 与 `Description` 节点，杜绝无障碍读屏警告。
@@ -107,12 +107,12 @@ export function AppModal(props: AppModalProps) {
     return (
       <Drawer.Root open={open} onOpenChange={handleOpenChange} noBodyStyles={true}>
         <Drawer.Portal>
-          <Drawer.Overlay className="app-no-drag fixed inset-0 z-[89] bg-black/45 backdrop-blur-[2px] dark:bg-black/75" />
+          <Drawer.Overlay className="app-no-drag fixed inset-0 z-[89] bg-[#090A0E]/35 backdrop-blur-[4px] dark:bg-[#050609]/65 dark:backdrop-blur-[6px]" />
           <Drawer.Content
             className={cn(
               "app-no-drag fixed inset-x-0 bottom-0 z-[90] mt-16 flex max-h-[92dvh] flex-col overflow-hidden rounded-t-[26px] outline-none",
-              "glass-modal text-[#141414]",
-              "dark:text-zinc-100",
+              "liquid-glass-modal text-[#111318]",
+              "dark:text-[#ECEFF6]",
               className,
             )}
           >
@@ -127,20 +127,20 @@ export function AppModal(props: AppModalProps) {
                 <Drawer.Description>{subtitle ?? title}</Drawer.Description>
               </div>
             ) : (
-              <header className="flex shrink-0 select-none items-start justify-between gap-3 border-b border-black/[0.07] px-5 pt-2 pb-3.5 dark:border-white/[0.08]">
+              <header className="flex shrink-0 select-none items-start justify-between gap-3 border-b border-black/[0.06] px-5 pt-2 pb-3.5 dark:border-white/[0.07]">
                 <div className="flex min-w-0 items-start gap-3">
                   {icon !== undefined ? (
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#F5F5F7] text-[#141414] ring-1 ring-inset ring-black/[0.06] dark:bg-[#27272A] dark:text-zinc-100 dark:ring-white/[0.10]">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#F3F4F7] text-[#111318] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2A2A2F] dark:text-[#F2F2F4] dark:ring-white/[0.08]">
                       {icon}
                     </div>
                   ) : null}
                   <div className="min-w-0">
-                    <Drawer.Title className="truncate text-[15.5px] font-semibold tracking-[-0.015em] text-[#141414] dark:text-zinc-100">
+                    <Drawer.Title className="truncate text-[15.5px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#ECEFF6]">
                       {title}
                     </Drawer.Title>
                     <Drawer.Description
                       className={cn(
-                        "mt-0.5 text-xs leading-relaxed text-[#6E6E73] dark:text-zinc-400",
+                        "mt-0.5 text-xs leading-relaxed text-[#687082] dark:text-[#7D869C]",
                         subtitle === undefined && "sr-only",
                       )}
                     >
@@ -152,7 +152,7 @@ export function AppModal(props: AppModalProps) {
                   <button
                     type="button"
                     aria-label="关闭窗口"
-                    className="-mr-1 inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#8E8E93] transition hover:bg-black/[0.05] hover:text-[#141414] active:scale-95 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white"
+                    className="-mr-1 inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#939BAD] transition hover:bg-black/[0.05] hover:text-[#111318] active:scale-95 dark:text-[#7D869C] dark:hover:bg-white/[0.08] dark:hover:text-[#ECEFF6]"
                   >
                     <X aria-hidden="true" className="h-4 w-4" />
                   </button>
@@ -167,7 +167,7 @@ export function AppModal(props: AppModalProps) {
             </div>
 
             {footer !== undefined ? (
-              <footer className="pb-safe shrink-0 border-t border-black/[0.07] bg-[#F8F8FA] px-5 py-3 dark:border-white/[0.08] dark:bg-[#151518]">
+              <footer className="pb-safe shrink-0 border-t border-black/[0.06] bg-black/[0.025] px-5 py-3 dark:border-white/[0.07] dark:bg-white/[0.03]">
                 {footer}
               </footer>
             ) : null}
@@ -185,7 +185,7 @@ export function AppModal(props: AppModalProps) {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.16, ease: "easeOut" }}
-            className="app-no-drag fixed inset-0 z-[89] bg-black/45 backdrop-blur-[2px] dark:bg-black/75"
+            className="app-no-drag fixed inset-0 z-[89] bg-[#090A0E]/35 backdrop-blur-[4px] dark:bg-[#050609]/65 dark:backdrop-blur-[6px]"
           />
         </Dialog.Overlay>
         {/* 采用 inset-0 + m-auto + h-fit 几何居中，不占用 CSS translate(-50%, -50%)，从而与 motion 弹簧 scale/y 变换零冲突 */}
@@ -196,8 +196,8 @@ export function AppModal(props: AppModalProps) {
             transition={{ type: "spring", stiffness: 480, damping: 34 }}
             className={cn(
               "app-no-drag fixed inset-0 z-[90] m-auto flex h-fit max-h-[90dvh] w-[calc(100%-2rem)] flex-col overflow-hidden rounded-[24px] outline-none",
-              "glass-modal text-[#141414]",
-              "dark:text-zinc-100",
+              "liquid-glass-modal text-[#111318]",
+              "dark:text-[#ECEFF6]",
               maxWidthClass,
               className,
             )}
@@ -208,20 +208,20 @@ export function AppModal(props: AppModalProps) {
                 <Dialog.Description>{subtitle ?? title}</Dialog.Description>
               </div>
             ) : (
-              <header className="flex shrink-0 select-none items-start justify-between gap-4 border-b border-black/[0.07] px-6 py-4 dark:border-white/[0.08]">
+              <header className="flex shrink-0 select-none items-start justify-between gap-4 border-b border-black/[0.06] px-6 py-4 dark:border-white/[0.07]">
                 <div className="flex min-w-0 items-start gap-3">
                   {icon !== undefined ? (
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#F5F5F7] text-[#141414] ring-1 ring-inset ring-black/[0.06] dark:bg-[#27272A] dark:text-zinc-100 dark:ring-white/[0.10]">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#F3F4F7] text-[#111318] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2A2A2F] dark:text-[#F2F2F4] dark:ring-white/[0.08]">
                       {icon}
                     </div>
                   ) : null}
                   <div className="min-w-0">
-                    <Dialog.Title className="truncate text-[16px] font-semibold tracking-[-0.015em] text-[#141414] dark:text-zinc-100">
+                    <Dialog.Title className="truncate text-[16px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#ECEFF6]">
                       {title}
                     </Dialog.Title>
                     <Dialog.Description
                       className={cn(
-                        "mt-0.5 text-xs leading-relaxed text-[#6E6E73] dark:text-zinc-400",
+                        "mt-0.5 text-xs leading-relaxed text-[#687082] dark:text-[#7D869C]",
                         subtitle === undefined && "sr-only",
                       )}
                     >
@@ -233,7 +233,7 @@ export function AppModal(props: AppModalProps) {
                   <button
                     type="button"
                     aria-label="关闭窗口"
-                    className="-mr-1 inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#8E8E93] transition hover:bg-black/[0.05] hover:text-[#141414] active:scale-95 focus-visible:ring-2 focus-visible:ring-black/20 focus-visible:outline-none dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white dark:focus-visible:ring-white/30"
+                    className="-mr-1 inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#939BAD] transition hover:bg-black/[0.05] hover:text-[#111318] active:scale-95 focus-visible:ring-2 focus-visible:ring-black/[0.15] focus-visible:outline-none dark:text-[#7D869C] dark:hover:bg-white/[0.08] dark:hover:text-[#ECEFF6] dark:focus-visible:ring-white/[0.22]"
                   >
                     <X aria-hidden="true" className="h-4 w-4" />
                   </button>
@@ -246,7 +246,7 @@ export function AppModal(props: AppModalProps) {
             </div>
 
             {footer !== undefined ? (
-              <footer className="shrink-0 border-t border-black/[0.07] bg-[#F8F8FA] px-6 py-3.5 dark:border-white/[0.08] dark:bg-[#151518]">
+              <footer className="shrink-0 border-t border-black/[0.06] bg-black/[0.025] px-6 py-3.5 dark:border-white/[0.07] dark:bg-white/[0.03]">
                 {footer}
               </footer>
             ) : null}
@@ -326,12 +326,12 @@ export function AppSheetDrawer(props: AppSheetDrawerProps) {
       noBodyStyles={true}
     >
       <Drawer.Portal>
-        <Drawer.Overlay className="app-no-drag fixed inset-0 z-[85] bg-black/45 backdrop-blur-[2px] dark:bg-black/75" />
+        <Drawer.Overlay className="app-no-drag fixed inset-0 z-[85] bg-[#090A0E]/35 backdrop-blur-[4px] dark:bg-[#050609]/65 dark:backdrop-blur-[6px]" />
         <Drawer.Content
           className={cn(
             "app-no-drag fixed z-[86] flex flex-col overflow-hidden outline-none",
-            "glass-modal text-[#141414]",
-            "dark:text-zinc-100",
+            "liquid-glass-modal text-[#111318]",
+            "dark:text-[#ECEFF6]",
             positionClass,
             className,
           )}
@@ -348,14 +348,14 @@ export function AppSheetDrawer(props: AppSheetDrawerProps) {
               <Drawer.Description>{subtitle ?? title}</Drawer.Description>
             </div>
           ) : (
-            <header className="flex shrink-0 select-none items-center justify-between gap-3 border-b border-black/[0.07] px-4 py-3.5 dark:border-white/[0.08]">
+            <header className="flex shrink-0 select-none items-center justify-between gap-3 border-b border-black/[0.06] px-4 py-3.5 dark:border-white/[0.07]">
               <div className="min-w-0">
-                <Drawer.Title className="truncate text-sm font-semibold text-[#141414] dark:text-zinc-100">
+                <Drawer.Title className="truncate text-sm font-semibold text-[#111318] dark:text-[#ECEFF6]">
                   {title}
                 </Drawer.Title>
                 <Drawer.Description
                   className={cn(
-                    "mt-0.5 truncate text-xs text-[#6E6E73] dark:text-zinc-400",
+                    "mt-0.5 truncate text-xs text-[#687082] dark:text-[#7D869C]",
                     subtitle === undefined && "sr-only",
                   )}
                 >
@@ -366,7 +366,7 @@ export function AppSheetDrawer(props: AppSheetDrawerProps) {
                 <button
                   type="button"
                   aria-label="关闭抽屉"
-                  className="inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#8E8E93] transition hover:bg-black/[0.05] hover:text-[#141414] dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white"
+                  className="inline-flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#939BAD] transition hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#7D869C] dark:hover:bg-white/[0.08] dark:hover:text-[#ECEFF6]"
                 >
                   <X aria-hidden="true" className="h-4 w-4" />
                 </button>

@@ -19,7 +19,7 @@ import {
   asReadCursorSeq,
   assertNever,
 } from "@openhuddle/protocol";
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
   type OptimisticMessageItem,
@@ -141,6 +141,53 @@ export function mergeProposalIntoCache(
     ok: true,
     proposals: replaced ? updated : [incoming, ...updated],
   };
+}
+
+/**
+ * 不可变移除已删除房间在左侧房间概览列表缓存中的条目（供本地删除与 SSE `room.deleted` 共享）。
+ *
+ * @param prev - 原房间概览列表缓存对象
+ * @param roomId - 已被永久删除的房间品牌 ID
+ * @returns 剔除目标房间后的不可变列表缓存
+ */
+export function removeRoomFromSummaryListCache(
+  prev: { readonly ok: true; readonly rooms: ReadonlyArray<RoomSummaryDto> },
+  roomId: RoomId,
+): { readonly ok: true; readonly rooms: ReadonlyArray<RoomSummaryDto> } {
+  return {
+    ok: true,
+    rooms: prev.rooms.filter((room) => room.id !== roomId),
+  };
+}
+
+/**
+ * 在收到 `DELETE /api/v1/rooms/:roomId` 成功回执或 SSE `room.deleted` 广播时，原子清理目标房间的全部 Query 缓存与飞行中轮询。
+ *
+ * @remarks
+ * 必须先取消正在飞行的查询并移除 `roomDetail`（含 15s 轮询）、`roomMessages`、`roomProposals` 缓存，防止已删除房间继续发起后台请求触发 `404` 报错闪烁。
+ *
+ * @param queryClient - 全局 `QueryClient` 实例
+ * @param roomId - 已被删除的房间品牌 ID
+ */
+export function evictDeletedRoomFromQueryClient(queryClient: QueryClient, roomId: RoomId): void {
+  const detailKey = huddleQueryKeys.roomDetail(roomId);
+  const messagesKey = huddleQueryKeys.roomMessages(roomId);
+  const proposalsKey = huddleQueryKeys.roomProposals(roomId);
+
+  void queryClient.cancelQueries({ queryKey: detailKey });
+  void queryClient.cancelQueries({ queryKey: messagesKey });
+  void queryClient.cancelQueries({ queryKey: proposalsKey });
+
+  queryClient.setQueryData<{
+    readonly ok: true;
+    readonly rooms: ReadonlyArray<RoomSummaryDto>;
+  }>(huddleQueryKeys.rooms(), (prev) =>
+    prev ? removeRoomFromSummaryListCache(prev, roomId) : undefined,
+  );
+
+  queryClient.removeQueries({ queryKey: detailKey, exact: true });
+  queryClient.removeQueries({ queryKey: messagesKey, exact: true });
+  queryClient.removeQueries({ queryKey: proposalsKey, exact: true });
 }
 
 /**
@@ -408,6 +455,11 @@ export function useRealtimeSseSync(
           return;
         }
 
+        case "room.deleted": {
+          evictDeletedRoomFromQueryClient(queryClient, event.roomId);
+          return;
+        }
+
         default:
           assertNever(event);
       }
@@ -425,6 +477,7 @@ export function useRealtimeSseSync(
       "message.created",
       "governance.updated",
       "proposal.updated",
+      "room.deleted",
     ] as const;
 
     source.addEventListener("message", onMessage);

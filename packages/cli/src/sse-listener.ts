@@ -10,7 +10,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   AgentId,
@@ -25,6 +25,11 @@ import type {
   RoomId,
   WakeReason,
 } from "@openhuddle/protocol";
+import {
+  discoverUserCliBinDirs,
+  resolveAntigravityManagedProxyEnv,
+  resolveShellWrapperEnvForBinary,
+} from "./host-env.js";
 import { OpenHuddleApiError, OpenHuddleHttpClient } from "./http-client.js";
 import { normalizeServerUrl, updateRoomLastReadSeq } from "./token-store.js";
 
@@ -100,6 +105,7 @@ export type PresetPromptExecutor = (params: {
   readonly preset: WakeAgentPreset;
   readonly prompt: string;
   readonly wakeEnv: Readonly<WakeProcessEnv>;
+  readonly homeDir?: string;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly onLog?: (line: string) => void;
@@ -824,6 +830,7 @@ async function runDefaultPresetPrompt(params: {
   readonly preset: WakeAgentPreset;
   readonly prompt: string;
   readonly wakeEnv: Readonly<WakeProcessEnv>;
+  readonly homeDir?: string;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly onLog?: (line: string) => void;
@@ -913,12 +920,84 @@ async function runDefaultPresetPrompt(params: {
   };
 
   const { command, args, sendPromptViaStdin } = resolveCommandAndArgs();
+  const effectiveHomeDir = params.homeDir ?? homedir();
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...params.wakeEnv,
   };
   // 防止监听器若由用户在 Claude Code 终端内安装拉起时继承 `CLAUDECODE=1` 导致 `claude -p` 拒绝嵌套启动
   childEnv.CLAUDECODE = undefined;
+
+  // 动态补齐多版本 nvm / 包管理器 bin 路径，防止守护进程安装后用户在另一 Node 版本中升级/新装 CLI 出现 ENOENT
+  if (process.platform !== "win32") {
+    const existingSegments = (childEnv.PATH ?? "")
+      .split(":")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    const seenPath = new Set<string>(existingSegments);
+    for (const candidateDir of [
+      ...discoverUserCliBinDirs(effectiveHomeDir),
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+    ]) {
+      if (!seenPath.has(candidateDir)) {
+        existingSegments.push(candidateDir);
+        seenPath.add(candidateDir);
+      }
+    }
+    childEnv.PATH = existingSegments.join(":");
+  }
+
+  // 每轮动态同步预设专属宿主环境变量（Antigravity 托管代理端口变更或 ~/.zshrc 包装函数变量无需重装守护即可生效）
+  switch (params.preset) {
+    case "antigravity": {
+      const hasExistingProxy = Boolean(
+        childEnv.HTTP_PROXY || childEnv.HTTPS_PROXY || childEnv.http_proxy || childEnv.https_proxy,
+      );
+      const agyProxy = resolveAntigravityManagedProxyEnv(effectiveHomeDir, !hasExistingProxy);
+      for (const [key, val] of Object.entries(agyProxy)) {
+        childEnv[key] = val;
+      }
+      for (const [key, val] of Object.entries(
+        resolveShellWrapperEnvForBinary(effectiveHomeDir, "agy"),
+      )) {
+        if (!childEnv[key]) {
+          childEnv[key] = val;
+        }
+      }
+      break;
+    }
+    case "claude_code": {
+      for (const [key, val] of Object.entries(
+        resolveShellWrapperEnvForBinary(effectiveHomeDir, "claude"),
+      )) {
+        if (!childEnv[key]) {
+          childEnv[key] = val;
+        }
+      }
+      break;
+    }
+    case "codex": {
+      for (const [key, val] of Object.entries(
+        resolveShellWrapperEnvForBinary(effectiveHomeDir, "codex"),
+      )) {
+        if (!childEnv[key]) {
+          childEnv[key] = val;
+        }
+      }
+      break;
+    }
+    case "gemini": {
+      for (const [key, val] of Object.entries(
+        resolveShellWrapperEnvForBinary(effectiveHomeDir, "gemini"),
+      )) {
+        if (!childEnv[key]) {
+          childEnv[key] = val;
+        }
+      }
+      break;
+    }
+  }
 
   try {
     const stdoutText = await new Promise<string>((resolvePromise, rejectPromise) => {
@@ -1059,12 +1138,15 @@ async function runDefaultPresetPrompt(params: {
         }
 
         const errTail = stderrChunks.join("").trim().slice(-600);
-        if (errTail.length > 0) {
-          params.onLog?.(`[openhuddle:runner:stderr] ${errTail}`);
+        const outTail = stdoutChunks.join("").trim().slice(-600);
+        // 兼容 `claude -p` 等将 `Not logged in · Please run /login` 输出至 stdout 而 stderr 为空的 CLI
+        const detailTail = errTail.length > 0 ? errTail : outTail;
+        if (detailTail.length > 0) {
+          params.onLog?.(`[openhuddle:runner:stderr] ${detailTail}`);
         }
         settleReject(
           new Error(
-            `Preset CLI "${command}" exited with code ${code}${errTail.length > 0 ? `: ${errTail}` : ""}`,
+            `Preset CLI "${command}" exited with code ${code}${detailTail.length > 0 ? `: ${detailTail}` : ""}`,
           ),
         );
       });
@@ -1272,6 +1354,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
             preset,
             prompt: activePrompt,
             wakeEnv,
+            ...(options.homeDir !== undefined ? { homeDir: options.homeDir } : {}),
             timeoutMs,
             ...(options.signal !== undefined ? { signal: options.signal } : {}),
             onLog: log,

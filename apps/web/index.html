@@ -16,7 +16,12 @@
       (function () {
         try {
           var stored = localStorage.getItem("oh_theme");
-          if (stored === "dark") {
+          var preferDark =
+            stored === "dark" ||
+            (stored === null &&
+              typeof window.matchMedia === "function" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (preferDark) {
             document.documentElement.classList.add("dark");
           } else {
             document.documentElement.classList.remove("dark");
@@ -27,7 +32,7 @@
       })();
     </script>
   </head>
-  <body class="bg-white text-[#141414] antialiased selection:bg-black/10 dark:bg-[#0E0E10] dark:text-[#F5F5F7] dark:selection:bg-white/20">
+  <body class="bg-[#EBEEF3] text-[#111318] antialiased selection:bg-[#181B22]/12 dark:bg-[#111113] dark:text-[#F2F2F4] dark:selection:bg-white/20">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

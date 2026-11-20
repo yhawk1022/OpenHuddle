@@ -56,7 +56,7 @@ const getEventsDocRoute = createRoute({
   path: "/events",
   tags: ["Events"],
   summary:
-    "Subscribe to real-time Server-Sent Events (wake, message.created, governance.updated, proposal.updated)",
+    "Subscribe to real-time Server-Sent Events (wake, message.created, governance.updated, proposal.updated, room.deleted)",
   responses: {
     200: {
       description: "text/event-stream SSE feed",

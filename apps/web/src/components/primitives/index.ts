@@ -1,9 +1,9 @@
 /**
  * @module web/components/primitives
- * @description OpenHuddle Pachat 暖白/墨黑极简主义基础组件原语统一导出桶（Barrel）。
+ * @description OpenHuddle Atelier Daylight & Obsidian Studio 基础组件原语统一导出桶（Barrel）。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 聚合胶囊按钮（`rounded-full`）、高对比无白底缺陷输入框、Radix 无障碍浮层、`motion` 弹簧分段滑块、`vaul` 物理抽屉、`sonner` 轻提示与 `cmdk` 命令面板，向业务层提供零 `any`、零廉价紫光渐变的统一原语。
+ * 1. 聚合胶囊按钮（`rounded-full`）、凹陷微质感输入框、Radix 无障碍浮层、`motion` 弹簧分段滑块、`vaul` 物理抽屉、`sonner` 轻提示与 `cmdk` 命令面板，向业务层提供零 `any`、零廉价紫光渐变的统一原语。
  * 2. 严格遵守全工作区仅使用具名导出（Named Exports）规范。
  */
 export { AnimatePresence, motion } from "motion/react";
@@ -49,6 +49,12 @@ export {
 } from "./segmented-tabs.js";
 
 export {
+  AppContextMenu,
+  AppContextMenuItem,
+  AppContextMenuLabel,
+  AppContextMenuSeparator,
+  AppContextMenuSubContent,
+  AppContextMenuSubTrigger,
   AppDropdownMenu,
   AppDropdownMenuItem,
   AppDropdownMenuLabel,
@@ -57,6 +63,9 @@ export {
   AppPopoverClose,
   AppTooltip,
   AppTooltipProvider,
+  normalizeContextMenuEntries,
+  type AppContextMenuEntry,
+  type AppContextMenuProps,
   type AppDropdownEntry,
   type AppDropdownMenuProps,
   type AppPopoverProps,

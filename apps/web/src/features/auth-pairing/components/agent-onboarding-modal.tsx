@@ -1,13 +1,13 @@
 /**
  * @module web/features/auth-pairing/agent-onboarding-modal
- * @description Pachat 自然对话风格「接入我的 Agent」与「邀请进群」双标签模态窗。
+ * @description Apple Liquid Glass 协调风格「接入我的 Agent」与「邀请进群」双标签模态窗。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 同机一键秒连优先：当服务端运行在本机回环地址且探测到已安装对应 CLI（`claude` / `codex` / `agy` / `gemini`）时，提供「一键直连本机 Agent」主按钮，0.3 秒内由同机服务端原子完成配对、`0600` 令牌落盘、进群问候与后台守护启动，彻底免去复制粘贴与外部终端确认等待。
- * 2. 跨机/外部 Agent 零点击预热口令：非本机直连场景打开即自动预生成 `HUDDLE-XXXX-XXXX` 一次性口令，直接展示 `#141414` `rounded-full`「复制发给 Agent 的话」胶囊主按钮；CLI 终端与 MCP 作为进阶分段提供。
+ * 2. 跨机/外部 Agent 零点击预热口令：非本机直连场景打开即自动预生成 `HUDDLE-XXXX-XXXX` 一次性口令，直接展示胶囊主按钮「复制发给 Agent 的话」；CLI 终端与 MCP 作为进阶分段提供。
  * 3. 指令以服务端为准：发给 Agent 的正文基于服务端权威返回的 `onboardingPrompt` 拼接推荐名字与平台标识，前端绝不自行伪造配对码或令牌。
  * 4. 原身份无损重连（`--reclaim`）：支持为已绑定的断连 Agent 一键本机重连或生成恢复口令，复用原有 `AgentId`、群成员身份与消息游标，杜绝重复分身。
- * 5. 零 AI 模板感控件：全量采用 `SegmentedTabs`、`AppSelect`、`AppSwitch`、`AppInput`、`AppButton` 与圆形暖粉彩平台徽章，零蓝紫渐变、零闪烁星标图标。
+ * 5. 协调分层表面：外层 `ModalDialog` 承载 `liquid-glass-modal`，内部卡片与凹陷代码井采用中性烟熏石墨与暖瓷对比色阶，杜绝多层模糊叠加。
  */
 import type {
   AgentId,
@@ -133,9 +133,9 @@ export interface AgentOnboardingModalProps {
   readonly onClose: () => void;
 }
 
-/** 只读代码块样式：Pachat 暖灰/深黑高对比纸面 */
+/** 只读代码块样式：凹陷暖瓷白 / 暗夜深中性石墨井 */
 const CODE_BLOCK_CLASS =
-  "select-text overflow-x-auto whitespace-pre rounded-[16px] border border-black/[0.07] bg-[#F5F5F7] p-3.5 font-mono text-[11.5px] leading-relaxed text-[#141414] dark:border-white/[0.08] dark:bg-[#141417] dark:text-zinc-200";
+  "select-text overflow-x-auto whitespace-pre rounded-[16px] border border-black/[0.07] bg-[#F6F8FB] p-3.5 font-mono text-[11.5px] leading-relaxed text-[#111318] dark:border-white/[0.08] dark:bg-[#141417] dark:text-[#ECECEF]";
 
 /**
  * 生成同机不撞车的本地凭证文件 slug（避免同一台电脑接入多个同平台 Agent 时触发 `TOKEN_FILE_COLLISION`）。
@@ -203,7 +203,7 @@ function CopyButton(props: CopyButtonProps) {
       onClick={props.onCopy}
       leadingIcon={
         props.copied ? (
-          <Check aria-hidden="true" className="h-3.5 w-3.5 text-[#34C759]" />
+          <Check aria-hidden="true" className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
         ) : (
           <Copy aria-hidden="true" className="h-3.5 w-3.5" />
         )
@@ -682,13 +682,13 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
 
         {activeTab === "pair_agent" ? (
           <div className="space-y-4">
-            {/* 1. 选择 Agent 运行环境（圆形暖粉彩图标 + 纯墨黑选中描边 + 本机已装绿点） */}
+            {/* 1. 选择 Agent 运行环境 */}
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="font-medium text-[#141414] dark:text-zinc-200">
+                <span className="font-medium text-[#111318] dark:text-[#ECECEF]">
                   你的 Agent 运行在哪里？
                 </span>
-                <span className="truncate text-[11.5px] text-[#6E6E73] dark:text-zinc-400">
+                <span className="truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
                   {platformMeta.cliHint}
                 </span>
               </div>
@@ -705,7 +705,6 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       onClick={() => {
                         hasUserPickedPlatformRef.current = true;
                         setSelectedPlatform(platform);
-                        // 若名下已有该平台的 Agent，点选平台时默认切入原身份重连模式，防误创重复 Agent（仍可在下拉框显式改为“接入一个新的 Agent”）
                         const existingForPlatform =
                           props.ownedAgents.find((item) => item.platform === platform) ?? null;
                         setReclaimAgentId(existingForPlatform ? existingForPlatform.id : null);
@@ -718,8 +717,8 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       className={cn(
                         "app-no-drag flex cursor-pointer items-center gap-2 rounded-full px-2.5 py-1.5 text-left text-xs font-medium transition-all duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50",
                         isSelected
-                          ? "bg-[#F5F5F7] text-[#141414] ring-[1.5px] ring-[#141414] dark:bg-[#27272A] dark:text-zinc-100 dark:ring-[#F5F5F7]"
-                          : "bg-white text-[#3A3A3C] ring-1 ring-inset ring-black/[0.08] hover:bg-[#F8F8FA] dark:bg-[#18181B] dark:text-zinc-300 dark:ring-white/[0.1] dark:hover:bg-[#222226]",
+                          ? "bg-[#181B22]/8 text-[#111318] ring-[1.5px] ring-[#181B22] dark:bg-white/[0.11] dark:text-[#F2F2F4] dark:ring-[#EAEEF6]"
+                          : "bg-white/80 text-[#3B414E] ring-1 ring-inset ring-black/[0.08] hover:bg-white dark:bg-white/[0.04] dark:text-[#C4C4CA] dark:ring-white/[0.09] dark:hover:bg-white/[0.08]",
                       )}
                     >
                       <span
@@ -734,7 +733,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       {isInstalledLocally ? (
                         <span
                           title="已检测到本机安装，支持一键秒连"
-                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#34C759]"
+                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#16A34A] dark:bg-[#34D399]"
                         />
                       ) : null}
                     </button>
@@ -748,7 +747,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
               <div>
                 <label
                   htmlFor="reclaim-agent-select"
-                  className="mb-1.5 block text-xs font-medium text-[#3A3A3C] dark:text-zinc-300"
+                  className="mb-1.5 block text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]"
                 >
                   接入方式
                 </label>
@@ -780,7 +779,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
               <div>
                 <label
                   htmlFor="agent-nickname-input"
-                  className="mb-1.5 block text-xs font-medium text-[#3A3A3C] dark:text-zinc-300"
+                  className="mb-1.5 block text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]"
                 >
                   它在群里的名字
                 </label>
@@ -799,15 +798,15 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
             </div>
 
             {/* 自动进群拨杆开关 */}
-            <div className="flex items-center justify-between gap-3 rounded-[18px] bg-[#F5F5F7] px-4 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-[#1C1C1F] dark:ring-white/[0.07]">
+            <div className="flex items-center justify-between gap-3 rounded-[18px] bg-black/[0.035] px-4 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.045] dark:ring-white/[0.08]">
               {props.activeRoom ? (
                 <>
                   <label
                     htmlFor="auto-join-active-room-switch"
-                    className="min-w-0 flex-1 cursor-pointer select-none text-xs text-[#3A3A3C] dark:text-zinc-300"
+                    className="min-w-0 flex-1 cursor-pointer select-none text-xs text-[#3B414E] dark:text-[#C4C4CA]"
                   >
                     连上后直接拉进当前群聊{" "}
-                    <strong className="font-semibold text-[#141414] dark:text-zinc-100">
+                    <strong className="font-semibold text-[#111318] dark:text-[#F2F2F4]">
                       {props.activeRoom.name}
                     </strong>
                   </label>
@@ -824,15 +823,15 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                   />
                 </>
               ) : (
-                <p className="text-xs text-[#6E6E73] dark:text-zinc-400">
+                <p className="text-xs text-[#687082] dark:text-[#8E8E96]">
                   当前未打开具体群聊，接入后会先添加到你的名下，随时可拉进任意群。
                 </p>
               )}
             </div>
 
             {connectedBannerAgent ? (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-[18px] bg-[#34C759]/[0.12] px-3.5 py-2.5 ring-1 ring-inset ring-[#34C759]/30 dark:bg-[#30D158]/[0.14] dark:ring-[#30D158]/35">
-                <div className="flex min-w-0 items-center gap-2 text-xs text-[#1D7A36] dark:text-[#6EE787]">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-[18px] bg-[#16A34A]/[0.12] px-3.5 py-2.5 ring-1 ring-inset ring-[#16A34A]/25 dark:bg-[#34D399]/[0.14] dark:ring-[#34D399]/30">
+                <div className="flex min-w-0 items-center gap-2 text-xs text-[#145335] dark:text-[#6EE7B7]">
                   <Check aria-hidden="true" className="h-4 w-4 shrink-0" />
                   <span className="truncate font-medium">
                     「{connectedBannerAgent.displayName}」已连入，回到群聊直接 @ 它即可开聊
@@ -844,15 +843,15 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
               </div>
             ) : null}
 
-            {/* 3A. 同机已安装预设 CLI：一键秒连主卡片（< 0.3s 零复制粘贴、零终端确认等待） */}
+            {/* 3A. 同机已安装预设 CLI：一键秒连主卡片 */}
             {isSelectedLocalConnectReady && selectedLocalCli ? (
-              <div className="rounded-[22px] bg-[#F5F5F7] p-4 ring-1 ring-inset ring-black/[0.06] dark:bg-[#1C1C1F] dark:ring-white/[0.08]">
+              <div className="rounded-[22px] bg-black/[0.035] p-4 ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.045] dark:ring-white/[0.08]">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#141414] dark:text-zinc-100">
-                    <span className="h-2 w-2 rounded-full bg-[#34C759]" />
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                    <span className="h-2 w-2 rounded-full bg-[#16A34A] dark:bg-[#34D399]" />
                     <span>已检测到本机 {platformMeta.label} CLI</span>
                   </span>
-                  <span className="rounded-full bg-white px-2.5 py-0.5 font-mono text-[11px] text-[#6E6E73] ring-1 ring-inset ring-black/[0.06] dark:bg-[#141417] dark:text-zinc-400 dark:ring-white/[0.08]">
+                  <span className="rounded-full bg-white/90 px-2.5 py-0.5 font-mono text-[11px] text-[#687082] ring-1 ring-inset ring-black/[0.06] dark:bg-[#141417] dark:text-[#8E8E96] dark:ring-white/[0.08]">
                     {selectedLocalCli.binaryName} · 本机直连
                   </span>
                 </div>
@@ -860,13 +859,13 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                 {localConnectError ? (
                   <p
                     role="alert"
-                    className="mb-3 rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3 py-2 text-xs text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
+                    className="mb-3 rounded-2xl border border-[#E5484D]/25 bg-[#E5484D]/[0.08] px-3 py-2 text-xs text-[#C81E1E] dark:bg-[#F05252]/12 dark:text-[#FCA5A5]"
                   >
                     {localConnectError}
                   </p>
                 ) : null}
 
-                <p className="mb-3 text-xs leading-relaxed text-[#5F5F64] dark:text-zinc-400">
+                <p className="mb-3 text-xs leading-relaxed text-[#4B5565] dark:text-[#9B9BA3]">
                   不用复制粘贴，也不用切去外部终端点确认——直接点下方按钮，约 0.3
                   秒即可自动绑定身份、拉进群聊并启动后台实时监听。
                 </p>
@@ -898,7 +897,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       const nextVal = !showManualConnectFallback;
                       setShowManualConnectFallback(nextVal);
                     }}
-                    className="app-no-drag cursor-pointer text-[11.5px] text-[#6E6E73] underline-offset-4 transition hover:text-[#141414] hover:underline dark:text-zinc-400 dark:hover:text-zinc-200"
+                    className="app-no-drag cursor-pointer text-[11.5px] text-[#687082] underline-offset-4 transition hover:text-[#111318] hover:underline dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
                   >
                     {showManualConnectFallback
                       ? "收起手动复制接入命令"
@@ -918,12 +917,12 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -4 }}
                     transition={{ duration: 0.14 }}
-                    className="rounded-[22px] bg-[#F5F5F7] p-4 ring-1 ring-inset ring-black/[0.05] dark:bg-[#1C1C1F] dark:ring-white/[0.08]"
+                    className="rounded-[22px] bg-black/[0.035] p-4 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.045] dark:ring-white/[0.08]"
                   >
                     {mutationError ? (
                       <p
                         role="alert"
-                        className="mb-3 rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3 py-2 text-xs text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
+                        className="mb-3 rounded-2xl border border-[#E5484D]/25 bg-[#E5484D]/[0.08] px-3 py-2 text-xs text-[#C81E1E] dark:bg-[#F05252]/12 dark:text-[#FCA5A5]"
                       >
                         {mutationError}
                       </p>
@@ -978,11 +977,14 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                 generatedPairing.code,
                               )
                             }
-                            className="app-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-[#F5F5F7] px-3 py-1 font-mono text-[11.5px] font-semibold tracking-wider text-[#141414] ring-1 ring-inset ring-black/[0.08] transition hover:bg-[#EFEFF3] active:scale-95 dark:bg-[#27272A] dark:text-zinc-100 dark:ring-white/[0.1] dark:hover:bg-[#323236]"
+                            className="app-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-black/[0.05] px-3 py-1 font-mono text-[11.5px] font-semibold tracking-wider text-[#111318] ring-1 ring-inset ring-black/[0.07] transition hover:bg-black/[0.08] active:scale-95 dark:bg-white/[0.07] dark:text-[#F2F2F4] dark:ring-white/[0.10] dark:hover:bg-white/[0.12]"
                           >
                             <span>{generatedPairing.code}</span>
                             {copiedKey === "pairingCode" ? (
-                              <Check aria-hidden="true" className="h-3 w-3 text-[#34C759]" />
+                              <Check
+                                aria-hidden="true"
+                                className="h-3 w-3 text-[#16A34A] dark:text-[#34D399]"
+                              />
                             ) : (
                               <Copy aria-hidden="true" className="h-3 w-3 opacity-65" />
                             )}
@@ -1003,17 +1005,17 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     </div>
 
                     {methodTab === "prompt" ? (
-                      <div className="rounded-[22px] bg-[#F5F5F7] p-4 ring-1 ring-inset ring-black/[0.06] dark:bg-[#1C1C1F] dark:ring-white/[0.08]">
+                      <div className="rounded-[22px] bg-black/[0.035] p-4 ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.045] dark:ring-white/[0.08]">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-[#141414] dark:text-zinc-100">
+                          <span className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
                             把下面这段话直接发给你的 Agent
                           </span>
-                          <span className="text-[11px] text-[#6E6E73] dark:text-zinc-400">
+                          <span className="text-[11px] text-[#687082] dark:text-[#8E8E96]">
                             在 {platformMeta.label} 里粘贴发送即可
                           </span>
                         </div>
-                        <div className="my-3 rounded-[16px] bg-white px-3.5 py-3 ring-1 ring-inset ring-black/[0.06] dark:bg-[#141417] dark:ring-white/[0.08]">
-                          <p className="select-text whitespace-pre-wrap text-[13px] leading-relaxed text-[#141414] dark:text-zinc-100">
+                        <div className="my-3 rounded-[16px] bg-white/90 px-3.5 py-3 ring-1 ring-inset ring-black/[0.06] dark:bg-[#141417] dark:ring-white/[0.08]">
+                          <p className="select-text whitespace-pre-wrap text-[13px] leading-relaxed text-[#111318] dark:text-[#ECECEF]">
                             {readyToPastePrompt}
                           </p>
                         </div>
@@ -1024,7 +1026,10 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                           className="h-10 rounded-full"
                           leadingIcon={
                             copiedKey === "prompt" ? (
-                              <Check aria-hidden="true" className="h-4 w-4 text-[#34C759]" />
+                              <Check
+                                aria-hidden="true"
+                                className="h-4 w-4 text-[#16A34A] dark:text-[#34D399]"
+                              />
                             ) : (
                               <Copy aria-hidden="true" className="h-4 w-4" />
                             )
@@ -1048,7 +1053,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     {methodTab === "cli" ? (
                       <div className="space-y-2">
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-xs text-[#6E6E73] dark:text-zinc-400">
+                          <p className="text-xs text-[#687082] dark:text-[#8E8E96]">
                             在 Agent 所在机器的终端执行（零依赖单文件脚本，令牌独立存放）：
                           </p>
                           <CopyButton
@@ -1073,7 +1078,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     {methodTab === "mcp" ? (
                       <div className="space-y-2">
                         <div className="flex items-center justify-between gap-2">
-                          <p className="text-xs text-[#6E6E73] dark:text-zinc-400">
+                          <p className="text-xs text-[#687082] dark:text-[#8E8E96]">
                             先发一句话或运行终端命令完成绑定，再把下面配置加进宿主的 MCP 设置：
                           </p>
                           <CopyButton
@@ -1092,7 +1097,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                           />
                         </div>
                         <pre className={CODE_BLOCK_CLASS}>{mcpConfig}</pre>
-                        <p className="rounded-[14px] bg-[#FFF1C2]/70 px-3.5 py-2.5 text-[11.5px] leading-relaxed text-[#5C4813] ring-1 ring-inset ring-black/[0.05] dark:bg-[#2C2718] dark:text-[#F2DF9D] dark:ring-white/[0.08]">
+                        <p className="rounded-[14px] bg-amber-500/10 px-3.5 py-2.5 text-[11.5px] leading-relaxed text-[#6B4E12] ring-1 ring-inset ring-amber-500/20 dark:bg-amber-400/10 dark:text-[#F5DF9D] dark:ring-amber-400/20">
                           说明：stdio MCP 子命令（openhuddle.mjs mcp）正随新版 CLI
                           逐步开放；若当前环境暂不可用，直接用「发一句话接入」即可。
                         </p>
@@ -1104,13 +1109,13 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
             ) : null}
 
             {/* 4. 我已接入的 Agent */}
-            <div className="space-y-2 border-t border-black/[0.07] pt-4 dark:border-white/[0.08]">
-              <h3 className="select-none text-xs font-medium text-[#8E8E93] dark:text-zinc-400">
+            <div className="space-y-2 border-t border-black/[0.06] pt-4 dark:border-white/[0.08]">
+              <h3 className="select-none text-xs font-medium text-[#687082] dark:text-[#8E8E96]">
                 我已接入的 Agent · {props.ownedAgents.length}
               </h3>
 
               {props.ownedAgents.length === 0 ? (
-                <p className="rounded-[16px] bg-[#F5F5F7] px-4 py-3 text-center text-xs text-[#5F5F64] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1C1C1F] dark:text-zinc-300 dark:ring-white/[0.08]">
+                <p className="rounded-[16px] bg-black/[0.035] px-4 py-3 text-center text-xs text-[#687082] ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.045] dark:text-[#9B9BA3] dark:ring-white/[0.08]">
                   还没有接入任何 Agent，把上面生成的话发给它就能连上。
                 </p>
               ) : (
@@ -1123,7 +1128,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     return (
                       <div
                         key={agent.id}
-                        className="flex items-center justify-between gap-2 rounded-[14px] px-2.5 py-1.5 transition hover:bg-[#F5F5F7] dark:hover:bg-[#1C1C1F]"
+                        className="flex items-center justify-between gap-2 rounded-[14px] px-2.5 py-1.5 transition hover:bg-black/[0.035] dark:hover:bg-white/[0.05]"
                       >
                         <div className="flex min-w-0 items-center gap-2.5">
                           <span
@@ -1135,10 +1140,10 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             {meta.monogram}
                           </span>
                           <div className="min-w-0">
-                            <p className="truncate text-xs font-semibold text-[#141414] dark:text-zinc-100">
+                            <p className="truncate text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
                               {agent.displayName}
                             </p>
-                            <p className="truncate text-[11px] text-[#8E8E93] dark:text-zinc-400">
+                            <p className="truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
                               {meta.label} · @{agent.slug}
                             </p>
                           </div>
@@ -1252,7 +1257,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                   variant="ghost"
                                   label={`删除 ${agent.displayName}`}
                                   onClick={() => setConfirmDeleteAgentId(agent.id)}
-                                  className="text-[#8E8E93] hover:text-[#FF3B30] dark:text-zinc-500 dark:hover:text-[#FF6961]"
+                                  className="text-[#8E96A6] hover:text-[#E5484D] dark:text-[#63636B] dark:hover:text-[#F87171]"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </IconButton>
@@ -1271,23 +1276,23 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
           /* Tab 2: 邀请进群与公开只读回放链接 */
           <div className="space-y-4">
             {!props.activeRoom ? (
-              <div className="rounded-[20px] bg-[#F5F5F7] p-6 text-center text-xs text-[#6E6E73] dark:bg-[#1C1C1F] dark:text-zinc-400">
+              <div className="rounded-[20px] bg-black/[0.035] p-6 text-center text-xs text-[#687082] dark:bg-white/[0.045] dark:text-[#8E8E96]">
                 请先在左侧打开或新建一个群聊，再复制它的邀请码或回放链接。
               </div>
             ) : (
               <>
                 {/* 群邀请码卡片 */}
-                <div className="space-y-3 rounded-[20px] bg-[#F5F5F7] p-4 ring-1 ring-inset ring-black/[0.05] dark:bg-[#1C1C1F] dark:ring-white/[0.08]">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-[#141414] dark:text-zinc-100">
+                <div className="space-y-3 rounded-[20px] bg-black/[0.035] p-4 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.045] dark:ring-white/[0.08]">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
                     <Link2
                       aria-hidden="true"
-                      className="h-4 w-4 text-[#141414] dark:text-zinc-200"
+                      className="h-4 w-4 text-[#111318] dark:text-[#ECECEF]"
                     />
                     <span>群邀请码 · {props.activeRoom.name}</span>
                   </div>
-                  <p className="text-xs leading-relaxed text-[#6E6E73] dark:text-zinc-400">
+                  <p className="text-xs leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                     同伴登录后点击「加入群聊」粘贴即可进群；已接入的同伴 Agent 也可以执行{" "}
-                    <code className="rounded-md bg-black/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-[#141414] dark:bg-white/[0.1] dark:text-zinc-200">
+                    <code className="rounded-md bg-black/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-[#111318] dark:bg-white/[0.10] dark:text-[#ECECEF]">
                       openhuddle.mjs join
                     </code>{" "}
                     直接入群。
@@ -1320,21 +1325,24 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       />
                     </div>
                   ) : (
-                    <p className="text-xs text-[#6E6E73] dark:text-zinc-400">
+                    <p className="text-xs text-[#687082] dark:text-[#8E8E96]">
                       当前身份暂不可查看原始群邀请码。
                     </p>
                   )}
                 </div>
 
                 {/* 公开只读回放卡片 */}
-                <div className="space-y-3 rounded-[20px] bg-white p-4 ring-1 ring-inset ring-black/[0.08] dark:bg-[#151518] dark:ring-white/[0.1]">
+                <div className="space-y-3 rounded-[20px] bg-white/75 p-4 ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.035] dark:ring-white/[0.09]">
                   <div className="flex items-start justify-between gap-3">
                     <div className="space-y-1">
-                      <div className="flex items-center gap-2 text-xs font-semibold text-[#141414] dark:text-zinc-100">
-                        <Share2 aria-hidden="true" className="h-4 w-4 text-[#34C759]" />
+                      <div className="flex items-center gap-2 text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                        <Share2
+                          aria-hidden="true"
+                          className="h-4 w-4 text-[#16A34A] dark:text-[#34D399]"
+                        />
                         <span>公开只读回放链接</span>
                       </div>
-                      <p className="text-xs leading-relaxed text-[#6E6E73] dark:text-zinc-400">
+                      <p className="text-xs leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                         打开后，拿到链接的人无需登录就能阅读群内讨论过程与最终拍板结论（只读、已剥离凭证）。
                       </p>
                     </div>
@@ -1369,11 +1377,14 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     />
                   </div>
 
-                  <p className="flex select-none items-center gap-1.5 text-[11.5px] font-medium text-[#6E6E73] dark:text-zinc-400">
+                  <p className="flex select-none items-center gap-1.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
                     {props.activeRoom.visibility === "public_shareable" ? (
                       <>
-                        <Globe aria-hidden="true" className="h-3.5 w-3.5 text-[#34C759]" />
-                        <span className="text-[#215236] dark:text-[#86E0A6]">
+                        <Globe
+                          aria-hidden="true"
+                          className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]"
+                        />
+                        <span className="text-[#145335] dark:text-[#6EE7B7]">
                           已开启 · 持链接者可免登录只读浏览
                         </span>
                       </>
@@ -1392,7 +1403,9 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         size="md"
                         aria-label="公开只读回放链接"
                         value={shareUrl}
-                        leadingIcon={<Globe className="h-3.5 w-3.5 text-[#34C759]" />}
+                        leadingIcon={
+                          <Globe className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
+                        }
                         className="select-all font-mono text-xs"
                         containerClassName="min-w-[200px] flex-1"
                       />

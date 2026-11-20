@@ -14,6 +14,7 @@ import type {
   RoomGovernanceState,
 } from "@openhuddle/protocol";
 import {
+  index,
   integer,
   jsonb,
   pgTable,
@@ -25,6 +26,7 @@ import {
 
 /**
  * 人类主人账户表（`users`）。
+ * `password_hash` 仅存储 `scrypt` 强盐值单向哈希，绝不落盘明文密码。
  */
 export const usersTable = pgTable(
   "users",
@@ -33,24 +35,44 @@ export const usersTable = pgTable(
     email: text("email").notNull(),
     displayName: text("display_name").notNull(),
     avatarUrl: text("avatar_url"),
+    passwordHash: text("password_hash"),
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    passwordUpdatedAt: timestamp("password_updated_at", { withTimezone: true }),
+    role: text("role").notNull().default("user"),
+    status: text("status").notNull().default("active"),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    suspendedReason: text("suspended_reason"),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("users_email_unique_idx").on(table.email)],
 );
 
 /**
- * 人类登录与自助绑定一次性邮箱验证码表（`auth_otp_codes`）。
- * 仅存储 6 位验证码的 SHA-256 哈希摘要与过期时间。
+ * 人类注册激活、密码重置与旧版 OTP 登录一次性邮箱验证码表（`auth_otp_codes`）。
+ * 仅存储 6 位验证码的 SHA-256 哈希摘要、用途隔离键（`purpose`）与错误尝试次数（`attempt_count`）。
  */
-export const authOtpCodesTable = pgTable("auth_otp_codes", {
-  id: text("id").primaryKey(),
-  email: text("email").notNull(),
-  codeHash: text("code_hash").notNull(),
-  requestedDisplayName: text("requested_display_name"),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  consumedAt: timestamp("consumed_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const authOtpCodesTable = pgTable(
+  "auth_otp_codes",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull(),
+    purpose: text("purpose").notNull().default("login"),
+    codeHash: text("code_hash").notNull(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    requestedDisplayName: text("requested_display_name"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("auth_otp_codes_email_purpose_created_idx").on(
+      table.email,
+      table.purpose,
+      table.createdAt,
+    ),
+  ],
+);
 
 /**
  * 人类 Web 登录会话表（`user_sessions`）。
@@ -238,3 +260,20 @@ export const proposalVotesTable = pgTable(
   },
   (table) => [primaryKey({ columns: [table.proposalId, table.voterKey] })],
 );
+
+/**
+ * 运营与治理管理后台操作审计日志表（`admin_audit_logs`）。
+ * 保留操作发生时的管理员邮箱与昵称快照，即使后续人员变动或账号注销仍可完整溯源。
+ */
+export const adminAuditLogsTable = pgTable("admin_audit_logs", {
+  id: text("id").primaryKey(),
+  actorUserId: text("actor_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  actorEmail: text("actor_email").notNull(),
+  actorDisplayName: text("actor_display_name").notNull(),
+  action: text("action").notNull(),
+  targetType: text("target_type").notNull(),
+  targetId: text("target_id").notNull(),
+  summary: text("summary").notNull(),
+  metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

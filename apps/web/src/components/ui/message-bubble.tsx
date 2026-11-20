@@ -1,12 +1,12 @@
 /**
  * @module web/components/ui/message-bubble
- * @description 忠实复刻 `pachat.ai` 温润纸感对话几何的纯 Props 驱动聊天气泡组件（本人右侧象牙暖白 `#F6F2EC` / 其他人类鼠尾草绿 `#E3F3EC` / Agent 柔灰 `#F5F5F7` / 居中安静系统提示），同时服务实时聊天室与公开只读分享页。
+ * @description 纯 Props 驱动的清晰高对比度聊天气泡组件（本人右侧暖亚麻瓷 `#F4EFE6` / 暗夜中性石墨 `#2E2E34`；同伴鼠尾草 `#E6F5EC` / 暗夜 `#1B2B23`；Agent 清冷瓷白 `bg-white/95` / 暗夜 `#222226`），同时服务实时聊天室与公开只读分享页。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 身份只信服务端签名：左右对齐由 `author.isYou` 决定，同伴/Agent 底色由 `author.kind` 决定，归属灰字由 `author.trustLevel` 决定，绝不从昵称或正文推断。
- * 2. 反「机器监控感」极简排版：不在消息流上裸露 `#seq` 序号徽章；外层 `<article id="msg-seq-{seq}">` 保留完整 DOM 锚点以驱动引用平滑滚动高亮，序号仅在时间戳悬停提示中按需可查。
- * 3. 非对称气泡几何与统一墨色阅读：本人气泡采用 `rounded-[18px_6px_18px_18px]` 暖象牙底色（`#F6F2EC` / 暗夜 `#272521`），对端采用 `rounded-[6px_18px_18px_18px]`，全部正文统一传递 `tone="default"` 保证自然黑/白墨水对比。
- * 4. 极简竖线引用：内联回复采用 `2px` 细竖线（`border-l-2 border-black/20`），摒弃笨重的嵌套框中框。
+ * 2. Apple Liquid Glass 严格分层：消息内容气泡本身绝不叠加 `backdrop-blur`，保证长列表 120Hz 滚动锐利流畅；仅悬浮在气泡顶部的快捷操作条采用 `liquid-glass-pill`。
+ * 3. 反「机器监控感」极简排版：不在消息流上裸露 `#seq` 序号徽章；外层 `<article id="msg-seq-{seq}">` 保留完整 DOM 锚点以驱动引用平滑滚动高亮，序号仅在时间戳悬停提示中按需可查。
+ * 4. 连续分组柔和圆角：首条带方向角，连续分组续条采用全对称 `rounded-[18px]`；内联回复采用 `2px` 细竖线。
  */
 import type {
   AgentId,
@@ -27,6 +27,7 @@ import {
   Loader2,
   Reply,
   RotateCcw,
+  UserRound,
 } from "lucide-react";
 import { useState } from "react";
 import {
@@ -35,7 +36,14 @@ import {
   getPlatformVisualMeta,
 } from "../../lib/format.js";
 import type { OptimisticMessageItem } from "../../lib/query-keys.js";
-import { AppTooltip, cn, motion, toast } from "../primitives/index.js";
+import {
+  AppContextMenu,
+  type AppContextMenuEntry,
+  AppTooltip,
+  cn,
+  motion,
+  toast,
+} from "../primitives/index.js";
 import type { InspectedAgentProfile } from "./agent-profile-dialog.js";
 import { AuthorMicroTag, MessageSemanticBadge, PlatformAvatar } from "./identity-badges.js";
 import { MarkdownContent } from "./markdown-content.js";
@@ -111,6 +119,7 @@ function scrollToMessageSeq(seq: MessageSeq): void {
 export function MessageBubble(props: MessageBubbleProps) {
   const { message } = props;
   const [copied, setCopied] = useState(false);
+  const [capturedSelection, setCapturedSelection] = useState("");
 
   const isSelf = message.author.isYou;
   const isGrouped = props.isGroupedWithPrevious === true;
@@ -128,7 +137,7 @@ export function MessageBubble(props: MessageBubbleProps) {
         data-seq={message.seq}
         className="flex select-none justify-center rounded-xl px-4 py-1.5 text-center transition-colors duration-700"
       >
-        <p className="max-w-[85%] text-[12px] leading-relaxed text-[#8E8E93] dark:text-zinc-500">
+        <p className="max-w-[85%] text-[12px] leading-relaxed text-[#939BAD] dark:text-[#63636B]">
           <span>{message.content}</span>
           <span aria-hidden="true" className="mx-1.5 opacity-60">
             ·
@@ -149,7 +158,7 @@ export function MessageBubble(props: MessageBubbleProps) {
         data-seq={message.seq}
         className="flex select-none justify-center rounded-xl px-4 py-1.5 text-center transition-colors duration-700"
       >
-        <p className="text-[12px] text-[#8E8E93] dark:text-zinc-500">
+        <p className="text-[12px] text-[#939BAD] dark:text-[#63636B]">
           {isSelf ? "你撤回了一条消息" : `${message.author.displayName} 撤回了一条消息`}
         </p>
       </div>
@@ -195,15 +204,27 @@ export function MessageBubble(props: MessageBubbleProps) {
     }
   };
 
-  const handleCopy = (): void => {
+  const handleCopyText = (text: string, toastMessage: string, markCopiedButton = false): void => {
     if (typeof navigator === "undefined" || !navigator.clipboard) {
       return;
     }
-    void navigator.clipboard.writeText(message.content).then(() => {
-      setCopied(true);
-      toast.success("已复制消息内容");
-      window.setTimeout(() => setCopied(false), 1_600);
+    void navigator.clipboard.writeText(text).then(() => {
+      if (markCopiedButton) {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1_600);
+      }
+      toast.success(toastMessage);
     });
+  };
+
+  const handleCopy = (): void => {
+    handleCopyText(message.content, "已复制消息内容", true);
+  };
+
+  const captureBubbleSelection = (): void => {
+    const selectedText =
+      typeof window !== "undefined" ? (window.getSelection()?.toString().trim() ?? "") : "";
+    setCapturedSelection(selectedText);
   };
 
   const handleJump = (seq: MessageSeq): void => {
@@ -220,14 +241,92 @@ export function MessageBubble(props: MessageBubbleProps) {
       ? getPlatformVisualMeta(message.author.platform).label
       : undefined;
 
-  // ── Pachat 轻量操作条（↩ 回复 · @ · 复制 · 撤回） ──
+  const isContextMenuDisabled = Boolean(props.readOnly) || isPending;
+  const contextMenuItems: ReadonlyArray<AppContextMenuEntry> = isContextMenuDisabled
+    ? []
+    : [
+        ...(capturedSelection.length > 0
+          ? [
+              {
+                id: "ctx-msg-copy-selection",
+                label: "复制选中文字",
+                icon: <Copy className="h-3.5 w-3.5" />,
+                onSelect: () => handleCopyText(capturedSelection, "已复制选中文字"),
+              } satisfies AppContextMenuEntry,
+            ]
+          : []),
+        ...(props.onReply !== undefined
+          ? [
+              {
+                id: "ctx-msg-reply",
+                label: "回复此消息",
+                icon: <Reply className="h-3.5 w-3.5" />,
+                onSelect: () => props.onReply?.(message),
+              } satisfies AppContextMenuEntry,
+            ]
+          : []),
+        {
+          id: "ctx-msg-copy-all",
+          label: "复制消息内容",
+          icon: <Copy className="h-3.5 w-3.5" />,
+          onSelect: handleCopy,
+        },
+        { kind: "separator", id: "ctx-msg-sep-actor" },
+        ...(props.onQuickMention !== undefined && !isSelf
+          ? [
+              {
+                id: "ctx-msg-mention",
+                label: `@ ${message.author.displayName}`,
+                icon: <AtSign className="h-3.5 w-3.5" />,
+                onSelect: handleMentionClick,
+              } satisfies AppContextMenuEntry,
+            ]
+          : []),
+        ...(isAgentInspectable
+          ? [
+              {
+                id: "ctx-msg-inspect",
+                label: `查看 ${message.author.displayName} 名片`,
+                icon: <UserRound className="h-3.5 w-3.5" />,
+                onSelect: handleAgentInspect,
+              } satisfies AppContextMenuEntry,
+            ]
+          : []),
+        ...(props.linkedProposal !== undefined && props.onOpenProposal !== undefined
+          ? [
+              {
+                id: "ctx-msg-proposal",
+                label: "查看关联提案",
+                icon: <FileText className="h-3.5 w-3.5" />,
+                onSelect: () => {
+                  if (props.linkedProposal !== undefined) {
+                    props.onOpenProposal?.(props.linkedProposal.id);
+                  }
+                },
+              } satisfies AppContextMenuEntry,
+            ]
+          : []),
+        { kind: "separator", id: "ctx-msg-sep-recall" },
+        ...(canRecall && props.onRecall !== undefined
+          ? [
+              {
+                id: "ctx-msg-recall",
+                label: "撤回消息",
+                icon: <RotateCcw className="h-3.5 w-3.5" />,
+                danger: true,
+                disabled: Boolean(props.isRecalling),
+                onSelect: () => props.onRecall?.(message.seq),
+              } satisfies AppContextMenuEntry,
+            ]
+          : []),
+      ];
+
+  // ── 悬浮 Liquid Glass 快捷操作条（↩ 回复 · @ · 复制 · 撤回） ──
   const actionBar =
     !props.readOnly && !isPending ? (
       <div
         className={cn(
-          "pointer-events-none absolute -top-3.5 z-10 flex translate-y-0.5 select-none items-center gap-0.5 rounded-full px-1.5 py-0.5 opacity-0 transition-all duration-150",
-          "bg-white/96 shadow-[0_4px_16px_rgba(0,0,0,0.08)] ring-1 ring-black/[0.07] backdrop-blur-md",
-          "dark:bg-[#1C1C1F]/96 dark:shadow-[0_6px_20px_rgba(0,0,0,0.5)] dark:ring-white/[0.10]",
+          "liquid-glass-pill pointer-events-none absolute -top-4 z-10 flex translate-y-0.5 select-none items-center gap-0.5 rounded-full px-1.5 py-0.5 opacity-0 transition-all duration-150",
           "group-focus-within/msg:pointer-events-auto group-focus-within/msg:translate-y-0 group-focus-within/msg:opacity-100",
           "group-hover/msg:pointer-events-auto group-hover/msg:translate-y-0 group-hover/msg:opacity-100",
           isSelf ? "right-1.5" : "left-1.5",
@@ -237,7 +336,7 @@ export function MessageBubble(props: MessageBubbleProps) {
           <button
             type="button"
             onClick={() => props.onReply?.(message)}
-            className="app-no-drag inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-[11.5px] font-medium text-[#5F5F64] transition-colors hover:bg-black/[0.05] hover:text-[#141414] dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100"
+            className="app-no-drag inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-[11.5px] font-medium text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
           >
             <Reply className="h-3 w-3" />
             <span>回复</span>
@@ -250,7 +349,7 @@ export function MessageBubble(props: MessageBubbleProps) {
               type="button"
               aria-label={`@${message.author.displayName}`}
               onClick={handleMentionClick}
-              className="app-no-drag inline-flex cursor-pointer items-center justify-center rounded-full px-1.5 py-1 text-[11.5px] font-medium text-[#5F5F64] transition-colors hover:bg-black/[0.05] hover:text-[#141414] dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100"
+              className="app-no-drag inline-flex cursor-pointer items-center justify-center rounded-full px-1.5 py-1 text-[11.5px] font-medium text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
             >
               <AtSign className="h-3 w-3" />
             </button>
@@ -260,9 +359,13 @@ export function MessageBubble(props: MessageBubbleProps) {
         <button
           type="button"
           onClick={handleCopy}
-          className="app-no-drag inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-[11.5px] font-medium text-[#5F5F64] transition-colors hover:bg-black/[0.05] hover:text-[#141414] dark:text-zinc-400 dark:hover:bg-white/[0.08] dark:hover:text-zinc-100"
+          className="app-no-drag inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-[11.5px] font-medium text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
         >
-          {copied ? <Check className="h-3 w-3 text-[#34C759]" /> : <Copy className="h-3 w-3" />}
+          {copied ? (
+            <Check className="h-3 w-3 text-[#16A34A] dark:text-[#34D399]" />
+          ) : (
+            <Copy className="h-3 w-3" />
+          )}
           <span>{copied ? "已复制" : "复制"}</span>
         </button>
 
@@ -272,7 +375,7 @@ export function MessageBubble(props: MessageBubbleProps) {
               type="button"
               disabled={Boolean(props.isRecalling)}
               onClick={() => props.onRecall?.(message.seq)}
-              className="app-no-drag inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-[11.5px] font-medium text-[#D70015] transition-colors hover:bg-[#FF3B30]/10 disabled:opacity-50 dark:text-[#FF6961] dark:hover:bg-[#FF453A]/15"
+              className="app-no-drag inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-[11.5px] font-medium text-[#C6282E] transition-colors hover:bg-[#E5484D]/10 disabled:opacity-50 dark:text-[#F88B8B] dark:hover:bg-[#F05252]/15"
             >
               {props.isRecalling ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -286,7 +389,7 @@ export function MessageBubble(props: MessageBubbleProps) {
       </div>
     ) : null;
 
-  // ── Pachat 极简 2px 竖线内联引用（无嵌套背景盒，点击定位源消息） ──
+  // ── 极简 2px 竖线内联引用（无嵌套背景盒，点击定位源消息） ──
   const replyQuote =
     message.replyToSeq !== undefined
       ? (() => {
@@ -302,11 +405,11 @@ export function MessageBubble(props: MessageBubbleProps) {
             <button
               type="button"
               onClick={() => handleJump(replySeq)}
-              className="app-no-drag mb-1.5 block w-full min-w-0 cursor-pointer select-none border-l-2 border-black/20 py-0.5 pl-2.5 text-left text-[13px] leading-snug text-[#5F5F64] transition-opacity hover:opacity-75 dark:border-white/25 dark:text-zinc-400"
+              className="app-no-drag mb-1.5 block w-full min-w-0 cursor-pointer select-none border-l-2 border-black/15 py-0.5 pl-2.5 text-left text-[13px] leading-snug text-[#687082] transition-opacity hover:opacity-75 dark:border-white/20 dark:text-[#8E8E96]"
             >
               <span className="line-clamp-2 min-w-0">
                 {replied !== undefined ? (
-                  <span className="mr-1 font-medium text-[#141414]/80 dark:text-zinc-200">
+                  <span className="mr-1 font-medium text-[#111318]/85 dark:text-[#F2F2F4]/90">
                     {replied.author.displayName}：
                   </span>
                 ) : null}
@@ -317,7 +420,7 @@ export function MessageBubble(props: MessageBubbleProps) {
         })()
       : null;
 
-  // ── 内嵌共识提案卡入口（温润纸面描边，联动右侧提案面板） ──
+  // ── 内嵌共识提案卡入口（清晰层级纸面描边，联动右侧提案面板） ──
   const linkedCard =
     props.linkedProposal !== undefined
       ? (() => {
@@ -328,8 +431,8 @@ export function MessageBubble(props: MessageBubbleProps) {
               className={cn(
                 "mt-2.5 select-none overflow-hidden rounded-2xl ring-1 ring-inset",
                 isApproved
-                  ? "bg-[#E3F3EC]/80 ring-black/[0.06] dark:bg-[#16271F] dark:ring-white/[0.08]"
-                  : "bg-white/85 ring-black/[0.07] dark:bg-[#151518]/90 dark:ring-white/[0.08]",
+                  ? "bg-[#E6F5EC]/85 ring-emerald-900/[0.08] dark:bg-[#1B2B23] dark:ring-emerald-400/[0.15]"
+                  : "bg-black/[0.03] ring-black/[0.06] dark:bg-[#18181B]/90 dark:ring-white/[0.08]",
               )}
             >
               <div className="flex items-start gap-2.5 px-3 py-2.5">
@@ -337,8 +440,8 @@ export function MessageBubble(props: MessageBubbleProps) {
                   className={cn(
                     "mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
                     isApproved
-                      ? "bg-[#1F5C43] text-white dark:bg-[#34C759] dark:text-[#141414]"
-                      : "bg-[#141414] text-white dark:bg-[#F5F5F7] dark:text-[#141414]",
+                      ? "bg-[#16A34A] text-white dark:bg-[#34D399] dark:text-[#111318]"
+                      : "bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]",
                   )}
                 >
                   {isApproved ? (
@@ -348,10 +451,10 @@ export function MessageBubble(props: MessageBubbleProps) {
                   )}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13.5px] font-semibold text-[#141414] dark:text-zinc-100">
+                  <p className="truncate text-[13.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
                     {linked.draft.title}
                   </p>
-                  <p className="mt-0.5 text-[12px] tabular-nums text-[#6E6E73] dark:text-zinc-400">
+                  <p className="mt-0.5 text-[12px] tabular-nums text-[#687082] dark:text-[#8E8E96]">
                     {linked.draft.options.length} 个方案 · {linked.votes.length} 人表态
                     {linked.decidedOptionKey ? ` · 已拍板 ${linked.decidedOptionKey}` : ""}
                   </p>
@@ -361,7 +464,7 @@ export function MessageBubble(props: MessageBubbleProps) {
                 <button
                   type="button"
                   onClick={() => props.onOpenProposal?.(linked.id)}
-                  className="app-no-drag flex w-full cursor-pointer items-center justify-between border-t border-black/[0.06] px-3 py-2 text-[12px] font-medium text-[#141414] transition-colors hover:bg-black/[0.03] active:scale-[0.99] dark:border-white/[0.07] dark:text-zinc-100 dark:hover:bg-white/[0.05]"
+                  className="app-no-drag flex w-full cursor-pointer items-center justify-between border-t border-black/[0.06] px-3 py-2 text-[12px] font-medium text-[#111318] transition-colors hover:bg-black/[0.03] active:scale-[0.99] dark:border-white/[0.07] dark:text-[#F2F2F4] dark:hover:bg-white/[0.05]"
                 >
                   <span>{isApproved ? "查看拍板结论" : "查看提案并拍板"}</span>
                   <ChevronRight className="h-3.5 w-3.5 opacity-70" />
@@ -379,7 +482,6 @@ export function MessageBubble(props: MessageBubbleProps) {
       </div>
     );
 
-  // 统一传 tone="default"：无论是 #F6F2EC 暖象牙还是 #E3F3EC / #F5F5F7 纸感气泡均采用自然深浅墨水字色
   // ADR-0002 Attention 面板：结构化等人问题 + 一键作答（仅 attention 消息渲染；过期仅展示）
   const attention =
     "attention" in message && message.attention !== undefined ? message.attention : undefined;
@@ -387,8 +489,8 @@ export function MessageBubble(props: MessageBubbleProps) {
     attention !== undefined && props.nowMs >= Date.parse(attention.expiresAtIso);
   const attentionPanel =
     attention !== undefined ? (
-      <div className="mt-1.5 w-full min-w-0 select-none rounded-[14px] border border-black/[0.06] bg-white/70 p-2.5 backdrop-blur-sm dark:border-white/[0.08] dark:bg-white/[0.04]">
-        <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#8E8E93] dark:text-zinc-400">
+      <div className="mt-1.5 w-full min-w-0 select-none rounded-[14px] border border-black/[0.06] bg-white/85 p-2.5 dark:border-white/[0.08] dark:bg-[#18181B]/90">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
           <span aria-hidden="true">🙋</span>
           <span>等待人类作答</span>
           {attentionExpired ? (
@@ -406,7 +508,7 @@ export function MessageBubble(props: MessageBubbleProps) {
                 key={option}
                 type="button"
                 onClick={() => props.onAnswerAttention?.(message.seq, option)}
-                className="app-no-drag cursor-pointer rounded-full bg-[#141414] px-3 py-1 text-[11.5px] font-medium text-white transition hover:bg-black active:scale-[0.97] dark:bg-[#F5F5F7] dark:text-[#141414] dark:hover:bg-white"
+                className="app-no-drag cursor-pointer rounded-full bg-[#181B22] px-3 py-1 text-[11.5px] font-medium text-white transition hover:bg-[#252A35] active:scale-[0.97] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
               >
                 {option}
               </button>
@@ -426,7 +528,7 @@ export function MessageBubble(props: MessageBubbleProps) {
   );
 
   const timeNode = isPending ? (
-    <span className="inline-flex select-none items-center gap-1 text-[12px] text-[#8E8E93] dark:text-zinc-500">
+    <span className="inline-flex select-none items-center gap-1 text-[12px] text-[#939BAD] dark:text-[#63636B]">
       <Loader2 className="h-3 w-3 animate-spin" />
       <span>发送中</span>
     </span>
@@ -434,14 +536,14 @@ export function MessageBubble(props: MessageBubbleProps) {
     <AppTooltip content={`消息 #${String(message.seq)} · ${timeLabel}`} side="top">
       <time
         dateTime={message.createdAtIso}
-        className="select-none text-[12px] tabular-nums text-[#8E8E93] dark:text-zinc-500"
+        className="select-none text-[12px] tabular-nums text-[#939BAD] dark:text-[#63636B]"
       >
         {timeLabel}
       </time>
     </AppTooltip>
   );
 
-  // ── 3. 本人发出消息（isSelf）：右对齐暖象牙纸气泡 `#F6F2EC` + `rounded-[18px_6px_18px_18px]` ──
+  // ── 3. 本人发出消息（isSelf）：右对齐暖亚麻瓷 `#F4EFE6` / 暗夜中性石墨 `#2E2E34` ──
   if (isSelf) {
     return (
       <article
@@ -467,14 +569,30 @@ export function MessageBubble(props: MessageBubbleProps) {
 
           <div className="relative min-w-0 max-w-full">
             {actionBar}
-            <div
-              className={cn(
-                "min-w-0 rounded-[18px_6px_18px_18px] bg-[#F6F2EC]/72 px-3.5 py-2.5 text-[#141414] ring-1 ring-inset ring-black/[0.04] backdrop-blur-md dark:bg-[#272521]/60 dark:text-[#F4F4F2] dark:ring-white/[0.06]",
-                message.type === "decision" && "ring-1 ring-[#2A7B59]/30 dark:ring-[#5ED3A2]/25",
-              )}
+            <AppContextMenu
+              items={contextMenuItems}
+              disabled={isContextMenuDisabled}
+              onOpenChange={(open) => {
+                if (!open) {
+                  setCapturedSelection("");
+                }
+              }}
             >
-              {bubbleBody}
-            </div>
+              <div
+                onContextMenuCapture={captureBubbleSelection}
+                className={cn(
+                  "min-w-0 px-4 py-2.5 transition-shadow",
+                  isGrouped ? "rounded-[18px]" : "rounded-[18px_6px_18px_18px]",
+                  "bg-[#F4EFE6] text-[#111318] ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
+                  "dark:bg-[#2E2E34] dark:text-[#F5F5F7] dark:ring-1 dark:ring-inset dark:ring-white/[0.11] dark:shadow-[0_2px_8px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.08)]",
+                  "data-[state=open]:ring-2 data-[state=open]:ring-[#181B22]/25 dark:data-[state=open]:ring-white/30",
+                  message.type === "decision" &&
+                    "ring-1 ring-[#16A34A]/35 dark:ring-emerald-400/30",
+                )}
+              >
+                {bubbleBody}
+              </div>
+            </AppContextMenu>
             {attentionPanel}
           </div>
 
@@ -484,11 +602,11 @@ export function MessageBubble(props: MessageBubbleProps) {
     );
   }
 
-  // ── 4. 对端消息：36px 圆形头像 + 发送者头部 + 鼠尾草绿（人类 `#E3F3EC`）或柔灰（Agent `#F5F5F7`）气泡 ──
+  // ── 4. 对端消息：36px 圆形头像 + 发送者头部 + 鼠尾草绿（人类）或清冷瓷白/中性石墨（Agent）气泡 ──
   const isHumanPeer = message.author.kind === "human";
   const peerBubbleSurfaceClass = isHumanPeer
-    ? "bg-[#E3F3EC]/68 text-[#141414] ring-1 ring-inset ring-black/[0.04] backdrop-blur-md dark:bg-[#16271F]/60 dark:text-[#E8F3EC] dark:ring-white/[0.06]"
-    : "bg-[#F5F5F7]/68 text-[#141414] ring-1 ring-inset ring-black/[0.04] backdrop-blur-md dark:bg-[#1C1C1F]/55 dark:text-[#ECECEF] dark:ring-white/[0.06]";
+    ? "bg-[#E6F5EC] text-[#111318] ring-1 ring-inset ring-emerald-900/[0.08] shadow-[0_1px_2px_rgba(15,23,42,0.03)] dark:bg-[#1B2B23] dark:text-[#E6F4EC] dark:ring-1 dark:ring-inset dark:ring-emerald-400/[0.14] dark:shadow-[0_2px_8px_rgba(0,0,0,0.22)]"
+    : "bg-white/95 text-[#111318] ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_3px_rgba(15,23,42,0.04)] dark:bg-[#222226] dark:text-[#ECECEF] dark:ring-1 dark:ring-inset dark:ring-white/[0.07] dark:shadow-[0_2px_8px_rgba(0,0,0,0.22)]";
 
   const avatar = (
     <PlatformAvatar
@@ -515,7 +633,7 @@ export function MessageBubble(props: MessageBubbleProps) {
         {isGrouped ? (
           <time
             dateTime={message.createdAtIso}
-            className="mt-2.5 select-none text-[11px] tabular-nums text-[#8E8E93] opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 dark:text-zinc-500"
+            className="mt-2.5 select-none text-[11px] tabular-nums text-[#939BAD] opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 dark:text-[#63636B]"
           >
             {timeLabel}
           </time>
@@ -524,7 +642,7 @@ export function MessageBubble(props: MessageBubbleProps) {
             <button
               type="button"
               onClick={handleAgentInspect}
-              className="app-no-drag mt-0.5 cursor-pointer rounded-full outline-none transition-transform duration-150 hover:opacity-90 active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-black/25 dark:focus-visible:ring-white/30"
+              className="app-no-drag mt-0.5 cursor-pointer rounded-full outline-none transition-transform duration-150 hover:opacity-90 active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-black/20 dark:focus-visible:ring-white/25"
             >
               {avatar}
             </button>
@@ -540,19 +658,19 @@ export function MessageBubble(props: MessageBubbleProps) {
         transition={BUBBLE_SPRING}
         className="flex min-w-0 max-w-[78%] flex-col items-start"
       >
-        {/* Pachat 发送者头部：13px font-medium 名字 + 12px 灰字时间 + 安静归属说明 */}
+        {/* 发送者头部：13px font-medium 名字 + 12px 灰字时间 + 安静归属说明 */}
         {!isGrouped ? (
           <div className="mb-1 flex max-w-full select-none items-baseline gap-2 overflow-hidden pl-0.5 leading-none">
             {isAgentInspectable ? (
               <button
                 type="button"
                 onClick={handleAgentInspect}
-                className="app-no-drag cursor-pointer truncate text-[13px] font-medium text-[#141414] outline-none transition-opacity hover:opacity-75 focus-visible:underline dark:text-zinc-100"
+                className="app-no-drag cursor-pointer truncate text-[13px] font-medium text-[#111318] outline-none transition-opacity hover:opacity-75 focus-visible:underline dark:text-[#F2F2F4]"
               >
                 {message.author.displayName}
               </button>
             ) : (
-              <span className="truncate text-[13px] font-medium text-[#141414] dark:text-zinc-100">
+              <span className="truncate text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
                 {message.author.displayName}
               </span>
             )}
@@ -571,15 +689,28 @@ export function MessageBubble(props: MessageBubbleProps) {
 
         <div className="relative min-w-0 max-w-full">
           {actionBar}
-          <div
-            className={cn(
-              "min-w-0 rounded-[6px_18px_18px_18px] px-3.5 py-2.5",
-              peerBubbleSurfaceClass,
-              message.type === "decision" && "ring-1 ring-[#2A7B59]/30 dark:ring-[#5ED3A2]/25",
-            )}
+          <AppContextMenu
+            items={contextMenuItems}
+            disabled={isContextMenuDisabled}
+            onOpenChange={(open) => {
+              if (!open) {
+                setCapturedSelection("");
+              }
+            }}
           >
-            {bubbleBody}
-          </div>
+            <div
+              onContextMenuCapture={captureBubbleSelection}
+              className={cn(
+                "min-w-0 px-4 py-2.5 transition-shadow",
+                isGrouped ? "rounded-[18px]" : "rounded-[6px_18px_18px_18px]",
+                peerBubbleSurfaceClass,
+                "data-[state=open]:ring-2 data-[state=open]:ring-[#181B22]/25 dark:data-[state=open]:ring-white/30",
+                message.type === "decision" && "ring-1 ring-[#16A34A]/35 dark:ring-emerald-400/30",
+              )}
+            >
+              {bubbleBody}
+            </div>
+          </AppContextMenu>
           {attentionPanel}
         </div>
       </motion.div>
