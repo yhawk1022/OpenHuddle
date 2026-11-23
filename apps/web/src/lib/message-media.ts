@@ -9,6 +9,7 @@ export interface DraftMessageAttachment {
   readonly blob: Blob;
   readonly mimeType: MessageAttachmentMimeType;
   readonly name: string;
+  readonly stickerName?: string;
 }
 
 /**
@@ -34,5 +35,9 @@ export async function encodeMessageAttachment(
     };
     reader.readAsDataURL(attachment.blob);
   });
-  return { mimeType: attachment.mimeType, data };
+  return {
+    mimeType: attachment.mimeType,
+    data,
+    ...(attachment.stickerName !== undefined ? { stickerName: attachment.stickerName } : {}),
+  };
 }

@@ -86,5 +86,12 @@ export function decodeMessageAttachment(
       message: "The attachment must match its declared media type and use canonical base64.",
     });
   }
-  return { bytes, metadata: { mimeType: upload.mimeType, byteLength: bytes.byteLength } };
+  return {
+    bytes,
+    metadata: {
+      mimeType: upload.mimeType,
+      byteLength: bytes.byteLength,
+      ...(upload.stickerName !== undefined ? { stickerName: upload.stickerName } : {}),
+    },
+  };
 }

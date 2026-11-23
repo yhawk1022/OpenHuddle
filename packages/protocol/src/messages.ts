@@ -84,25 +84,38 @@ export const MessageAttachmentMimeTypeSchema = z.enum([
 /** 房间附件使用的媒体类型。 */
 export type MessageAttachmentMimeType = z.infer<typeof MessageAttachmentMimeTypeSchema>;
 
+/** 图片作为表情发送时，用于草稿、消息预览和无障碍描述的简短名称。 */
+export const MessageStickerNameSchema = z.string().trim().min(1).max(80);
+
 /** 消息列表中的附件元数据。二进制由独立的鉴权接口返回。 */
 export const MessageAttachmentSchema = z.object({
   mimeType: MessageAttachmentMimeTypeSchema,
   byteLength: z.number().int().min(1).max(MAX_MESSAGE_ATTACHMENT_BYTES),
+  stickerName: MessageStickerNameSchema.optional(),
 });
 
 /** 房间消息中可用于展示和读取附件的元数据。 */
 export type MessageAttachment = z.infer<typeof MessageAttachmentSchema>;
 
 /** 发送附件的请求载荷。服务端还需核验解码字节数及文件格式。 */
-export const MessageAttachmentUploadSchema = z.object({
-  mimeType: MessageAttachmentMimeTypeSchema,
-  data: z
-    .string()
-    .min(4)
-    .max(MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH)
-    .regex(/^[A-Za-z0-9+/]+={0,2}$(?![\s\S])/, "Expected standard Base64 data")
-    .refine((data) => data.length % 4 === 0, "Expected padded Base64 data"),
-});
+export const MessageAttachmentUploadSchema = z
+  .object({
+    mimeType: MessageAttachmentMimeTypeSchema,
+    stickerName: MessageStickerNameSchema.optional(),
+    data: z
+      .string()
+      .min(4)
+      .max(MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH)
+      .regex(/^[A-Za-z0-9+/]+={0,2}$(?![\s\S])/, "Expected standard Base64 data")
+      .refine((data) => data.length % 4 === 0, "Expected padded Base64 data"),
+  })
+  .refine(
+    ({ mimeType, stickerName }) => stickerName === undefined || mimeType.startsWith("image/"),
+    {
+      path: ["stickerName"],
+      message: "Only image attachments can be sent as stickers",
+    },
+  );
 
 /** 随消息提交的 Base64 编码附件。 */
 export type MessageAttachmentUpload = z.infer<typeof MessageAttachmentUploadSchema>;

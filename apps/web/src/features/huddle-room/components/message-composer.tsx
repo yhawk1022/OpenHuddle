@@ -59,6 +59,7 @@ import {
   getReachVisualMeta,
 } from "../../../lib/format.js";
 import type { DraftMessageAttachment } from "../../../lib/message-media.js";
+import { StickerPicker } from "./sticker-picker.js";
 import { MESSAGE_MEDIA_ACCEPT, useMessageMediaDraft } from "./use-message-media-draft.js";
 
 /** 输入框自适应高度上限（像素），超出后框内滚动，保持聊天舞台比例克制 */
@@ -75,7 +76,7 @@ export interface MessageComposerProps {
   readonly roomName: string;
   readonly roomKind?: RoomKind | undefined;
   readonly members: ReadonlyArray<RoomMemberDto>;
-  readonly currentUserId?: UserId | undefined;
+  readonly currentUserId: UserId;
   /** 当前登录用户的展示昵称（用于渲染输入舱内本人发言身份提示） */
   readonly currentUserDisplayName?: string | undefined;
   readonly replyTarget: MessageDto | null;
@@ -103,7 +104,7 @@ function AttachmentPreview(props: {
   readonly onRemove: () => void;
 }) {
   const [url, setUrl] = useState<string | null>(null);
-  const { blob, mimeType, name } = props.attachment;
+  const { blob, mimeType, name, stickerName } = props.attachment;
   useEffect(() => {
     const source = blob.type === mimeType ? blob : blob.slice(0, blob.size, mimeType);
     const objectUrl = URL.createObjectURL(source);
@@ -117,8 +118,11 @@ function AttachmentPreview(props: {
         url !== null ? (
           <img
             src={url}
-            alt="待发送图片预览"
-            className="h-12 w-12 shrink-0 rounded-md object-cover"
+            alt={stickerName !== undefined ? `待发送表情：${stickerName}` : "待发送图片预览"}
+            className={cn(
+              "h-12 w-12 shrink-0 rounded-md",
+              stickerName !== undefined ? "object-contain" : "object-cover",
+            )}
           />
         ) : null
       ) : url !== null ? (
@@ -1017,6 +1021,12 @@ export function MessageComposer(props: MessageComposerProps) {
               >
                 <Paperclip className="h-[17px] w-[17px]" />
               </button>
+              <StickerPicker
+                userId={props.currentUserId}
+                disabled={props.isSending || media.phase !== "idle"}
+                triggerClassName={MEDIA_BUTTON_CLASS}
+                onSelect={media.chooseSticker}
+              />
               {media.phase === "idle" ? (
                 <button
                   type="button"

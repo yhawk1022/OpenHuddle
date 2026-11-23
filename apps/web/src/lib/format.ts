@@ -50,6 +50,9 @@ export function getMessageSnippet(message: MessageDto, maxLength: number): strin
   if (text.length > 0 || message.attachment === undefined) {
     return text.slice(0, maxLength);
   }
+  if (message.attachment.stickerName !== undefined) {
+    return `[表情] ${message.attachment.stickerName}`.slice(0, maxLength);
+  }
   return message.attachment.mimeType.startsWith("image/") ? "[图片]" : "[语音]";
 }
 

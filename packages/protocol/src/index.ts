@@ -174,6 +174,7 @@ export {
   MessageAttachmentMimeTypeSchema,
   MessageAttachmentSchema,
   MessageAttachmentUploadSchema,
+  MessageStickerNameSchema,
   MessageDtoSchema,
   MessageMentionSchema,
   MessageTypeSchema,

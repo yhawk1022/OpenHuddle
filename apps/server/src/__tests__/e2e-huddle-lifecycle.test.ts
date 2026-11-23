@@ -98,7 +98,7 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     await database.close();
   });
 
-  it("shares image and voice attachments only with room members and removes recalled media", async () => {
+  it("shares images, stickers and voice only with room members and removes recalled media", async () => {
     const app = createServerApp({
       env: parseServerEnv({ NODE_ENV: "test", LOG_LEVEL: "silent", DATABASE_URL: "memory://" }),
       database,
@@ -208,6 +208,32 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     expect(invalidRange.status).toBe(416);
     expect(invalidRange.headers.get("content-range")).toBe(`bytes */${wav.byteLength}`);
 
+    const invalidSticker = await send({
+      content: "",
+      attachment: { ...wavUpload, stickerName: "Audio sticker" },
+    });
+    expect(invalidSticker.status).toBe(400);
+
+    const sticker = await send({
+      content: "",
+      attachment: { ...pngUpload, stickerName: " 收到 " },
+      replyToSeq: imageMessage.seq,
+    });
+    expect(sticker.status).toBe(201);
+    const { message: stickerMessage } = (await sticker.json()) as { message: MessageDto };
+    expect(stickerMessage).toMatchObject({
+      seq: 4,
+      type: "text",
+      content: "",
+      replyToSeq: imageMessage.seq,
+      attachment: { mimeType: "image/png", byteLength: png.byteLength, stickerName: "收到" },
+    });
+    const stickerUrl = `${messagesUrl}/${stickerMessage.seq}/attachment`;
+    expect((await app.request(stickerUrl)).status).toBe(401);
+    const stickerMedia = await app.request(stickerUrl, { headers: readerHeaders });
+    expect(stickerMedia.status).toBe(200);
+    expect(Buffer.from(await stickerMedia.arrayBuffer())).toEqual(png);
+
     const read = await app.request(messagesUrl, { headers: readerHeaders });
     expect(read.status).toBe(200);
     expect(await read.json()).toMatchObject({
@@ -215,8 +241,9 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
         { content: "text remains supported" },
         { attachment: imageMessage.attachment },
         { attachment: voiceMessage.attachment, attention: voiceMessage.attention },
+        { attachment: stickerMessage.attachment },
       ],
-      latestSeq: 3,
+      latestSeq: 4,
     });
 
     const recall = await app.request(`${messagesUrl}/${imageMessage.seq}`, {
@@ -234,6 +261,13 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     expect(adminRecall.status).toBe(200);
     expect((await adminRecall.json()).message).not.toHaveProperty("attachment");
     expect((await app.request(voiceUrl, { headers: readerHeaders })).status).toBe(404);
+    const stickerRecall = await app.request(`${messagesUrl}/${stickerMessage.seq}`, {
+      method: "DELETE",
+      headers: ownerHeaders,
+    });
+    expect(stickerRecall.status).toBe(200);
+    expect((await stickerRecall.json()).message).not.toHaveProperty("attachment");
+    expect((await app.request(stickerUrl, { headers: readerHeaders })).status).toBe(404);
     expect(await database.db.select().from(messageAttachmentsTable)).toEqual([]);
 
     expect((await send({ content: "", attachment: pngUpload })).status).toBe(201);

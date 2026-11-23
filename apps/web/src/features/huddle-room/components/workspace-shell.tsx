@@ -130,6 +130,7 @@ import {
   useUpdateAnyRoomGovernanceMutation,
   useUpdateGovernanceMutation,
 } from "../api/huddle-room.queries.js";
+import { saveRoomSticker } from "../stickers/sticker-library.js";
 import { AddFriendModal, EditFriendRemarkModal, InviteMembersModal } from "./friend-modals.js";
 import { GovernanceBar } from "./governance-bar.js";
 import { MessageComposer } from "./message-composer.js";
@@ -142,6 +143,7 @@ import {
   LeaveRoomConfirmModal,
 } from "./room-modals.js";
 import { RoomSidebar } from "./room-sidebar.js";
+import { savedStickerQueryKey } from "./sticker-picker.js";
 
 export { systemHealthQueryOptions };
 
@@ -257,6 +259,16 @@ interface ActiveRoomStageProps {
 
 function ActiveRoomStage(props: ActiveRoomStageProps) {
   const queryClient = useQueryClient();
+  const handleSaveSticker = async (message: MessageDto): Promise<void> => {
+    const userId = props.currentUser.id;
+    try {
+      const result = await saveRoomSticker(userId, message);
+      await queryClient.invalidateQueries({ queryKey: savedStickerQueryKey(userId) });
+      toast.success(result === "added" ? "已收藏表情" : "这条表情已收藏");
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "无法收藏表情，请稍后重试");
+    }
+  };
   const detailQuery = useQuery(roomDetailQueryOptions(props.roomId));
   const messagesQuery = useQuery({
     ...roomMessagesQueryOptions(props.roomId),
@@ -841,6 +853,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                     nowMs={nowMs}
                     isRecalling={recallMutation.isPending}
                     onReply={(msg) => setReplyTarget(msg)}
+                    onSaveSticker={(msg) => void handleSaveSticker(msg)}
                     onQuickMention={(mention) => setPendingQuickMention(mention)}
                     onAnswerAttention={(replyToSeq, answer) => {
                       if (sendMessageMutation.isPending) {

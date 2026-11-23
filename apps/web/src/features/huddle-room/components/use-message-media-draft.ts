@@ -9,6 +9,7 @@ import {
 } from "@openhuddle/protocol";
 import { useEffect, useRef, useState } from "react";
 import type { DraftMessageAttachment } from "../../../lib/message-media.js";
+import type { StickerImage } from "../stickers/sticker-library.js";
 
 /** 文件选择器只显示房间消息支持的媒体格式。 */
 export const MESSAGE_MEDIA_ACCEPT = [
@@ -135,6 +136,11 @@ export function useMessageMediaDraft() {
     setError(null);
   };
 
+  const chooseSticker = ({ blob, mimeType, name }: StickerImage): void => {
+    setAttachment({ blob, mimeType, name, stickerName: name });
+    setError(null);
+  };
+
   const cancelRecording = (): void => {
     const current = sessionRef.current;
     sessionRef.current = null;
@@ -231,6 +237,7 @@ export function useMessageMediaDraft() {
     phase,
     canRecord,
     chooseFile,
+    chooseSticker,
     clearAttachment,
     startRecording,
     finishRecording,

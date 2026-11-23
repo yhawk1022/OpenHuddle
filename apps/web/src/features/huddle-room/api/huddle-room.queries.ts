@@ -632,6 +632,9 @@ export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto
                 attachment: {
                   mimeType: vars.attachment.mimeType,
                   byteLength: vars.attachment.blob.size,
+                  ...(vars.attachment.stickerName !== undefined
+                    ? { stickerName: vars.attachment.stickerName }
+                    : {}),
                 },
               }
             : {}),

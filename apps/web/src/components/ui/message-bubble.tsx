@@ -20,6 +20,7 @@ import type {
 import {
   AtSign,
   Award,
+  BookmarkPlus,
   Check,
   ChevronRight,
   Copy,
@@ -70,6 +71,8 @@ export interface MessageBubbleProps {
   /** ADR-0002：Attention 选项一键作答回调（携带 replyTo 与选项文本） */
   readonly onAnswerAttention?: ((replyToSeq: MessageSeq, answer: string) => void) | undefined;
   readonly onRecall?: ((seq: MessageSeq) => void) | undefined;
+  /** 收藏当前已确认的表情附件。 */
+  readonly onSaveSticker?: ((message: MessageDto) => void) | undefined;
   readonly onOpenProposal?: ((proposalId: ProposalId) => void) | undefined;
   readonly onInspectAgent?: ((profile: InspectedAgentProfile) => void) | undefined;
   /** 点击引用块时的跳转回调；缺省时组件自行滚动到 `#msg-seq-{seq}` 并短暂高亮 */
@@ -128,6 +131,10 @@ export function MessageBubble(props: MessageBubbleProps) {
   const isRecalled = message.recalledAtIso !== undefined;
   const isPending = message._optimisticPending === true;
   const hasContent = message.content.length > 0;
+  const isSticker = message.attachment?.stickerName !== undefined;
+  const isStandaloneSticker =
+    isSticker && !hasContent && message.replyToSeq === undefined && message.type === "text";
+  const canSaveSticker = isSticker && props.onSaveSticker !== undefined;
   const canRecall = !props.readOnly && !isPending && canViewerRecallMessage(message, props.nowMs);
   const timeLabel = formatMessageTimestamp(message.createdAtIso);
   const anchorId = `msg-seq-${String(message.seq)}`;
@@ -278,6 +285,16 @@ export function MessageBubble(props: MessageBubbleProps) {
               } satisfies AppContextMenuEntry,
             ]
           : []),
+        ...(canSaveSticker
+          ? [
+              {
+                id: "ctx-msg-save-sticker",
+                label: "收藏表情",
+                icon: <BookmarkPlus className="h-3.5 w-3.5" />,
+                onSelect: () => props.onSaveSticker?.(message),
+              } satisfies AppContextMenuEntry,
+            ]
+          : []),
         { kind: "separator", id: "ctx-msg-sep-actor" },
         ...(props.onQuickMention !== undefined && !isSelf
           ? [
@@ -376,6 +393,19 @@ export function MessageBubble(props: MessageBubbleProps) {
             )}
             <span>{copied ? "已复制" : "复制"}</span>
           </button>
+        ) : null}
+
+        {canSaveSticker ? (
+          <AppTooltip content="收藏表情" side="top">
+            <button
+              type="button"
+              aria-label="收藏表情"
+              onClick={() => props.onSaveSticker?.(message)}
+              className="app-no-drag inline-flex cursor-pointer items-center justify-center rounded-full px-1.5 py-1 text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
+            >
+              <BookmarkPlus className="h-3.5 w-3.5" />
+            </button>
+          </AppTooltip>
         ) : null}
 
         {canRecall && props.onRecall ? (
@@ -592,10 +622,15 @@ export function MessageBubble(props: MessageBubbleProps) {
               <div
                 onContextMenuCapture={captureBubbleSelection}
                 className={cn(
-                  "min-w-0 px-4 py-2.5 transition-shadow",
-                  isGrouped ? "rounded-[18px]" : "rounded-[18px_6px_18px_18px]",
-                  "bg-[#F4EFE6] text-[#111318] ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
-                  "dark:bg-[#2E2E34] dark:text-[#F5F5F7] dark:ring-1 dark:ring-inset dark:ring-white/[0.11] dark:shadow-[0_2px_8px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.08)]",
+                  "min-w-0 transition-shadow",
+                  isStandaloneSticker
+                    ? "rounded-lg p-1"
+                    : cn(
+                        "px-4 py-2.5",
+                        isGrouped ? "rounded-[18px]" : "rounded-[18px_6px_18px_18px]",
+                        "bg-[#F4EFE6] text-[#111318] ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
+                        "dark:bg-[#2E2E34] dark:text-[#F5F5F7] dark:ring-1 dark:ring-inset dark:ring-white/[0.11] dark:shadow-[0_2px_8px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.08)]",
+                      ),
                   "data-[state=open]:ring-2 data-[state=open]:ring-[#181B22]/25 dark:data-[state=open]:ring-white/30",
                   message.type === "decision" &&
                     "ring-1 ring-[#16A34A]/35 dark:ring-emerald-400/30",
@@ -712,9 +747,14 @@ export function MessageBubble(props: MessageBubbleProps) {
             <div
               onContextMenuCapture={captureBubbleSelection}
               className={cn(
-                "min-w-0 px-4 py-2.5 transition-shadow",
-                isGrouped ? "rounded-[18px]" : "rounded-[6px_18px_18px_18px]",
-                peerBubbleSurfaceClass,
+                "min-w-0 transition-shadow",
+                isStandaloneSticker
+                  ? "rounded-lg p-1"
+                  : cn(
+                      "px-4 py-2.5",
+                      isGrouped ? "rounded-[18px]" : "rounded-[6px_18px_18px_18px]",
+                      peerBubbleSurfaceClass,
+                    ),
                 "data-[state=open]:ring-2 data-[state=open]:ring-[#181B22]/25 dark:data-[state=open]:ring-white/30",
                 message.type === "decision" && "ring-1 ring-[#16A34A]/35 dark:ring-emerald-400/30",
               )}
