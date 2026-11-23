@@ -104,7 +104,37 @@ export function joinedRoomsQueryOptions() {
   return queryOptions({
     queryKey: huddleQueryKeys.rooms(),
     queryFn: () => fetchJoinedRooms(),
+    structuralSharing: reconcileJoinedRoomSequences,
   });
+}
+
+type JoinedRoomsData = Awaited<ReturnType<typeof fetchJoinedRooms>>;
+
+function reconcileJoinedRoomSequences(
+  cachedValue: unknown,
+  incomingValue: unknown,
+): JoinedRoomsData {
+  const cached = cachedValue as JoinedRoomsData | undefined;
+  const incoming = incomingValue as JoinedRoomsData;
+  if (cached === undefined) {
+    return incoming;
+  }
+
+  // 补拉和发送回执都可能晚于 SSE 或本地已读更新。以新列表为准，仅保护同一房间的单调游标。
+  const cachedById = new Map(cached.rooms.map((room) => [room.id, room]));
+  const rooms = incoming.rooms.map((room) => {
+    const previous = cachedById.get(room.id);
+    return previous === undefined
+      ? room
+      : {
+          ...room,
+          lastSeq: asReadCursorSeq(Math.max(previous.lastSeq, room.lastSeq)),
+          yourLastReadSeq: asReadCursorSeq(
+            Math.max(previous.yourLastReadSeq, room.yourLastReadSeq),
+          ),
+        };
+  });
+  return replaceEqualDeep(cached, { ...incoming, rooms });
 }
 
 /**
