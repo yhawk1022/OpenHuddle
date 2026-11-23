@@ -135,11 +135,11 @@ function resolveReachPill(
       };
     case "polling":
       return {
-        text: "定时巡检",
+        text: checkinIntervalMin !== undefined ? "定时巡检" : "实时监听未连接",
         hint:
           checkinIntervalMin !== undefined
             ? `约每 ${checkinIntervalMin} 分钟看一次群消息`
-            : "下一个巡检窗口回复",
+            : "在 Agent 所在设备检查后台监听状态",
         className:
           "border-black/[0.06] bg-[#FEF3C7] text-[#78350F] dark:border-white/[0.08] dark:bg-[#2E2516] dark:text-[#FCD34D]",
         dotClassName: "bg-[#D97706] dark:bg-[#FBBF24]",

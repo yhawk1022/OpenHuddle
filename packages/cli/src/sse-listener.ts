@@ -32,6 +32,7 @@ import {
   type WakeAgentPreset,
   discoverUserCliBinDirs,
   resolveAntigravityManagedProxyEnv,
+  resolveCodexCliBinary,
   resolveDeepSeekCliBinary,
   resolveShellWrapperEnvForBinary,
 } from "./host-env.js";
@@ -44,6 +45,9 @@ export const DEFAULT_SSE_BASE_DELAY_MS = 1_000;
 
 /** 最大 SSE 指数退避重连上限毫秒数（30 秒） */
 export const DEFAULT_SSE_MAX_DELAY_MS = 30_000;
+
+/** 服务端每 15 秒发心跳；容忍短时网络抖动后主动放弃失活连接。 */
+const DEFAULT_SSE_IDLE_TIMEOUT_MS = 60_000;
 
 /** 单轮本地预设 Agent 主推理保护超时（120 秒），兼顾代理握手开销与长代码生成，同时防止死循环永久锁死房间队列 */
 export const DEFAULT_PRESET_TURN_TIMEOUT_MS = 120_000;
@@ -153,6 +157,8 @@ export interface SseListenerOptions {
   readonly runPresetTurn?: PresetPromptExecutor;
   readonly catchUpInboxOnConnect?: boolean;
   readonly onLog?: (line: string) => void;
+  /** 无 SSE 帧时主动重连的等待上限，默认 60 秒。 */
+  readonly idleTimeoutMs?: number;
   readonly maxReconnectAttempts?: number;
 }
 
@@ -1077,6 +1083,10 @@ async function runDefaultPresetPrompt(
     childEnv.TMPDIR = params.replyImageDir;
   }
 
+  const executable =
+    params.preset === "codex" && process.platform === "darwin"
+      ? (resolveCodexCliBinary(effectiveHomeDir, childEnv.PATH) ?? command)
+      : command;
   const needsWindowsDshShell =
     params.preset === "deepseek" && process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
   if (needsWindowsDshShell) {
@@ -1086,7 +1096,7 @@ async function runDefaultPresetPrompt(
   try {
     const stdoutText = await new Promise<string>((resolvePromise, rejectPromise) => {
       const child = spawn(
-        needsWindowsDshShell ? (process.env.ComSpec ?? "cmd.exe") : command,
+        needsWindowsDshShell ? (process.env.ComSpec ?? "cmd.exe") : executable,
         needsWindowsDshShell
           ? ["/d", "/s", "/v:off", "/c", '""%OPENHUDDLE_DSH_EXECUTABLE%" --profile headless"']
           : [...args],
@@ -1718,8 +1728,22 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
   };
 
   let reconnectAttempt = 0;
+  const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_SSE_IDLE_TIMEOUT_MS;
 
   while (!options.signal?.aborted) {
+    const connection = new AbortController();
+    const stopConnection = (): void => connection.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", stopConnection, { once: true });
+    // 服务端定时发心跳。即使 TCP 仍显示连接，也要在长时间收不到事件时重新握手。
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const resetIdleTimer = (): void => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => connection.abort(new Error(`SSE stream idle for ${idleTimeoutMs} ms`)),
+        idleTimeoutMs,
+      );
+    };
+    resetIdleTimer();
     try {
       const requestInit: RequestInit = {
         method: "GET",
@@ -1728,7 +1752,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
           Accept: "text/event-stream",
           "Cache-Control": "no-cache",
         },
-        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        signal: connection.signal,
       };
 
       const response = await fetchFn(eventsUrl, requestInit);
@@ -1736,16 +1760,21 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
         throw new Error(`SSE endpoint returned HTTP ${response.status}`);
       }
 
-      // 成功建立流式连接后立即将指数退避计数器归零，并异步扫描离线期间积压的未读 @提及 / 主人指令
-      reconnectAttempt = 0;
+      // 收到首帧才重置退避，避免代理返回空流时始终以最短间隔重试。
+      resetIdleTimer();
       log(`[openhuddle:listen] Connected to ${eventsUrl}`);
       triggerInitialInboxCatchUp();
 
-      for await (const frame of readSseFrames(response.body, options.signal)) {
+      for await (const frame of readSseFrames(response.body, connection.signal)) {
+        reconnectAttempt = 0;
+        resetIdleTimer();
         const wake = parseWakeEventFrame(frame);
         if (wake !== undefined) {
           queue.enqueue(wake);
         }
+      }
+      if (connection.signal.aborted) {
+        throw connection.signal.reason;
       }
     } catch (error) {
       if (options.signal?.aborted) {
@@ -1753,6 +1782,10 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       }
       const detail = error instanceof Error ? error.message : String(error);
       log(`[openhuddle:listen:disconnected] ${detail}`);
+    } finally {
+      clearTimeout(idleTimer);
+      options.signal?.removeEventListener("abort", stopConnection);
+      connection.abort();
     }
 
     if (options.signal?.aborted) {

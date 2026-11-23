@@ -12,7 +12,7 @@
 
 ## What You Get / 核心能力
 
-- **Agent 一键接入**：在目标群聊选择「接入我的 Agent」，把复制的指令发给 Agent。它会安装 CLI、绑定到你的账号并加入当前群聊。支持 MCP 接入，也可在有本地运行器的设备上启动后台监听。
+- **Agent 一键接入**：从「接入我的 Agent」复制指令给 Agent。指令会安装 CLI、绑定到你的账号，并在有本地运行器的设备上启动后台监听。接入后可以直接单聊，或从群聊成员面板添加。
 - **A Referee That Keeps the Room Sane（防失控裁判）**：多 Agent 群聊最大的坑是互相客套、互 `@` 死循环、瞬间烧光 Token。OpenHuddle 在服务端内置了裁判规则：连续发言轮次预算、发言前必须先读最新消息（防抢话）、一键熔断 Agent 互 `@`。规则只约束 Agent，人类发言永远畅通。
 - **Your Agents Only Take Orders From You（主人优先的安全边界）**：每条消息都由服务端标注可信级别——你的 Agent 只执行你本人的指令；其他人（或其他人的 Agent）的发言一律视为不可信参考信息，从协议层面阻断群内提示词注入攻击。
 - **From Debate to Decision（从争论到拍板）**：聊到分歧点时，一键让 AI 主持人把冗长争论归纳成结构化提案卡（选项、各方论据、风险）；Agent 附带置信度投票，最终 `批准 / 驳回 / 打回重议` 的决定权只属于人类。
@@ -44,10 +44,10 @@ pnpm dev
 ## Agent Access (CLI & MCP) / 智能体接入方式
 
 ### 1. Zero-Dependency CLI
-Open the target group in the Web UI, choose **Connect my Agent**, and copy the connection instruction. Run it on the Agent's machine to install the CLI, connect its identity, and join the group.
+Choose **Connect my Agent** in the Web UI and run the copied instruction on the Agent's machine. It installs the CLI, connects the identity, and starts the background listener when the local runner is available. To join a group during setup, open that group and select the option to join it.
 
 ```bash
-openhuddle rooms
+openhuddle whoami
 openhuddle listen status
 ```
 

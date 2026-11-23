@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   AgentId,
@@ -20,6 +21,7 @@ import type {
   MessageMention,
   MessageSeq,
   OperationKey,
+  OwnedAgentSummaryDto,
   ProposalDraft,
   ProposalId,
   ProposalOption,
@@ -75,6 +77,36 @@ function formatMessageLine(message: MessageDto): string {
     parts.push(`[Attachment: ${attachment.mimeType}, ${attachment.byteLength} bytes, GET ${path}]`);
   }
   return `  [#${seq}] ${author.displayName} (${author.kind}, trust=${author.trustLevel}): ${parts.filter(Boolean).join(" ")}`;
+}
+
+/** 系统服务已加载后短暂等待服务端确认实际监听，避免把进程启动当作长连就绪。 */
+async function waitForRealtimeAgent(
+  client: OpenHuddleHttpClient,
+  agentId: AgentId,
+  signal: AbortSignal,
+): Promise<OwnedAgentSummaryDto | undefined> {
+  try {
+    while (!signal.aborted) {
+      const me = await client.getMe(signal).catch((error: unknown) => {
+        if (error instanceof OpenHuddleApiError && (error.status === 0 || error.status >= 500)) {
+          return undefined;
+        }
+        throw error;
+      });
+      if (
+        me?.callerKind === "agent" &&
+        me.agent.id === agentId &&
+        me.agent.reach === "online_sse"
+      ) {
+        return me.agent;
+      }
+      await delay(750, undefined, { signal });
+    }
+  } catch {
+    // 监听进程自行重连。探测失败后保留已经落盘的身份和服务配置。
+    return undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -844,6 +876,7 @@ export async function runCli(
       // 一键极速体验（2）：在具备唤醒目标时启动后台常驻 SSE 守护（自动兼容 systemd/launchd/schtasks 与云端容器脱离进程兜底）
       let daemonReport: DaemonControlReport | undefined;
       let daemonSkippedNote: string | undefined;
+      let realtimeAgent: OwnedAgentSummaryDto | undefined;
       let listenerMode: "daemon" | "on_demand_cli" | "disabled" = listenRequested
         ? "on_demand_cli"
         : "disabled";
@@ -890,14 +923,34 @@ export async function runCli(
         }
       }
 
+      if (connectionToken !== undefined && listenerMode === "daemon") {
+        const authedClient = new OpenHuddleHttpClient({
+          serverUrl: effectivePairServerUrl,
+          token: pairRes.token,
+          ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
+        });
+        realtimeAgent = await waitForRealtimeAgent(
+          authedClient,
+          pairRes.agent.id,
+          AbortSignal.timeout(8_000),
+        );
+        if (realtimeAgent === undefined) {
+          daemonSkippedNote =
+            "Identity saved and background listener installed. The server has not confirmed its realtime connection yet. Check the listener logs or rerun listen install with the saved token file.";
+        }
+      }
+
       if (parsed.json) {
         emitJson({
           ok: true,
-          agent: pairRes.agent,
+          agent: realtimeAgent ?? pairRes.agent,
           owner: pairRes.owner,
           serverUrl: effectivePairServerUrl,
           tokenFilePath: resolve(targetTokenFilePath),
           listenerMode,
+          ...(connectionToken !== undefined
+            ? { listenerConnected: realtimeAgent !== undefined }
+            : {}),
           ...(pairRes.autoJoinedRoomId !== undefined
             ? { autoJoinedRoomId: pairRes.autoJoinedRoomId }
             : {}),
@@ -922,8 +975,12 @@ export async function runCli(
                 ]
               : []),
             ...(daemonReport !== undefined
-              ? [daemonReport.detail, `Logs: ${daemonReport.logOutPath}`]
+              ? [
+                  daemonReport.detail,
+                  `Logs: ${daemonReport.logOutPath} / ${daemonReport.logErrPath}`,
+                ]
               : []),
+            ...(realtimeAgent !== undefined ? ["Realtime listener connected."] : []),
             ...(daemonSkippedNote !== undefined ? [daemonSkippedNote] : []),
           ].join("\n"),
         );

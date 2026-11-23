@@ -473,6 +473,24 @@ export function resolveDeepSeekCliBinary(customHomeDir?: string): string | undef
   return findPresetCliBinary("deepseek", customHomeDir);
 }
 
+/**
+ * 查找 Codex 唤醒执行器。macOS 应用内置 CLI 可在命令行链接缺失时直接使用。
+ *
+ * @param customHomeDir - 可选用户目录，用于查找用户安装的应用
+ * @param preferredPath - 唤醒子进程已有的 PATH，优先保留用户选择的 CLI
+ * @returns 可执行的 Codex 路径
+ */
+export function resolveCodexCliBinary(
+  customHomeDir?: string,
+  preferredPath?: string,
+): string | undefined {
+  const preferred =
+    preferredPath === undefined
+      ? undefined
+      : findPresetCliBinary("codex", customHomeDir, preferredPath);
+  return preferred ?? findPresetCliBinary("codex", customHomeDir);
+}
+
 function findPresetCliBinary(
   preset: WakeAgentPreset,
   customHomeDir?: string,
@@ -496,12 +514,23 @@ function findPresetCliBinary(
             ? []
             : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]),
         ];
-  const bundleRelativeDir = "DeepSeek Harness.app/Contents/Resources/runtime/cli/bin";
-  if (preset === "deepseek" && process.platform === "darwin" && customPathEnv === undefined) {
-    rawDirs.push(
-      join(customHomeDir ?? homedir(), "Applications", bundleRelativeDir),
-      join("/Applications", bundleRelativeDir),
-    );
+  if (process.platform === "darwin" && customPathEnv === undefined) {
+    const bundleDirs =
+      preset === "codex"
+        ? [
+            "ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS",
+            "ChatGPT.app/Contents/Resources",
+            "Codex.app/Contents/Resources",
+          ]
+        : preset === "deepseek"
+          ? ["DeepSeek Harness.app/Contents/Resources/runtime/cli/bin"]
+          : [];
+    for (const bundleDir of bundleDirs) {
+      rawDirs.push(
+        join(customHomeDir ?? homedir(), "Applications", bundleDir),
+        join("/Applications", bundleDir),
+      );
+    }
   }
 
   const suffixes = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];

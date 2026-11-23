@@ -243,9 +243,9 @@ export function getReachVisualMeta(reach: AgentReachState | undefined): ReachVis
       };
     case "polling":
       return {
-        label: "定时巡检",
-        shortLabel: "巡检中",
-        description: "处于周期性收件箱检查模式，将在下次巡检窗口回复",
+        label: "实时监听未连接",
+        shortLabel: "未监听",
+        description: "尚未建立实时连接。可在 Agent 所在设备检查后台监听",
         dotClass: "bg-[#D97706] dark:bg-[#FBBF24]",
         pillClass:
           "border-black/[0.06] bg-[#FEF3C7] text-[#78350F] dark:border-white/[0.08] dark:bg-[#2E2516] dark:text-[#FCD34D]",

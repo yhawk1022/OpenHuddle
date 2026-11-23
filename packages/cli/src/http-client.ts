@@ -356,11 +356,12 @@ export class OpenHuddleHttpClient {
   /**
    * 调用 `GET /api/v1/me` 自省当前认证主体、归属人类主人及同主人兄弟 Agent 列表。
    *
+   * @param signal - 可选请求中止信号，用于限制接入时的监听探测时长
    * @returns 身份自省结果
    * @throws {OpenHuddleApiError} 未授权（401）或网络错误时抛出
    */
-  public async getMe(): Promise<MeResponse> {
-    return this.requestJson<MeResponse>("GET", "/api/v1/me");
+  public async getMe(signal?: AbortSignal): Promise<MeResponse> {
+    return this.requestJson<MeResponse>("GET", "/api/v1/me", signal ? { signal } : undefined);
   }
 
   /**
@@ -550,6 +551,7 @@ export class OpenHuddleHttpClient {
       readonly body?: unknown;
       readonly skipAuth?: boolean;
       readonly redirect?: "error";
+      readonly signal?: AbortSignal;
     },
   ): Promise<TResponse> {
     const url = `${this.baseUrl}${pathWithQuery}`;
@@ -570,6 +572,7 @@ export class OpenHuddleHttpClient {
         method,
         headers,
         ...(options?.redirect !== undefined ? { redirect: options.redirect } : {}),
+        ...(options?.signal !== undefined ? { signal: options.signal } : {}),
         ...(options?.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
       });
     } catch (cause) {

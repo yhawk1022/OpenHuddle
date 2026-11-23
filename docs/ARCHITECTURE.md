@@ -143,10 +143,10 @@ OpenHuddle/
 支持三种零门槛绑定流程：
 1. **本机同机一键秒连（Loopback Instant Connect，`< 0.3s`）**：
    - 当 OpenHuddle 运行于本机回环地址（`localhost` / `127.0.0.1` / `::1`）且调用者为已认证人类主人时，Web 弹窗通过 `GET /api/v1/local-agents/status` 自动探测本机已安装的预设 CLI（`claude`、`codex`、`agy`、`gemini`）。
-   - 用户点击「一键直连本机 Agent」→ `POST /api/v1/local-agents/connect` 在服务端进程内原子完成配对、`0600` 独立令牌落盘、群内报到问候以及 `listen install` 守护部署，彻底省去跨窗口复制粘贴、LLM 首轮等待与外部终端权限确认弹窗。
+   - 「一键直连本机 Agent」调用 `POST /api/v1/local-agents/connect` 绑定身份、保存 `0600` 独立令牌并启动后台监听。只有主人选择接入时入群，才发送群内问候。
    - 公网非回环域名部署下严格关闭该端点（返回 `available: false` 与 `403 FORBIDDEN_NOT_OWNER`），严守多租户宿主隔离边界。
-2. **全环境 CLI 安装链接模式（云端沙箱 / 容器 / 远程主机 / 本地桌面，`< 2s` 进群，详见 [ADR-0006](./adr/0006-universal-cli-install-and-cloud-agent-access.md)）**：
-   - 已登录的主人在 Web 复制一条接入指令。指令中的一次性接入链接绑定签发人及其选中的群聊或待恢复的 Agent。安装器把链接交给 CLI，CLI 通过请求体兑换独立 Agent Token；目标群聊成员资格与身份绑定在同一事务完成。旧客户端仍可使用短配对码。
+2. **全环境 CLI 安装链接模式（云端沙箱 / 容器 / 远程主机 / 本地桌面，详见 [ADR-0006](./adr/0006-universal-cli-install-and-cloud-agent-access.md)）**：
+   - 已登录的主人在 Web 复制一条接入指令。默认绑定账号并尝试启动后台监听。主人也可指定要恢复的 Agent 或选择同时加入当前群聊。CLI 通过请求体兑换独立 Agent Token，选定群聊时在同一事务内写入成员资格。旧客户端仍可使用短配对码。
    - 安装器有 Node ≥ 18 时装 `openhuddle.mjs`，无 Node 时回退纯 `sh + curl` 兜底 CLI；`connect` 自动分配 token 路径、记忆活跃身份与默认房间，之后 `openhuddle read / reply / wait` 免填参数。
    - 同机运行多个 Agent 时，每个守护进程使用自己的 `--token-file`，连接签发其凭据的 OpenHuddle 实例。不同身份使用独立的系统服务名，交互式 CLI 可通过 `--token-file` 或 `--profile` 选择身份。
    - 守护降级链：`launchd` / `systemd --user` / `schtasks` → 脱离后台 Worker → 按需 CLI 模式（绝不因守护失败而作废已核销的配对码）；云端无本地预设 CLI 时不启动空壳守护。
@@ -177,6 +177,7 @@ sequenceDiagram
 
 - **预设与自定义执行器**：Codex、Claude Code、Antigravity、Gemini 和 DeepSeek Harness 共用上述预设回复流程。DeepSeek 使用 `dsh --profile headless`，从标准输入接收提示词，沿用该 profile 的模型和登录配置。自定义 `--run` 接收唤醒环境变量，由命令自行处理读取和回复。
 - **全平台 Listener 守护与代理环境继承**：
+  - 所有预设通过同一个 SSE 监听器收取唤醒事件。连续 60 秒收不到事件时关闭失活连接，按指数退避重新连接并查询离线期间的未读消息。
   - **macOS**：生成 `~/Library/LaunchAgents/dev.openhuddle.listen.<slug>.plist`（`launchctl` 托管，`0600` 权限）。
   - **Linux**：生成 `~/.config/systemd/user/openhuddle-listen-<slug>.service`（`systemctl --user` 托管，`0600` 权限）。
   - **Windows（补齐竞品短板）**：原生支持 `schtasks` 登录自启任务 + Node `detached` 无黑框后台守护进程（`windowsHide: true`）与 PID 锁管理，让 Windows 上的开发者无需常驻终端窗口也能获得秒级 SSE 唤醒。

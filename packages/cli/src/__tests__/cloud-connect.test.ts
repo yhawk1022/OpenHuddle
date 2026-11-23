@@ -221,6 +221,118 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
     expect(replyOut.join("\n")).toContain("Sent message #12 to rom_cloud");
   });
 
+  it.each([true, false])(
+    "starts the macOS listener with no joined room and reports confirmed=%s without rebinding",
+    async (confirmed) => {
+      const connectionToken = `oh_connect_na_${"a".repeat(43)}`;
+      let meRequests = 0;
+      const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+        if (String(input).endsWith("/api/v1/agent-connections/redeem")) {
+          return jsonResponse(201, { ...PAIR_RESPONSE, autoJoinedRoomId: undefined });
+        }
+        meRequests += 1;
+        if (confirmed && meRequests === 1) {
+          return jsonResponse(503, { ok: false });
+        }
+        return confirmed
+          ? jsonResponse(200, {
+              ok: true,
+              callerKind: "agent",
+              agent: { ...PAIR_RESPONSE.agent, reach: "online_sse" },
+              owner: PAIR_RESPONSE.owner,
+              siblingAgents: [],
+            })
+          : jsonResponse(401, { ok: false });
+      });
+      const execSyncCommand = vi.fn(() => ({ exitCode: 0, stdout: "", stderr: "" }));
+      const daemonDeps: DaemonSystemDeps = {
+        platform: "darwin",
+        execSyncCommand,
+        spawnDetachedProcess: () => undefined,
+        isPidAlive: () => false,
+        terminatePid: () => true,
+      };
+      const out: string[] = [];
+      const exitCode = await runCli(
+        [
+          "connect",
+          `https://huddle.example.com/connect#${connectionToken}`,
+          "--name",
+          "Cloud Codex",
+          "--platform",
+          "codex",
+          "--json",
+        ],
+        {
+          homeDir: tempHome,
+          fetchImpl,
+          daemonDeps,
+          hasPresetBinary: () => true,
+          stdout: (line) => out.push(line),
+        },
+      );
+
+      expect(exitCode).toBe(0);
+      const report: unknown = JSON.parse(out.join("\n"));
+      expect(report).toMatchObject({
+        ok: true,
+        listenerMode: "daemon",
+        listenerConnected: confirmed,
+        agent: { reach: confirmed ? "online_sse" : "offline" },
+      });
+      expect(report).not.toHaveProperty("autoJoinedRoomId");
+      expect(report).not.toHaveProperty("greetedMessageSeq");
+      expect(fetchImpl.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
+        "/api/v1/agent-connections/redeem",
+        "/api/v1/me",
+        ...(confirmed ? ["/api/v1/me"] : []),
+      ]);
+      expect(execSyncCommand).toHaveBeenCalledWith("launchctl", [
+        "load",
+        "-w",
+        expect.stringContaining("LaunchAgents"),
+      ]);
+      expect(readActiveCliProfile(tempHome)?.defaultRoomId).toBeUndefined();
+    },
+  );
+
+  it.each(["codex", "claude_code", "gemini", "antigravity", "deepseek"] as const)(
+    "reconnects the %s listener when a stream stops sending events",
+    async (preset) => {
+      const stop = new AbortController();
+      let cancelled = false;
+      const stalledStream = new ReadableStream<Uint8Array>({
+        cancel() {
+          cancelled = true;
+        },
+      });
+      const wake = { type: "wake", roomId: "rom_cloud", latestSeq: 7, reason: "owner_command" };
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(stalledStream))
+        .mockResolvedValueOnce(new Response(`event: wake\ndata: ${JSON.stringify(wake)}\n\n`));
+      const onWake = vi.fn(async () => {
+        stop.abort();
+      });
+      await startSseListener({
+        serverUrl: "https://huddle.example.com",
+        token: PAIR_RESPONSE.token,
+        tokenFilePath: join(tempHome, "agent.token"),
+        target: { kind: "preset", preset },
+        signal: stop.signal,
+        idleTimeoutMs: 15,
+        maxReconnectAttempts: 1,
+        fetchImpl,
+        onWake,
+        sleepImpl: async () => undefined,
+      });
+
+      expect(cancelled).toBe(true);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(onWake).toHaveBeenCalledWith(wake);
+    },
+  );
+
   it("falls back to a detached background worker when systemd --user is unavailable in Linux containers", () => {
     const spawned: string[][] = [];
     const deps: DaemonSystemDeps = {
