@@ -17,6 +17,7 @@ import {
 import type {
   AgentId,
   AuditLogId,
+  FriendshipId,
   PairingCode,
   ProposalId,
   RoomId,
@@ -181,13 +182,22 @@ export function constantTimeEqualHex(expectedHex: string, actualHex: string): bo
 /**
  * 生成带业务语义前缀的高熵实体主键字符串。
  *
- * @param prefix - 实体域前缀（如 `usr`, `agt`, `rom`, `prp`, `ses`, `otp`, `aud`）
+ * @param prefix - 实体域前缀（如 `usr`, `agt`, `rom`, `prp`, `ses`, `otp`, `aud`, `frd`）
  * @returns 形如 `<prefix>_<24位hex>` 的唯一标识符
  */
 export function generatePrefixedId(
-  prefix: "usr" | "ses" | "otp" | "agt" | "rom" | "prp" | "aud",
+  prefix: "usr" | "ses" | "otp" | "agt" | "rom" | "prp" | "aud" | "frd",
 ): string {
   return `${prefix}_${randomBytes(12).toString("hex")}`;
+}
+
+/**
+ * 生成品牌化的好友关系/好友申请主键 `FriendshipId`。
+ *
+ * @returns 新生成的 `FriendshipId`
+ */
+export function generateFriendshipId(): FriendshipId {
+  return generatePrefixedId("frd") as FriendshipId;
 }
 
 /**
