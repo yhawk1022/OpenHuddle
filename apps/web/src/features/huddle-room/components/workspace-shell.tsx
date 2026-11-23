@@ -830,6 +830,9 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                     onReply={(msg) => setReplyTarget(msg)}
                     onQuickMention={(mention) => setPendingQuickMention(mention)}
                     onAnswerAttention={(replyToSeq, answer) => {
+                      if (sendMessageMutation.isPending) {
+                        return;
+                      }
                       // ADR-0002：Attention 选项一键作答——直接以回复形式落库，免跳输入框
                       sendMessageMutation.mutate({
                         content: answer,
@@ -899,26 +902,38 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
               opKey,
               replyToSeq,
               mentions,
-              onConfirmedOrQueued,
+              attachment,
+              onConfirmed,
               attention,
             }) => {
-              onConfirmedOrQueued();
-              sendMessageMutation.mutate({
-                content,
-                opKey,
-                ...(replyToSeq !== undefined ? { replyToSeq } : {}),
-                mentions,
-                ...(attention !== undefined
-                  ? {
-                      attention: {
-                        question: attention.question,
-                        options: [],
-                        addresseeUserIds: attention.addresseeUserIds,
-                        expiresAtIso: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-                      },
+              sendMessageMutation.mutate(
+                {
+                  content,
+                  opKey,
+                  ...(replyToSeq !== undefined ? { replyToSeq } : {}),
+                  ...(attachment !== undefined ? { attachment } : {}),
+                  mentions,
+                  ...(attention !== undefined
+                    ? {
+                        attention: {
+                          question: attention.question,
+                          options: [],
+                          addresseeUserIds: attention.addresseeUserIds,
+                          expiresAtIso: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+                        },
+                      }
+                    : {}),
+                },
+                {
+                  onSuccess: () => {
+                    onConfirmed();
+                    setReplyTarget((current) => (current?.seq === replyToSeq ? null : current));
+                    if (attachment !== undefined) {
+                      sendMessageMutation.reset();
                     }
-                  : {}),
-              });
+                  },
+                },
+              );
             }}
           />
         </div>

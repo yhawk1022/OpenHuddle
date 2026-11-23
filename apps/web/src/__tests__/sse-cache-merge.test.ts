@@ -103,4 +103,29 @@ describe("@openhuddle/web — SSE & optimistic QueryClient cache merge invariant
     const afterRepeat = removeRoomFromSummaryListCache(afterDelete, ROOM_ID);
     expect(afterRepeat.rooms.map((r) => r.id)).toEqual([otherRoomId]);
   });
+
+  it("correlates captionless media sends by operation key rather than matching empty captions", () => {
+    const opKey = "op_media_pending" as OperationKey;
+    const attachment = { mimeType: "image/png", byteLength: 17 } as const;
+    const optimistic = {
+      ...makeMessage(1, ""),
+      attachment,
+      _opKey: opKey,
+      _optimisticPending: true,
+    };
+    const otherDevice = { ...makeMessage(1, ""), attachment };
+    const cache: RoomMessagesCacheData = {
+      ok: true,
+      messages: [optimistic],
+      latestSeq: 0,
+      governance: createDefaultGovernanceState(),
+    };
+
+    const afterSse = mergeConfirmedMessageIntoCache(cache, otherDevice);
+    expect(afterSse.messages).toEqual([otherDevice, optimistic]);
+
+    const confirmed = { ...makeMessage(2, ""), attachment };
+    const afterHttp = mergeConfirmedMessageIntoCache(afterSse, confirmed, { matchedOpKey: opKey });
+    expect(afterHttp.messages).toEqual([otherDevice, confirmed]);
+  });
 });

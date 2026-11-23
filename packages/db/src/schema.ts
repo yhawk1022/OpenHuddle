@@ -15,6 +15,8 @@ import type {
 } from "@openhuddle/protocol";
 import {
   boolean,
+  customType,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -252,6 +254,30 @@ export const messagesTable = pgTable(
   (table) => [
     primaryKey({ columns: [table.roomId, table.seq] }),
     uniqueIndex("messages_room_op_key_unique_idx").on(table.roomId, table.opKey),
+  ],
+);
+
+const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
+  dataType: () => "bytea",
+});
+
+/**
+ * 消息媒体二进制表。将大字段与消息流分开，删除消息或房间时由外键级联清理。
+ */
+export const messageAttachmentsTable = pgTable(
+  "message_attachments",
+  {
+    roomId: text("room_id").notNull(),
+    seq: integer("seq").notNull(),
+    bytes: bytea("bytes").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.roomId, table.seq] }),
+    foreignKey({
+      columns: [table.roomId, table.seq],
+      foreignColumns: [messagesTable.roomId, messagesTable.seq],
+      name: "message_attachments_message_fk",
+    }).onDelete("cascade"),
   ],
 );
 

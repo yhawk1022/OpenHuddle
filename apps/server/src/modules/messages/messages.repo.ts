@@ -7,7 +7,13 @@
  * 2. 原始归属与视角解耦：仓储层仅还原数据库真实的 `RawAuthorIdentity`（严禁从消息 JSON 负载读取身份），交由服务层按查看者动态计算 `AuthorStamp`。
  * 3. 单调游标推进：更新 `room_members.last_read_seq` 时强制使用 `GREATEST(last_read_seq, nextSeq)`，防止乱序并发读请求导致游标倒退。
  */
-import { type OpenHuddleDb, messagesTable, roomMembersTable, roomsTable } from "@openhuddle/db";
+import {
+  type OpenHuddleDb,
+  messageAttachmentsTable,
+  messagesTable,
+  roomMembersTable,
+  roomsTable,
+} from "@openhuddle/db";
 import {
   ActorKindSchema,
   type AgentId,
@@ -15,6 +21,8 @@ import {
   type AttentionPayload,
   AttentionPayloadSchema,
   type AuthenticatedCaller,
+  type MessageAttachment,
+  MessageAttachmentSchema,
   type MessageDto,
   type MessageMention,
   MessageMentionSchema,
@@ -35,11 +43,22 @@ import {
   asMessageSeq,
   computeAuthorStamp,
 } from "@openhuddle/protocol";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { extractSqlRows } from "../../infra/sql-rows.js";
 
 const MentionsArraySchema = z.array(MessageMentionSchema);
+const AttachmentPayloadSchema = z.object({
+  attachment: MessageAttachmentSchema,
+});
+
+/**
+ * 已校验的附件元数据与字节，仅在发送事务或独立下载时使用。
+ */
+export interface StoredMessageAttachment {
+  readonly metadata: MessageAttachment;
+  readonly bytes: Uint8Array;
+}
 
 /**
  * 包含真实作者归属信息但尚未绑定特定查看者视角的内部消息记录。
@@ -53,6 +72,7 @@ export interface HydratedRawMessageRecord {
   readonly replyToSeq: MessageSeq | undefined;
   readonly mentions: readonly MessageMention[];
   readonly attention: AttentionPayload | undefined;
+  readonly attachment: MessageAttachment | undefined;
   readonly recalledAt: Date | null;
   readonly createdAt: Date;
 }
@@ -134,13 +154,6 @@ export function mapSqlRowToHydratedMessage(row: RawSqlMessageRow): HydratedRawMe
 
   const mentions = MentionsArraySchema.parse(parseJsonColumn(row.mentionsJson ?? []));
   const parsedType = MessageTypeSchema.parse(row.type);
-  // ADR-0002：仅 attention 类型消息透出结构化等人载荷；脏数据解析失败时静默降级为普通文本
-  const attention =
-    parsedType === "attention"
-      ? AttentionPayloadSchema.safeParse(parseJsonColumn(row.payloadJson ?? {})).success
-        ? AttentionPayloadSchema.parse(parseJsonColumn(row.payloadJson ?? {}))
-        : undefined
-      : undefined;
   const recalledAt =
     row.recalledAt === null
       ? null
@@ -148,6 +161,9 @@ export function mapSqlRowToHydratedMessage(row: RawSqlMessageRow): HydratedRawMe
         ? row.recalledAt
         : new Date(row.recalledAt);
   const createdAt = row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt);
+  const payload = parseJsonColumn(row.payloadJson);
+  const attention = parsedType === "attention" ? AttentionPayloadSchema.safeParse(payload) : null;
+  const attachment = recalledAt === null ? AttachmentPayloadSchema.safeParse(payload) : null;
 
   return {
     roomId: row.roomId as RoomId,
@@ -157,7 +173,8 @@ export function mapSqlRowToHydratedMessage(row: RawSqlMessageRow): HydratedRawMe
     content: row.content,
     replyToSeq: row.replyToSeq !== null ? asMessageSeq(Number(row.replyToSeq)) : undefined,
     mentions,
-    attention,
+    attention: attention?.data,
+    attachment: attachment?.data?.attachment,
     recalledAt,
     createdAt,
   };
@@ -184,6 +201,7 @@ export function stampRawMessageForViewer(
     ...(record.replyToSeq !== undefined ? { replyToSeq: record.replyToSeq } : {}),
     mentions: [...record.mentions],
     ...(record.attention !== undefined ? { attention: record.attention } : {}),
+    ...(record.attachment !== undefined ? { attachment: record.attachment } : {}),
     ...(record.recalledAt !== null ? { recalledAtIso: record.recalledAt.toISOString() } : {}),
     createdAtIso: record.createdAt.toISOString(),
   };
@@ -328,6 +346,64 @@ export class MessagesRepository {
       role: RoomMemberRoleSchema.parse(row.role),
       lastReadSeq: row.lastReadSeq,
     };
+  }
+
+  /**
+   * 使用同一个查询快照校验房间成员资格与消息撤回状态，再读取附件。
+   *
+   * @param roomId - 房间主键
+   * @param seq - 消息序号
+   * @param memberKey - 由已认证身份派生的成员键
+   * @returns 所在房间的访问结果；房间不存在时返回 `undefined`
+   */
+  public async findAttachment(
+    roomId: RoomId,
+    seq: MessageSeq,
+    memberKey: string,
+  ): Promise<
+    | { readonly isMember: false }
+    | { readonly isMember: true; readonly attachment?: StoredMessageAttachment }
+    | undefined
+  > {
+    const [row] = await this.db
+      .select({
+        memberKey: roomMembersTable.memberKey,
+        payload: messagesTable.payloadJson,
+        bytes: messageAttachmentsTable.bytes,
+      })
+      .from(roomsTable)
+      .leftJoin(
+        roomMembersTable,
+        and(eq(roomMembersTable.roomId, roomsTable.id), eq(roomMembersTable.memberKey, memberKey)),
+      )
+      .leftJoin(
+        messagesTable,
+        and(
+          eq(messagesTable.roomId, roomMembersTable.roomId),
+          eq(messagesTable.seq, seq),
+          isNull(messagesTable.recalledAt),
+        ),
+      )
+      .leftJoin(
+        messageAttachmentsTable,
+        and(
+          eq(messageAttachmentsTable.roomId, messagesTable.roomId),
+          eq(messageAttachmentsTable.seq, messagesTable.seq),
+        ),
+      )
+      .where(eq(roomsTable.id, roomId));
+
+    if (row === undefined) {
+      return undefined;
+    }
+    if (row.memberKey === null) {
+      return { isMember: false };
+    }
+    if (row.bytes === null) {
+      return { isMember: true };
+    }
+    const { attachment: metadata } = AttachmentPayloadSchema.parse(row.payload);
+    return { isMember: true, attachment: { bytes: row.bytes, metadata } };
   }
 
   /**
@@ -609,6 +685,7 @@ export class MessagesRepository {
     readonly type: MessageType;
     readonly content: string;
     readonly payloadJson?: Record<string, unknown>;
+    readonly attachment?: StoredMessageAttachment;
     readonly replyToSeq?: MessageSeq;
     readonly mentions: readonly MessageMention[];
     readonly opKey?: OperationKey;
@@ -628,11 +705,23 @@ export class MessagesRepository {
       ownerUserId,
       type: input.type,
       content: input.content,
-      payloadJson: input.payloadJson ?? null,
+      payloadJson:
+        input.attachment === undefined
+          ? (input.payloadJson ?? null)
+          : { ...input.payloadJson, attachment: input.attachment.metadata },
       replyToSeq: input.replyToSeq ?? null,
       mentionsJson: input.mentions,
       opKey: input.opKey ?? null,
     });
+
+    // 依赖外层的房间写入事务，避免同一 seq 出现只有元数据或只有附件的中间状态。
+    if (input.attachment !== undefined) {
+      await this.db.insert(messageAttachmentsTable).values({
+        roomId: input.roomId,
+        seq: input.seq,
+        bytes: input.attachment.bytes,
+      });
+    }
 
     const loaded = await this.findBySeq(input.roomId, input.seq);
     if (!loaded) {
@@ -685,7 +774,7 @@ export class MessagesRepository {
   }
 
   /**
-   * 将指定消息标记为撤回，清空正文为 `"[Message recalled]"` 并剥离提及列表。
+   * 将指定消息标记为撤回，清空正文、提及列表与附件。
    *
    * @param roomId - 房间主键
    * @param seq - 待撤回消息序号
@@ -702,9 +791,14 @@ export class MessagesRepository {
       .set({
         content: "[Message recalled]",
         mentionsJson: [],
+        payloadJson: sql`${messagesTable.payloadJson} - 'attachment'`,
         recalledAt,
       })
       .where(and(eq(messagesTable.roomId, roomId), eq(messagesTable.seq, seq)));
+
+    await this.db
+      .delete(messageAttachmentsTable)
+      .where(and(eq(messageAttachmentsTable.roomId, roomId), eq(messageAttachmentsTable.seq, seq)));
 
     const updated = await this.findBySeq(roomId, seq);
     if (!updated) {

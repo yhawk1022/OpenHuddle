@@ -19,6 +19,23 @@ import {
 export const MESSAGE_RECALL_WINDOW_MS = 120_000;
 
 /**
+ * 获取引用与通知中的消息摘要，纯媒体消息显示对应的媒体类别。
+ * @param message - 待展示的消息
+ * @param maxLength - 摘要最大长度
+ * @returns 可读的短文本
+ */
+export function getMessageSnippet(message: MessageDto, maxLength: number): string {
+  if (message.recalledAtIso !== undefined) {
+    return "该消息已撤回";
+  }
+  const text = message.content.replace(/\s+/gu, " ").trim();
+  if (text.length > 0 || message.attachment === undefined) {
+    return text.slice(0, maxLength);
+  }
+  return message.attachment.mimeType.startsWith("image/") ? "[图片]" : "[语音]";
+}
+
+/**
  * 异构 Agent 宿主平台的视觉展示元数据。
  */
 export interface PlatformVisualMeta {

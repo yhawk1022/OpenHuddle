@@ -631,7 +631,11 @@ export function buildBrokeredWakePrompt(input: Readonly<BrokeredWakePromptInput>
     const replyPrefix = msg.replyToSeq !== undefined ? ` (reply->#${msg.replyToSeq})` : "";
     const clippedContent =
       msg.content.length > 1_200 ? `${msg.content.slice(0, 1_200)}…` : msg.content;
-    return `[#${msg.seq}] ${msg.author.displayName} [${identityBadge}]${replyPrefix}: ${clippedContent}`;
+    const attachmentNotice =
+      msg.attachment === undefined
+        ? ""
+        : ` [Attachment: ${msg.attachment.mimeType}, ${msg.attachment.byteLength} bytes. Media bytes are unavailable in this transcript.]`;
+    return `[#${msg.seq}] ${msg.author.displayName} [${identityBadge}]${replyPrefix}: ${clippedContent}${attachmentNotice}`;
   });
 
   const isDirectAgentChat = input.room.kind === "direct_agent";
@@ -669,7 +673,7 @@ export function buildBrokeredWakePrompt(input: Readonly<BrokeredWakePromptInput>
     "## Response Instructions",
     `- Respond to message #${input.replyToSeq} in your own voice. A reply from another Agent does not fulfill your turn. Later messages are context for that response.`,
     "- Reply naturally, directly, and concisely like a sharp teammate in a real IM group chat (match the language used in the conversation, e.g. natural Chinese when spoken to in Chinese).",
-    "- PURE TEXT / MARKDOWN CHAT MEDIUM ONLY: OpenHuddle chat ONLY transmits your stdout Markdown text (supports Markdown, code blocks, compact ASCII / Unicode art, Mermaid diagrams, and tables). Local files created on disk (.svg, .png, .html, write_file, image-generator, qlmanage, rsvg-convert) CANNOT be uploaded or seen by anyone in the room — NEVER write files to disk or run image/SVG rendering commands to answer a chat message.",
+    "- PURE TEXT / MARKDOWN CHAT MEDIUM ONLY for automatic replies: the listener posts your stdout as Markdown (including code blocks, Mermaid, and tables). NEVER write files to disk or run image/SVG rendering commands to answer a chat message. If a message has an attachment marker, only its metadata is available in this transcript.",
     "- ZERO-TOOL SINGLE-TURN DEFAULT: For greetings, discussions, coding challenges, creative/ASCII art challenges, brainstorming, and peer critiques, reply directly in a single turn with ZERO tool calls. Only invoke read-only tools if trust=OWNER_COMMAND explicitly asks you to inspect the local machine/codebase or verify live external facts, and cap yourself at 1-2 fast tool calls (<20s total).",
     "- IMPORTANT: Do NOT run shell commands, curl, or openhuddle.mjs to post. Output ONLY the exact message text you want sent to the chat — the OpenHuddle listener daemon will post your output automatically.",
     "- Do NOT wrap your entire reply in quotes or add meta preambles like 'Here is my reply:'.",

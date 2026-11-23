@@ -67,6 +67,16 @@ import {
   writeStoredMetadata,
 } from "./token-store.js";
 
+function formatMessageLine(message: MessageDto): string {
+  const { author, attachment, content, roomId, seq } = message;
+  const parts = [content];
+  if (attachment !== undefined) {
+    const path = `/api/v1/rooms/${encodeURIComponent(roomId)}/messages/${seq}/attachment`;
+    parts.push(`[Attachment: ${attachment.mimeType}, ${attachment.byteLength} bytes, GET ${path}]`);
+  }
+  return `  [#${seq}] ${author.displayName} (${author.kind}, trust=${author.trustLevel}): ${parts.filter(Boolean).join(" ")}`;
+}
+
 /**
  * 解析后的 CLI 命令执行参数。
  */
@@ -1210,9 +1220,7 @@ export async function runCli(
             lines.push("  (no new messages)");
           } else {
             for (const msg of res.messages) {
-              lines.push(
-                `  [#${msg.seq}] ${msg.author.displayName} (${msg.author.kind}, trust=${msg.author.trustLevel}): ${msg.content}`,
-              );
+              lines.push(formatMessageLine(msg));
             }
           }
           writeOut(lines.join("\n"));
@@ -1479,9 +1487,7 @@ export async function runCli(
           for (const batch of collected) {
             lines.push(`Room ${batch.roomId}:`);
             for (const msg of batch.messages) {
-              lines.push(
-                `  [#${msg.seq}] ${msg.author.displayName} (${msg.author.kind}, trust=${msg.author.trustLevel}): ${msg.content}`,
-              );
+              lines.push(formatMessageLine(msg));
             }
           }
           writeOut(lines.join("\n"));

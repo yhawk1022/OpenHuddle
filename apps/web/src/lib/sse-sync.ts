@@ -44,7 +44,7 @@ export interface RealtimeSseTelemetry {
  * @remarks
  * 并发防重核心算法：
  * - 若收到消息带有 `matchedOpKey`，优先精准剔除对应的客户端乐观占位气泡；
- * - 若 SSE 帧早于 HTTP `POST /messages` 响应抵达（此时 SSE 帧不含客户端私有 `_opKey`），则匹配最早一条同为 `author.isYou === true` 且正文一致的 `_optimisticPending` 气泡予以原地转正，杜绝瞬时双影；
+ * - 若 SSE 帧早于 HTTP `POST /messages` 响应抵达，则按同作者、同正文匹配纯文本待确认气泡。媒体消息等待 HTTP 回执以幂等键确认，避免误匹配同一用户在不同端发送的无正文附件；
  * - 按 `seq` 严格升序去重排列，保证任何乱序推送下消息流单调连续。
  *
  * @param prev - 当前缓存快照
@@ -80,6 +80,8 @@ export function mergeConfirmedMessageIntoCache(
       !replacedOptimisticByHeuristic &&
       item._optimisticPending === true &&
       incoming.author.isYou &&
+      incoming.attachment === undefined &&
+      item.attachment === undefined &&
       item.content.trim() === incoming.content.trim()
     ) {
       replacedOptimisticByHeuristic = true;

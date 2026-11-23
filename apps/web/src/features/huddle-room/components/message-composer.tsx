@@ -21,7 +21,20 @@ import type {
   RoomMemberDto,
   UserId,
 } from "@openhuddle/protocol";
-import { ArrowUp, AtSign, Check, CornerUpLeft, Hand, Loader2, User, Users, X } from "lucide-react";
+import {
+  ArrowUp,
+  AtSign,
+  Check,
+  CornerUpLeft,
+  Hand,
+  Loader2,
+  Mic,
+  Paperclip,
+  Square,
+  User,
+  Users,
+  X,
+} from "lucide-react";
 import {
   type KeyboardEvent,
   useCallback,
@@ -40,13 +53,22 @@ import {
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { ApiClientError } from "../../../lib/api-client.js";
-import { createClientOperationKey, getReachVisualMeta } from "../../../lib/format.js";
+import {
+  createClientOperationKey,
+  getMessageSnippet,
+  getReachVisualMeta,
+} from "../../../lib/format.js";
+import type { DraftMessageAttachment } from "../../../lib/message-media.js";
+import { MESSAGE_MEDIA_ACCEPT, useMessageMediaDraft } from "./use-message-media-draft.js";
 
 /** 输入框自适应高度上限（像素），超出后框内滚动，保持聊天舞台比例克制 */
 const TEXTAREA_MAX_HEIGHT_PX = 168;
 
 /** 行内 `@` 键盘联想浮层最多展示的候选人数 */
 const MAX_MENTION_SUGGESTIONS = 8;
+
+const MEDIA_BUTTON_CLASS =
+  "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] disabled:cursor-not-allowed disabled:opacity-40 dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]";
 
 /** `MessageComposer` 入参属性 */
 export interface MessageComposerProps {
@@ -68,10 +90,62 @@ export interface MessageComposerProps {
     readonly opKey: OperationKey;
     readonly replyToSeq?: MessageSeq;
     readonly mentions: ReadonlyArray<MessageMention>;
-    readonly onConfirmedOrQueued: () => void;
+    readonly attachment?: DraftMessageAttachment;
+    readonly onConfirmed: () => void;
     /** ADR-0002：提问模式开启时以 attention 消息发出（等人类作答，默认 24h 过期） */
     readonly attention?: { readonly question: string; readonly addresseeUserIds: UserId[] };
   }) => void;
+}
+
+function AttachmentPreview(props: {
+  readonly attachment: DraftMessageAttachment;
+  readonly disabled: boolean;
+  readonly onRemove: () => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const { blob, mimeType, name } = props.attachment;
+  useEffect(() => {
+    const source = blob.type === mimeType ? blob : blob.slice(0, blob.size, mimeType);
+    const objectUrl = URL.createObjectURL(source);
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [blob, mimeType]);
+
+  return (
+    <div className="mb-2 flex min-w-0 items-center gap-2 rounded-xl bg-black/[0.04] px-2 py-1.5 dark:bg-white/[0.07]">
+      {mimeType.startsWith("image/") ? (
+        url !== null ? (
+          <img
+            src={url}
+            alt="待发送图片预览"
+            className="h-12 w-12 shrink-0 rounded-md object-cover"
+          />
+        ) : null
+      ) : url !== null ? (
+        // biome-ignore lint/a11y/useMediaCaption: 用户的音频草稿没有字幕轨，原生控件支持键盘播放与暂停。
+        <audio
+          src={url}
+          controls
+          preload="metadata"
+          aria-label="试听待发送语音"
+          className="h-9 w-48 min-w-0 max-w-[65%]"
+        />
+      ) : null}
+      <span className="min-w-0 flex-1 truncate text-xs text-[#687082] dark:text-[#C4C4CA]">
+        {name}
+      </span>
+      <button
+        type="button"
+        aria-label="移除附件"
+        title="移除附件"
+        disabled={props.disabled}
+        onClick={props.onRemove}
+        className={MEDIA_BUTTON_CLASS}
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  );
 }
 
 /** `@` 联想菜单中的单个候选项（`all` 代表一键点名全体 Agent） */
@@ -206,6 +280,13 @@ export function MessageComposer(props: MessageComposerProps) {
   const [askMode, setAskMode] = useState<boolean>(false);
   const [pickerOpen, setPickerOpen] = useState<boolean>(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const retryRef = useRef<{
+    readonly attachment: DraftMessageAttachment | null;
+    readonly fingerprint: string;
+    readonly opKey: OperationKey;
+  } | null>(null);
+  const media = useMessageMediaDraft();
 
   const senderDisplayName =
     props.currentUserDisplayName !== undefined && props.currentUserDisplayName.trim().length > 0
@@ -436,9 +517,14 @@ export function MessageComposer(props: MessageComposerProps) {
     });
   };
 
+  const trimmed = draft.trim();
+  const canSend =
+    !props.isSending &&
+    media.phase === "idle" &&
+    (trimmed.length > 0 || (media.attachment !== null && !askMode));
+
   const submitMessage = (): void => {
-    const trimmed = draft.trim();
-    if (trimmed.length === 0 || props.isSending) {
+    if (!canSend) {
       return;
     }
 
@@ -449,28 +535,44 @@ export function MessageComposer(props: MessageComposerProps) {
       presentKeys.has(mentionIdentityKey(m)),
     );
 
-    const opKey = createClientOperationKey();
     const replySeq = props.replyTarget?.seq;
 
     // ADR-0002 提问模式：以结构化 attention 消息发出，收件人默认为房间内全部人类成员
     const humanMemberIds = props.members
       .filter((m) => m.memberKind === "human" && m.userId !== undefined)
       .map((m) => m.userId as UserId);
+    const attention =
+      askMode && humanMemberIds.length > 0
+        ? { question: trimmed, addresseeUserIds: humanMemberIds }
+        : undefined;
+    const { attachment } = media;
+    const fingerprint = JSON.stringify([trimmed, replySeq, finalMentions, attention]);
+    const previousAttempt = retryRef.current;
+    // 超时可能发生在落库后，原样重试须复用幂等键以免重复发出。
+    const opKey =
+      previousAttempt?.attachment === attachment && previousAttempt.fingerprint === fingerprint
+        ? previousAttempt.opKey
+        : createClientOperationKey();
+    retryRef.current = { attachment, fingerprint, opKey };
 
     props.onSendMessage({
       content: trimmed,
       opKey,
       ...(replySeq !== undefined ? { replyToSeq: replySeq } : {}),
       mentions: finalMentions,
-      ...(askMode && humanMemberIds.length > 0
-        ? { attention: { question: trimmed, addresseeUserIds: humanMemberIds } }
-        : {}),
-      onConfirmedOrQueued: () => {
-        setDraft("");
-        setAskMode(false);
-        setSelectedMentions([]);
-        setCaretIndex(0);
-        props.onClearReplyTarget();
+      ...(attention !== undefined ? { attention } : {}),
+      ...(attachment !== null ? { attachment } : {}),
+      onConfirmed: () => {
+        retryRef.current = null;
+        setDraft((current) => (current === draft ? "" : current));
+        setAskMode((current) => (current === askMode ? false : current));
+        setSelectedMentions((current) => (current === selectedMentions ? [] : current));
+        if (textareaRef.current?.value === draft) {
+          setCaretIndex(0);
+        }
+        if (attachment !== null) {
+          media.clearAttachment(attachment);
+        }
       },
     });
   };
@@ -518,7 +620,6 @@ export function MessageComposer(props: MessageComposerProps) {
         ? props.sendError.message
         : null;
 
-  const canSend = draft.trim().length > 0 && !props.isSending;
   const effectiveKind: RoomKind = props.roomKind ?? "group";
   const hasAnyTeammate =
     effectiveKind === "group" && (agentMembers.length > 0 || humanMembers.length > 0);
@@ -678,7 +779,7 @@ export function MessageComposer(props: MessageComposerProps) {
                   <CornerUpLeft className="h-3 w-3 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
                   <span className="truncate">
                     回复 <strong>{props.replyTarget.author.displayName}</strong>：
-                    {props.replyTarget.content.replace(/\s+/gu, " ").slice(0, 42)}
+                    {getMessageSnippet(props.replyTarget, 42)}
                   </span>
                   <button
                     type="button"
@@ -718,6 +819,22 @@ export function MessageComposer(props: MessageComposerProps) {
             </div>
           ) : null}
 
+          {media.attachment !== null ? (
+            <AttachmentPreview
+              attachment={media.attachment}
+              disabled={props.isSending}
+              onRemove={() => {
+                retryRef.current = null;
+                media.clearAttachment();
+              }}
+            />
+          ) : null}
+          {media.error !== null ? (
+            <p role="alert" className="mb-1 text-xs text-[#C81E1E] dark:text-[#FCA5A5]">
+              {media.error}
+            </p>
+          ) : null}
+
           <textarea
             ref={textareaRef}
             rows={1}
@@ -740,7 +857,7 @@ export function MessageComposer(props: MessageComposerProps) {
 
           {/* 舱内底部工具栏：左侧 `@` 点名、提问模式、`@全体` 与身份微标；右侧圆形发送键 */}
           <div className="mt-2 flex select-none items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {effectiveKind === "group" ? (
                 <AppPopover
                   open={pickerOpen}
@@ -876,6 +993,78 @@ export function MessageComposer(props: MessageComposerProps) {
                   </div>
                 </AppPopover>
               ) : null}
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={MESSAGE_MEDIA_ACCEPT}
+                hidden
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  event.currentTarget.value = "";
+                  if (file !== undefined) {
+                    media.chooseFile(file);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                aria-label="选择图片或音频"
+                title="选择图片或音频"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={props.isSending || media.phase !== "idle"}
+                className={MEDIA_BUTTON_CLASS}
+              >
+                <Paperclip className="h-[17px] w-[17px]" />
+              </button>
+              {media.phase === "idle" ? (
+                <button
+                  type="button"
+                  aria-label="录制语音"
+                  title={media.canRecord ? "录制语音" : "当前浏览器无法录音，可以上传音频文件"}
+                  disabled={props.isSending || !media.canRecord}
+                  onClick={() => void media.startRecording()}
+                  className={MEDIA_BUTTON_CLASS}
+                >
+                  <Mic className="h-[17px] w-[17px]" />
+                </button>
+              ) : (
+                <div className="flex items-center gap-0.5">
+                  <output className="sr-only">
+                    {media.phase === "requesting"
+                      ? "等待麦克风授权"
+                      : media.phase === "recording"
+                        ? "录音中"
+                        : "正在生成录音"}
+                  </output>
+                  <button
+                    type="button"
+                    aria-label="停止录音"
+                    title="停止录音"
+                    disabled={media.phase !== "recording"}
+                    onClick={media.finishRecording}
+                    className={cn(
+                      MEDIA_BUTTON_CLASS,
+                      "bg-red-500/10 text-red-700 dark:text-red-300",
+                    )}
+                  >
+                    {media.phase === "recording" ? (
+                      <Square className="h-3.5 w-3.5 fill-current" />
+                    ) : (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="取消录音"
+                    title="取消录音"
+                    onClick={media.cancelRecording}
+                    className={MEDIA_BUTTON_CLASS}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
 
               {/* ADR-0002 提问模式开关：开启后本条消息以 attention 形式发出，等待人类作答 */}
               <button

@@ -27,9 +27,11 @@ import {
 import { AppError } from "../../infra/errors.js";
 import { toActorMemberKey } from "../../infra/identity-stamp.js";
 import type { RealtimeBus } from "../../infra/realtime-bus.js";
+import { decodeMessageAttachment } from "./message-attachment.js";
 import {
   type MessagesRepository,
   type RoomAgentMentionTarget,
+  type StoredMessageAttachment,
   stampRawMessageForViewer,
 } from "./messages.repo.js";
 
@@ -227,6 +229,38 @@ export class MessagesService {
   }
 
   /**
+   * 独立读取房间消息的附件，不推进消息流的已读游标。
+   *
+   * @param caller - 已认证调用者
+   * @param roomId - 房间主键
+   * @param seq - 消息序号
+   * @returns 经过成员校验的附件
+   * @throws {AppError} 房间或附件不存在，或者调用者不在房间内
+   */
+  public async getAttachment(
+    caller: Readonly<AuthenticatedCaller>,
+    roomId: RoomId,
+    seq: MessageSeq,
+  ): Promise<StoredMessageAttachment> {
+    const result = await this.repo.findAttachment(roomId, seq, toActorMemberKey(caller));
+    if (result?.isMember === false) {
+      throw new AppError({
+        code: "FORBIDDEN_NOT_ROOM_MEMBER",
+        statusCode: 403,
+        message: "You must be a member of this room to read message attachments.",
+      });
+    }
+    if (result?.attachment === undefined) {
+      throw new AppError({
+        code: "NOT_FOUND",
+        statusCode: 404,
+        message: "The message attachment was not found.",
+      });
+    }
+    return result.attachment;
+  }
+
+  /**
    * 在排他行锁与纯函数治理引擎保护下发送房间消息，并在事务提交后派发实时广播与 Agent 唤醒帧。
    *
    * @param caller - 服务端权威认证的发送者
@@ -242,6 +276,9 @@ export class MessagesService {
   ): Promise<SendMessageResult> {
     const memberKey = toActorMemberKey(caller);
     const nowMs = Date.now();
+    // 在获取房间锁前解码，避免大型附件的校验延长同房间发言排队时间。
+    const attachment =
+      body.attachment === undefined ? undefined : decodeMessageAttachment(body.attachment);
 
     // ADR-0002 联邦铁律：结构化 Attention（等人作答）仅人类成员可发起，Agent 消息永不携带等人语义
     if (body.attention !== undefined && caller.kind !== "human") {
@@ -412,6 +449,7 @@ export class MessagesService {
         mentions: effectiveMentions,
         ...(body.opKey !== undefined ? { opKey: body.opKey } : {}),
         ...(body.attention !== undefined ? { payloadJson: body.attention } : {}),
+        ...(attachment !== undefined ? { attachment } : {}),
       });
 
       await txRepo.updateRoomSeqAndGovernance(roomId, nextSeq, transition.nextState);
@@ -545,6 +583,13 @@ export class MessagesService {
       return txRepo.recallMessage(roomId, seq, now);
     });
 
-    return stampRawMessageForViewer(recalledRaw, caller);
+    const recalledMessage = stampRawMessageForViewer(recalledRaw, caller);
+    // 在线客户端通过同序号覆盖移除已撤回附件，与管理员撤回的广播一致。
+    await this.realtimeBus.publishToRoom(roomId, {
+      type: "message.created",
+      roomId,
+      message: recalledMessage,
+    });
+    return recalledMessage;
   }
 }

@@ -33,6 +33,7 @@ import { useState } from "react";
 import {
   canViewerRecallMessage,
   formatMessageTimestamp,
+  getMessageSnippet,
   getPlatformVisualMeta,
 } from "../../lib/format.js";
 import type { OptimisticMessageItem } from "../../lib/query-keys.js";
@@ -47,6 +48,7 @@ import {
 import type { InspectedAgentProfile } from "./agent-profile-dialog.js";
 import { AuthorMicroTag, MessageSemanticBadge, PlatformAvatar } from "./identity-badges.js";
 import { MarkdownContent } from "./markdown-content.js";
+import { MessageAttachment } from "./message-attachment.js";
 
 /** `MessageBubble` 入参属性 */
 export interface MessageBubbleProps {
@@ -125,6 +127,7 @@ export function MessageBubble(props: MessageBubbleProps) {
   const isGrouped = props.isGroupedWithPrevious === true;
   const isRecalled = message.recalledAtIso !== undefined;
   const isPending = message._optimisticPending === true;
+  const hasContent = message.content.length > 0;
   const canRecall = !props.readOnly && !isPending && canViewerRecallMessage(message, props.nowMs);
   const timeLabel = formatMessageTimestamp(message.createdAtIso);
   const anchorId = `msg-seq-${String(message.seq)}`;
@@ -265,12 +268,16 @@ export function MessageBubble(props: MessageBubbleProps) {
               } satisfies AppContextMenuEntry,
             ]
           : []),
-        {
-          id: "ctx-msg-copy-all",
-          label: "复制消息内容",
-          icon: <Copy className="h-3.5 w-3.5" />,
-          onSelect: handleCopy,
-        },
+        ...(hasContent
+          ? [
+              {
+                id: "ctx-msg-copy-all",
+                label: "复制消息内容",
+                icon: <Copy className="h-3.5 w-3.5" />,
+                onSelect: handleCopy,
+              } satisfies AppContextMenuEntry,
+            ]
+          : []),
         { kind: "separator", id: "ctx-msg-sep-actor" },
         ...(props.onQuickMention !== undefined && !isSelf
           ? [
@@ -356,18 +363,20 @@ export function MessageBubble(props: MessageBubbleProps) {
           </AppTooltip>
         ) : null}
 
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="app-no-drag inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-[11.5px] font-medium text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
-        >
-          {copied ? (
-            <Check className="h-3 w-3 text-[#16A34A] dark:text-[#34D399]" />
-          ) : (
-            <Copy className="h-3 w-3" />
-          )}
-          <span>{copied ? "已复制" : "复制"}</span>
-        </button>
+        {hasContent ? (
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="app-no-drag inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-[11.5px] font-medium text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
+          >
+            {copied ? (
+              <Check className="h-3 w-3 text-[#16A34A] dark:text-[#34D399]" />
+            ) : (
+              <Copy className="h-3 w-3" />
+            )}
+            <span>{copied ? "已复制" : "复制"}</span>
+          </button>
+        ) : null}
 
         {canRecall && props.onRecall ? (
           <AppTooltip content="撤回（发送后 2 分钟内）" side="top">
@@ -395,12 +404,7 @@ export function MessageBubble(props: MessageBubbleProps) {
       ? (() => {
           const replySeq = message.replyToSeq;
           const replied = props.repliedMessage;
-          const snippet =
-            replied === undefined
-              ? "引用前序发言"
-              : replied.recalledAtIso !== undefined
-                ? "该消息已撤回"
-                : replied.content.replace(/\s+/g, " ").slice(0, 88);
+          const snippet = replied === undefined ? "引用前序发言" : getMessageSnippet(replied, 88);
           return (
             <button
               type="button"
@@ -522,7 +526,14 @@ export function MessageBubble(props: MessageBubbleProps) {
     <>
       {semanticBadge}
       {replyQuote}
-      <MarkdownContent content={message.content} tone="default" />
+      {hasContent ? <MarkdownContent content={message.content} tone="default" /> : null}
+      {message.attachment !== undefined ? (
+        <MessageAttachment
+          message={{ roomId: message.roomId, seq: message.seq, attachment: message.attachment }}
+          isPending={isPending}
+          readOnly={props.readOnly === true}
+        />
+      ) : null}
       {linkedCard}
     </>
   );

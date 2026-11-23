@@ -62,6 +62,51 @@ export const MessageMentionSchema = z.discriminatedUnion("kind", [
 ]);
 export type MessageMention = z.infer<typeof MessageMentionSchema>;
 
+/** 单条消息附件解码后的字节上限。 */
+export const MAX_MESSAGE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+
+/** 字节上限对应的标准 Base64 字符数，包含补位。 */
+export const MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH = Math.ceil(MAX_MESSAGE_ATTACHMENT_BYTES / 3) * 4;
+
+/** 可作为消息附件传输的被动图片与音频类型。 */
+export const MessageAttachmentMimeTypeSchema = z.enum([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "audio/webm",
+  "audio/ogg",
+  "audio/mp4",
+  "audio/mpeg",
+  "audio/wav",
+]);
+
+/** 房间附件使用的媒体类型。 */
+export type MessageAttachmentMimeType = z.infer<typeof MessageAttachmentMimeTypeSchema>;
+
+/** 消息列表中的附件元数据。二进制由独立的鉴权接口返回。 */
+export const MessageAttachmentSchema = z.object({
+  mimeType: MessageAttachmentMimeTypeSchema,
+  byteLength: z.number().int().min(1).max(MAX_MESSAGE_ATTACHMENT_BYTES),
+});
+
+/** 房间消息中可用于展示和读取附件的元数据。 */
+export type MessageAttachment = z.infer<typeof MessageAttachmentSchema>;
+
+/** 发送附件的请求载荷。服务端还需核验解码字节数及文件格式。 */
+export const MessageAttachmentUploadSchema = z.object({
+  mimeType: MessageAttachmentMimeTypeSchema,
+  data: z
+    .string()
+    .min(4)
+    .max(MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$(?![\s\S])/, "Expected standard Base64 data")
+    .refine((data) => data.length % 4 === 0, "Expected padded Base64 data"),
+});
+
+/** 随消息提交的 Base64 编码附件。 */
+export type MessageAttachmentUpload = z.infer<typeof MessageAttachmentUploadSchema>;
+
 /**
  * 对外返回的单条消息标准 DTO Schema。
  */
@@ -71,6 +116,7 @@ export const MessageDtoSchema = z.object({
   type: MessageTypeSchema,
   author: AuthorStampSchema,
   content: z.string().max(16_000),
+  attachment: MessageAttachmentSchema.optional(),
   replyToSeq: MessageSeqSchema.optional(),
   mentions: z.array(MessageMentionSchema),
   /** 仅 `type === "attention"` 时出现的结构化等人载荷（ADR-0002） */
@@ -83,16 +129,22 @@ export type MessageDto = z.infer<typeof MessageDtoSchema>;
 /**
  * 发送房间消息请求体 Schema。
  */
-export const SendMessageRequestSchema = z.object({
-  content: z.string().trim().min(1).max(16_000),
-  replyToSeq: MessageSeqSchema.optional(),
-  mentions: z.array(MessageMentionSchema).max(20).default([]),
-  /** ADR-0002：人类专属的结构化等人问题；Agent 携带此字段将被服务端拒绝 */
-  attention: AttentionPayloadSchema.optional(),
-  opKey: OperationKeySchema.optional(),
-  lastReadSeq: ReadCursorSeqSchema.optional(),
-  ignoreUnread: z.boolean().default(false),
-});
+export const SendMessageRequestSchema = z
+  .object({
+    content: z.string().trim().max(16_000),
+    attachment: MessageAttachmentUploadSchema.optional(),
+    replyToSeq: MessageSeqSchema.optional(),
+    mentions: z.array(MessageMentionSchema).max(20).default([]),
+    /** ADR-0002：人类专属的结构化等人问题；Agent 携带此字段将被服务端拒绝 */
+    attention: AttentionPayloadSchema.optional(),
+    opKey: OperationKeySchema.optional(),
+    lastReadSeq: ReadCursorSeqSchema.optional(),
+    ignoreUnread: z.boolean().default(false),
+  })
+  .refine((message) => message.content.length > 0 || message.attachment !== undefined, {
+    path: ["content"],
+    message: "Expected message text or an attachment",
+  });
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>;
 
 /**

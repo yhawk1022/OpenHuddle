@@ -147,6 +147,14 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     PRIMARY KEY (room_id, seq)
   )`,
   "CREATE UNIQUE INDEX IF NOT EXISTS messages_room_op_key_unique_idx ON messages (room_id, op_key)",
+  `CREATE TABLE IF NOT EXISTS message_attachments (
+    room_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    bytes BYTEA NOT NULL,
+    PRIMARY KEY (room_id, seq),
+    CONSTRAINT message_attachments_message_fk
+      FOREIGN KEY (room_id, seq) REFERENCES messages(room_id, seq) ON DELETE CASCADE
+  )`,
   `CREATE TABLE IF NOT EXISTS proposals (
     id TEXT PRIMARY KEY,
     room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,

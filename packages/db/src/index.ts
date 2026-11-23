@@ -19,6 +19,7 @@ export {
   agentsTable,
   authOtpCodesTable,
   friendshipsTable,
+  messageAttachmentsTable,
   messagesTable,
   pairingCodesTable,
   proposalsTable,

@@ -22,7 +22,16 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ManagedDatabase, createDatabaseClient, ensureCoreSchema } from "@openhuddle/db";
+import {
+  type ManagedDatabase,
+  createDatabaseClient,
+  ensureCoreSchema,
+  messageAttachmentsTable,
+} from "@openhuddle/db";
+import {
+  MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH,
+  MAX_MESSAGE_ATTACHMENT_BYTES,
+} from "@openhuddle/protocol";
 import type {
   ApiErrorEnvelope,
   ConnectLocalAgentResponse,
@@ -87,6 +96,201 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
   afterEach(async () => {
     await bus.close();
     await database.close();
+  });
+
+  it("shares image and voice attachments only with room members and removes recalled media", async () => {
+    const app = createServerApp({
+      env: parseServerEnv({ NODE_ENV: "test", LOG_LEVEL: "silent", DATABASE_URL: "memory://" }),
+      database,
+      realtimeBus: bus,
+    });
+    const owner = await loginHumanViaOtp(app, "media-owner@example.com", "Owner");
+    const reader = await loginHumanViaOtp(app, "media-reader@example.com", "Reader");
+    const ownerHeaders = {
+      "content-type": "application/json",
+      authorization: `Bearer ${owner.sessionToken}`,
+    };
+    const readerHeaders = { cookie: `oh_session=${reader.sessionToken}` };
+    const create = await app.request("/api/v1/rooms", {
+      method: "POST",
+      headers: ownerHeaders,
+      body: JSON.stringify({ name: "Media room", visibility: "public_shareable" }),
+    });
+    expect(create.status).toBe(201);
+    const { room } = (await create.json()) as { room: RoomDetailDto };
+    const roomUrl = `/api/v1/rooms/${room.id}`;
+    const messagesUrl = `${roomUrl}/messages`;
+    const send = (body: unknown) =>
+      app.request(messagesUrl, {
+        method: "POST",
+        headers: ownerHeaders,
+        body: JSON.stringify(body),
+      });
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const pngUpload = { mimeType: "image/png", data: png.toString("base64") };
+    const wav = Buffer.from(
+      "UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQIAAACAgA==",
+      "base64",
+    );
+    const wavUpload = { mimeType: "audio/wav", data: wav.toString("base64") };
+
+    const textOnly = await send({ content: "text remains supported" });
+    expect(textOnly.status).toBe(201);
+    const imageBody = { content: "", attachment: pngUpload, opKey: "media-image" };
+    const image = await send(imageBody);
+    expect(image.status).toBe(201);
+    const { message: imageMessage } = (await image.json()) as { message: MessageDto };
+    expect(imageMessage).toMatchObject({
+      seq: 2,
+      content: "",
+      attachment: { mimeType: "image/png", byteLength: png.byteLength },
+    });
+    expect(imageMessage.attachment).not.toHaveProperty("data");
+    const retry = await send(imageBody);
+    expect(retry.status).toBe(201);
+    expect(await retry.json()).toMatchObject({ message: imageMessage, wokenAgentIds: [] });
+
+    const imageUrl = `${messagesUrl}/${imageMessage.seq}/attachment`;
+    expect((await app.request(imageUrl)).status).toBe(401);
+    expect((await app.request(imageUrl, { headers: readerHeaders })).status).toBe(403);
+    const shared = await app.request(`/api/v1/share/${room.inviteToken}`);
+    expect(shared.status).toBe(200);
+    const sharedBody = (await shared.json()) as { messages: MessageDto[] };
+    expect(sharedBody.messages.find(({ seq }) => seq === imageMessage.seq)).not.toHaveProperty(
+      "attachment",
+    );
+    const join = await app.request("/api/v1/join", {
+      method: "POST",
+      headers: { ...readerHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ inviteToken: room.inviteToken }),
+    });
+    expect(join.status).toBe(200);
+
+    const attachment = await app.request(imageUrl, { headers: readerHeaders });
+    expect(attachment.status).toBe(200);
+    expect(attachment.headers.get("content-type")).toBe("image/png");
+    expect(attachment.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(attachment.headers.get("cache-control")).toBe("private, no-store");
+    expect(Buffer.from(await attachment.arrayBuffer())).toEqual(png);
+
+    const voice = await send({
+      content: "Please listen",
+      attachment: wavUpload,
+      attention: {
+        question: "Can you hear it?",
+        addresseeUserIds: [reader.user.id],
+        expiresAtIso: "2099-01-01T00:00:00.000Z",
+      },
+    });
+    expect(voice.status).toBe(201);
+    const { message: voiceMessage } = (await voice.json()) as { message: MessageDto };
+    expect(voiceMessage).toMatchObject({
+      seq: 3,
+      type: "attention",
+      content: "Please listen",
+      attachment: { mimeType: "audio/wav", byteLength: wav.byteLength },
+      attention: { question: "Can you hear it?" },
+    });
+    const voiceUrl = `${messagesUrl}/${voiceMessage.seq}/attachment`;
+    const partial = await app.request(voiceUrl, {
+      headers: { ...readerHeaders, range: "bytes=3-10" },
+    });
+    expect(partial.status).toBe(206);
+    expect(partial.headers.get("content-type")).toBe("audio/wav");
+    expect(partial.headers.get("content-range")).toBe(`bytes 3-10/${wav.byteLength}`);
+    expect(Buffer.from(await partial.arrayBuffer())).toEqual(wav.subarray(3, 11));
+    const invalidRange = await app.request(voiceUrl, {
+      headers: { ...readerHeaders, range: "bytes=999-" },
+    });
+    expect(invalidRange.status).toBe(416);
+    expect(invalidRange.headers.get("content-range")).toBe(`bytes */${wav.byteLength}`);
+
+    const read = await app.request(messagesUrl, { headers: readerHeaders });
+    expect(read.status).toBe(200);
+    expect(await read.json()).toMatchObject({
+      messages: [
+        { content: "text remains supported" },
+        { attachment: imageMessage.attachment },
+        { attachment: voiceMessage.attachment, attention: voiceMessage.attention },
+      ],
+      latestSeq: 3,
+    });
+
+    const recall = await app.request(`${messagesUrl}/${imageMessage.seq}`, {
+      method: "DELETE",
+      headers: ownerHeaders,
+    });
+    expect(recall.status).toBe(200);
+    expect((await recall.json()).message).not.toHaveProperty("attachment");
+    expect((await app.request(imageUrl, { headers: readerHeaders })).status).toBe(404);
+
+    const adminRecall = await app.request(
+      `/api/v1/admin/rooms/${room.id}/messages/${voiceMessage.seq}/recall`,
+      { method: "POST", headers: ownerHeaders, body: "{}" },
+    );
+    expect(adminRecall.status).toBe(200);
+    expect((await adminRecall.json()).message).not.toHaveProperty("attachment");
+    expect((await app.request(voiceUrl, { headers: readerHeaders })).status).toBe(404);
+    expect(await database.db.select().from(messageAttachmentsTable)).toEqual([]);
+
+    expect((await send({ content: "", attachment: pngUpload })).status).toBe(201);
+    expect(await database.db.select().from(messageAttachmentsTable)).toHaveLength(1);
+    const deleteRoom = await app.request(roomUrl, { method: "DELETE", headers: ownerHeaders });
+    expect(deleteRoom.status).toBe(200);
+    expect(await database.db.select().from(messageAttachmentsTable)).toEqual([]);
+  });
+
+  it("rejects mismatched, malformed, and oversized uploads before committing messages", async () => {
+    const app = createServerApp({
+      env: parseServerEnv({ NODE_ENV: "test", LOG_LEVEL: "silent", DATABASE_URL: "memory://" }),
+      database,
+      realtimeBus: bus,
+    });
+    const owner = await loginHumanViaOtp(app, "media-invalid@example.com", "Owner");
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${owner.sessionToken}`,
+    };
+    const create = await app.request("/api/v1/rooms", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "Invalid media room" }),
+    });
+    expect(create.status).toBe(201);
+    const { room } = (await create.json()) as { room: RoomDetailDto };
+    const url = `/api/v1/rooms/${room.id}/messages`;
+    const post = (body: unknown) =>
+      app.request(url, { method: "POST", headers, body: JSON.stringify(body) });
+    const mismatched = await post({
+      content: "",
+      attachment: { mimeType: "image/png", data: Buffer.from("<html>").toString("base64") },
+    });
+    expect(mismatched.status).toBe(400);
+    expect((await post({ content: "" })).status).toBe(400);
+    const noncanonical = await post({
+      content: "",
+      attachment: { mimeType: "image/jpeg", data: "/9j/Zh==" },
+    });
+    expect(noncanonical.status).toBe(400);
+    const oversizedBytes = await post({
+      content: "",
+      attachment: {
+        mimeType: "image/png",
+        data: Buffer.alloc(MAX_MESSAGE_ATTACHMENT_BYTES + 1).toString("base64"),
+      },
+    });
+    expect(oversizedBytes.status).toBe(413);
+    const oversizedBody = await app.request(url, {
+      method: "POST",
+      headers,
+      body: "x".repeat(MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH + 128 * 1024 + 1),
+    });
+    expect(oversizedBody.status).toBe(413);
+    const read = await app.request(url, { headers });
+    expect(await read.json()).toMatchObject({ messages: [], latestSeq: 0 });
   });
 
   it("enforces owner-first trust boundaries, 409 optimistic read-lock, turn-budget pause, and human-gated proposal approval", async () => {

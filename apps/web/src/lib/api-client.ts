@@ -33,6 +33,7 @@ import {
   type JoinRoomBody,
   type LocalAgentsStatusResponse,
   type LoginWithPasswordBody,
+  type MessageAttachmentUpload,
   type MessageDto,
   type MessageMention,
   type MessageSeq,
@@ -141,6 +142,7 @@ export interface RoomMessagesResponseDto {
 /** 发送消息入参结构（兼容只读数组与可选幂等键） */
 export interface SendRoomMessageInput {
   readonly content: string;
+  readonly attachment?: MessageAttachmentUpload;
   readonly replyToSeq?: MessageSeq;
   readonly mentions?: ReadonlyArray<MessageMention>;
   readonly opKey?: OperationKey;
@@ -193,6 +195,7 @@ export async function requestApiJson<TResponse>(
   options: RequestOptions = {},
 ): Promise<TResponse> {
   const method = options.method ?? "GET";
+  const timeoutMs = options.timeoutMs ?? 20_000;
   const token = getStoredSessionToken();
 
   const headers: Record<string, string> = {
@@ -211,7 +214,7 @@ export async function requestApiJson<TResponse>(
       method,
       headers,
       credentials: "include",
-      signal: AbortSignal.timeout(options.timeoutMs ?? 20_000),
+      signal: AbortSignal.timeout(timeoutMs),
       ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
     });
   } catch (err) {
@@ -219,7 +222,7 @@ export async function requestApiJson<TResponse>(
     if (err instanceof DOMException && err.name === "TimeoutError") {
       throw new ApiClientError({
         code: "INTERNAL_SERVER_ERROR",
-        message: "请求超时（20 秒无响应），请检查网络后重试",
+        message: `请求超时（${String(timeoutMs / 1_000)} 秒无响应），请检查网络后重试`,
         statusCode: 504,
         requestId: "timeout",
       });
@@ -787,8 +790,19 @@ export async function sendRoomMessage(
     {
       method: "POST",
       body,
+      ...(body.attachment !== undefined ? { timeoutMs: 120_000 } : {}),
     },
   );
+}
+
+/**
+ * 生成原生图片与音频控件可访问的同源附件路径，签入时设置的会话 Cookie 由浏览器自动携带。
+ * @param roomId - 房间品牌 ID
+ * @param seq - 已确认的消息序号
+ * @returns 仍需通过房间成员鉴权的资源路径
+ */
+export function roomMessageAttachmentPath(roomId: RoomId, seq: MessageSeq): string {
+  return `/api/v1/rooms/${encodeURIComponent(roomId)}/messages/${String(seq)}/attachment`;
 }
 
 /**

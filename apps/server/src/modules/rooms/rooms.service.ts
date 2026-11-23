@@ -915,7 +915,9 @@ export class RoomsService {
     });
 
     // 安全防御点：所有消息与提案投票统一按中立公开观察者盖章，强制 isYou=false, isYourOwner=false, trustLevel="external_participant"
-    const messages = rawMessages.map((msg) => stampRawMessageForViewer(msg, PUBLIC_NEUTRAL_VIEWER));
+    const messages = rawMessages.map((msg) =>
+      stampRawMessageForViewer({ ...msg, attachment: undefined }, PUBLIC_NEUTRAL_VIEWER),
+    );
     const proposals = rawProposals.map((prop) =>
       stampRawProposalForViewer(prop, PUBLIC_NEUTRAL_VIEWER),
     );

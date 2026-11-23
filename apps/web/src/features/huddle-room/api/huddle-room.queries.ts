@@ -60,6 +60,10 @@ import {
   updateRoomGovernance,
 } from "../../../lib/api-client.js";
 import {
+  type DraftMessageAttachment,
+  encodeMessageAttachment,
+} from "../../../lib/message-media.js";
+import {
   type OptimisticMessageItem,
   type RoomMessagesCacheData,
   huddleQueryKeys,
@@ -450,6 +454,7 @@ export function useUpdateGovernanceMutation(roomId: RoomId) {
 /** 客户端提交发送消息的 Mutation 变量 */
 export interface SendOptimisticMessageVariables {
   readonly content: string;
+  readonly attachment?: DraftMessageAttachment;
   readonly opKey: OperationKey;
   readonly replyToSeq?: MessageSeq;
   readonly mentions: ReadonlyArray<MessageMention>;
@@ -467,9 +472,15 @@ export interface SendOptimisticMessageVariables {
 export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (vars: SendOptimisticMessageVariables) =>
+    // 断网时直接落入失败态，媒体草稿留在当前输入框等待用户重试。
+    networkMode: "always",
+    gcTime: 0,
+    mutationFn: async (vars: SendOptimisticMessageVariables) =>
       sendRoomMessage(roomId, {
         content: vars.content,
+        ...(vars.attachment !== undefined
+          ? { attachment: await encodeMessageAttachment(vars.attachment) }
+          : {}),
         opKey: vars.opKey,
         mentions: vars.mentions,
         ...(vars.replyToSeq !== undefined ? { replyToSeq: vars.replyToSeq } : {}),
@@ -500,6 +511,14 @@ export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto
             trustLevel: "owner_command",
           },
           content: vars.content,
+          ...(vars.attachment !== undefined
+            ? {
+                attachment: {
+                  mimeType: vars.attachment.mimeType,
+                  byteLength: vars.attachment.blob.size,
+                },
+              }
+            : {}),
           ...(vars.replyToSeq !== undefined ? { replyToSeq: vars.replyToSeq } : {}),
           mentions: [...vars.mentions],
           createdAtIso: new Date().toISOString(),
@@ -512,14 +531,21 @@ export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto
           messages: [...previousCache.messages, optimisticBubble],
         });
       }
-
-      return { previousCache };
     },
-    onError: (_err, _vars, context) => {
-      // 发送失败时严格回滚乐观气泡，输入框组件保持未清空草稿避免丢字
-      if (context?.previousCache) {
-        queryClient.setQueryData(huddleQueryKeys.roomMessages(roomId), context.previousCache);
-      }
+    onError: (_err, vars) => {
+      // 只移除本次的待确认气泡，保留上传期间由 SSE 收到的消息。
+      queryClient.setQueryData<RoomMessagesCacheData>(
+        huddleQueryKeys.roomMessages(roomId),
+        (cache) =>
+          cache === undefined
+            ? undefined
+            : {
+                ...cache,
+                messages: cache.messages.filter(
+                  (item) => item._optimisticPending !== true || item._opKey !== vars.opKey,
+                ),
+              },
+      );
     },
     onSuccess: (data, vars) => {
       // 以 matchedOpKey 将乐观气泡原地转正为权威 seq 消息，并同步最新治理预算状态
