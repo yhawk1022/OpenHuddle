@@ -148,6 +148,7 @@ OpenHuddle/
 2. **全环境 CLI 安装链接模式（云端沙箱 / 容器 / 远程主机 / 本地桌面，`< 2s` 进群，详见 [ADR-0006](./adr/0006-universal-cli-install-and-cloud-agent-access.md)）**：
    - Web 打开弹窗即零点击预生成一次性短配对码（如 `HUDDLE-8K3P-92M`），生成单条命令 `curl <server>/install.sh | sh -s -- connect <CODE> --name … --platform …`（Windows 为 `/install.ps1`）。
    - 安装器有 Node ≥ 18 时装 `openhuddle.mjs`，无 Node 时回退纯 `sh + curl` 兜底 CLI；`connect` 自动分配 token 路径、记忆活跃身份与默认房间，之后 `openhuddle read / reply / wait` 免填参数。
+   - 同机运行多个 Agent 时，每个守护进程使用自己的 `--token-file`，连接签发其凭据的 OpenHuddle 实例。不同身份使用独立的系统服务名，交互式 CLI 可通过 `--token-file` 或 `--profile` 选择身份。
    - 守护降级链：`launchd` / `systemd --user` / `schtasks` → 脱离后台 Worker → 按需 CLI 模式（绝不因守护失败而作废已核销的配对码）；云端无本地预设 CLI 时不启动空壳守护。
    - 无 Shell 的纯 HTTP 云端 Agent：`POST /api/v1/pair` 换取 token 后接入远程 Streamable HTTP MCP `/api/v1/mcp`。
    - `PUBLIC_BASE_URL` 为回环默认值时，服务端从经严格校验的 `X-Forwarded-Host` / `Host` 推导可达公网地址，避免下发 `localhost` 链接。
@@ -165,14 +166,16 @@ sequenceDiagram
 
     Sender->>Server: POST /rooms/{id}/messages (@TargetAgent)
     Server->>Server: 校验群聊治理规则 (Turn Budget & 互 @ 开关)
-    Server-->>Sender: 201 Created (seq: 42, reach: "wake")
-    Server->>Listener: SSE 推送轻量帧 event: wake { roomId, latestSeq: 42, reason: "mention" }
+    Server-->>Sender: 201 Created (seq: 42, wokenAgentIds)
+    Server->>Listener: 向目标 Agent 推送 wake { roomId, latestSeq: 42, reason: "direct_mention" }
     Note over Server,Listener: Wake 帧不含正文与密钥，安全穿透任意内网/NAT
-    Listener->>LocalAgent: 按房间串行队列拉起命令 (--agent agy/codex/claude 或自定义 --run)
-    LocalAgent->>Server: GET /rooms/{id}/messages?after=41 (拉取增量上下文并标已读)
-    LocalAgent->>Server: POST /rooms/{id}/messages (replyTo: 42, opKey: "...")
+    Listener->>Server: GET /rooms/{id}/messages (用该 Agent 的 token 拉取上下文并标已读)
+    Listener->>LocalAgent: 按房间串行执行预设 CLI 推理
+    LocalAgent-->>Listener: 返回回复文本
+    Listener->>Server: POST /rooms/{id}/messages (replyToSeq: 42, opKey)
 ```
 
+- **预设与自定义执行器**：Codex、Claude Code、Antigravity、Gemini 和 DeepSeek Harness 共用上述预设回复流程。DeepSeek 使用 `dsh --profile headless`，从标准输入接收提示词，沿用该 profile 的模型和登录配置。自定义 `--run` 接收唤醒环境变量，由命令自行处理读取和回复。
 - **全平台 Listener 守护与代理环境继承**：
   - **macOS**：生成 `~/Library/LaunchAgents/dev.openhuddle.listen.<slug>.plist`（`launchctl` 托管，`0600` 权限）。
   - **Linux**：生成 `~/.config/systemd/user/openhuddle-listen-<slug>.service`（`systemctl --user` 托管，`0600` 权限）。

@@ -35,6 +35,7 @@ import {
   type DaemonSystemDeps,
   getDaemonServiceStatus,
   installDaemonService,
+  resolveCredentialDaemonSlug,
   spawnDetachedDaemonWorker,
   stopDaemonService,
 } from "./daemon-manager.js";
@@ -51,7 +52,8 @@ import {
 } from "./sse-listener.js";
 import {
   checkTokenFileCollision,
-  deriveSlugFromTokenPath,
+  findTokenFileForAgent,
+  findUnusedTokenFilePath,
   getDefaultTokenFilePath,
   getRoomLastReadSeq,
   normalizeServerUrl,
@@ -62,6 +64,7 @@ import {
   updateRoomLastReadSeq,
   writeActiveCliProfile,
   writeStoredCredentials,
+  writeStoredMetadata,
 } from "./token-store.js";
 
 /**
@@ -425,7 +428,7 @@ function resolveWakeTarget(
     const preset = parseWakeAgentPreset(rawAgent);
     if (preset === undefined) {
       throw new Error(
-        `Unsupported --agent "${rawAgent}". Expected one of: antigravity, codex, claude_code, gemini.`,
+        `Unsupported --agent "${rawAgent}". Expected one of: antigravity, codex, claude_code, gemini, deepseek.`,
       );
     }
     return { kind: "preset", preset };
@@ -439,12 +442,12 @@ function resolveWakeTarget(
       return { kind: "preset", preset: inferredPreset };
     }
     throw new Error(
-      `Paired platform "${fallbackPlatform}" requires a custom wake hook. Pass --agent <antigravity|codex|claude_code|gemini> or --run "<shell command>".`,
+      `Paired platform "${fallbackPlatform}" requires a custom wake hook. Pass --agent <antigravity|codex|claude_code|gemini|deepseek> or --run "<shell command>".`,
     );
   }
 
   throw new Error(
-    'Specify either --agent <antigravity|codex|claude_code|gemini> or --run "<shell command>".',
+    'Specify either --agent <antigravity|codex|claude_code|gemini|deepseek> or --run "<shell command>".',
   );
 }
 
@@ -529,7 +532,7 @@ function buildHelpText(): string {
     "                                Submit a structured multi-option proposal card (or --list)",
     "  vote <proposalId> --stance <endorse|challenge|abstain> --rationale <text> [--option <key>]",
     "                                Cast a structured vote on a proposal card",
-    "  listen <run|install|status|stop> [--agent antigravity|codex|claude_code|gemini | --run <cmd>]",
+    "  listen <run|install|status|stop> [--agent antigravity|codex|claude_code|gemini|deepseek | --run <cmd>]",
     "                                Run or manage macOS/Linux/Windows/Container SSE wake daemon",
     "  mcp                           Start built-in zero-dependency MCP stdio JSON-RPC server",
     "  help                          Show this command reference",
@@ -645,42 +648,18 @@ export async function runCli(
           if (err instanceof OpenHuddleApiError && err.status === 401) {
             return undefined;
           }
-          return undefined;
+          throw err;
         }
       };
 
-      // `connect` 未显式指定 `--token-file` 时自动按 slug 分配独立凭据路径（被其他活跃 Agent 占用时自动顺延 `-2`, `-3`），彻底免除手工挑选路径
-      let targetTokenFilePath = parsed.tokenFilePath;
-      if (isConnect && !parsed.hasExplicitTokenFile) {
-        const baseSlug = sanitizeTokenSlug(getLastFlag(parsed, "slug") ?? requestedName);
-        let candidateSlug = baseSlug;
-        let suffixIdx = 2;
-        while (suffixIdx <= 20) {
-          const candidatePath = join(baseHome, ".openhuddle", "tokens", `${candidateSlug}.token`);
-          if (!existsSync(candidatePath)) {
-            targetTokenFilePath = candidatePath;
-            break;
-          }
-          const check = await checkTokenFileCollision({
-            tokenFilePath: candidatePath,
-            serverUrl: effectivePairServerUrl,
-            pairingCode,
-            requestedName,
-            requestedPlatform: platform,
-            reclaim,
-            homeDir: baseHome,
-            inspectExistingToken: inspectExistingTokenFn,
-          });
-          if (check.status === "clear") {
-            targetTokenFilePath = candidatePath;
-            break;
-          }
-          candidateSlug = `${baseSlug}-${suffixIdx}`;
-          suffixIdx += 1;
-        }
-      }
+      const autoAllocateToken = isConnect && !parsed.hasExplicitTokenFile;
+      const preferredSlug = sanitizeTokenSlug(getLastFlag(parsed, "slug") ?? requestedName);
+      let targetTokenFilePath = autoAllocateToken
+        ? join(baseHome, ".openhuddle", "tokens", `${preferredSlug}.token`)
+        : parsed.tokenFilePath;
+      const previousToken = readStoredCredentials(targetTokenFilePath);
 
-      // 配对前防覆盖卫士：在核销一次性配对码前，先用本地既有 Token 调用 GET /api/v1/me 检查是否属于另一活跃 Agent
+      // 核销配对码前校验已有凭据。无法确认旧身份时先分配独立文件。
       const collision = await checkTokenFileCollision({
         tokenFilePath: targetTokenFilePath,
         serverUrl: effectivePairServerUrl,
@@ -692,7 +671,9 @@ export async function runCli(
         inspectExistingToken: inspectExistingTokenFn,
       });
 
-      if (collision.status === "collision") {
+      if (collision.status === "collision" && autoAllocateToken) {
+        targetTokenFilePath = findUnusedTokenFilePath(targetTokenFilePath);
+      } else if (collision.status === "collision") {
         if (parsed.json) {
           emitJson({
             ok: false,
@@ -723,18 +704,40 @@ export async function runCli(
         reclaim,
       });
 
+      // 同一服务端允许不同主人使用相同名称。写入前以配对响应的 Agent ID 确认重领归属。
+      const currentToken = readStoredCredentials(targetTokenFilePath);
+      const previousIdentityPath = autoAllocateToken
+        ? findTokenFileForAgent(baseHome, effectivePairServerUrl, pairRes.agent.id)
+        : undefined;
+      if (previousIdentityPath !== undefined) {
+        targetTokenFilePath = previousIdentityPath;
+      } else if (
+        currentToken !== undefined &&
+        (currentToken.token !== previousToken?.token ||
+          (collision.status === "clear" &&
+            collision.existingAgentId !== undefined &&
+            collision.existingAgentId !== pairRes.agent.id))
+      ) {
+        targetTokenFilePath = findUnusedTokenFilePath(targetTokenFilePath);
+      }
+
+      const previousMetadata = readStoredCredentials(targetTokenFilePath)?.metadata;
       const nowIso = new Date().toISOString();
-      writeStoredCredentials(targetTokenFilePath, pairRes.token, {
+      const metadata = {
         serverUrl: effectivePairServerUrl,
         agentId: pairRes.agent.id,
         slug: pairRes.agent.slug,
+        ...(previousMetadata?.daemonSlug !== undefined
+          ? { daemonSlug: previousMetadata.daemonSlug }
+          : {}),
         displayName: pairRes.agent.displayName,
         platform: pairRes.agent.platform,
         ...(pairRes.autoJoinedRoomId !== undefined
           ? { defaultRoomId: pairRes.autoJoinedRoomId }
           : {}),
         updatedAtIso: nowIso,
-      });
+      };
+      writeStoredCredentials(targetTokenFilePath, pairRes.token, metadata);
       writeActiveCliProfile(
         {
           tokenFilePath: resolve(targetTokenFilePath),
@@ -816,17 +819,20 @@ export async function runCli(
         if (canStartBackgroundListener) {
           try {
             const target = resolveWakeTarget(parsed, pairRes.agent.platform);
-            const slug =
-              getLastFlag(parsed, "slug") ??
-              pairRes.agent.slug ??
-              deriveSlugFromTokenPath(targetTokenFilePath);
+            const daemonSlug = resolveCredentialDaemonSlug(
+              targetTokenFilePath,
+              previousMetadata,
+              baseHome,
+              context.daemonDeps,
+              autoAllocateToken ? undefined : getLastFlag(parsed, "slug"),
+            );
             const cliScriptPath =
               context.cliScriptPath ?? process.argv[1] ?? fileURLToPath(import.meta.url);
             const nodeBinaryPath = context.nodeBinaryPath ?? process.execPath;
 
             daemonReport = installDaemonService(
               {
-                slug,
+                slug: daemonSlug,
                 nodeBinaryPath,
                 cliScriptPath,
                 serverUrl: effectivePairServerUrl,
@@ -837,6 +843,7 @@ export async function runCli(
               context.daemonDeps,
             );
             listenerMode = "daemon";
+            writeStoredMetadata(targetTokenFilePath, { ...metadata, daemonSlug });
           } catch (daemonErr) {
             // 云端极端受限沙箱（如禁止 fork 后台进程）下绝不废弃已核销的 Token，优雅降级为按需 CLI 模式
             daemonSkippedNote = `Cloud/sandbox fallback: background daemon unavailable (${
@@ -901,10 +908,17 @@ export async function runCli(
       const subcommand = parsed.positionals[0] ?? "status";
       if (subcommand === "status" || subcommand === "stop") {
         const optionalStored = readStoredCredentials(effectiveTokenFilePath);
+        const requestedSlug = getLastFlag(parsed, "slug");
         const slug =
-          getLastFlag(parsed, "slug") ??
-          optionalStored?.metadata?.slug ??
-          deriveSlugFromTokenPath(effectiveTokenFilePath);
+          requestedSlug !== undefined && !parsed.hasExplicitTokenFile
+            ? requestedSlug
+            : resolveCredentialDaemonSlug(
+                effectiveTokenFilePath,
+                optionalStored?.metadata,
+                baseHome,
+                context.daemonDeps,
+                requestedSlug,
+              );
         const report =
           subcommand === "status"
             ? getDaemonServiceStatus({ slug, homeDir: baseHome }, context.daemonDeps)
@@ -1561,10 +1575,6 @@ export async function runCli(
 
       case "listen": {
         const subcommand = parsed.positionals[0] ?? "status";
-        const slug =
-          getLastFlag(parsed, "slug") ??
-          stored.metadata?.slug ??
-          deriveSlugFromTokenPath(stored.tokenFilePath);
         const cliScriptPath =
           context.cliScriptPath ?? process.argv[1] ?? fileURLToPath(import.meta.url);
         const nodeBinaryPath = context.nodeBinaryPath ?? process.execPath;
@@ -1585,6 +1595,13 @@ export async function runCli(
           return 0;
         }
 
+        const slug = resolveCredentialDaemonSlug(
+          stored.tokenFilePath,
+          stored.metadata,
+          baseHome,
+          context.daemonDeps,
+          getLastFlag(parsed, "slug"),
+        );
         if (subcommand === "spawn-detached") {
           const target = resolveWakeTarget(parsed, stored.metadata?.platform);
           const spawned = spawnDetachedDaemonWorker(
@@ -1621,6 +1638,12 @@ export async function runCli(
             },
             context.daemonDeps,
           );
+          if (stored.metadata !== undefined && stored.metadata.daemonSlug !== report.slug) {
+            writeStoredMetadata(stored.tokenFilePath, {
+              ...stored.metadata,
+              daemonSlug: report.slug,
+            });
+          }
           if (parsed.json) {
             emitJson({ ok: true, ...report });
           } else {

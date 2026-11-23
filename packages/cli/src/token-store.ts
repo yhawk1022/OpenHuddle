@@ -7,7 +7,15 @@
  * 2. 配对前防误覆写（Token Collision Guard）：当目标 Token 文件已存在时，必须在消耗一次性配对码前先调用 `GET /api/v1/me` 自省身份；若该 Token 归属于另一个仍处于活跃状态的 Agent，坚决拒绝覆盖并输出带 `--token-file` 的精确重试命令。
  * 3. 单调递增游标缓存：本地按 `(agentId, roomId)` 持久化已读 `lastReadSeq`，只增不减，供 `send` 命令自动挂载乐观并发防抢话读锁。
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
@@ -25,6 +33,8 @@ export interface StoredAgentMetadata {
   readonly serverUrl: string;
   readonly agentId: AgentId;
   readonly slug: string;
+  /** 同机守护进程标识随凭据保存，避免服务器 slug 在不同实例或主人间重复。 */
+  readonly daemonSlug?: string;
   readonly displayName: string;
   readonly platform: AgentPlatform;
   readonly defaultRoomId?: RoomId;
@@ -90,11 +100,12 @@ export interface TokenCollisionCheckOptions {
 export type TokenCollisionCheckResult =
   | {
       readonly status: "clear";
+      readonly existingAgentId?: AgentId;
     }
   | {
       readonly status: "collision";
-      readonly existingAgentId: AgentId;
-      readonly existingDisplayName: string;
+      readonly existingAgentId?: AgentId;
+      readonly existingDisplayName?: string;
       readonly suggestedTokenFilePath: string;
       readonly suggestedDisplayPath: string;
       readonly suggestedCommand: string;
@@ -164,6 +175,78 @@ export function deriveSlugFromTokenPath(tokenFilePath: string): string {
 }
 
 /**
+ * 为新凭据生成同机守护标识。
+ * @param tokenFilePath - 已分配的凭据路径
+ * @param homeDir - 当前宿主的用户主目录
+ * @param forcePathSuffix - 当规范名称已被旧监听器占用时强制追加路径摘要
+ * @returns 标准目录中的规范文件名，或包含完整路径摘要的隔离标识
+ */
+export function deriveDaemonSlug(
+  tokenFilePath: string,
+  homeDir: string,
+  forcePathSuffix = false,
+): string {
+  const tokenPath = resolve(tokenFilePath);
+  const slug = deriveSlugFromTokenPath(tokenPath);
+  if (
+    !forcePathSuffix &&
+    tokenPath === resolve(homeDir, ".openhuddle", "tokens", `${slug}.token`)
+  ) {
+    return slug;
+  }
+  const suffix = createHash("sha256").update(tokenPath).digest("hex").slice(0, 12);
+  return `${slug.slice(0, 35)}-${suffix}`;
+}
+
+/**
+ * 找到没有凭据的相邻路径，提前为递增后缀保留守护标识长度。
+ * @param tokenFilePath - 第一个候选路径
+ * @returns 未占用的 `.token` 路径
+ */
+export function findUnusedTokenFilePath(tokenFilePath: string): string {
+  let candidatePath = resolve(tokenFilePath);
+  const parentPath = dirname(candidatePath);
+  const baseSlug = deriveSlugFromTokenPath(candidatePath);
+  for (
+    let index = 2;
+    existsSync(candidatePath) || existsSync(getMetadataFilePath(candidatePath));
+    index += 1
+  ) {
+    const suffix = `-${index}`;
+    candidatePath = join(parentPath, `${baseSlug.slice(0, 48 - suffix.length)}${suffix}.token`);
+  }
+  return candidatePath;
+}
+
+/**
+ * 按服务端确认的身份寻找已有本地凭据，包括之前因同名冲突分配的带后缀路径。
+ * @param homeDir - 当前宿主用户主目录
+ * @param serverUrl - 配对响应所属服务端
+ * @param agentId - 配对响应确认的 Agent ID
+ * @returns 对应凭据路径（如有）
+ */
+export function findTokenFileForAgent(
+  homeDir: string,
+  serverUrl: string,
+  agentId: AgentId,
+): string | undefined {
+  const tokensDir = join(homeDir, ".openhuddle", "tokens");
+  if (!existsSync(tokensDir)) return undefined;
+  for (const entry of readdirSync(tokensDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".token.json")) continue;
+    const tokenFilePath = join(tokensDir, entry.name.slice(0, -".json".length));
+    const metadata = readStoredCredentials(tokenFilePath)?.metadata;
+    if (
+      metadata?.agentId === agentId &&
+      normalizeServerUrl(metadata.serverUrl) === normalizeServerUrl(serverUrl)
+    ) {
+      return tokenFilePath;
+    }
+  }
+  return undefined;
+}
+
+/**
  * 以严格权限（目录 `0o700`、文件 `0o600`）原子写入敏感凭据或游标文件。
  *
  * @param filePath - 目标文件绝对路径
@@ -199,6 +282,7 @@ function isStoredAgentMetadata(value: unknown): value is StoredAgentMetadata {
     typeof record.agentId === "string" &&
     record.agentId.length > 0 &&
     typeof record.slug === "string" &&
+    (record.daemonSlug === undefined || typeof record.daemonSlug === "string") &&
     typeof record.displayName === "string" &&
     typeof record.platform === "string" &&
     typeof record.updatedAtIso === "string"
@@ -255,10 +339,19 @@ export function writeStoredCredentials(
 ): void {
   const resolvedTokenPath = resolve(tokenFilePath);
   writeProtectedFile(resolvedTokenPath, `${token.trim()}\n`);
-  writeProtectedFile(
-    getMetadataFilePath(resolvedTokenPath),
-    `${JSON.stringify(metadata, null, 2)}\n`,
-  );
+  writeStoredMetadata(resolvedTokenPath, metadata);
+}
+
+/**
+ * 更新已配对身份的伴随元数据，保持现有 Token 内容及作用域。
+ * @param tokenFilePath - 已有的凭据路径
+ * @param metadata - 待保存的 Agent 元数据
+ */
+export function writeStoredMetadata(
+  tokenFilePath: string,
+  metadata: Readonly<StoredAgentMetadata>,
+): void {
+  writeProtectedFile(getMetadataFilePath(tokenFilePath), `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
 /**
@@ -281,42 +374,51 @@ export async function checkTokenFileCollision(
 
   // 优先向旧凭据记录的归属服务端发起 GET /api/v1/me 自省，兼容跨实例防撞场景
   const probeServerUrl = existing.metadata?.serverUrl ?? options.serverUrl;
-  const meResponse = await options.inspectExistingToken(probeServerUrl, existing.token);
-  if (meResponse === undefined || meResponse.callerKind !== "agent") {
-    // 旧 Token 已吊销、过期（401）或不可用，允许安全覆写复用路径
-    return { status: "clear" };
-  }
-
   const requestedSlug = sanitizeTokenSlug(options.requestedName);
   const sameServer = normalizeServerUrl(probeServerUrl) === normalizeServerUrl(options.serverUrl);
-  const sameAgentIdentity =
-    meResponse.agent.slug === requestedSlug ||
-    meResponse.agent.displayName.trim().toLowerCase() ===
-      options.requestedName.trim().toLowerCase();
-
-  // 仅当同一服务端下的同一 Agent 执行身份重领（或同名重绑）时允许覆写；其余一律拦截保护在役兄弟 Agent
-  if (sameServer && sameAgentIdentity) {
-    return { status: "clear" };
+  let existingAgentId = existing.metadata?.agentId;
+  let existingDisplayName = existing.metadata?.displayName;
+  if (sameServer) {
+    try {
+      const meResponse = await options.inspectExistingToken(probeServerUrl, existing.token);
+      if (meResponse === undefined) {
+        return { status: "clear" };
+      }
+      if (meResponse.callerKind === "agent") {
+        existingAgentId = meResponse.agent.id;
+        existingDisplayName = meResponse.agent.displayName;
+        if (
+          meResponse.agent.slug === requestedSlug ||
+          existingDisplayName.trim().toLowerCase() === options.requestedName.trim().toLowerCase()
+        ) {
+          return { status: "clear", existingAgentId };
+        }
+      }
+    } catch {
+      // 连接失败时旧 Agent 仍可能有效，保留凭据并引导分配独立路径。
+    }
   }
 
   const baseHome = options.homeDir ?? homedir();
-  const suggestedTokenFilePath = join(baseHome, ".openhuddle", "tokens", `${requestedSlug}.token`);
-  const suggestedDisplayPath = `~/.openhuddle/tokens/${requestedSlug}.token`;
+  const suggestedTokenFilePath = findUnusedTokenFilePath(
+    join(baseHome, ".openhuddle", "tokens", `${requestedSlug}.token`),
+  );
+  const suggestedDisplayPath = `~/.openhuddle/tokens/${basename(suggestedTokenFilePath)}`;
   const reclaimFlag = options.reclaim ? " --reclaim" : "";
   const escapedName = JSON.stringify(options.requestedName);
   const suggestedCommand = `node openhuddle.mjs pair ${options.pairingCode} --name ${escapedName} --platform ${options.requestedPlatform}${reclaimFlag} --server ${normalizeServerUrl(options.serverUrl)} --token-file ${suggestedDisplayPath}`;
 
   const message = [
-    `Refusing to overwrite active agent token at ${options.tokenFilePath}.`,
-    `Existing token belongs to active agent "${meResponse.agent.displayName}" (${meResponse.agent.id}, platform=${meResponse.agent.platform}).`,
+    `Refusing to overwrite an existing agent token at ${options.tokenFilePath}.`,
+    ...(existingDisplayName !== undefined ? [`Existing agent: "${existingDisplayName}".`] : []),
     "To isolate multiple agents on the same machine, re-run with a dedicated --token-file:",
     `  ${suggestedCommand}`,
   ].join("\n");
 
   return {
     status: "collision",
-    existingAgentId: meResponse.agent.id,
-    existingDisplayName: meResponse.agent.displayName,
+    ...(existingAgentId !== undefined ? { existingAgentId } : {}),
+    ...(existingDisplayName !== undefined ? { existingDisplayName } : {}),
     suggestedTokenFilePath,
     suggestedDisplayPath,
     suggestedCommand,

@@ -25,9 +25,12 @@ import type {
   RoomId,
   WakeReason,
 } from "@openhuddle/protocol";
+import { asReadCursorSeq } from "@openhuddle/protocol";
 import {
+  type WakeAgentPreset,
   discoverUserCliBinDirs,
   resolveAntigravityManagedProxyEnv,
+  resolveDeepSeekCliBinary,
   resolveShellWrapperEnvForBinary,
 } from "./host-env.js";
 import { OpenHuddleApiError, OpenHuddleHttpClient } from "./http-client.js";
@@ -45,10 +48,7 @@ export const DEFAULT_PRESET_TURN_TIMEOUT_MS = 120_000;
 /** 主推理超时后自动降级为“零工具纯文本极速回复”回合的保护超时（90 秒） */
 export const FAST_FALLBACK_TURN_TIMEOUT_MS = 90_000;
 
-/**
- * 内置一等公民支持的本地编程 Agent 唤醒预设枚举。
- */
-export type WakeAgentPreset = "antigravity" | "codex" | "claude_code" | "gemini";
+export type { WakeAgentPreset } from "./host-env.js";
 
 /**
  * 本地唤醒执行目标配置（内置 Agent 模板或自定义 Shell 命令）。
@@ -80,6 +80,8 @@ export interface WakeEventPayload {
   readonly roomId: RoomId;
   readonly latestSeq: MessageSeq;
   readonly reason: WakeReason;
+  /** Inbox 补扫的未读起点。实时帧的 latestSeq 直接指向触发消息。 */
+  readonly catchUpAfterSeq?: ReadCursorSeq;
 }
 
 /**
@@ -120,6 +122,7 @@ export interface BrokeredWakePromptInput {
   readonly room: Readonly<RoomDetailDto>;
   readonly messages: readonly MessageDto[];
   readonly wake: Readonly<WakeEventPayload>;
+  readonly replyToSeq: MessageSeq;
 }
 
 /**
@@ -151,7 +154,7 @@ const VALID_WAKE_REASONS: ReadonlySet<string> = new Set<WakeReason>([
 ]);
 
 /**
- * 解析并规范化 `--agent` 预设名称（兼容简写别名 `agy`、`claude` 与 `gemini`）。
+ * 解析并规范化 `--agent` 预设名称（兼容宿主命令别名）。
  *
  * @param raw - 用户传入的 `--agent` 标志值或配对元数据中的 `platform`
  * @returns 合法的 `WakeAgentPreset`，不支持则返回 `undefined`
@@ -174,6 +177,9 @@ export function parseWakeAgentPreset(raw: string): WakeAgentPreset | undefined {
     case "gemini-cli":
     case "gemini_cli":
       return "gemini";
+    case "deepseek":
+    case "dsh":
+      return "deepseek";
     default:
       return undefined;
   }
@@ -458,7 +464,11 @@ export class RoomWakeQueue {
         return;
       }
 
-      const coalescedSeq = Math.max(existingPending.latestSeq, event.latestSeq) as MessageSeq;
+      const latestEvent =
+        existingPending.latestSeq > event.latestSeq ||
+        (existingPending.latestSeq === event.latestSeq && event.catchUpAfterSeq !== undefined)
+          ? existingPending
+          : event;
       // 安全与语义优先级不变量：合并多次唤醒时，若其中任意一次属于主人亲自下令（owner_command），
       // 必须保留 owner_command 标签，避免后续普通提及覆盖掉主人指令的最高响应优先级。
       const coalescedReason: WakeReason =
@@ -467,9 +477,7 @@ export class RoomWakeQueue {
           : event.reason;
 
       this.pendingByRoom.set(event.roomId, {
-        type: "wake",
-        roomId: event.roomId,
-        latestSeq: coalescedSeq,
+        ...latestEvent,
         reason: coalescedReason,
       });
       return;
@@ -557,6 +565,8 @@ export function buildWakeShellCommand(
       return `claude -p --output-format text --no-session-persistence --permission-prompts none ${JSON.stringify(promptInstruction)}`;
     case "gemini":
       return `gemini -p ${JSON.stringify(promptInstruction)} -o text`;
+    case "deepseek":
+      return `dsh --profile headless ${JSON.stringify(promptInstruction)}`;
   }
 }
 
@@ -657,6 +667,7 @@ export function buildBrokeredWakePrompt(input: Readonly<BrokeredWakePromptInput>
       : []),
     "",
     "## Response Instructions",
+    `- Respond to message #${input.replyToSeq} in your own voice. A reply from another Agent does not fulfill your turn. Later messages are context for that response.`,
     "- Reply naturally, directly, and concisely like a sharp teammate in a real IM group chat (match the language used in the conversation, e.g. natural Chinese when spoken to in Chinese).",
     "- PURE TEXT / MARKDOWN CHAT MEDIUM ONLY: OpenHuddle chat ONLY transmits your stdout Markdown text (supports Markdown, code blocks, compact ASCII / Unicode art, Mermaid diagrams, and tables). Local files created on disk (.svg, .png, .html, write_file, image-generator, qlmanage, rsvg-convert) CANNOT be uploaded or seen by anyone in the room — NEVER write files to disk or run image/SVG rendering commands to answer a chat message.",
     "- ZERO-TOOL SINGLE-TURN DEFAULT: For greetings, discussions, coding challenges, creative/ASCII art challenges, brainstorming, and peer critiques, reply directly in a single turn with ZERO tool calls. Only invoke read-only tools if trust=OWNER_COMMAND explicitly asks you to inspect the local machine/codebase or verify live external facts, and cap yourself at 1-2 fast tool calls (<20s total).",
@@ -849,6 +860,7 @@ async function runDefaultPresetPrompt(params: {
   readonly signal?: AbortSignal;
   readonly onLog?: (line: string) => void;
 }): Promise<string> {
+  const effectiveHomeDir = params.homeDir ?? homedir();
   const effectiveTimeoutMs = params.timeoutMs ?? DEFAULT_PRESET_TURN_TIMEOUT_MS;
   const agyPrintTimeoutSec = Math.max(15, Math.floor(effectiveTimeoutMs / 1_000) - 5);
   const codexOutputFile =
@@ -930,11 +942,17 @@ async function runDefaultPresetPrompt(params: {
           args: ["-p", "Reply to the OpenHuddle room transcript provided on stdin.", "-o", "text"],
           sendPromptViaStdin: true,
         };
+      case "deepseek":
+        return {
+          command: resolveDeepSeekCliBinary(effectiveHomeDir) ?? "dsh",
+          args: ["--profile", "headless"],
+          // 群聊正文通过 stdin 传给 Harness，避免出现在进程命令行里。
+          sendPromptViaStdin: true,
+        };
     }
   };
 
   const { command, args, sendPromptViaStdin } = resolveCommandAndArgs();
-  const effectiveHomeDir = params.homeDir ?? homedir();
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...params.wakeEnv,
@@ -1011,16 +1029,39 @@ async function runDefaultPresetPrompt(params: {
       }
       break;
     }
+    case "deepseek": {
+      for (const [key, val] of Object.entries(
+        resolveShellWrapperEnvForBinary(effectiveHomeDir, "dsh"),
+      )) {
+        if (!childEnv[key]) {
+          childEnv[key] = val;
+        }
+      }
+      break;
+    }
   }
 
+  const needsWindowsDshShell =
+    params.preset === "deepseek" && process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
+  if (needsWindowsDshShell) {
+    // Windows 的 npm 启动器是批处理文件；固定命令行只引用路径，房间内容仍走 stdin。
+    childEnv.OPENHUDDLE_DSH_EXECUTABLE = command;
+  }
   try {
     const stdoutText = await new Promise<string>((resolvePromise, rejectPromise) => {
-      const child = spawn(command, [...args], {
-        cwd: tmpdir(),
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-        env: childEnv,
-      });
+      const child = spawn(
+        needsWindowsDshShell ? (process.env.ComSpec ?? "cmd.exe") : command,
+        needsWindowsDshShell
+          ? ["/d", "/s", "/v:off", "/c", '""%OPENHUDDLE_DSH_EXECUTABLE%" --profile headless"']
+          : [...args],
+        {
+          cwd: tmpdir(),
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          windowsVerbatimArguments: needsWindowsDshShell,
+          env: childEnv,
+        },
+      );
 
       const stdoutChunks: string[] = [];
       const stderrChunks: string[] = [];
@@ -1269,6 +1310,8 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     token: options.token,
     fetchImpl: fetchFn,
   });
+  // 实时帧和建连补扫可能报告同一条消息。去重只推进已处理的触发序号。
+  const lastHandledTriggerByRoom = new Map<RoomId, number>();
 
   let cachedSelfIdentity:
     | {
@@ -1276,10 +1319,6 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
         readonly owner: HumanUserDto;
       }
     | undefined;
-
-  // 记录每个房间在上一轮成功完成推理时已纳入 Prompt 评估的最大消息序号，
-  // 防止在 409 并发补发（自身消息落库在别人新提问之后）时误把未读新提问当成自回声跳过。
-  const maxEvaluatedSeqByRoom = new Map<RoomId, number>();
 
   const resolveSelfIdentity = async (): Promise<{
     readonly agent: OwnedAgentSummaryDto;
@@ -1318,29 +1357,47 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       return;
     }
 
-    const visibleMessages = readRes.messages.filter((m) => m.recalledAtIso === undefined);
-    const latestVisible = visibleMessages[visibleMessages.length - 1];
-    if (latestVisible === undefined) {
-      return;
-    }
-
-    const prevEvaluatedSeq = maxEvaluatedSeqByRoom.get(wake.roomId) ?? 0;
-    const unseenNonSelfMessages = visibleMessages.filter(
-      (m) =>
-        m.seq > prevEvaluatedSeq &&
-        !m.author.isYou &&
-        !m.content.startsWith("⚠️ 本地推理执行失败（"),
+    const visibleMessages = readRes.messages.filter(
+      (message) => message.recalledAtIso === undefined,
     );
-
-    // 防自回声与并发防漏双保险：仅当最新消息来自自身且自上次推理以来没有任何未评估的他方消息时才跳过
-    if (unseenNonSelfMessages.length === 0) {
+    const catchUpAfterSeq = wake.catchUpAfterSeq;
+    const lastHandledTrigger = lastHandledTriggerByRoom.get(wake.roomId) ?? 0;
+    // 实时帧绑定触发消息。其他 Agent 先回到群里时，后读到的回复只参与上下文。
+    let replyAnchorMsg =
+      catchUpAfterSeq === undefined
+        ? visibleMessages.find((message) => message.seq === wake.latestSeq)
+        : visibleMessages.findLast(
+            (message) =>
+              message.seq > Math.max(catchUpAfterSeq, lastHandledTrigger) &&
+              message.seq <= wake.latestSeq &&
+              (message.author.trustLevel === "owner_command" ||
+                message.mentions.some(
+                  (mention) => mention.kind === "agent" && mention.agentId === selfAgent.id,
+                )),
+          );
+    if (catchUpAfterSeq === undefined && wake.latestSeq <= windowAfterSeq) {
+      const { messages } = await client.readRoomMessages(wake.roomId, {
+        afterSeq: wake.latestSeq - 1,
+        limit: 1,
+      });
+      replyAnchorMsg = messages.find(
+        (message) => message.seq === wake.latestSeq && message.recalledAtIso === undefined,
+      );
+      if (replyAnchorMsg !== undefined) {
+        visibleMessages.unshift(replyAnchorMsg);
+      }
+    }
+    if (
+      replyAnchorMsg === undefined ||
+      replyAnchorMsg.seq <= lastHandledTrigger ||
+      replyAnchorMsg.author.isYou ||
+      replyAnchorMsg.content.startsWith("⚠️ 本地推理执行失败（")
+    ) {
       log(
-        `[openhuddle:wake:skip] room=${wake.roomId} no unseen non-self messages after seq=#${prevEvaluatedSeq}`,
+        `[openhuddle:wake:skip] room=${wake.roomId} no available trigger for wake seq=#${wake.latestSeq}`,
       );
       return;
     }
-
-    const replyAnchorMsg = unseenNonSelfMessages[unseenNonSelfMessages.length - 1] ?? latestVisible;
 
     const wakeEnv = buildWakeProcessEnv(wake, options.tokenFilePath, options.serverUrl);
     const prompt = buildBrokeredWakePrompt({
@@ -1349,6 +1406,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       room,
       messages: visibleMessages,
       wake,
+      replyToSeq: replyAnchorMsg.seq,
     });
 
     log(
@@ -1446,10 +1504,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
             opKey: `op_diag_${selfAgent.id}_${replyAnchorMsg.seq}_${randomUUID()}` as OperationKey,
             ignoreUnread: true,
           });
-          maxEvaluatedSeqByRoom.set(
-            wake.roomId,
-            Math.max(prevEvaluatedSeq, latestVisible.seq, diagSent.message.seq),
-          );
+          lastHandledTriggerByRoom.set(wake.roomId, replyAnchorMsg.seq);
           updateRoomLastReadSeq(
             selfAgent.id,
             wake.roomId,
@@ -1463,10 +1518,9 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       throw finalErr;
     }
 
-    maxEvaluatedSeqByRoom.set(wake.roomId, Math.max(prevEvaluatedSeq, latestVisible.seq));
-
     const trimmedReply = rawReply.trim();
     if (trimmedReply.length === 0 || trimmedReply === "[[SKIP]]") {
+      lastHandledTriggerByRoom.set(wake.roomId, replyAnchorMsg.seq);
       log(`[openhuddle:wake:skip] room=${wake.roomId} agent returned empty/[[SKIP]]`);
       return;
     }
@@ -1474,7 +1528,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     const mentions = extractMentionsFromReplyContent(trimmedReply, room, selfAgent.id);
     const opKey = `op_${randomUUID()}` as OperationKey;
 
-    const postPayload = {
+    let postPayload = {
       content: trimmedReply,
       replyToSeq: replyAnchorMsg.seq,
       ...(mentions.length > 0 ? { mentions } : {}),
@@ -1484,50 +1538,41 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     };
 
     let sentSeq: MessageSeq;
-    try {
-      const sent = await client.sendRoomMessage(wake.roomId, postPayload);
-      sentSeq = sent.message.seq;
-    } catch (error) {
-      if (error instanceof OpenHuddleApiError && error.code === "CONFLICT_UNREAD_MESSAGES") {
-        // 推理期间若有其他成员插话导致 409 乐观读锁拦截，附带最新游标与 ignoreUnread 重试一次，避免丢失已完成推理的回复
-        const conflict = error.getUnreadConflictDetails();
-        const nextCursor =
-          conflict !== undefined
-            ? (conflict.latestSeq as unknown as ReadCursorSeq)
-            : readRes.latestSeq;
-        log(
-          `[openhuddle:wake:retry] room=${wake.roomId} concurrent message arrived during generation; posting with updated cursor #${nextCursor}`,
-        );
-        const retried = await client.sendRoomMessage(wake.roomId, {
-          ...postPayload,
-          lastReadSeq: nextCursor,
-          ignoreUnread: true,
-        });
-        sentSeq = retried.message.seq;
-      } else if (
-        error instanceof OpenHuddleApiError &&
-        error.code === "GOVERNANCE_COOLDOWN_ACTIVE"
-      ) {
+    let retriedCooldown = false;
+    // 兄弟 Agent 插话与本 Agent 的冷却可以连续发生。分别处理一次，所有尝试共用同一个 opKey。
+    while (true) {
+      try {
+        const sent = await client.sendRoomMessage(wake.roomId, postPayload);
+        sentSeq = sent.message.seq;
+        break;
+      } catch (error) {
+        if (!(error instanceof OpenHuddleApiError)) {
+          throw error;
+        }
+        if (error.code === "CONFLICT_UNREAD_MESSAGES" && !postPayload.ignoreUnread) {
+          const conflict = error.getUnreadConflictDetails();
+          const nextCursor =
+            conflict === undefined ? readRes.latestSeq : asReadCursorSeq(conflict.latestSeq);
+          log(
+            `[openhuddle:wake:retry] room=${wake.roomId} concurrent message arrived during generation; posting with updated cursor #${nextCursor}`,
+          );
+          postPayload = { ...postPayload, lastReadSeq: nextCursor, ignoreUnread: true };
+          continue;
+        }
+        if (error.code !== "GOVERNANCE_COOLDOWN_ACTIVE" || retriedCooldown) {
+          throw error;
+        }
+        retriedCooldown = true;
+        const details = error.details as { readonly retryAfterMs?: unknown } | undefined;
         const retryAfterMs =
-          typeof error.details === "object" &&
-          error.details !== null &&
-          typeof (error.details as Record<string, unknown>).retryAfterMs === "number"
-            ? Math.min(
-                15_000,
-                Math.max(100, (error.details as { readonly retryAfterMs: number }).retryAfterMs),
-              )
+          typeof details?.retryAfterMs === "number"
+            ? Math.min(15_000, Math.max(100, details.retryAfterMs))
             : 1_500;
         await sleepFn(retryAfterMs + 80, options.signal);
-        const retried = await client.sendRoomMessage(wake.roomId, {
-          ...postPayload,
-          ignoreUnread: true,
-        });
-        sentSeq = retried.message.seq;
-      } else {
-        throw error;
       }
     }
 
+    lastHandledTriggerByRoom.set(wake.roomId, replyAnchorMsg.seq);
     updateRoomLastReadSeq(
       selfAgent.id,
       wake.roomId,
@@ -1579,6 +1624,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
               roomId: room.roomId,
               latestSeq: room.lastSeq as unknown as MessageSeq,
               reason: room.hasOwnerCommand ? "owner_command" : "direct_mention",
+              catchUpAfterSeq: room.yourLastReadSeq,
             });
           }
         }

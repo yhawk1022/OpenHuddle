@@ -836,10 +836,11 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       );
     });
 
-    it("catches up offline unread inbox mentions on connect, executes brokered preset turns, and retries 409 conflicts", async () => {
+    it("catches up on connect and retries a concurrent write followed by a cooldown", async () => {
       const controller = new AbortController();
       const capturedPrompts: string[] = [];
       const postedPayloads: Array<Record<string, unknown>> = [];
+      const delays: number[] = [];
       let sendAttempts = 0;
 
       await startSseListener({
@@ -849,6 +850,9 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
         homeDir: tempHome,
         target: { kind: "preset", preset: "codex" },
         signal: controller.signal,
+        sleepImpl: async (delayMs) => {
+          delays.push(delayMs);
+        },
         runPresetTurn: async ({ preset, prompt }) => {
           expect(preset).toBe("codex");
           capturedPrompts.push(prompt);
@@ -1045,6 +1049,17 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
                 },
               });
             }
+            if (sendAttempts === 2) {
+              return jsonResponse(429, {
+                ok: false,
+                error: {
+                  code: "GOVERNANCE_COOLDOWN_ACTIVE",
+                  message: "Agent cooldown active",
+                  requestId: "req_cooldown_1",
+                  details: { retryAfterMs: 250 },
+                },
+              });
+            }
 
             controller.abort();
             return jsonResponse(201, {
@@ -1093,7 +1108,8 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       expect(capturedPrompts[0]).toContain("trust=OWNER_COMMAND");
       expect(capturedPrompts[0]).toContain("@庞彦-OpenAICodex 你好，能听到吗？");
 
-      expect(sendAttempts).toBe(2);
+      expect(sendAttempts).toBe(3);
+      expect(delays).toEqual([330]);
       expect(postedPayloads[0]).toMatchObject({
         content: "收到！@Alice 我已经上线，随时可以讨论架构方案。",
         replyToSeq: 2,
@@ -1105,6 +1121,8 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
         lastReadSeq: 3,
         ignoreUnread: true,
       });
+      expect(postedPayloads[2]).toEqual(postedPayloads[1]);
+      expect(postedPayloads[1]?.opKey).toBe(postedPayloads[0]?.opKey);
     });
   });
 
@@ -1440,7 +1458,7 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       ).toBe(0);
 
       const generatedPlist = readFileSync(
-        join(tempHome, "Library", "LaunchAgents", "dev.openhuddle.listen.openaicodex.plist"),
+        join(tempHome, "Library", "LaunchAgents", "dev.openhuddle.listen.auto-codex.plist"),
         "utf8",
       );
       expect(generatedPlist).toContain("<string>codex</string>");
@@ -1575,7 +1593,7 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       expect(daemonCalls.some((c) => c.startsWith("launchctl load -w "))).toBe(true);
       expect(outLines.join("\n")).toContain("Posted arrival greeting #10 in room rom_fast.");
       expect(outLines.join("\n")).toContain(
-        "Installed and loaded macOS LaunchAgent dev.openhuddle.listen.antigravity",
+        "Installed and loaded macOS LaunchAgent dev.openhuddle.listen.fast-agy",
       );
     });
 
@@ -1933,7 +1951,10 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       expect(postedPayloads[0]?.mentions).toEqual([]);
     });
 
-    it("does not skip unseen message #12 even when latestVisible #13 is self-authored from a prior 409 retry", async () => {
+    it.each([
+      { source: "inbox catch-up", isCatchUp: true },
+      { source: "live wake after a sibling replies", isCatchUp: false },
+    ])("replies to the trigger message from $source", async ({ isCatchUp }) => {
       const controller = new AbortController();
       const capturedPrompts: string[] = [];
       const postedPayloads: Array<Record<string, unknown>> = [];
@@ -1957,7 +1978,10 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
             return new Response(
               new ReadableStream<Uint8Array>({
                 start(streamCtrl) {
-                  streamCtrl.enqueue(new TextEncoder().encode(": connected\n\n"));
+                  const frame = isCatchUp
+                    ? ": connected\n\n"
+                    : 'event: wake\ndata: {"type":"wake","roomId":"rom_race","latestSeq":12,"reason":"owner_command"}\n\n';
+                  streamCtrl.enqueue(new TextEncoder().encode(frame));
                 },
               }),
               { status: 200, headers: { "Content-Type": "text/event-stream" } },
@@ -1968,18 +1992,20 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
             return jsonResponse(200, {
               ok: true,
               totalUnreadMessages: 1,
-              rooms: [
-                {
-                  roomId: "rom_race",
-                  roomName: "并发测试群",
-                  lastSeq: 13,
-                  yourLastReadSeq: 11,
-                  unreadCount: 2,
-                  hasOwnerCommand: true,
-                  hasDirectMention: true,
-                  governanceStatus: "active",
-                },
-              ],
+              rooms: isCatchUp
+                ? [
+                    {
+                      roomId: "rom_race",
+                      roomName: "并发测试群",
+                      lastSeq: 13,
+                      yourLastReadSeq: 11,
+                      unreadCount: 2,
+                      hasOwnerCommand: true,
+                      hasDirectMention: true,
+                      governanceStatus: "active",
+                    },
+                  ]
+                : [],
               serverTimeIso: "2026-11-13T06:20:00.000Z",
             });
           }
@@ -2083,15 +2109,15 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
                   type: "text",
                   author: {
                     kind: "agent",
-                    agentId: "agt_codex_race",
+                    agentId: isCatchUp ? "agt_codex_race" : "agt_other_agent",
                     ownerUserId: "usr_owner",
-                    displayName: "庞彦-OpenAICodex",
+                    displayName: isCatchUp ? "庞彦-OpenAICodex" : "同机兄弟 Agent",
                     platform: "codex",
-                    isYou: true,
+                    isYou: isCatchUp,
                     isYourOwner: false,
                     trustLevel: "owner_sibling_agent",
                   },
-                  content: "（上一轮针对 #10 的回复）",
+                  content: isCatchUp ? "（上一轮针对 #10 的回复）" : "（兄弟 Agent 已回复 #12）",
                   mentions: [],
                   createdAtIso: "2026-11-13T06:19:59.000Z",
                 },
@@ -2145,6 +2171,7 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       });
 
       expect(capturedPrompts).toHaveLength(1);
+      expect(capturedPrompts[0]).toContain("Respond to message #12 in your own voice.");
       expect(postedPayloads).toHaveLength(1);
       expect(postedPayloads[0]).toMatchObject({
         content: "收到补充追问 #12，这里给你详细说明。",

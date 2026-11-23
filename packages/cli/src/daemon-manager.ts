@@ -21,13 +21,19 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, posix, resolve } from "node:path";
 import {
+  DEEPSEEK_DAEMON_ENV_KEYS,
   discoverUserCliBinDirs,
   ensureLoopbackNoProxyValue,
   resolveAntigravityManagedProxyEnv,
   resolveShellWrapperEnvForBinary,
 } from "./host-env.js";
 import type { WakeExecutionTarget } from "./sse-listener.js";
-import { normalizeServerUrl, sanitizeTokenSlug } from "./token-store.js";
+import {
+  type StoredAgentMetadata,
+  deriveDaemonSlug,
+  normalizeServerUrl,
+  sanitizeTokenSlug,
+} from "./token-store.js";
 
 /**
  * 支持安装原生后台守护服务的平台判别字面量。
@@ -300,8 +306,12 @@ export function collectInheritedDaemonEnvVars(
   target?: Readonly<WakeExecutionTarget>,
 ): Readonly<Record<string, string>> {
   const collected: Record<string, string> = {};
+  const passthroughKeys =
+    target?.kind === "preset" && target.preset === "deepseek"
+      ? [...PASSTHROUGH_DAEMON_ENV_KEYS, ...DEEPSEEK_DAEMON_ENV_KEYS]
+      : PASSTHROUGH_DAEMON_ENV_KEYS;
 
-  for (const key of PASSTHROUGH_DAEMON_ENV_KEYS) {
+  for (const key of passthroughKeys) {
     const val = sourceEnv[key];
     if (typeof val === "string" && val.trim().length > 0) {
       collected[key] = val.trim();
@@ -311,7 +321,7 @@ export function collectInheritedDaemonEnvVars(
   // 回退兜底：若用户通过非交互式宿主拉起安装导致进程本身未带代理或网关变量，轻量提取常见 Shell RC 中的白名单静态 export
   if (homeDir.trim().length > 0) {
     const rcCandidates = [".zshrc", ".zprofile", ".bashrc", ".bash_profile"];
-    const allowedKeysSet = new Set<string>(PASSTHROUGH_DAEMON_ENV_KEYS);
+    const allowedKeysSet = new Set<string>(passthroughKeys);
     const exportPattern = /^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=([^\n#]+)/gm;
     for (const rcFile of rcCandidates) {
       const fullPath = join(homeDir, rcFile);
@@ -375,6 +385,14 @@ export function collectInheritedDaemonEnvVars(
         case "gemini": {
           for (const [key, val] of Object.entries(
             resolveShellWrapperEnvForBinary(homeDir, "gemini"),
+          )) {
+            collected[key] ??= val;
+          }
+          break;
+        }
+        case "deepseek": {
+          for (const [key, val] of Object.entries(
+            resolveShellWrapperEnvForBinary(homeDir, "dsh"),
           )) {
             collected[key] ??= val;
           }
@@ -604,6 +622,8 @@ export function buildWindowsSchtasksArgs(spec: Readonly<DaemonServiceSpec>): rea
     normalizeServerUrl(spec.serverUrl),
     "--token-file",
     spec.tokenFilePath,
+    "--slug",
+    safeSlug,
   ];
   if (spec.target.kind === "preset") {
     bootstrapArgs.push("--agent", spec.target.preset);
@@ -613,6 +633,86 @@ export function buildWindowsSchtasksArgs(spec: Readonly<DaemonServiceSpec>): rea
 
   const taskRunCommand = bootstrapArgs.map(quoteWindowsArg).join(" ");
   return ["/Create", "/SC", "ONLOGON", "/TN", taskName, "/TR", taskRunCommand, "/F"];
+}
+
+/**
+ * 在保留旧服务名称前确认旧监听器使用当前凭据，否则按独立路径分配名称。
+ * @param tokenFilePath - 当前 Agent 的本地凭据路径
+ * @param metadata - 对应凭据元数据
+ * @param homeDir - 当前宿主用户主目录
+ * @param deps - 本机守护系统依赖
+ * @param requestedSlug - 用户选定的名称，已被其他凭据使用时回到隔离名称
+ * @returns 可用于该 Agent 的守护服务名称
+ */
+export function resolveCredentialDaemonSlug(
+  tokenFilePath: string,
+  metadata: Readonly<StoredAgentMetadata> | undefined,
+  homeDir: string,
+  deps = createDefaultDaemonSystemDeps(),
+  requestedSlug?: string,
+): string {
+  const tokenPath = resolve(tokenFilePath);
+  const binding = (slug: string): boolean | undefined => {
+    const platform = normalizeDaemonPlatform(deps.platform);
+    if (platform === "win32") {
+      const { exitCode, stdout } = deps.execSyncCommand("schtasks", [
+        "/Query",
+        "/TN",
+        getWindowsScheduledTaskName(slug),
+        "/XML",
+      ]);
+      if (exitCode === 0 && stdout.includes("<Arguments>")) {
+        return stdout.includes(`--token-file ${escapeXml(quoteWindowsArg(tokenPath))} `);
+      }
+      return undefined;
+    }
+
+    const configPath =
+      platform === "darwin"
+        ? getMacPlistPath(homeDir, slug)
+        : getLinuxSystemdUnitPath(homeDir, slug);
+    if (existsSync(configPath)) {
+      const config = readFileSync(configPath, "utf8");
+      return platform === "darwin"
+        ? config
+            .split("\n")
+            .map((line) => line.trim())
+            .join("\n")
+            .includes(`<string>--token-file</string>\n<string>${escapeXml(tokenPath)}</string>`)
+        : (config.split("\n").find((line) => line.startsWith("ExecStart=")) ?? "").includes(
+            ` --token-file ${escapeSystemdExecArg(tokenPath)} `,
+          );
+    }
+
+    const pid = readDaemonPidFile(getDaemonPidFilePath(homeDir, slug));
+    if (pid !== undefined && deps.isPidAlive(pid)) {
+      const { stdout } = deps.execSyncCommand("ps", ["-p", String(pid), "-o", "command="]);
+      return stdout.includes(` --token-file ${tokenPath} `);
+    }
+    return undefined;
+  };
+
+  if (requestedSlug !== undefined) {
+    const slug = sanitizeTokenSlug(requestedSlug);
+    if (binding(slug) !== false) return slug;
+  }
+  const legacySlug = metadata?.slug;
+  if (
+    metadata?.daemonSlug === undefined &&
+    legacySlug !== undefined &&
+    binding(legacySlug) === true
+  ) {
+    return legacySlug;
+  }
+  const preferredSlug = metadata?.daemonSlug ?? deriveDaemonSlug(tokenPath, homeDir);
+  const preferredBinding = binding(preferredSlug);
+  if (preferredBinding === true) return preferredSlug;
+  const fallbackSlug = deriveDaemonSlug(tokenPath, homeDir, true);
+  const fallbackBinding = binding(fallbackSlug);
+  if (fallbackBinding === true) return fallbackSlug;
+  if (preferredBinding === undefined) return preferredSlug;
+  if (fallbackBinding === undefined) return fallbackSlug;
+  throw new Error(`No available listener name for ${tokenPath}. Specify an unused --slug.`);
 }
 
 /**

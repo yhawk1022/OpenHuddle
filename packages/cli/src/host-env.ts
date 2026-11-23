@@ -1,6 +1,6 @@
 /**
  * @module cli/host-env
- * @description 本机预设编程 Agent CLI（`agy`、`claude`、`codex`、`gemini`）跨环境路径探测、托管代理提取与 Shell 包装函数环境变量还原模块。
+ * @description 本机预设编程 Agent CLI 跨环境路径探测、托管代理提取与 Shell 包装函数环境变量还原模块。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 零 Shell 执行注入风险：所有 `~/.zshrc` / `network-proxy.zsh` 解析均采用纯文本词法提取，仅展开静态 `$HOME` / `~` 与同文件内已赋值的变量引用，绝不调用子 Shell 求值未知脚本。
@@ -10,9 +10,17 @@
  * 3. 多版本 Node / 包管理器全覆盖：自动按语义版本降序扫描 `~/.nvm/versions/node/<ver>/bin` 及 `~/.local/bin`、`~/.claude/local`、`~/Library/pnpm` 等目录，消除守护进程与服务端因 Node 版本差异找不到全局 CLI 的盲区。
  */
 import { spawnSync } from "node:child_process";
-import { constants, accessSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { constants, accessSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+
+/** 本机自动唤醒支持的 Agent 平台。 */
+export type WakeAgentPreset = "antigravity" | "codex" | "claude_code" | "gemini" | "deepseek";
+
+type PresetCliBinary = "agy" | "codex" | "claude" | "gemini" | "dsh";
+
+/** 只继承给 DeepSeek 守护进程的 Harness 配置环境变量。 */
+export const DEEPSEEK_DAEMON_ENV_KEYS = ["DSH_HOME", "DEEPSEEK_API_KEY"] as const;
 
 /**
  * 允许从用户 Shell 包装函数或托管代理配置中安全提取的环境变量白名单。
@@ -332,12 +340,12 @@ export function resolveAntigravityManagedProxyEnv(
  * 从用户的 Shell 启动配置（`~/.zshrc` 等）中还原指定 CLI 二进制的包装函数环境变量（如 `claude()` 中的 `CLAUDE_CONFIG_DIR` 或 `codex()` 中的 `CODEX_HOME`）。
  *
  * @param customHomeDir - 可选覆盖的用户主目录
- * @param binaryName - 目标 CLI 命令名（`"claude"` | `"codex"` | `"agy"` | `"gemini"`）
+ * @param binaryName - 目标 CLI 命令名
  * @returns 提取到的安全环境变量键值表
  */
 export function resolveShellWrapperEnvForBinary(
   customHomeDir: string | undefined,
-  binaryName: "claude" | "codex" | "agy" | "gemini",
+  binaryName: PresetCliBinary,
 ): Readonly<Record<string, string>> {
   const home = (customHomeDir ?? homedir()).trim();
   if (home.length === 0) {
@@ -345,6 +353,10 @@ export function resolveShellWrapperEnvForBinary(
   }
 
   const extracted: Record<string, string> = {};
+  const allowedKeys: ReadonlySet<string> =
+    binaryName === "dsh"
+      ? new Set([...ALLOWED_WRAPPER_ENV_KEYS, ...DEEPSEEK_DAEMON_ENV_KEYS])
+      : ALLOWED_WRAPPER_ENV_KEYS;
   const escapedBin = binaryName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // 匹配 `claude() { ... }` 或 `function claude { ... }`
   const fnBlockPattern = new RegExp(
@@ -371,7 +383,7 @@ export function resolveShellWrapperEnvForBinary(
         for (const expMatch of body.matchAll(exportInFnPattern)) {
           const key = expMatch[1];
           const rawVal = expMatch[2];
-          if (key !== undefined && rawVal !== undefined && ALLOWED_WRAPPER_ENV_KEYS.has(key)) {
+          if (key !== undefined && rawVal !== undefined && allowedKeys.has(key)) {
             const val = expandStaticShellValue(rawVal, home, extracted);
             if (val !== undefined) {
               extracted[key] ??= val;
@@ -384,7 +396,7 @@ export function resolveShellWrapperEnvForBinary(
           for (const kv of prefix.matchAll(keyValTokenPattern)) {
             const key = kv[1];
             const rawVal = kv[2];
-            if (key !== undefined && rawVal !== undefined && ALLOWED_WRAPPER_ENV_KEYS.has(key)) {
+            if (key !== undefined && rawVal !== undefined && allowedKeys.has(key)) {
               const val = expandStaticShellValue(rawVal, home, extracted);
               if (val !== undefined) {
                 extracted[key] ??= val;
@@ -414,9 +426,7 @@ export function resolveShellWrapperEnvForBinary(
 /**
  * 将唤醒预设枚举映射为宿主可执行二进制名称。
  */
-function presetToBinaryName(
-  preset: "antigravity" | "codex" | "claude_code" | "gemini",
-): "agy" | "codex" | "claude" | "gemini" {
+function presetToBinaryName(preset: WakeAgentPreset): PresetCliBinary {
   switch (preset) {
     case "antigravity":
       return "agy";
@@ -426,6 +436,8 @@ function presetToBinaryName(
       return "claude";
     case "gemini":
       return "gemini";
+    case "deepseek":
+      return "dsh";
   }
 }
 
@@ -444,23 +456,53 @@ function presetToBinaryName(
  * @returns 若在搜索路径上找到可执行文件则返回 `true`
  */
 export function isPresetCliBinaryAvailable(
-  preset: "antigravity" | "codex" | "claude_code" | "gemini",
+  preset: WakeAgentPreset,
   customHomeDir?: string,
   customPathEnv?: string,
 ): boolean {
+  return findPresetCliBinary(preset, customHomeDir, customPathEnv) !== undefined;
+}
+
+/**
+ * 解析实际用于唤醒的 DeepSeek Harness 启动器。macOS 桌面端未注册 CLI 时也能运行。
+ *
+ * @param customHomeDir - 可选覆盖的用户主目录
+ * @returns 绝对可执行路径，未安装时返回 `undefined`
+ */
+export function resolveDeepSeekCliBinary(customHomeDir?: string): string | undefined {
+  return findPresetCliBinary("deepseek", customHomeDir);
+}
+
+function findPresetCliBinary(
+  preset: WakeAgentPreset,
+  customHomeDir?: string,
+  customPathEnv?: string,
+): string | undefined {
   const binaryName = presetToBinaryName(preset);
   const pathSep = process.platform === "win32" ? ";" : ":";
+  const envDirs = (process.env.PATH ?? "").split(pathSep);
+  if (preset === "deepseek") {
+    envDirs.push(dirname(process.execPath));
+  } else {
+    envDirs.unshift(dirname(process.execPath));
+  }
   const rawDirs =
     customPathEnv !== undefined
       ? customPathEnv.split(pathSep)
       : [
-          dirname(process.execPath),
-          ...(process.env.PATH ?? "").split(pathSep),
+          ...envDirs,
           ...discoverUserCliBinDirs(customHomeDir),
           ...(process.platform === "win32"
             ? []
             : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]),
         ];
+  const bundleRelativeDir = "DeepSeek Harness.app/Contents/Resources/runtime/cli/bin";
+  if (preset === "deepseek" && process.platform === "darwin" && customPathEnv === undefined) {
+    rawDirs.push(
+      join(customHomeDir ?? homedir(), "Applications", bundleRelativeDir),
+      join("/Applications", bundleRelativeDir),
+    );
+  }
 
   const suffixes = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
   const accessMode = process.platform === "win32" ? constants.F_OK : constants.X_OK;
@@ -473,13 +515,16 @@ export function isPresetCliBinaryAvailable(
     }
     visited.add(dir);
     for (const suffix of suffixes) {
+      const candidate = resolve(dir, `${binaryName}${suffix}`);
       try {
-        accessSync(join(dir, `${binaryName}${suffix}`), accessMode);
-        return true;
+        accessSync(candidate, accessMode);
+        if (statSync(candidate).isFile()) {
+          return candidate;
+        }
       } catch {
         // 继续检查下一候选路径
       }
     }
   }
-  return false;
+  return undefined;
 }

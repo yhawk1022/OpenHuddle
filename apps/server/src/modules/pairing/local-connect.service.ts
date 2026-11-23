@@ -71,7 +71,7 @@ export type LocalDaemonInstallerFn = (params: {
  */
 export type LocalDaemonStopperFn = (params: {
   readonly cliScriptPath: string;
-  readonly slug: string;
+  readonly tokenFilePath: string;
   readonly homeDir: string;
 }) => boolean;
 
@@ -221,7 +221,12 @@ function writeProtectedLocalFile(filePath: string, content: string): void {
 /**
  * 查找或分配与目标 `agentId` 绑定的唯一 `.token` 文件路径。
  */
-function resolveAgentTokenFilePath(tokensDir: string, agentId: string, slug: string): string {
+function resolveAgentTokenFilePath(
+  tokensDir: string,
+  serverUrl: string,
+  agentId: AgentId,
+  slug: string,
+): string {
   if (existsSync(tokensDir)) {
     try {
       for (const entry of readdirSync(tokensDir)) {
@@ -229,9 +234,13 @@ function resolveAgentTokenFilePath(tokensDir: string, agentId: string, slug: str
           continue;
         }
         const metaPath = path.join(tokensDir, entry);
-        const parsed = JSON.parse(readFileSync(metaPath, "utf8")) as Record<string, unknown>;
-        if (parsed.agentId === agentId) {
-          return metaPath.slice(0, -".json".length);
+        try {
+          const parsed = JSON.parse(readFileSync(metaPath, "utf8")) as Record<string, unknown>;
+          if (parsed.agentId === agentId && parsed.serverUrl === serverUrl) {
+            return metaPath.slice(0, -".json".length);
+          }
+        } catch {
+          // 一个损坏的元数据文件不应阻断其余凭据的归属匹配。
         }
       }
     } catch {
@@ -239,24 +248,17 @@ function resolveAgentTokenFilePath(tokensDir: string, agentId: string, slug: str
     }
   }
 
-  const preferredPath = path.join(tokensDir, `${slug}.token`);
-  const preferredMetaPath = `${preferredPath}.json`;
-  if (!existsSync(preferredPath)) {
-    return preferredPath;
+  const baseSlug = slug.slice(0, 48);
+  let tokenFilePath = path.join(tokensDir, `${baseSlug}.token`);
+  for (
+    let index = 2;
+    existsSync(tokenFilePath) || existsSync(`${tokenFilePath}.json`);
+    index += 1
+  ) {
+    const suffix = `-${index}`;
+    tokenFilePath = path.join(tokensDir, `${baseSlug.slice(0, 48 - suffix.length)}${suffix}.token`);
   }
-
-  try {
-    if (existsSync(preferredMetaPath)) {
-      const parsed = JSON.parse(readFileSync(preferredMetaPath, "utf8")) as Record<string, unknown>;
-      if (parsed.agentId === agentId) {
-        return preferredPath;
-      }
-    }
-  } catch {
-    // 若旧文件无法归属同一 Agent，追加短后缀防覆盖
-  }
-
-  return path.join(tokensDir, `${slug}-${agentId.slice(-6)}.token`);
+  return tokenFilePath;
 }
 
 /**
@@ -324,8 +326,6 @@ export class LocalConnectService {
             "listen",
             "install",
             "--json",
-            "--slug",
-            params.slug,
             "--server",
             params.serverUrl,
             "--token-file",
@@ -364,7 +364,14 @@ export class LocalConnectService {
         : (params) => {
             const res = spawnSync(
               process.execPath,
-              [params.cliScriptPath, "listen", "stop", "--json", "--slug", params.slug],
+              [
+                params.cliScriptPath,
+                "listen",
+                "stop",
+                "--json",
+                "--token-file",
+                params.tokenFilePath,
+              ],
               {
                 encoding: "utf8",
                 windowsHide: true,
@@ -545,7 +552,24 @@ export class LocalConnectService {
     copyFileSync(this.cliBundlePath, installedCliPath);
 
     const baseUrl = this.env.PUBLIC_BASE_URL.replace(/\/+$/, "");
-    const tokenFilePath = resolveAgentTokenFilePath(tokensDir, paired.agent.id, paired.agent.slug);
+    const tokenFilePath = resolveAgentTokenFilePath(
+      tokensDir,
+      baseUrl,
+      paired.agent.id,
+      paired.agent.slug,
+    );
+    let daemonSlug: string | undefined;
+    try {
+      const previous = JSON.parse(readFileSync(`${tokenFilePath}.json`, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      if (previous.agentId === paired.agent.id && typeof previous.daemonSlug === "string") {
+        daemonSlug = previous.daemonSlug;
+      }
+    } catch {
+      // 新配对及旧版凭据由 CLI 按本地服务配置解析守护名称。
+    }
     writeProtectedLocalFile(tokenFilePath, `${paired.token}\n`);
     writeProtectedLocalFile(
       `${tokenFilePath}.json`,
@@ -554,6 +578,7 @@ export class LocalConnectService {
           serverUrl: baseUrl,
           agentId: paired.agent.id,
           slug: paired.agent.slug,
+          ...(daemonSlug !== undefined ? { daemonSlug } : {}),
           displayName: paired.agent.displayName,
           platform: paired.agent.platform,
           updatedAtIso: new Date().toISOString(),
@@ -615,7 +640,7 @@ export class LocalConnectService {
       cliScriptPath: installedCliPath,
       serverUrl: baseUrl,
       tokenFilePath,
-      slug: paired.agent.slug,
+      slug: daemonSlug ?? path.basename(tokenFilePath, ".token"),
     });
 
     return {
@@ -649,16 +674,7 @@ export class LocalConnectService {
     const openhuddleDir = path.join(this.homeDir, ".openhuddle");
     const tokensDir = path.join(openhuddleDir, "tokens");
     const matchedTokenFiles = new Set<string>();
-    const candidateSlugs = new Set<string>();
-
-    const normalizedAgentSlug = agent.slug
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    if (normalizedAgentSlug.length > 0) {
-      candidateSlugs.add(normalizedAgentSlug);
-    }
+    const baseUrl = this.env.PUBLIC_BASE_URL.replace(/\/+$/, "");
 
     // 扫描 `~/.openhuddle/tokens/*.token.json` 精准匹配归属于该 `agentId` 的凭据文件（兼容带后缀或改名后的文件）
     if (existsSync(tokensDir)) {
@@ -670,26 +686,9 @@ export class LocalConnectService {
           const metaPath = path.join(tokensDir, entry);
           try {
             const parsed = JSON.parse(readFileSync(metaPath, "utf8")) as Record<string, unknown>;
-            if (parsed.agentId === agent.id) {
+            if (parsed.agentId === agent.id && parsed.serverUrl === baseUrl) {
               const tokenPath = metaPath.slice(0, -".json".length);
               matchedTokenFiles.add(tokenPath);
-              const baseSlug = path
-                .basename(tokenPath, ".token")
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, "-")
-                .replace(/^-+|-+$/g, "");
-              if (baseSlug.length > 0) {
-                candidateSlugs.add(baseSlug);
-              }
-              if (typeof parsed.slug === "string" && parsed.slug.trim().length > 0) {
-                candidateSlugs.add(
-                  parsed.slug
-                    .trim()
-                    .toLowerCase()
-                    .replace(/[^a-z0-9]+/g, "-")
-                    .replace(/^-+|-+$/g, ""),
-                );
-              }
             }
           } catch {
             // 忽略单个损坏元数据文件，继续清理其余条目
@@ -705,12 +704,12 @@ export class LocalConnectService {
     const activeCliPath = cliCandidatePaths.find((candidate) => existsSync(candidate));
 
     if (activeCliPath !== undefined) {
-      for (const slug of candidateSlugs) {
+      for (const tokenFilePath of matchedTokenFiles) {
         try {
           if (
             this.stopDaemonFn({
               cliScriptPath: activeCliPath,
-              slug,
+              tokenFilePath,
               homeDir: this.homeDir,
             })
           ) {

@@ -8,17 +8,21 @@
  * 3. MCP stdio 帧流与 `@openhuddle/mcp` 工具名同构，`stdout` 仅输出 JSON-RPC 行。
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type DaemonSystemDeps,
+  collectInheritedDaemonEnvVars,
   getDaemonPidFilePath,
   installDaemonService,
+  isPresetCliBinaryAvailable,
+  parseWakeAgentPreset,
   readActiveCliProfile,
   runCli,
+  startSseListener,
 } from "../cli.js";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -62,7 +66,7 @@ const GOVERNANCE = {
   },
 };
 
-function sentMessage(seq: number, content: string): Record<string, unknown> {
+function sentMessage(seq: number, content: string) {
   return {
     ok: true,
     message: {
@@ -95,6 +99,7 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     rmSync(tempHome, { recursive: true, force: true });
   });
 
@@ -212,6 +217,105 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       "4242",
     );
   });
+
+  it("inherits DeepSeek Harness configuration only for the matching daemon", () => {
+    const env = { DSH_HOME: "/tmp/dsh", DEEPSEEK_API_KEY: "test-key" };
+    expect(parseWakeAgentPreset("dsh")).toBe("deepseek");
+    expect(
+      collectInheritedDaemonEnvVars(tempHome, env, { kind: "preset", preset: "deepseek" }),
+    ).toEqual(env);
+    expect(
+      collectInheritedDaemonEnvVars(tempHome, env, { kind: "preset", preset: "codex" }),
+    ).toEqual({});
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "runs a DeepSeek wake turn with the transcript on stdin and posts under its own token",
+    async () => {
+      writeFileSync(
+        join(tempHome, "dsh"),
+        [
+          "#!/bin/sh",
+          '[ "$#" -eq 2 ] && [ "$1" = --profile ] && [ "$2" = headless ] || exit 1',
+          'case "$(/bin/cat)" in *"Private transcript fragment"*) printf "%s" "DeepSeek reply";; *) exit 2;; esac',
+        ].join("\n"),
+        { mode: 0o700 },
+      );
+      vi.stubEnv("PATH", `${tempHome}:${process.env.PATH ?? ""}`);
+      expect(isPresetCliBinaryAvailable("deepseek", tempHome, tempHome)).toBe(true);
+
+      const agent = { ...PAIR_RESPONSE.agent, slug: "cloud-deepseek", platform: "deepseek" };
+      const ownerMessage = {
+        ...sentMessage(1, "Private transcript fragment").message,
+        author: {
+          kind: "human",
+          userId: PAIR_RESPONSE.owner.id,
+          displayName: PAIR_RESPONSE.owner.displayName,
+          isYou: false,
+          isYourOwner: true,
+          trustLevel: "owner_command",
+        },
+      };
+      const posts: { authorization: string | null; body: unknown }[] = [];
+
+      await startSseListener({
+        serverUrl: "https://huddle.example.com",
+        token: PAIR_RESPONSE.token,
+        tokenFilePath: join(tempHome, "deepseek.token"),
+        homeDir: tempHome,
+        target: { kind: "preset", preset: "deepseek" },
+        catchUpInboxOnConnect: false,
+        maxReconnectAttempts: 0,
+        onLog: () => undefined,
+        fetchImpl: async (input, init) => {
+          const { pathname } = new URL(String(input));
+          switch (pathname) {
+            case "/api/v1/events":
+              return new Response(
+                'event: wake\ndata: {"type":"wake","roomId":"rom_cloud","latestSeq":1,"reason":"owner_command"}\n\n',
+              );
+            case "/api/v1/me":
+              return jsonResponse(200, { ...PAIR_RESPONSE, callerKind: "agent", agent });
+            case "/api/v1/rooms/rom_cloud":
+              return jsonResponse(200, {
+                ok: true,
+                room: {
+                  id: "rom_cloud",
+                  name: "Cloud",
+                  topic: "",
+                  rules: "",
+                  members: [],
+                  lastSeq: 1,
+                },
+              });
+            case "/api/v1/rooms/rom_cloud/messages":
+              if (init?.method === "POST") {
+                posts.push({
+                  authorization: new Headers(init.headers).get("authorization"),
+                  body: JSON.parse(String(init.body)),
+                });
+                return jsonResponse(201, sentMessage(2, "DeepSeek reply"));
+              }
+              return jsonResponse(200, {
+                ok: true,
+                messages: [ownerMessage],
+                latestSeq: 1,
+                governance: GOVERNANCE,
+              });
+            default:
+              return jsonResponse(404, { ok: false });
+          }
+        },
+      });
+
+      expect(posts).toEqual([
+        {
+          authorization: `Bearer ${PAIR_RESPONSE.token}`,
+          body: expect.objectContaining({ content: "DeepSeek reply", replyToSeq: 1 }),
+        },
+      ]);
+    },
+  );
 
   it("serves built-in zero-dependency MCP stdio initialize, tools/list and tools/call", async () => {
     const tokenFile = join(tempHome, ".openhuddle", "tokens", "mcp.token");
