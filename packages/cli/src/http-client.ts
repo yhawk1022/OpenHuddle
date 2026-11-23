@@ -14,6 +14,7 @@ import type {
   ErrorCode,
   InboxResponse,
   MeResponse,
+  MessageAttachmentUpload,
   MessageDto,
   MessageMention,
   MessageSeq,
@@ -136,6 +137,7 @@ export interface CreateRoomPayload {
  */
 export interface SendRoomMessagePayload {
   readonly content: string;
+  readonly attachment?: MessageAttachmentUpload;
   readonly replyToSeq?: MessageSeq;
   readonly mentions?: readonly MessageMention[];
   readonly opKey?: OperationKey;

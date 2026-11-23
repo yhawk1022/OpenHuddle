@@ -138,6 +138,9 @@ function AttachmentPreview(props: {
       <span className="min-w-0 flex-1 truncate text-xs text-[#687082] dark:text-[#C4C4CA]">
         {name}
       </span>
+      {props.attachment.wasCompressed === true ? (
+        <span className="shrink-0 text-xs text-[#687082] dark:text-[#C4C4CA]">已压缩</span>
+      ) : null}
       <button
         type="button"
         aria-label="移除附件"
@@ -522,10 +525,8 @@ export function MessageComposer(props: MessageComposerProps) {
   };
 
   const trimmed = draft.trim();
-  const canSend =
-    !props.isSending &&
-    media.phase === "idle" &&
-    (trimmed.length > 0 || (media.attachment !== null && !askMode));
+  const canChooseMedia = !props.isSending && !media.isPreparingImage && media.phase === "idle";
+  const canSend = canChooseMedia && (trimmed.length > 0 || (media.attachment !== null && !askMode));
 
   const submitMessage = (): void => {
     if (!canSend) {
@@ -826,12 +827,17 @@ export function MessageComposer(props: MessageComposerProps) {
           {media.attachment !== null ? (
             <AttachmentPreview
               attachment={media.attachment}
-              disabled={props.isSending}
+              disabled={props.isSending || media.isPreparingImage}
               onRemove={() => {
                 retryRef.current = null;
                 media.clearAttachment();
               }}
             />
+          ) : null}
+          {media.isPreparingImage ? (
+            <output className="mb-1 block text-xs text-[#687082] dark:text-[#C4C4CA]">
+              正在压缩图片…
+            </output>
           ) : null}
           {media.error !== null ? (
             <p role="alert" className="mb-1 text-xs text-[#C81E1E] dark:text-[#FCA5A5]">
@@ -1007,7 +1013,7 @@ export function MessageComposer(props: MessageComposerProps) {
                   const file = event.currentTarget.files?.[0];
                   event.currentTarget.value = "";
                   if (file !== undefined) {
-                    media.chooseFile(file);
+                    void media.chooseFile(file);
                   }
                 }}
               />
@@ -1016,14 +1022,14 @@ export function MessageComposer(props: MessageComposerProps) {
                 aria-label="选择图片或音频"
                 title="选择图片或音频"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={props.isSending || media.phase !== "idle"}
+                disabled={!canChooseMedia}
                 className={MEDIA_BUTTON_CLASS}
               >
                 <Paperclip className="h-[17px] w-[17px]" />
               </button>
               <StickerPicker
                 userId={props.currentUserId}
-                disabled={props.isSending || media.phase !== "idle"}
+                disabled={!canChooseMedia}
                 triggerClassName={MEDIA_BUTTON_CLASS}
                 onSelect={media.chooseSticker}
               />
@@ -1032,7 +1038,7 @@ export function MessageComposer(props: MessageComposerProps) {
                   type="button"
                   aria-label="录制语音"
                   title={media.canRecord ? "录制语音" : "当前浏览器无法录音，可以上传音频文件"}
-                  disabled={props.isSending || !media.canRecord}
+                  disabled={!canChooseMedia || !media.canRecord}
                   onClick={() => void media.startRecording()}
                   className={MEDIA_BUTTON_CLASS}
                 >

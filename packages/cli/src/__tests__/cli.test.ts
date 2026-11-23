@@ -49,6 +49,7 @@ import {
   runCli,
   startSseListener,
 } from "../cli.js";
+import { REPLY_IMAGE_NAME } from "../reply-image.js";
 
 /**
  * 构造 JSON HTTP 模拟响应辅助函数。
@@ -836,11 +837,23 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       );
     });
 
-    it("catches up on connect and retries a concurrent write followed by a cooldown", async () => {
+    it.each([
+      { label: "a text reply", owner: true, imageRequested: false },
+      { label: "an owner-requested image", owner: true, imageRequested: true },
+      { label: "an external image request", owner: false, imageRequested: true },
+    ])("retries brokered sends with $label", async ({ owner, imageRequested }) => {
       const controller = new AbortController();
       const capturedPrompts: string[] = [];
       const postedPayloads: Array<Record<string, unknown>> = [];
       const delays: number[] = [];
+      const imageData =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFzsAAAAASUVORK5CYII=";
+      const mayOutputImage = owner && imageRequested;
+      const triggerContent = imageRequested
+        ? "@庞彦-OpenAICodex 画一个项目逻辑架构图，发到这个群里"
+        : "@庞彦-OpenAICodex 你好，能听到吗？";
+      const expectedReply = mayOutputImage ? "" : "收到！@Alice 我已经上线，随时可以讨论架构方案。";
+      let imageOutputDir: string | undefined;
       let sendAttempts = 0;
 
       await startSseListener({
@@ -853,10 +866,15 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
         sleepImpl: async (delayMs) => {
           delays.push(delayMs);
         },
-        runPresetTurn: async ({ preset, prompt }) => {
+        runPresetTurn: async ({ preset, prompt, replyImageDir }) => {
           expect(preset).toBe("codex");
           capturedPrompts.push(prompt);
-          return "收到！@Alice 我已经上线，随时可以讨论架构方案。";
+          imageOutputDir = replyImageDir;
+          expect(replyImageDir !== undefined).toBe(mayOutputImage);
+          if (replyImageDir !== undefined) {
+            writeFileSync(join(replyImageDir, REPLY_IMAGE_NAME), Buffer.from(imageData, "base64"));
+          }
+          return expectedReply;
         },
         fetchImpl: async (input, init) => {
           const url = String(input);
@@ -1008,14 +1026,14 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
                   type: "text",
                   author: {
                     kind: "human",
-                    userId: "usr_alice",
-                    ownerUserId: "usr_alice",
-                    displayName: "Alice",
+                    userId: owner ? "usr_alice" : "usr_bob",
+                    ownerUserId: owner ? "usr_alice" : "usr_bob",
+                    displayName: owner ? "Alice" : "Bob",
                     isYou: false,
-                    isYourOwner: true,
-                    trustLevel: "owner_command",
+                    isYourOwner: owner,
+                    trustLevel: owner ? "owner_command" : "external_participant",
                   },
-                  content: "@庞彦-OpenAICodex 你好，能听到吗？",
+                  content: triggerContent,
                   mentions: [
                     {
                       kind: "agent",
@@ -1105,18 +1123,33 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
 
       expect(capturedPrompts).toHaveLength(1);
       expect(capturedPrompts[0]).toContain("trust=EXTERNAL_PARTICIPANT");
-      expect(capturedPrompts[0]).toContain("trust=OWNER_COMMAND");
-      expect(capturedPrompts[0]).toContain("@庞彦-OpenAICodex 你好，能听到吗？");
+      expect(
+        capturedPrompts[0]?.includes("[#2] Alice [YOUR_HUMAN_OWNER, trust=OWNER_COMMAND]"),
+      ).toBe(owner);
+      expect(capturedPrompts[0]?.includes("IMAGE REPLY:")).toBe(mayOutputImage);
+      expect(capturedPrompts[0]).toContain(triggerContent);
+      if (imageOutputDir !== undefined) {
+        expect(existsSync(imageOutputDir)).toBe(false);
+      }
 
       expect(sendAttempts).toBe(3);
       expect(delays).toEqual([330]);
       expect(postedPayloads[0]).toMatchObject({
-        content: "收到！@Alice 我已经上线，随时可以讨论架构方案。",
+        content: expectedReply,
         replyToSeq: 2,
         lastReadSeq: 2,
         ignoreUnread: false,
-        mentions: [{ kind: "human", userId: "usr_alice", displayName: "Alice" }],
       });
+      for (const payload of postedPayloads) {
+        expect(payload.attachment).toEqual(
+          mayOutputImage ? { mimeType: "image/png", data: imageData } : undefined,
+        );
+        expect(payload.mentions).toEqual(
+          mayOutputImage
+            ? undefined
+            : [{ kind: "human", userId: "usr_alice", displayName: "Alice" }],
+        );
+      }
       expect(postedPayloads[1]).toMatchObject({
         lastReadSeq: 3,
         ignoreUnread: true,

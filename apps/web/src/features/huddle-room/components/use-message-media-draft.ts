@@ -8,6 +8,7 @@ import {
   MessageAttachmentMimeTypeSchema,
 } from "@openhuddle/protocol";
 import { useEffect, useRef, useState } from "react";
+import { compressMessageImage } from "../../../lib/compress-message-image.js";
 import type { DraftMessageAttachment } from "../../../lib/message-media.js";
 import type { StickerImage } from "../stickers/sticker-library.js";
 
@@ -100,6 +101,8 @@ export function useMessageMediaDraft() {
   const [attachment, setAttachment] = useState<DraftMessageAttachment | null>(null);
   const [phase, setPhase] = useState<RecordingPhase>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [isPreparingImage, setIsPreparingImage] = useState(false);
+  const imageSelectionRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<RecordingSession | null>(null);
   const canRecord =
     typeof MediaRecorder !== "undefined" &&
@@ -108,6 +111,7 @@ export function useMessageMediaDraft() {
 
   useEffect(
     () => () => {
+      imageSelectionRef.current?.abort();
       const current = sessionRef.current;
       sessionRef.current = null;
       if (current !== null) {
@@ -122,21 +126,57 @@ export function useMessageMediaDraft() {
     setError(null);
   };
 
-  const chooseFile = (file: File): void => {
+  const chooseFile = async (file: File): Promise<void> => {
+    imageSelectionRef.current?.abort();
+    imageSelectionRef.current = null;
+    setIsPreparingImage(false);
     const mimeType = readFileMimeType(file);
     if (mimeType === undefined) {
       setError("请选择 JPG、PNG、GIF、WebP 图片，或 WebM、OGG、M4A、MP3、WAV 音频");
       return;
     }
-    if (file.size === 0 || file.size > MAX_MESSAGE_ATTACHMENT_BYTES) {
+    if (
+      file.size === 0 ||
+      (file.size > MAX_MESSAGE_ATTACHMENT_BYTES && !mimeType.startsWith("image/"))
+    ) {
       setError(file.size === 0 ? "无法发送空文件" : SIZE_LIMIT_TEXT);
       return;
     }
-    setAttachment({ blob: file, mimeType, name: file.name });
     setError(null);
+    if (file.size <= MAX_MESSAGE_ATTACHMENT_BYTES) {
+      setAttachment({ blob: file, mimeType, name: file.name });
+      return;
+    }
+
+    const selection = new AbortController();
+    imageSelectionRef.current = selection;
+    setIsPreparingImage(true);
+    try {
+      const compressed = await compressMessageImage(file, selection.signal);
+      if (!selection.signal.aborted) {
+        setAttachment({ ...compressed, name: file.name, wasCompressed: true });
+      }
+    } catch (cause) {
+      if (!selection.signal.aborted) {
+        setError(
+          cause instanceof DOMException || !(cause instanceof Error)
+            ? "无法读取这张图片，请重新选择"
+            : cause.message,
+        );
+      }
+    } finally {
+      // 老选图完成时不覆盖后来的选图或离开房间后的草稿。
+      if (!selection.signal.aborted) {
+        imageSelectionRef.current = null;
+        setIsPreparingImage(false);
+      }
+    }
   };
 
   const chooseSticker = ({ blob, mimeType, name }: StickerImage): void => {
+    imageSelectionRef.current?.abort();
+    imageSelectionRef.current = null;
+    setIsPreparingImage(false);
     setAttachment({ blob, mimeType, name, stickerName: name });
     setError(null);
   };
@@ -235,6 +275,7 @@ export function useMessageMediaDraft() {
     attachment,
     error,
     phase,
+    isPreparingImage,
     canRecord,
     chooseFile,
     chooseSticker,

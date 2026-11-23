@@ -9,6 +9,7 @@ export interface DraftMessageAttachment {
   readonly blob: Blob;
   readonly mimeType: MessageAttachmentMimeType;
   readonly name: string;
+  readonly wasCompressed?: true;
   readonly stickerName?: string;
 }
 

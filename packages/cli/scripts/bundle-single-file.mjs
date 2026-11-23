@@ -16,7 +16,8 @@ await build({
   format: "esm",
   target: "node20",
   banner: {
-    js: "#!/usr/bin/env node",
+    // 打包后的 PNG 编解码仍需在 ESM CLI 中加载 Node.js 原生 zlib。
+    js: "#!/usr/bin/env node\nimport { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);",
   },
   minifySyntax: true,
 });

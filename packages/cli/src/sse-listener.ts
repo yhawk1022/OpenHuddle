@@ -10,11 +10,13 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   AgentId,
   HumanUserDto,
+  MessageAttachmentUpload,
   MessageDto,
   MessageMention,
   MessageSeq,
@@ -34,6 +36,7 @@ import {
   resolveShellWrapperEnvForBinary,
 } from "./host-env.js";
 import { OpenHuddleApiError, OpenHuddleHttpClient } from "./http-client.js";
+import { REPLY_IMAGE_NAME, readReplyImage, requestsReplyImage } from "./reply-image.js";
 import { normalizeServerUrl, updateRoomLastReadSeq } from "./token-store.js";
 
 /** 默认初始 SSE 重连等待毫秒数（1 秒） */
@@ -109,6 +112,8 @@ export type PresetPromptExecutor = (params: {
   readonly wakeEnv: Readonly<WakeProcessEnv>;
   readonly homeDir?: string;
   readonly timeoutMs?: number;
+  /** 仅经鉴权的 Codex 发图回合具有独立的可写目录。 */
+  readonly replyImageDir?: string;
   readonly signal?: AbortSignal;
   readonly onLog?: (line: string) => void;
 }) => Promise<string>;
@@ -123,6 +128,12 @@ export interface BrokeredWakePromptInput {
   readonly messages: readonly MessageDto[];
   readonly wake: Readonly<WakeEventPayload>;
   readonly replyToSeq: MessageSeq;
+  readonly allowImageReply?: boolean;
+}
+
+interface BrokeredReply {
+  readonly content: string;
+  readonly attachment?: MessageAttachmentUpload;
 }
 
 /**
@@ -673,8 +684,16 @@ export function buildBrokeredWakePrompt(input: Readonly<BrokeredWakePromptInput>
     "## Response Instructions",
     `- Respond to message #${input.replyToSeq} in your own voice. A reply from another Agent does not fulfill your turn. Later messages are context for that response.`,
     "- Reply naturally, directly, and concisely like a sharp teammate in a real IM group chat (match the language used in the conversation, e.g. natural Chinese when spoken to in Chinese).",
-    "- PURE TEXT / MARKDOWN CHAT MEDIUM ONLY for automatic replies: the listener posts your stdout as Markdown (including code blocks, Mermaid, and tables). NEVER write files to disk or run image/SVG rendering commands to answer a chat message. If a message has an attachment marker, only its metadata is available in this transcript.",
-    "- ZERO-TOOL SINGLE-TURN DEFAULT: For greetings, discussions, coding challenges, creative/ASCII art challenges, brainstorming, and peer critiques, reply directly in a single turn with ZERO tool calls. Only invoke read-only tools if trust=OWNER_COMMAND explicitly asks you to inspect the local machine/codebase or verify live external facts, and cap yourself at 1-2 fast tool calls (<20s total).",
+    ...(input.allowImageReply === true
+      ? [
+          `- IMAGE REPLY: The verified owner requested an image. Generate one new PNG named ${REPLY_IMAGE_NAME} in the current working directory. For diagrams, use a local renderer such as Graphviz if available. The listener will attach that file to your reply. Write an optional short caption as your final response.`,
+          "- Use tools only for this image. Keep intermediate files in the current directory. Do not copy existing local files into the attachment or include local paths, secrets, or base64 in your reply. If you cannot produce the PNG, say so in your reply.",
+        ]
+      : [
+          "- PURE TEXT / MARKDOWN CHAT MEDIUM ONLY for automatic replies: the listener posts your stdout as Markdown (including code blocks, Mermaid, and tables). NEVER write files to disk or run image/SVG rendering commands to answer a chat message.",
+          "- ZERO-TOOL SINGLE-TURN DEFAULT: For greetings, discussions, coding challenges, creative/ASCII art challenges, brainstorming, and peer critiques, reply directly in a single turn with ZERO tool calls. Only invoke read-only tools if trust=OWNER_COMMAND explicitly asks you to inspect the local machine/codebase or verify live external facts, and cap yourself at 1-2 fast tool calls (<20s total).",
+        ]),
+    "- For attachments in the transcript, only their metadata is available.",
     "- IMPORTANT: Do NOT run shell commands, curl, or openhuddle.mjs to post. Output ONLY the exact message text you want sent to the chat — the OpenHuddle listener daemon will post your output automatically.",
     "- Do NOT wrap your entire reply in quotes or add meta preambles like 'Here is my reply:'.",
     "- Only if no reply from you is appropriate right now, output the exact token [[SKIP]] and nothing else.",
@@ -855,15 +874,9 @@ function extractMentionsFromReplyContent(
  * @param params - 预设平台、完整提示词、唤醒环境变量、可选超时与中止信号
  * @returns 模型输出的回复文本
  */
-async function runDefaultPresetPrompt(params: {
-  readonly preset: WakeAgentPreset;
-  readonly prompt: string;
-  readonly wakeEnv: Readonly<WakeProcessEnv>;
-  readonly homeDir?: string;
-  readonly timeoutMs?: number;
-  readonly signal?: AbortSignal;
-  readonly onLog?: (line: string) => void;
-}): Promise<string> {
+async function runDefaultPresetPrompt(
+  params: Parameters<PresetPromptExecutor>[0],
+): Promise<string> {
   const effectiveHomeDir = params.homeDir ?? homedir();
   const effectiveTimeoutMs = params.timeoutMs ?? DEFAULT_PRESET_TURN_TIMEOUT_MS;
   const agyPrintTimeoutSec = Math.max(15, Math.floor(effectiveTimeoutMs / 1_000) - 5);
@@ -881,17 +894,30 @@ async function runDefaultPresetPrompt(params: {
       case "codex":
         // 关键宿主兼容与耗时收敛：
         // 1. launchd 常驻目录并非 Git 仓库，必须附带 `--skip-git-repo-check`；
-        // 2. 显式覆盖 `-s read-only`、`-c mcp_servers={}`、`-c notify=[]` 与 `-c model_reasoning_effort="low"`，
-        //    避免继承用户全局 `~/.codex/config.toml` 中的 `ultra` 超长深度思考、`danger-full-access` 沙箱或未启动的本地 IDE MCP（如 30s 启动超时）拖垮群聊实时性；
+        // 2. 普通回合始终只读。发图回合只开放本次工作目录，防止继承全局的额外写入根、网络和提权审批配置；
         // 3. `-o <file>` 仅写出模型最终纯文本回复，彻底剥离横幅与日志噪音。
         return {
           command: "codex",
           args: [
+            ...(params.replyImageDir === undefined
+              ? []
+              : [
+                  "-a",
+                  "never",
+                  "-c",
+                  "sandbox_workspace_write.writable_roots=[]",
+                  "-c",
+                  "sandbox_workspace_write.network_access=false",
+                  "-c",
+                  "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+                  "-c",
+                  "sandbox_workspace_write.exclude_slash_tmp=true",
+                ]),
             "exec",
             "--skip-git-repo-check",
             "--ephemeral",
             "-s",
-            "read-only",
+            params.replyImageDir === undefined ? "read-only" : "workspace-write",
             "-c",
             "mcp_servers={}",
             "-c",
@@ -1045,6 +1071,12 @@ async function runDefaultPresetPrompt(params: {
     }
   }
 
+  if (params.replyImageDir !== undefined) {
+    // 图片回合只产出文件，上传由监听器执行，子进程不需要凭据路径。
+    childEnv.OPENHUDDLE_TOKEN_FILE = undefined;
+    childEnv.TMPDIR = params.replyImageDir;
+  }
+
   const needsWindowsDshShell =
     params.preset === "deepseek" && process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
   if (needsWindowsDshShell) {
@@ -1059,7 +1091,7 @@ async function runDefaultPresetPrompt(params: {
           ? ["/d", "/s", "/v:off", "/c", '""%OPENHUDDLE_DSH_EXECUTABLE%" --profile headless"']
           : [...args],
         {
-          cwd: tmpdir(),
+          cwd: params.replyImageDir ?? tmpdir(),
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
           windowsVerbatimArguments: needsWindowsDshShell,
@@ -1213,11 +1245,12 @@ async function runDefaultPresetPrompt(params: {
 
     if (codexOutputFile !== undefined && existsSync(codexOutputFile)) {
       const fromFile = readFileSync(codexOutputFile, "utf8").trim();
-      if (fromFile.length > 0) {
+      if (fromFile.length > 0 || params.replyImageDir !== undefined) {
         return fromFile;
       }
     }
-    return stdoutText;
+    // 发图回合允许无说明的回复。执行轨迹可能包含文件路径，不将其当成群聊正文。
+    return params.replyImageDir === undefined ? stdoutText : "";
   } finally {
     if (codexOutputFile !== undefined && existsSync(codexOutputFile)) {
       rmSync(codexOutputFile, { force: true });
@@ -1404,37 +1437,75 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     }
 
     const wakeEnv = buildWakeProcessEnv(wake, options.tokenFilePath, options.serverUrl);
-    const prompt = buildBrokeredWakePrompt({
+    const promptInput = {
       selfAgent,
       owner,
       room,
       messages: visibleMessages,
       wake,
       replyToSeq: replyAnchorMsg.seq,
-    });
+    };
+    // 只有触发本轮的主人消息能启用图片输出。上下文里的转述或其他参与者消息不授予能力。
+    const allowImageReply =
+      preset === "codex" &&
+      replyAnchorMsg.author.trustLevel === "owner_command" &&
+      requestsReplyImage(replyAnchorMsg.content);
+    const prompt = buildBrokeredWakePrompt({ ...promptInput, allowImageReply });
 
     log(
       `[openhuddle:wake] room=${wake.roomId} seq=${readRes.latestSeq} reason=${wake.reason} preset=${preset} -> generating reply`,
     );
 
+    const runAttempt = async (
+      activePrompt: string,
+      timeoutMs: number,
+      imageEnabled: boolean,
+    ): Promise<BrokeredReply> => {
+      const params = {
+        preset,
+        prompt: activePrompt,
+        wakeEnv,
+        ...(options.homeDir !== undefined ? { homeDir: options.homeDir } : {}),
+        timeoutMs,
+        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        onLog: log,
+      };
+      if (!imageEnabled) {
+        return { content: (await runPreset(params)).trim() };
+      }
+
+      // 每次尝试分配新目录，网络重试和纯文本降级均不能上传上次尝试留下的文件。
+      const outputDir = await mkdtemp(join(await realpath(tmpdir()), "openhuddle-reply-"));
+      try {
+        const content = (await runPreset({ ...params, replyImageDir: outputDir })).trim();
+        if (content === "[[SKIP]]" || options.signal?.aborted) {
+          return { content };
+        }
+        const attachment = await readReplyImage(outputDir);
+        return attachment === undefined
+          ? { content: ["本次没有生成可发送的 PNG 图片。", content].filter(Boolean).join("\n\n") }
+          : { content, attachment };
+      } finally {
+        await rm(outputDir, { recursive: true, force: true }).catch(() => {
+          log("[openhuddle:wake] could not remove the temporary image directory");
+        });
+      }
+    };
+
     const invokeWithTransientRetries = async (
       activePrompt: string,
       timeoutMs: number,
       phaseLabel: "primary" | "fast-fallback",
-    ): Promise<string> => {
+    ): Promise<BrokeredReply> => {
       let attempt = 0;
       while (true) {
         attempt += 1;
         try {
-          return await runPreset({
-            preset,
-            prompt: activePrompt,
-            wakeEnv,
-            ...(options.homeDir !== undefined ? { homeDir: options.homeDir } : {}),
+          return await runAttempt(
+            activePrompt,
             timeoutMs,
-            ...(options.signal !== undefined ? { signal: options.signal } : {}),
-            onLog: log,
-          });
+            allowImageReply && phaseLabel === "primary",
+          );
         } catch (err) {
           // 超时错误或二进制缺失不在此处原样重复，交由外层极速纯文本降级或直接汇报诊断
           if (
@@ -1465,14 +1536,10 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       }
     };
 
-    let rawReply: string;
+    let reply: BrokeredReply;
     try {
       try {
-        rawReply = await invokeWithTransientRetries(
-          prompt,
-          DEFAULT_PRESET_TURN_TIMEOUT_MS,
-          "primary",
-        );
+        reply = await invokeWithTransientRetries(prompt, DEFAULT_PRESET_TURN_TIMEOUT_MS, "primary");
       } catch (primaryErr) {
         if (options.signal?.aborted || !isPresetTimeoutError(primaryErr)) {
           throw primaryErr;
@@ -1482,8 +1549,11 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
         log(
           `[openhuddle:wake:fast-fallback] room=${wake.roomId} preset=${preset} primary turn timed out (${formatSafeDiagnosticReason(primaryErr)}); switching to ${FAST_FALLBACK_TURN_TIMEOUT_MS}ms zero-tool pure-text fallback...`,
         );
-        rawReply = await invokeWithTransientRetries(
-          buildFastFallbackWakePrompt(prompt),
+        const fallbackPrompt = allowImageReply
+          ? `${buildBrokeredWakePrompt(promptInput)}\nThe image attempt timed out. Tell the owner that no image was attached.`
+          : prompt;
+        reply = await invokeWithTransientRetries(
+          buildFastFallbackWakePrompt(fallbackPrompt),
           FAST_FALLBACK_TURN_TIMEOUT_MS,
           "fast-fallback",
         );
@@ -1522,18 +1592,23 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       throw finalErr;
     }
 
-    const trimmedReply = rawReply.trim();
-    if (trimmedReply.length === 0 || trimmedReply === "[[SKIP]]") {
+    if (options.signal?.aborted) {
+      return;
+    }
+    if (
+      (reply.content.length === 0 && reply.attachment === undefined) ||
+      reply.content === "[[SKIP]]"
+    ) {
       lastHandledTriggerByRoom.set(wake.roomId, replyAnchorMsg.seq);
       log(`[openhuddle:wake:skip] room=${wake.roomId} agent returned empty/[[SKIP]]`);
       return;
     }
 
-    const mentions = extractMentionsFromReplyContent(trimmedReply, room, selfAgent.id);
+    const mentions = extractMentionsFromReplyContent(reply.content, room, selfAgent.id);
     const opKey = `op_${randomUUID()}` as OperationKey;
 
     let postPayload = {
-      content: trimmedReply,
+      ...reply,
       replyToSeq: replyAnchorMsg.seq,
       ...(mentions.length > 0 ? { mentions } : {}),
       opKey,

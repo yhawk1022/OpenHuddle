@@ -11,9 +11,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@openhuddle/protocol": "workspace:*"
+    "@openhuddle/protocol": "workspace:*",
+    "pngjs": "7.0.0"
   },
   "devDependencies": {
+    "@types/pngjs": "6.0.5",
     "esbuild": "^0.25.0"
   }
 }
