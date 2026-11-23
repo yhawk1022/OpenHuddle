@@ -933,6 +933,12 @@ export function AuthScreen() {
                                 : "发送验证码"}
                           </AppButton>
                         </div>
+                        <p
+                          id="auth-reg-code-hint"
+                          className="mt-1.5 text-[12px] leading-relaxed text-[#6E6E73] dark:text-zinc-400"
+                        >
+                          如果收不到验证码，请检查邮箱的垃圾邮件文件夹。
+                        </p>
                       </div>
 
                       {/* 发送成功回执（真实 SMTP 或开发模式快捷码） */}
@@ -977,6 +983,7 @@ export function AuthScreen() {
                           </label>
                           <AppInput
                             id="auth-reg-code"
+                            aria-describedby="auth-reg-code-hint"
                             type="text"
                             size="lg"
                             inputMode="numeric"

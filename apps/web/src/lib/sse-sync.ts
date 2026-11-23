@@ -5,7 +5,7 @@
  * 架构职责与关键不变量（Invariants）：
  * 1. SSE 仅作传输通道（Transport Only）：绝不在组件树外维护平行的消息/治理副本库，唯一状态真相源始终是 `QueryClient`。
  * 2. 严格按 `seq` 幂等去重与排序：当人类发送消息的 HTTP 201 响应与 SSE `message.created` 帧乱序并发到达时，通过 `seq` 唯一性与乐观 `_opKey` 对账消除重复气泡。
- * 3. 断线重连自愈：每当 SSE 重新收到 `connected` 握手帧且此前经历过断线时，定向触发房间列表与当前激活房间的 `invalidateQueries` 补齐离线期间的增量缺口。
+ * 3. 收到握手或页面恢复可见时补齐未读、好友请求和当前可见会话，避免意外读取后台会话。
  */
 import {
   type MessageDto,
@@ -21,6 +21,7 @@ import {
 } from "@openhuddle/protocol";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   type OptimisticMessageItem,
   type RoomMessagesCacheData,
@@ -195,7 +196,7 @@ export function evictDeletedRoomFromQueryClient(queryClient: QueryClient, roomId
  *
  * @param enabled - 是否已通过认证允许建立 SSE 连接
  * @param sessionToken - 本地备份的人类会话令牌（附加在 `?token=` 兼容跨代理 SSE 鉴权）
- * @param activeRoomId - 当前用户正在浏览的房间 ID（用于同步推进已读游标与断线重连精准补拉）
+ * @param activeRoomId - 当前布局上实际显示的房间 ID，移动端停在列表时为空
  * @param joinedRoomsSignature - 已加入房间集合的排序签名（仅在新建群或新入群导致成员资格集合变化时自动重握手订阅新房间，切换已有群不触发重连）
  * @returns 供工作台状态栏展示的连接遥测状态
  */
@@ -215,8 +216,7 @@ export function useRealtimeSseSync(
   // 使用 ref 持有最新 activeRoomId，避免切换房间时无谓销毁重建全局单条 EventSource 长连接
   const activeRoomIdRef = useRef<RoomId | null | undefined>(activeRoomId);
   activeRoomIdRef.current = activeRoomId;
-  const previousRoomsSigRef = useRef<string | null>(null);
-
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 房间成员资格变化时必须重新订阅，退群后关闭旧房间订阅。
   useEffect(() => {
     if (!enabled || typeof window === "undefined" || typeof EventSource === "undefined") {
       setTelemetry({
@@ -226,10 +226,6 @@ export function useRealtimeSseSync(
       });
       return;
     }
-
-    const didRoomsMembershipChange =
-      previousRoomsSigRef.current !== null && previousRoomsSigRef.current !== joinedRoomsSignature;
-    previousRoomsSigRef.current = joinedRoomsSignature;
 
     const endpoint =
       sessionToken !== null && sessionToken.length > 0
@@ -241,8 +237,30 @@ export function useRealtimeSseSync(
       status: prev.connectionId !== null ? "reconnecting" : "connecting",
     }));
 
-    let hadPriorConnection = false;
     const source = new EventSource(endpoint, { withCredentials: true });
+
+    const refreshNotifications = (): void => {
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms(), exact: true });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends(), exact: true });
+
+      const currentRoom = activeRoomIdRef.current;
+      if (currentRoom && document.visibilityState === "visible") {
+        void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.roomMessages(currentRoom) });
+        void queryClient.invalidateQueries({
+          queryKey: huddleQueryKeys.roomProposals(currentRoom),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: huddleQueryKeys.roomDetail(currentRoom),
+          exact: true,
+        });
+      }
+    };
+
+    const onVisibilityChange = (): void => {
+      if (document.visibilityState === "visible") {
+        refreshNotifications();
+      }
+    };
 
     const handleRawPayload = (rawData: unknown): void => {
       if (typeof rawData !== "string" || rawData.trim().length === 0) {
@@ -263,29 +281,12 @@ export function useRealtimeSseSync(
       const event = parsed.data;
       switch (event.type) {
         case "connected": {
-          const isReconnect = hadPriorConnection;
-          hadPriorConnection = true;
           setTelemetry({
             status: "live",
             connectionId: event.connectionId,
             lastHeartbeatIso: event.serverTimeIso,
           });
-          // 断线重连或因新建/加入新群重握手后，主动补齐当前房间窗口期内的增量
-          if (isReconnect || didRoomsMembershipChange) {
-            void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
-            const currentRoom = activeRoomIdRef.current;
-            if (currentRoom) {
-              void queryClient.invalidateQueries({
-                queryKey: huddleQueryKeys.roomMessages(currentRoom),
-              });
-              void queryClient.invalidateQueries({
-                queryKey: huddleQueryKeys.roomProposals(currentRoom),
-              });
-              void queryClient.invalidateQueries({
-                queryKey: huddleQueryKeys.roomDetail(currentRoom),
-              });
-            }
-          }
+          refreshNotifications();
           return;
         }
 
@@ -300,13 +301,29 @@ export function useRealtimeSseSync(
 
         case "wake": {
           // 收到轻量唤醒帧时刷新左侧房间列表未读计数徽章
-          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms(), exact: true });
           return;
         }
 
         case "message.created": {
-          const isViewingRoom = activeRoomIdRef.current === event.roomId;
+          const isViewingRoom =
+            activeRoomIdRef.current === event.roomId && document.visibilityState === "visible";
           const nextCursor = asReadCursorSeq(event.message.seq);
+          const roomSummary = queryClient
+            .getQueryData<{ readonly rooms: ReadonlyArray<RoomSummaryDto> }>(
+              huddleQueryKeys.rooms(),
+            )
+            ?.rooms.find((room) => room.id === event.roomId);
+          if (
+            !isViewingRoom &&
+            !event.message.author.isYou &&
+            event.message.seq > (roomSummary?.lastSeq ?? 0)
+          ) {
+            toast.info(roomSummary ? `${roomSummary.name} 有新消息` : "收到新消息", {
+              id: `room-notice-${event.roomId}`,
+              description: event.message.author.displayName,
+            });
+          }
 
           // 1. 对目标房间消息流缓存做按 seq 幂等合并；若缓存尚未水合则保持未加载状态等待打开时拉取
           queryClient.setQueryData<RoomMessagesCacheData>(
@@ -339,7 +356,7 @@ export function useRealtimeSseSync(
                   lastSeq: nextLastSeq,
                   yourLastReadSeq:
                     isViewingRoom || event.message.author.isYou
-                      ? nextLastSeq
+                      ? asReadCursorSeq(Math.max(room.yourLastReadSeq, nextCursor))
                       : room.yourLastReadSeq,
                 };
               }),
@@ -377,6 +394,7 @@ export function useRealtimeSseSync(
             if (matchingMember === undefined || matchingMember.reach === "offline") {
               void queryClient.invalidateQueries({
                 queryKey: huddleQueryKeys.roomDetail(event.roomId),
+                exact: true,
               });
               void queryClient.invalidateQueries({
                 queryKey: huddleQueryKeys.me(),
@@ -463,9 +481,10 @@ export function useRealtimeSseSync(
 
         case "room.upserted": {
           // 收到新建 1v1 单聊或被好友拉入新群通知时，立即刷新会话列表、房间详情与通讯录私聊关联
-          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms(), exact: true });
           void queryClient.invalidateQueries({
             queryKey: huddleQueryKeys.roomDetail(event.roomId),
+            exact: true,
           });
           void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
           return;
@@ -504,22 +523,16 @@ export function useRealtimeSseSync(
       source.addEventListener(eventName, onMessage as EventListener);
     }
 
-    source.onopen = () => {
-      setTelemetry((prev) => ({
-        ...prev,
-        status: "live",
-      }));
-    };
-
     source.onerror = () => {
-      hadPriorConnection = true;
       setTelemetry((prev) => ({
         ...prev,
         status: "reconnecting",
       }));
     };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       source.removeEventListener("message", onMessage);
       for (const eventName of namedEventTypes) {
         source.removeEventListener(eventName, onMessage as EventListener);

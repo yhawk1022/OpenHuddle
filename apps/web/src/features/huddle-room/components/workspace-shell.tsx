@@ -34,7 +34,8 @@ import type {
   UpdateGovernanceBody,
   UserId,
 } from "@openhuddle/protocol";
-import { useQuery } from "@tanstack/react-query";
+import { asReadCursorSeq } from "@openhuddle/protocol";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   ArrowDown,
@@ -90,7 +91,7 @@ import {
   useSessionToken,
   useThemeMode,
 } from "../../../lib/session-store.js";
-import { useRealtimeSseSync } from "../../../lib/sse-sync.js";
+import { type SseConnectionStatus, useRealtimeSseSync } from "../../../lib/sse-sync.js";
 import {
   AccountSecurityModal,
   AgentOnboardingModal,
@@ -148,6 +149,8 @@ const NEAR_BOTTOM_THRESHOLD_PX = 120;
 
 /** 右侧抽屉常驻断点（与 Tailwind `xl` 对齐） */
 const WIDE_SCREEN_QUERY = "(min-width: 1280px)";
+const DESKTOP_CHAT_QUERY = "(min-width: 48rem)";
+const NOTIFICATION_RECOVERY_INTERVAL_MS = 5_000;
 
 function parseSelectedRoomIdFromSearch(search: string): RoomId | null {
   const params = new URLSearchParams(search);
@@ -155,24 +158,36 @@ function parseSelectedRoomIdFromSearch(search: string): RoomId | null {
   return raw && raw.length > 0 ? (raw as RoomId) : null;
 }
 
-function subscribeWideScreen(onChange: () => void): () => void {
+function subscribeScreen(query: string, onChange: () => void): () => void {
   if (typeof window === "undefined" || !window.matchMedia) {
     return () => undefined;
   }
-  const mql = window.matchMedia(WIDE_SCREEN_QUERY);
+  const mql = window.matchMedia(query);
   mql.addEventListener("change", onChange);
   return () => mql.removeEventListener("change", onChange);
 }
 
-function readWideScreen(): boolean {
+function readScreen(query: string): boolean {
   return typeof window !== "undefined" && !!window.matchMedia
-    ? window.matchMedia(WIDE_SCREEN_QUERY).matches
+    ? window.matchMedia(query).matches
     : true;
 }
 
 /** 订阅 `xl` 断点：决定抽屉以「右侧悬浮分栏」还是「Vaul 手势抽屉」形式呈现 */
 function useIsWideScreen(): boolean {
-  return useSyncExternalStore(subscribeWideScreen, readWideScreen, () => true);
+  return useSyncExternalStore(
+    useCallback((onChange) => subscribeScreen(WIDE_SCREEN_QUERY, onChange), []),
+    () => readScreen(WIDE_SCREEN_QUERY),
+    () => true,
+  );
+}
+
+function useIsDesktopChat(): boolean {
+  return useSyncExternalStore(
+    useCallback((onChange) => subscribeScreen(DESKTOP_CHAT_QUERY, onChange), []),
+    () => readScreen(DESKTOP_CHAT_QUERY),
+    () => true,
+  );
 }
 
 function authorIdentityKey(message: MessageDto): string {
@@ -222,6 +237,7 @@ interface ActiveRoomStageProps {
   readonly currentUser: HumanUserDto;
   readonly friends: ReadonlyArray<FriendContactDto>;
   readonly synthesizeSignal: number;
+  readonly realtimeLive: boolean;
   readonly onOpenAddAgentModal: (tab?: OnboardingModalTab, reclaimAgentId?: AgentId) => void;
   readonly onOpenInviteMembersModal: () => void;
   readonly onStartDirectHumanChat: (userId: UserId) => void;
@@ -234,8 +250,14 @@ interface ActiveRoomStageProps {
 }
 
 function ActiveRoomStage(props: ActiveRoomStageProps) {
+  const queryClient = useQueryClient();
   const detailQuery = useQuery(roomDetailQueryOptions(props.roomId));
-  const messagesQuery = useQuery(roomMessagesQueryOptions(props.roomId));
+  const messagesQuery = useQuery({
+    ...roomMessagesQueryOptions(props.roomId),
+    refetchInterval: props.realtimeLive ? false : NOTIFICATION_RECOVERY_INTERVAL_MS,
+    refetchOnMount: "always",
+    refetchOnReconnect: false,
+  });
   const proposalsQuery = useQuery(roomProposalsQueryOptions(props.roomId));
 
   const governanceMutation = useUpdateGovernanceMutation(props.roomId);
@@ -304,6 +326,36 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
     () => messagesQuery.data?.messages ?? [],
     [messagesQuery.data],
   );
+  const latestDisplayedSeq = messages.reduce(
+    (latest, message) => (message._optimisticPending ? latest : Math.max(latest, message.seq)),
+    0,
+  );
+  useEffect(() => {
+    if (
+      messagesQuery.dataUpdatedAt === 0 ||
+      latestDisplayedSeq === 0 ||
+      document.visibilityState !== "visible"
+    ) {
+      return;
+    }
+    // 打开会话后同步销掉侧栏红点，保留比当前时间线更新的未读。
+    queryClient.setQueryData(
+      joinedRoomsQueryOptions().queryKey,
+      (previous) =>
+        previous && {
+          ...previous,
+          rooms: previous.rooms.map((room) =>
+            room.id === props.roomId && latestDisplayedSeq > room.yourLastReadSeq
+              ? {
+                  ...room,
+                  lastSeq: asReadCursorSeq(Math.max(room.lastSeq, latestDisplayedSeq)),
+                  yourLastReadSeq: asReadCursorSeq(latestDisplayedSeq),
+                }
+              : room,
+          ),
+        },
+    );
+  }, [latestDisplayedSeq, messagesQuery.dataUpdatedAt, props.roomId, queryClient]);
   const proposals: ReadonlyArray<ProposalCardDto> = useMemo(
     () => proposalsQuery.data?.proposals ?? [],
     [proposalsQuery.data],
@@ -1139,8 +1191,18 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const location = useBrowserLocation();
   const sessionToken = useSessionToken();
   const themeMode = useThemeMode();
-  const roomsQuery = useQuery(joinedRoomsQueryOptions());
-  const friendsQuery = useQuery(friendsOverviewQueryOptions());
+  const isDesktopChat = useIsDesktopChat();
+  const connectionStatusRef = useRef<SseConnectionStatus>("connecting");
+  const notificationRefetchInterval = () =>
+    connectionStatusRef.current === "live" ? false : NOTIFICATION_RECOVERY_INTERVAL_MS;
+  const roomsQuery = useQuery({
+    ...joinedRoomsQueryOptions(),
+    refetchInterval: notificationRefetchInterval,
+  });
+  const friendsQuery = useQuery({
+    ...friendsOverviewQueryOptions(),
+    refetchInterval: notificationRefetchInterval,
+  });
   const logoutMutation = useLogoutMutation();
   const deleteOwnedAgentMutation = useDeleteOwnedAgentMutation();
   const updateOwnedAgentMutation = useUpdateOwnedAgentMutation();
@@ -1177,6 +1239,29 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const outgoingRequests = friendsQuery.data?.outgoingRequests ?? [];
   const discoverableAgents = friendsQuery.data?.discoverableAgents ?? [];
   const urlRoomId = parseSelectedRoomIdFromSearch(location.search);
+
+  const lastIncomingRequestsRef = useRef<ReadonlySet<string> | null>(null);
+  const incomingRequestSnapshot = friendsQuery.data?.incomingRequests;
+  useEffect(() => {
+    if (incomingRequestSnapshot === undefined) {
+      return;
+    }
+    const previous = lastIncomingRequestsRef.current;
+    lastIncomingRequestsRef.current = new Set(
+      incomingRequestSnapshot.map((request) => request.friendshipId),
+    );
+    // 首屏已有申请由通讯录红点呈现，仅对随后到达的申请弹出提醒。
+    if (previous !== null) {
+      for (const request of incomingRequestSnapshot) {
+        if (!previous.has(request.friendshipId)) {
+          toast.info("收到好友申请", {
+            id: request.friendshipId,
+            description: request.peer.displayName,
+          });
+        }
+      }
+    }
+  }, [incomingRequestSnapshot]);
 
   // 移动端（< md）当前页：深链携带 ?room= 时直接进入聊天，否则停留在会话列表首页
   const [mobileShowChat, setMobileShowChat] = useState<boolean>(() => urlRoomId !== null);
@@ -1242,7 +1327,10 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     [rooms],
   );
 
-  const sseTelemetry = useRealtimeSseSync(true, sessionToken, activeRoomId, joinedRoomsSignature);
+  // 移动端选中的会话可能仍藏在列表之后，隐藏的时间线不能读取并清掉未读。
+  const visibleRoomId = isDesktopChat || mobileShowChat ? activeRoomId : null;
+  const sseTelemetry = useRealtimeSseSync(true, sessionToken, visibleRoomId, joinedRoomsSignature);
+  connectionStatusRef.current = sseTelemetry.status;
 
   const onlineAgentCount = useMemo(
     () =>
@@ -1803,7 +1891,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       </div>
 
       {/* 第 3 栏：通透聊天主舞台 vs 无会话极简空态 */}
-      {activeRoomId !== null ? (
+      {visibleRoomId !== null ? (
         <div
           className={cn(
             isChatVisibleOnMobile ? "flex" : "hidden",
@@ -1811,11 +1899,12 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           )}
         >
           <ActiveRoomStage
-            key={activeRoomId}
-            roomId={activeRoomId}
+            key={visibleRoomId}
+            roomId={visibleRoomId}
             currentUser={props.currentUser}
             friends={friends}
             synthesizeSignal={synthesizeSignal}
+            realtimeLive={sseTelemetry.status === "live"}
             onOpenAddAgentModal={(tab, reclaimId) => openOnboarding(tab ?? "pair_agent", reclaimId)}
             onOpenInviteMembersModal={() => setInviteMembersOpen(true)}
             onStartDirectHumanChat={handleStartDirectHumanChat}

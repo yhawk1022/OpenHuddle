@@ -75,7 +75,6 @@ export class EventsService {
     caller: Readonly<AuthenticatedCaller>,
     onEvent: (event: SseEvent) => void,
   ): Promise<UnsubscribeFn> {
-    const joinedRooms = await this.roomsRepo.listJoinedRooms(toActorMemberKey(caller), caller);
     const unsubscribers: UnsubscribeFn[] = [];
     const subscribedRoomIds = new Set<RoomId>();
     let cleanedUp = false;
@@ -96,10 +95,6 @@ export class EventsService {
       unsubscribers.push(unsubRoom);
     };
 
-    for (const room of joinedRooms) {
-      attachRoomSubscription(room.id);
-    }
-
     if (caller.kind === "agent") {
       const unsubAgent = this.realtimeBus.subscribeAgent(caller.agentId, (agentEvent) => {
         if (agentEvent.type === "room.upserted") {
@@ -118,7 +113,7 @@ export class EventsService {
       unsubscribers.push(unsubUser);
     }
 
-    return () => {
+    const unsubscribeAll = (): void => {
       if (cleanedUp) {
         return;
       }
@@ -128,6 +123,18 @@ export class EventsService {
         unsub();
       }
     };
+
+    // 先订阅身份通道，再查房间快照。查库期间收到新会话也能立即挂载。
+    try {
+      const joinedRooms = await this.roomsRepo.listJoinedRooms(toActorMemberKey(caller), caller);
+      for (const room of joinedRooms) {
+        attachRoomSubscription(room.id);
+      }
+      return unsubscribeAll;
+    } catch (error) {
+      unsubscribeAll();
+      throw error;
+    }
   }
 
   /**

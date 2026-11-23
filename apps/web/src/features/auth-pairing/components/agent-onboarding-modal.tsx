@@ -24,6 +24,7 @@ import {
   ArrowRight,
   Bot,
   Check,
+  ChevronDown,
   Copy,
   ExternalLink,
   Globe,
@@ -413,9 +414,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
           onSuccess: (res) => {
             setGeneratedPairing(res);
             if (!options?.silentToast) {
-              toast.success("一键接入命令已刷新", {
-                description: `一次性口令 ${res.code} · 复制发给 Agent 约 2 秒连入`,
-              });
+              toast.success("已生成新的接入指令");
             }
           },
           onError: (err) => {
@@ -683,7 +682,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
         activeTab === "pair_agent"
           ? isSelectedLocalConnectReady
             ? "已检测到本机 CLI，点一下即可秒连进群并开启后台实时监听"
-            : "口令已自动备好，复制发给你的 Agent 就会自己绑定并进群"
+            : "把接入指令发给你的 Agent，它会按当前设置完成绑定"
           : "发邀请码把同伴拉进群，或生成公开只读回放链接"
       }
       maxWidthClass="max-w-2xl"
@@ -986,69 +985,19 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       </p>
                     ) : null}
 
-                    {/* 接入方式切换 + 一次性口令胶囊 */}
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <SegmentedTabs
-                        value={methodTab}
-                        onValueChange={setMethodTab}
-                        items={CONNECT_METHOD_ITEMS}
-                        size="sm"
-                        ariaLabel="Agent 接入方式切换"
-                      />
-                      <div className="flex items-center gap-1">
-                        <AppTooltip content="点击复制一次性接入口令" side="top">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              triggerCopy(
-                                "pairingCode",
-                                generatedPairing.code,
-                                "接入口令已复制",
-                                generatedPairing.code,
-                              )
-                            }
-                            className="app-no-drag inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-black/[0.05] px-3 py-1 font-mono text-[11.5px] font-semibold tracking-wider text-[#111318] ring-1 ring-inset ring-black/[0.07] transition hover:bg-black/[0.08] active:scale-95 dark:bg-white/[0.07] dark:text-[#F2F2F4] dark:ring-white/[0.10] dark:hover:bg-white/[0.12]"
-                          >
-                            <span>{generatedPairing.code}</span>
-                            {copiedKey === "pairingCode" ? (
-                              <Check
-                                aria-hidden="true"
-                                className="h-3 w-3 text-[#16A34A] dark:text-[#34D399]"
-                              />
-                            ) : (
-                              <Copy aria-hidden="true" className="h-3 w-3 opacity-65" />
-                            )}
-                          </button>
-                        </AppTooltip>
-                        <AppTooltip content="换一个新口令" side="top">
-                          <IconButton
-                            size="sm"
-                            variant="ghost"
-                            label="重新生成口令"
-                            isLoading={pairingMutation.isPending}
-                            onClick={() => requestNewPairingCode()}
-                          >
-                            <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
-                          </IconButton>
-                        </AppTooltip>
-                      </div>
-                    </div>
+                    <SegmentedTabs
+                      value={methodTab}
+                      onValueChange={setMethodTab}
+                      items={CONNECT_METHOD_ITEMS}
+                      size="sm"
+                      ariaLabel="Agent 接入方式切换"
+                    />
 
                     {methodTab === "prompt" ? (
-                      <div className="rounded-[22px] bg-black/[0.035] p-4 ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.045] dark:ring-white/[0.08]">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                            把下面这段话直接发给你的 Agent（支持云端与本地环境）
-                          </span>
-                          <span className="text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                            在 {platformMeta.label} 粘贴发送即可
-                          </span>
-                        </div>
-                        <div className="my-3 rounded-[16px] bg-white/90 px-3.5 py-3 ring-1 ring-inset ring-black/[0.06] dark:bg-[#141417] dark:ring-white/[0.08]">
-                          <p className="select-text whitespace-pre-wrap text-[12.5px] leading-relaxed text-[#111318] dark:text-[#ECECEF]">
-                            {readyToPastePrompt}
-                          </p>
-                        </div>
+                      <div className="space-y-3 rounded-[22px] bg-black/[0.035] p-4 ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.045] dark:ring-white/[0.08]">
+                        <p className="text-xs text-[#687082] dark:text-[#A0A0A8]">
+                          复制后，在 {platformMeta.label} 的对话里粘贴发送。
+                        </p>
                         <AppButton
                           variant="primary"
                           size="lg"
@@ -1179,6 +1128,53 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         </div>
                       </div>
                     ) : null}
+
+                    {/* 原生折叠面板保留键盘操作，并避免切换方式时意外展示口令。 */}
+                    <details
+                      key={methodTab}
+                      className="group rounded-[16px] bg-black/[0.025] ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.035] dark:ring-white/[0.08]"
+                    >
+                      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-[16px] px-3.5 py-3 text-xs font-medium text-[#3B414E] focus-visible:outline-2 focus-visible:outline-offset-2 dark:text-[#C4C4CA] [&::-webkit-details-marker]:hidden">
+                        {methodTab === "prompt" ? "查看完整话术和接入口令" : "查看接入口令"}
+                        <ChevronDown
+                          aria-hidden="true"
+                          className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180 motion-reduce:transition-none"
+                        />
+                      </summary>
+                      <div className="space-y-3 px-3.5 pb-3.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <code className="select-text rounded-full bg-black/[0.05] px-2.5 py-1 font-mono text-[11.5px] font-semibold text-[#111318] dark:bg-white/[0.07] dark:text-[#F2F2F4]">
+                            {generatedPairing.code}
+                          </code>
+                          <CopyButton
+                            copied={copiedKey === "pairingCode"}
+                            label="复制口令"
+                            copiedLabel="已复制"
+                            variant="secondary"
+                            onCopy={() =>
+                              triggerCopy("pairingCode", generatedPairing.code, "接入口令已复制")
+                            }
+                          />
+                          <IconButton
+                            size="sm"
+                            variant="ghost"
+                            label="重新生成口令"
+                            isLoading={pairingMutation.isPending}
+                            onClick={() => requestNewPairingCode()}
+                          >
+                            <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
+                          </IconButton>
+                        </div>
+                        <p className="text-xs text-[#687082] dark:text-[#A0A0A8]">
+                          口令用于一次性绑定 Agent，接入话术和安装命令里已包含。
+                        </p>
+                        {methodTab === "prompt" ? (
+                          <p className="max-h-56 select-text overflow-y-auto rounded-[14px] bg-white/90 px-3.5 py-3 text-[12.5px] leading-relaxed break-words whitespace-pre-wrap text-[#111318] ring-1 ring-inset ring-black/[0.06] dark:bg-[#141417] dark:text-[#ECECEF] dark:ring-white/[0.08]">
+                            {readyToPastePrompt}
+                          </p>
+                        ) : null}
+                      </div>
+                    </details>
                   </motion.div>
                 )}
               </AnimatePresence>

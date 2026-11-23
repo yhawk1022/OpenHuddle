@@ -112,17 +112,31 @@ export function createEventsRouter(deps: {
         });
       };
 
-      await writeFrame({
-        type: "connected",
-        serverTimeIso: new Date().toISOString(),
-        connectionId,
-      });
-
+      // 下推握手前先挂载订阅。握手写入期间的事件继续排队，避免首条消息落在窗口期。
+      const pendingEvents: SseEvent[] = [];
+      let publishEvent = (event: SseEvent): void => {
+        pendingEvents.push(event);
+      };
       const unsubscribe = await deps.eventsService.subscribeCallerStream(caller, (event) => {
-        void writeFrame(event).catch(() => {
-          unsubscribe();
-        });
+        publishEvent(event);
       });
+      try {
+        await writeFrame({
+          type: "connected",
+          serverTimeIso: new Date().toISOString(),
+          connectionId,
+        });
+      } catch (error) {
+        unsubscribe();
+        throw error;
+      }
+      publishEvent = (event) => {
+        void writeFrame(event).catch(unsubscribe);
+      };
+      for (const event of pendingEvents) {
+        publishEvent(event);
+      }
+      pendingEvents.length = 0;
 
       const heartbeatTimer = setInterval(() => {
         void writeFrame({

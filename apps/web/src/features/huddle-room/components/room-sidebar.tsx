@@ -819,7 +819,10 @@ export function RoomSidebar(props: RoomSidebarProps) {
                           </span>
 
                           {unreadCount > 0 ? (
-                            <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#E5484D] px-1.5 text-[11px] font-semibold tabular-nums text-white dark:bg-[#F05252]">
+                            <span
+                              aria-label={`${unreadCount} 条未读消息`}
+                              className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#E5484D] px-1.5 text-[11px] font-semibold tabular-nums text-white dark:bg-[#F05252]"
+                            >
                               {unreadCount > 99 ? "99+" : unreadCount}
                             </span>
                           ) : null}
