@@ -1,102 +1,97 @@
 /**
  * @module web/components/ui/theme-toggle
- * @description 基于 Atelier Daylight 暖瓷（`#181B22`）与 Obsidian Studio 黑曜石（`#ECEFF6`）双主题体系及 `motion` 弹簧旋转微交互的日光 / 深夜主题切换器。
- *
- * 架构职责与关键不变量（Invariants）：
- * 1. 单一外部状态源：直接读写 `session-store` 主题模式，切换 `<html>` 上的 `.dark` 类即可零闪烁驱动全站令牌与轻提示换肤。
- * 2. 桌面无边框窗口拖拽安全：`IconButton` 与 `AppButton` 原生携带 `rounded-full` 胶囊几何与 `.app-no-drag`，嵌入 Tauri / Electron 拖拽顶栏时点击始终可靠响应。
- * 3. 纯粹单色图标：使用干净克制的墨黑与柔和雪花白线条呈现日月切换。
+ * @description 外观设置菜单。菜单选中态反映用户偏好，触发图标反映当前实际配色。
  */
-import { Moon, Sun } from "lucide-react";
-import { toggleThemeMode, useThemeMode } from "../../lib/session-store.js";
-import { AnimatePresence, AppButton, AppTooltip, IconButton, motion } from "../primitives/index.js";
+import { Check, Clock3, Moon, Sun } from "lucide-react";
+import {
+  type ThemePreference,
+  setThemePreference,
+  useThemeMode,
+  useThemePreference,
+} from "../../lib/theme-store.js";
+import {
+  AppButton,
+  AppDropdownMenu,
+  AppDropdownMenuItem,
+  AppDropdownMenuLabel,
+  IconButton,
+} from "../primitives/index.js";
 
-/** `ThemeToggle` 入参属性 */
+/** `ThemeToggle` 入参属性。 */
 export interface ThemeToggleProps {
-  /** 是否在图标旁展示主题文字标签 */
+  /** 是否在图标旁显示「外观」文字。 */
   readonly showLabel?: boolean | undefined;
-  /** `ghost` = 无边框幽灵圆形按钮（适合 80px 导轨与顶栏）；`pill` = 带细描边的胶囊按钮 */
+  /** 导轨和顶栏用幽灵按钮，默认使用胶囊按钮。 */
   readonly variant?: "pill" | "ghost" | undefined;
-  /** 可选附加类名 */
+  /** 附加到触发按钮的样式。 */
   readonly className?: string | undefined;
 }
 
-const ICON_SPRING = {
-  type: "spring",
-  stiffness: 480,
-  damping: 28,
-} as const;
+const THEME_OPTIONS = [
+  { value: "auto", label: "自动切换", icon: Clock3 },
+  { value: "light", label: "始终使用白天模式", icon: Sun },
+  { value: "dark", label: "始终使用夜间模式", icon: Moon },
+] as const satisfies ReadonlyArray<{
+  readonly value: ThemePreference;
+  readonly label: string;
+  readonly icon: typeof Sun;
+}>;
 
 /**
- * 渲染带 `AppTooltip` 与弹簧旋转日月动画的 Pachat 风格主题切换按钮。
+ * 渲染可用键盘操作的外观设置菜单。
  *
- * @param props - 是否展示文字标签、视觉变体及附加类名
- * @returns 无障碍友好的圆形或胶囊主题切换按钮
+ * @param props - 触发按钮的文字、变体及附加样式。
+ * @returns 可选择定时切换或固定配色的菜单。
  */
 export function ThemeToggle(props: ThemeToggleProps) {
-  const mode = useThemeMode();
-  const isDark = mode === "dark";
-  const isGhost = props.variant === "ghost";
-  const tooltipLabel = isDark ? "切换至日光模式" : "切换至深夜模式";
-
-  const animatedGlyph = (
-    <span className="relative inline-flex h-4 w-4 items-center justify-center overflow-hidden">
-      <AnimatePresence mode="wait" initial={false}>
-        {isDark ? (
-          <motion.span
-            key="sun"
-            initial={{ opacity: 0, rotate: -75, scale: 0.55 }}
-            animate={{ opacity: 1, rotate: 0, scale: 1 }}
-            exit={{ opacity: 0, rotate: 75, scale: 0.55 }}
-            transition={ICON_SPRING}
-            className="inline-flex items-center justify-center"
-          >
-            <Sun className="h-4 w-4 text-[#ECEFF6]" />
-          </motion.span>
-        ) : (
-          <motion.span
-            key="moon"
-            initial={{ opacity: 0, rotate: 75, scale: 0.55 }}
-            animate={{ opacity: 1, rotate: 0, scale: 1 }}
-            exit={{ opacity: 0, rotate: -75, scale: 0.55 }}
-            transition={ICON_SPRING}
-            className="inline-flex items-center justify-center"
-          >
-            <Moon className="h-4 w-4 text-[#181B22]" />
-          </motion.span>
-        )}
-      </AnimatePresence>
-    </span>
-  );
-
-  if (props.showLabel) {
-    return (
-      <AppTooltip content={tooltipLabel} side="bottom">
-        <AppButton
-          variant={isGhost ? "ghost" : "secondary"}
-          size="sm"
-          onClick={toggleThemeMode}
-          aria-label={tooltipLabel}
-          leadingIcon={animatedGlyph}
-          className={props.className}
-        >
-          <span>{isDark ? "日光模式" : "深夜模式"}</span>
-        </AppButton>
-      </AppTooltip>
-    );
-  }
+  const preference = useThemePreference();
+  const CurrentModeIcon = useThemeMode() === "dark" ? Moon : Sun;
+  const glyph = <CurrentModeIcon aria-hidden="true" className="h-4 w-4" />;
+  const variant = props.variant === "ghost" ? "ghost" : "secondary";
+  const label = "外观设置";
 
   return (
-    <AppTooltip content={tooltipLabel} side="right">
-      <IconButton
-        variant={isGhost ? "ghost" : "secondary"}
-        size="md"
-        label={tooltipLabel}
-        onClick={toggleThemeMode}
-        className={props.className}
-      >
-        {animatedGlyph}
-      </IconButton>
-    </AppTooltip>
+    <AppDropdownMenu
+      align={props.showLabel ? "end" : "start"}
+      className="min-w-52"
+      trigger={
+        props.showLabel ? (
+          <AppButton
+            variant={variant}
+            size="sm"
+            aria-label={label}
+            leadingIcon={glyph}
+            className={props.className}
+          >
+            外观
+          </AppButton>
+        ) : (
+          <IconButton label={label} title={label} variant={variant} className={props.className}>
+            {glyph}
+          </IconButton>
+        )
+      }
+    >
+      <AppDropdownMenuLabel className="text-im-muted">外观设置</AppDropdownMenuLabel>
+      {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
+        <AppDropdownMenuItem
+          key={value}
+          role="menuitemradio"
+          aria-checked={preference === value}
+          onSelect={() => setThemePreference(value)}
+        >
+          <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+          <span className="flex-1">
+            {label}
+            {value === "auto" ? (
+              <span className="block text-[11px] font-normal text-im-muted">
+                07:00 白天 · 18:00 夜间
+              </span>
+            ) : null}
+          </span>
+          {preference === value ? <Check aria-hidden="true" className="h-4 w-4 shrink-0" /> : null}
+        </AppDropdownMenuItem>
+      ))}
+    </AppDropdownMenu>
   );
 }

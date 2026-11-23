@@ -14,7 +14,7 @@
  */
 import { useEffect, useRef } from "react";
 import { cn } from "../../lib/cn.js";
-import { useThemeMode } from "../../lib/session-store.js";
+import { useThemeMode } from "../../lib/theme-store.js";
 
 type Rgb = readonly [number, number, number];
 
@@ -641,13 +641,13 @@ export function HuddleConstellationBackground(props: HuddleConstellationBackgrou
       aria-hidden="true"
       className={cn(
         "pointer-events-none fixed inset-0 z-0 overflow-hidden select-none",
-        "bg-[#FBFBFD] dark:bg-[#0E0F13]",
+        "bg-app-frame dark:bg-[#0E0F13]",
         props.className,
       )}
     >
       <canvas ref={canvasRef} className="block h-full w-full" />
       {/* 左上标题区阅读保护：轻柔雾化，避免星点与弧线穿过大标题时干扰阅读 */}
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(36rem_20rem_at_27%_27%,rgba(251,251,253,0.88),transparent_80%)] dark:bg-[radial-gradient(36rem_20rem_at_27%_27%,rgba(14,15,19,0.84),transparent_80%)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(36rem_20rem_at_27%_27%,var(--oh-app-frame),transparent_80%)] dark:bg-[radial-gradient(36rem_20rem_at_27%_27%,rgba(14,15,19,0.84),transparent_80%)]" />
     </div>
   );
 }

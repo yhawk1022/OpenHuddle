@@ -234,7 +234,7 @@ function LiveHuddlePreview() {
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 360, damping: 32, delay: 0.05 }}
-      className="relative liquid-glass-modal select-none overflow-hidden rounded-[28px] bg-white/[0.72] dark:bg-[#16171C]/[0.74]"
+      className="relative liquid-glass-modal select-none overflow-hidden rounded-[28px] dark:bg-[#16171C]/[0.74]"
     >
       {/* 卡片顶部群聊头：圆角方标 + 群标题 + 实时在线圆点 */}
       <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-5 py-3.5 dark:border-white/[0.07]">
@@ -261,7 +261,7 @@ function LiveHuddlePreview() {
       </div>
 
       {/* 协调半透聊天画布：对齐全站三角色对话气泡色阶，消除顶栏与画布的生硬黑块断层 */}
-      <div className="space-y-3.5 bg-white/45 px-5 py-4.5 dark:bg-black/[0.16]">
+      <div className="space-y-3.5 bg-im-canvas/70 px-5 py-4.5 dark:bg-black/[0.16]">
         {/* 本人发出的暖亚麻/烟熏石墨气泡 */}
         <motion.div
           initial={{ opacity: 0, y: 8 }}
@@ -270,7 +270,7 @@ function LiveHuddlePreview() {
           className="flex justify-end"
         >
           <div className="max-w-[82%]">
-            <div className="rounded-[18px_6px_18px_18px] bg-[#F4EFE6] px-3.5 py-2.5 text-[13.5px] leading-[1.52] text-[#111318] ring-1 ring-inset ring-black/[0.05] dark:bg-[#2E2E34] dark:text-[#F5F5F7] dark:ring-white/[0.10]">
+            <div className="rounded-[18px_6px_18px_18px] bg-im-self px-3.5 py-2.5 text-[13.5px] leading-[1.52] text-im-self-fg ring-1 ring-inset ring-black/[0.05] dark:ring-white/[0.10]">
               <span className="font-medium text-[#157347] dark:text-[#6EE7B7]">
                 @Claude Code @Codex
               </span>{" "}
@@ -312,7 +312,7 @@ function LiveHuddlePreview() {
                 <span className="text-[#687082] dark:text-[#8E8E96]">{bubble.ownerNote}</span>
                 <span className="text-[#939BAD] dark:text-[#63636B]">{bubble.time}</span>
               </p>
-              <div className="rounded-[6px_18px_18px_18px] bg-white/95 px-3.5 py-2.5 text-[13.5px] leading-[1.52] text-[#111318] shadow-[0_1px_2px_rgba(15,23,42,0.04)] ring-1 ring-inset ring-black/[0.05] dark:bg-[#222226] dark:text-[#ECECEF] dark:ring-white/[0.07]">
+              <div className="rounded-[6px_18px_18px_18px] bg-im-peer px-3.5 py-2.5 text-[13.5px] leading-[1.52] text-im-peer-fg shadow-[0_1px_2px_rgba(15,23,42,0.04)] ring-1 ring-inset ring-black/[0.05] dark:ring-white/[0.07]">
                 {bubble.text}
               </div>
             </div>
@@ -324,7 +324,7 @@ function LiveHuddlePreview() {
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ type: "spring", stiffness: 420, damping: 32, delay: 0.32 }}
-          className="ml-11 rounded-[18px] bg-[#E6F5EC] px-4 py-3 text-[#111318] ring-1 ring-inset ring-emerald-900/[0.08] dark:bg-[#1B2B23] dark:text-[#E6F4EC] dark:ring-emerald-400/[0.14]"
+          className="ml-11 rounded-[18px] bg-im-human px-4 py-3 text-im-human-fg ring-1 ring-inset ring-emerald-900/[0.08] dark:ring-emerald-400/[0.14]"
         >
           <div className="flex items-center justify-between gap-2">
             <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-[#145335] dark:text-[#6EE7B7]">
@@ -663,7 +663,7 @@ export function AuthScreen() {
 
   return (
     // 全局 body 已锁定滚动，背景和内部滚动区域都由本屏管理。
-    <div className="relative isolate flex h-dvh flex-col overflow-hidden bg-[#FCFDFE] text-[#111318] dark:bg-[#0E0F13] dark:text-[#F2F2F4]">
+    <div className="relative isolate flex h-dvh flex-col overflow-hidden bg-app-frame text-im-fg dark:bg-[#0E0F13]">
       <HuddleConstellationBackground />
 
       <header
@@ -677,7 +677,7 @@ export function AuthScreen() {
               OpenHuddle
             </span>
           </div>
-          <div className="app-no-drag rounded-full bg-white/70 backdrop-blur-md dark:bg-white/[0.06]">
+          <div className="app-no-drag rounded-full bg-im-surface/70 backdrop-blur-md dark:bg-white/[0.06]">
             <ThemeToggle showLabel={true} />
           </div>
         </div>
@@ -713,7 +713,7 @@ export function AuthScreen() {
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 400, damping: 32, delay: 0.06 }}
-              className="relative liquid-glass-modal overflow-hidden rounded-[28px] bg-white/[0.76] p-6 sm:p-8 dark:bg-[#16171C]/[0.78]"
+              className="relative liquid-glass-modal overflow-hidden rounded-[28px] p-6 sm:p-8 dark:bg-[#16171C]/[0.78]"
             >
               {/* 登录 / 注册顶部分段切换器（仅非重置密码态且开放注册时展示） */}
               {mode !== "reset" && allowPublicSignup ? (
@@ -750,7 +750,7 @@ export function AuthScreen() {
                     </div>
 
                     {!allowPublicSignup ? (
-                      <div className="rounded-2xl bg-[#F5F5F7] px-3.5 py-2.5 text-[12px] leading-relaxed text-[#6E6E73] dark:bg-white/[0.05] dark:text-zinc-400">
+                      <div className="rounded-2xl bg-im-surface-muted px-3.5 py-2.5 text-[12px] leading-relaxed text-im-muted dark:bg-white/[0.05] dark:text-zinc-400">
                         当前实例已关闭自助注册，仅限已有账号登录。
                       </div>
                     ) : null}
@@ -868,7 +868,7 @@ export function AuthScreen() {
                     </div>
 
                     {allowedEmailDomains.length > 0 ? (
-                      <div className="flex items-start gap-2 rounded-2xl bg-[#F5F5F7] px-3.5 py-2 text-[12px] leading-relaxed text-[#52525B] dark:bg-white/[0.05] dark:text-zinc-300">
+                      <div className="flex items-start gap-2 rounded-2xl bg-im-surface-muted px-3.5 py-2 text-[12px] leading-relaxed text-[#52525B] dark:bg-white/[0.05] dark:text-zinc-300">
                         <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#2A7B59] dark:text-[#5ED3A2]" />
                         <span>
                           仅允许使用 {allowedEmailDomains.map((domain) => `@${domain}`).join("、")}{" "}

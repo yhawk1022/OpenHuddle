@@ -28,7 +28,7 @@ const SURFACE_BASE_CLASS = [
   "app-no-drag transition-all duration-150",
   "border border-black/[0.07] bg-black/[0.03] text-[#111318]",
   "hover:bg-black/[0.04] hover:border-black/[0.11]",
-  "focus-within:bg-white focus-within:border-[#181B22]/25 focus-within:ring-[3px] focus-within:ring-[#181B22]/[0.06]",
+  "focus-within:bg-im-input-focus focus-within:border-[#181B22]/25 focus-within:ring-[3px] focus-within:ring-[#181B22]/[0.06]",
   "dark:border-white/[0.08] dark:bg-[#161619] dark:text-[#F2F2F4]",
   "dark:hover:border-white/[0.14]",
   "dark:focus-within:bg-[#1C1C20] dark:focus-within:border-white/[0.22] dark:focus-within:ring-white/[0.07]",
@@ -93,7 +93,7 @@ export const AppInput = forwardRef<HTMLInputElement, AppInputProps>(function App
         disabled={disabled}
         aria-invalid={invalid || undefined}
         className={cn(
-          "h-full w-full min-w-0 flex-1 border-0 bg-transparent p-0 text-inherit caret-[#181B22] outline-none placeholder:text-[#939BAD] disabled:cursor-not-allowed dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]",
+          "h-full w-full min-w-0 flex-1 border-0 bg-transparent p-0 text-inherit caret-[#181B22] outline-none placeholder:text-im-placeholder disabled:cursor-not-allowed dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]",
           className,
         )}
         {...rest}
@@ -129,8 +129,8 @@ export const AppTextarea = forwardRef<HTMLTextAreaElement, AppTextareaProps>(
         aria-invalid={invalid || undefined}
         className={cn(
           "app-no-drag block w-full min-w-0 resize-y rounded-xl px-3 py-2.5 text-[13px] leading-relaxed outline-none transition-all duration-150",
-          "border border-black/[0.10] bg-[#F6F7FA] text-[#111318] placeholder:text-[#939BAD]",
-          "hover:border-black/[0.16] focus:bg-white focus:border-[#181B22]/35 focus:ring-[3px] focus:ring-[#181B22]/[0.07]",
+          "border border-black/[0.10] bg-im-input text-[#111318] placeholder:text-im-placeholder",
+          "hover:border-black/[0.16] focus:bg-im-input-focus focus:border-[#181B22]/35 focus:ring-[3px] focus:ring-[#181B22]/[0.07]",
           "dark:border-white/[0.09] dark:bg-[#161619] dark:text-[#F2F2F4] dark:placeholder:text-[#63636B]",
           "dark:hover:border-white/[0.16] dark:focus:bg-[#1C1C20] dark:focus:border-white/[0.25] dark:focus:ring-white/[0.08]",
           "caret-[#181B22] dark:caret-[#F2F2F4]",

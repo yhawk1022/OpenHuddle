@@ -53,7 +53,21 @@ export function getMessageSnippet(message: MessageDto, maxLength: number): strin
   if (message.attachment.stickerName !== undefined) {
     return `[表情] ${message.attachment.stickerName}`.slice(0, maxLength);
   }
+  if (message.attachment.mimeType === "application/octet-stream") {
+    return `[文件] ${message.attachment.fileName ?? "附件"}`.slice(0, maxLength);
+  }
   return message.attachment.mimeType.startsWith("image/") ? "[图片]" : "[语音]";
+}
+
+/** 用聊天视图的简短单位格式化附件字节数。 */
+export function formatAttachmentSize(byteLength: number): string {
+  if (byteLength < 1024) {
+    return `${byteLength} B`;
+  }
+  if (byteLength < 1024 * 1024) {
+    return `${(byteLength / 1024).toFixed(1)} KB`;
+  }
+  return `${(byteLength / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**

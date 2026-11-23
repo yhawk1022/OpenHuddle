@@ -51,7 +51,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useId, useMemo, useState } from "react";
 import {
   AnimatePresence,
   AppButton,
@@ -76,6 +76,7 @@ import { PlatformAvatar, PlatformTagPill } from "../../../components/ui/identity
 import { ProposalCardView } from "../../../components/ui/proposal-card-view.js";
 import { ApiClientError, type SynthesizeProposalInput } from "../../../lib/api-client.js";
 import { getReachVisualMeta } from "../../../lib/format.js";
+import { useUpdateOwnRoomRemarkMutation } from "../api/huddle-room.queries.js";
 
 /** 右侧群信息抽屉标签页枚举 */
 export type InspectorTab = "members" | "proposals";
@@ -215,7 +216,7 @@ function groupMembersByOwner(members: ReadonlyArray<RoomMemberDto>): ReadonlyArr
     }
     if (member.memberKind === "human") {
       humans.set(ownerId, member);
-      ownerNames.set(ownerId, member.displayName);
+      ownerNames.set(ownerId, member.remark ?? member.displayName);
     } else {
       const list = agentsByOwner.get(ownerId) ?? [];
       list.push(member);
@@ -258,6 +259,9 @@ export function RoomInspector(props: RoomInspectorProps) {
   const surfaceMode = props.surfaceMode ?? "panel";
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [remarkDraft, setRemarkDraft] = useState<string | null>(null);
+  const remarkInputId = useId();
+  const remarkMutation = useUpdateOwnRoomRemarkMutation(props.room.id, props.currentUserId);
 
   // 自动整理提案的窗口与可选 BYOK 配置折叠态
   const [byokOpen, setByokOpen] = useState<boolean>(false);
@@ -566,6 +570,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                 {teamGroups.map((group) => {
                   const humanMember = group.human;
                   const humanUserId = humanMember?.userId;
+                  const isOwnGroupMember = isGroupRoom && humanUserId === props.currentUserId;
                   const isOtherHuman =
                     humanUserId !== undefined && humanUserId !== props.currentUserId;
                   const isAlreadyFriend =
@@ -646,7 +651,14 @@ export function RoomInspector(props: RoomInspectorProps) {
                             />
                             <div className="min-w-0">
                               <div className="flex items-center gap-1.5">
-                                <p className="truncate text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                                <p
+                                  className="truncate text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]"
+                                  title={
+                                    group.human?.remark !== undefined
+                                      ? group.human.displayName
+                                      : undefined
+                                  }
+                                >
                                   {group.ownerDisplayName}
                                 </p>
                                 {group.human && isGroupRoom ? (
@@ -674,6 +686,16 @@ export function RoomInspector(props: RoomInspectorProps) {
                                 const humanName = group.human.displayName;
                                 return (
                                   <div className="flex shrink-0 items-center gap-1">
+                                    {isOwnGroupMember && remarkDraft === null ? (
+                                      <AppButton
+                                        variant="soft"
+                                        size="xs"
+                                        onClick={() => setRemarkDraft(group.human?.remark ?? "")}
+                                        className="h-6 px-2 text-[11px]"
+                                      >
+                                        我的群备注
+                                      </AppButton>
+                                    ) : null}
                                     {isGroupRoom && isOtherHuman ? (
                                       isAlreadyFriend &&
                                       props.onStartDirectHumanChat !== undefined ? (
@@ -723,6 +745,64 @@ export function RoomInspector(props: RoomInspectorProps) {
                             : null}
                         </div>
                       </AppContextMenu>
+
+                      {isOwnGroupMember && remarkDraft !== null ? (
+                        <form
+                          className="my-1.5 space-y-2 px-1.5"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            if (!remarkMutation.isPending) {
+                              remarkMutation.mutate(remarkDraft, {
+                                onSuccess: ({ remark }) => {
+                                  setRemarkDraft(null);
+                                  toast.success(remark === null ? "已清除群备注" : "已保存群备注");
+                                },
+                              });
+                            }
+                          }}
+                        >
+                          <label htmlFor={remarkInputId} className="block text-xs text-im-muted">
+                            我的群备注
+                          </label>
+                          <AppInput
+                            id={remarkInputId}
+                            size="sm"
+                            value={remarkDraft}
+                            onChange={(event) => setRemarkDraft(event.target.value)}
+                            placeholder={humanMember?.displayName}
+                            maxLength={80}
+                            disabled={remarkMutation.isPending}
+                            invalid={remarkMutation.isError}
+                          />
+                          <p className="text-[11px] text-im-muted">
+                            群成员可见，留空使用账号昵称。
+                          </p>
+                          {remarkMutation.isError ? (
+                            <p role="alert" className="text-xs text-[#C12C32] dark:text-[#F87171]">
+                              {remarkMutation.error instanceof ApiClientError
+                                ? remarkMutation.error.message
+                                : "保存群备注失败，请重试。"}
+                            </p>
+                          ) : null}
+                          <div className="flex justify-end gap-1.5">
+                            <AppButton
+                              type="button"
+                              variant="secondary"
+                              size="xs"
+                              disabled={remarkMutation.isPending}
+                              onClick={() => {
+                                remarkMutation.reset();
+                                setRemarkDraft(null);
+                              }}
+                            >
+                              取消
+                            </AppButton>
+                            <AppButton type="submit" size="xs" disabled={remarkMutation.isPending}>
+                              {remarkMutation.isPending ? "保存中…" : "保存"}
+                            </AppButton>
+                          </div>
+                        </form>
+                      ) : null}
 
                       {/* 名下个人 Agent 列表 */}
                       {group.agents.length > 0 ? (

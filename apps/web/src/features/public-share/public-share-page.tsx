@@ -414,10 +414,10 @@ export function PublicSharePage(props: PublicSharePageProps) {
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 380, damping: 32 }}
-              className="oh-stage-frame relative flex min-w-0 flex-col overflow-hidden sm:rounded-[28px] lg:col-span-8 [--oh-avatar-ring:#FFFFFF] dark:[--oh-avatar-ring:#1C1C1F]"
+              className="oh-stage-frame relative flex min-w-0 flex-col overflow-hidden sm:rounded-[28px] lg:col-span-8 [--oh-avatar-ring:var(--oh-im-canvas)]"
             >
               {/* 群头：圆角方标图标 + 群标题 + 圆形成员头像叠放 */}
-              <div className="flex select-none items-center gap-3 border-b border-black/[0.06] bg-white/45 px-4 py-3.5 sm:px-6 dark:border-white/[0.07] dark:bg-white/[0.03]">
+              <div className="flex select-none items-center gap-3 border-b border-black/[0.06] bg-im-surface/45 px-4 py-3.5 sm:px-6 dark:border-white/[0.07] dark:bg-white/[0.03]">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-black/[0.05] text-[#111318] ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.08] dark:text-[#F2F2F4] dark:ring-white/[0.08]">
                   <MessagesSquare aria-hidden="true" className="h-4.5 w-4.5" />
                 </div>
@@ -538,7 +538,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
               </div>
 
               {/* 底部只读提示与建群引导栏 */}
-              <div className="pb-safe flex select-none flex-wrap items-center justify-between gap-3 border-t border-black/[0.06] bg-white/45 px-4 py-3 sm:px-6 dark:border-white/[0.07] dark:bg-white/[0.03]">
+              <div className="pb-safe flex select-none flex-wrap items-center justify-between gap-3 border-t border-black/[0.06] bg-im-surface/45 px-4 py-3 sm:px-6 dark:border-white/[0.07] dark:bg-white/[0.03]">
                 <div className="flex min-w-0 items-center gap-2 rounded-full bg-black/[0.045] px-3.5 py-2 text-xs text-[#687082] dark:bg-white/[0.07] dark:text-[#9B9BA3]">
                   <Eye aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                   <span className="truncate">只读回放 · 访客无需登录即可阅读，无法直接发言</span>

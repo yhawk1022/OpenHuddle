@@ -1,19 +1,14 @@
 /**
  * @module web/lib/session-store
- * @description 浏览器端会话令牌、双主题模式（Atelier Daylight 暖瓷日光 / Obsidian Studio 黑曜石深色）与轻量 SPA 路由外部状态源。
+ * @description 浏览器端会话令牌与轻量 SPA 路由外部状态源。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 零 `useEffect` 同步外部存储：统一采用 React 19 原生 `useSyncExternalStore` 订阅 `localStorage` 与 `History` 变更，杜绝双状态源撕裂。
  * 2. 双通道鉴权兜底：除服务端签发的 `oh_session` HttpOnly Cookie 外，本地备份 `sessionToken` 供 `Authorization: Bearer` 与 SSE `?token=` 握手使用。
- * 3. 无闪烁主题切换：首屏由 `index.html` 读取 `localStorage("oh_theme")` 或回退至系统 `prefers-color-scheme` 注入 `.dark` 类名；本模块同步维护 `.dark` 类与持久化，驱动全站设计令牌零延迟换肤。
  */
 import { useSyncExternalStore } from "react";
 
 const SESSION_STORAGE_KEY = "oh_session_token";
-const THEME_STORAGE_KEY = "oh_theme";
-
-/** 支持的界面视觉主题模式 */
-export type ThemeMode = "light" | "dark";
 
 /** 浏览器当前路由快照 */
 export interface BrowserLocationSnapshot {
@@ -24,7 +19,6 @@ export interface BrowserLocationSnapshot {
 type StoreListener = () => void;
 
 const sessionListeners = new Set<StoreListener>();
-const themeListeners = new Set<StoreListener>();
 const locationListeners = new Set<StoreListener>();
 
 let cachedLocation: BrowserLocationSnapshot = {
@@ -117,62 +111,6 @@ function subscribeSession(listener: StoreListener): () => void {
  */
 export function useSessionToken(): string | null {
   return useSyncExternalStore(subscribeSession, getStoredSessionToken, () => null);
-}
-
-/**
- * 读取当前激活的主题模式（与 `index.html` 首屏注入的 `.dark` 类保持一致，未显式存储时遵循系统明暗偏好）。
- *
- * @returns `"light"` 或 `"dark"`
- */
-export function getThemeMode(): ThemeMode {
-  if (typeof document !== "undefined") {
-    return document.documentElement.classList.contains("dark") ? "dark" : "light";
-  }
-  return "dark";
-}
-
-/**
- * 切换并持久化界面视觉主题。
- *
- * @param mode - 目标主题（`"light"` 暖瓷日光 | `"dark"` 黑曜石工作室）
- */
-export function setThemeMode(mode: ThemeMode): void {
-  if (typeof document !== "undefined") {
-    document.documentElement.classList.toggle("dark", mode === "dark");
-  }
-  if (typeof window !== "undefined") {
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, mode);
-    } catch {
-      // 忽略存储配额或沙箱限制异常
-    }
-  }
-  for (const listener of themeListeners) {
-    listener();
-  }
-}
-
-/**
- * 在暖瓷日光模式与黑曜石工作室模式之间一键翻转。
- */
-export function toggleThemeMode(): void {
-  setThemeMode(getThemeMode() === "dark" ? "light" : "dark");
-}
-
-function subscribeTheme(listener: StoreListener): () => void {
-  themeListeners.add(listener);
-  return () => {
-    themeListeners.delete(listener);
-  };
-}
-
-/**
- * 响应式订阅当前界面视觉主题。
- *
- * @returns 当前主题模式（`"light"` | `"dark"`）
- */
-export function useThemeMode(): ThemeMode {
-  return useSyncExternalStore(subscribeTheme, getThemeMode, () => "dark");
 }
 
 function subscribeLocation(listener: StoreListener): () => void {

@@ -4,6 +4,7 @@
  */
 import {
   MAX_MESSAGE_ATTACHMENT_BYTES,
+  MessageAttachmentFileNameSchema,
   type MessageAttachmentMimeType,
   MessageAttachmentMimeTypeSchema,
 } from "@openhuddle/protocol";
@@ -11,21 +12,6 @@ import { useEffect, useRef, useState } from "react";
 import { compressMessageImage } from "../../../lib/compress-message-image.js";
 import type { DraftMessageAttachment } from "../../../lib/message-media.js";
 import type { StickerImage } from "../stickers/sticker-library.js";
-
-/** 文件选择器只显示房间消息支持的媒体格式。 */
-export const MESSAGE_MEDIA_ACCEPT = [
-  ...MessageAttachmentMimeTypeSchema.options,
-  ".jpg",
-  ".jpeg",
-  ".png",
-  ".gif",
-  ".webp",
-  ".webm",
-  ".ogg",
-  ".m4a",
-  ".mp3",
-  ".wav",
-].join(",");
 
 const RECORDER_TYPES = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"];
 const SIZE_LIMIT_TEXT = `附件大小上限为 ${String(MAX_MESSAGE_ATTACHMENT_BYTES / 1024 / 1024)} MB`;
@@ -68,9 +54,9 @@ function normalizeMimeType(type: string): MessageAttachmentMimeType | undefined 
   }
 }
 
-function readFileMimeType(file: File): MessageAttachmentMimeType | undefined {
+function readFileMimeType(file: File): MessageAttachmentMimeType {
   const mimeType = normalizeMimeType(file.type);
-  if (mimeType !== undefined) {
+  if (mimeType !== undefined && mimeType !== "application/octet-stream") {
     return mimeType;
   }
   const extension = /\.([a-z0-9]+)$/iu.exec(file.name)?.[1]?.toLowerCase();
@@ -82,9 +68,9 @@ function readFileMimeType(file: File): MessageAttachmentMimeType | undefined {
       (extension === "webm" && file.type === "video/webm") ||
       (extension === "m4a" && file.type === "video/mp4"))
   ) {
-    return MIME_BY_EXTENSION[extension];
+    return MIME_BY_EXTENSION[extension] ?? "application/octet-stream";
   }
-  return undefined;
+  return "application/octet-stream";
 }
 
 function releaseRecording(session: RecordingSession): void {
@@ -126,15 +112,19 @@ export function useMessageMediaDraft() {
     setError(null);
   };
 
-  const chooseFile = async (file: File): Promise<void> => {
+  const chooseFiles = async (files: readonly File[]): Promise<void> => {
+    const file = files[0];
+    if (file === undefined) {
+      return;
+    }
+    if (files.length > 1) {
+      setError("每条消息可带一个附件，请分开发送");
+      return;
+    }
     imageSelectionRef.current?.abort();
     imageSelectionRef.current = null;
     setIsPreparingImage(false);
     const mimeType = readFileMimeType(file);
-    if (mimeType === undefined) {
-      setError("请选择 JPG、PNG、GIF、WebP 图片，或 WebM、OGG、M4A、MP3、WAV 音频");
-      return;
-    }
     if (
       file.size === 0 ||
       (file.size > MAX_MESSAGE_ATTACHMENT_BYTES && !mimeType.startsWith("image/"))
@@ -143,6 +133,15 @@ export function useMessageMediaDraft() {
       return;
     }
     setError(null);
+    if (mimeType === "application/octet-stream") {
+      const name = MessageAttachmentFileNameSchema.safeParse(file.name.trim() || "附件");
+      if (!name.success) {
+        setError("无法使用此文件名，请重命名后再发送");
+        return;
+      }
+      setAttachment({ blob: file, mimeType, name: name.data });
+      return;
+    }
     if (file.size <= MAX_MESSAGE_ATTACHMENT_BYTES) {
       setAttachment({ blob: file, mimeType, name: file.name });
       return;
@@ -277,7 +276,7 @@ export function useMessageMediaDraft() {
     phase,
     isPreparingImage,
     canRecord,
-    chooseFile,
+    chooseFiles,
     chooseSticker,
     clearAttachment,
     startRecording,

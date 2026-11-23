@@ -1,13 +1,15 @@
 /**
  * @module web/components/ui/message-attachment
- * @description 消息媒体展示。已提交的媒体由浏览器按需读取同源鉴权端点，公开回放只显示附件类型。
+ * @description 图片、音频和下载附件展示。附件由浏览器通过同源鉴权端点按需读取。
  */
 import type { MessageDto } from "@openhuddle/protocol";
+import { Download, FileText } from "lucide-react";
 import { useState } from "react";
 import { roomMessageAttachmentPath } from "../../lib/api-client.js";
+import { formatAttachmentSize } from "../../lib/format.js";
 
 /**
- * 展示图片、原生音频播放器，或对应的发送中及获取失败状态。
+ * 展示图片、原生音频播放器、文件下载及对应的发送中状态。
  * @param props - 消息标识、媒体元数据以及是否允许就地读取
  * @returns 消息附件独立展示节点
  */
@@ -20,13 +22,37 @@ export function MessageAttachment(props: {
 }) {
   const [failed, setFailed] = useState(false);
   const { message } = props;
-  const { mimeType, stickerName } = message.attachment;
+  const { mimeType, stickerName, fileName, byteLength } = message.attachment;
   const isImage = mimeType.startsWith("image/");
+  const isFile = mimeType === "application/octet-stream";
   const label = stickerName !== undefined ? `表情：${stickerName}` : isImage ? "图片" : "语音";
   const className = "mt-1 block text-xs text-[#687082] dark:text-[#C4C4CA]";
 
   if (props.isPending || props.readOnly) {
-    return <span className={className}>{label}</span>;
+    return <span className={className}>{isFile ? (fileName ?? "附件") : label}</span>;
+  }
+
+  const src = roomMessageAttachmentPath(message.roomId, message.seq);
+  if (isFile) {
+    const name = fileName ?? "附件";
+    return (
+      <a
+        href={src}
+        download={name}
+        aria-label={`下载文件 ${name}`}
+        title={name}
+        className="mt-1 flex w-fit max-w-full items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-black/[0.05] focus-visible:ring-2 dark:hover:bg-white/[0.08]"
+      >
+        <FileText aria-hidden="true" className="h-5 w-5 shrink-0" />
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium">{name}</span>
+          <span className="block text-xs text-[#687082] dark:text-[#C4C4CA]">
+            {formatAttachmentSize(byteLength)}
+          </span>
+        </span>
+        <Download aria-hidden="true" className="ml-1 h-4 w-4 shrink-0" />
+      </a>
+    );
   }
   if (failed) {
     return (
@@ -36,7 +62,6 @@ export function MessageAttachment(props: {
     );
   }
 
-  const src = roomMessageAttachmentPath(message.roomId, message.seq);
   if (isImage) {
     return (
       <a

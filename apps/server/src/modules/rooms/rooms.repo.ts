@@ -69,6 +69,7 @@ interface InternalHydratedMemberRow {
   readonly userId: string | null;
   readonly agentId: string | null;
   readonly role: string;
+  readonly remark: string | null;
   readonly lastReadSeq: number;
   readonly joinedAt: Date | string;
   readonly humanDisplayName: string | null;
@@ -144,6 +145,7 @@ function mapInternalMemberRow(
         ownerUserId: userId,
         ownerDisplayName: displayName,
         displayName,
+        ...(row.remark !== null ? { remark: row.remark } : {}),
         role,
         lastReadSeq: asReadCursorSeq(Number(row.lastReadSeq)),
         joinedAtIso: joinedAt.toISOString(),
@@ -639,6 +641,29 @@ export class RoomsRepository {
   }
 
   /**
+   * 更新指定房间的人类成员备注，成员不存在时返回 `false`。
+   * @param roomId - 房间主键
+   * @param userId - 已认证的成员账号主键
+   * @param remark - 已校验的备注，`null` 表示清除
+   * @returns 是否更新了现有成员行
+   */
+  public async updateHumanMemberRemark(
+    roomId: RoomId,
+    userId: UserId,
+    remark: string | null,
+  ): Promise<boolean> {
+    // 只更新现有成员行。并发退群时，写入备注不会重建成员关系。
+    const updated = await this.db
+      .update(roomMembersTable)
+      .set({ remark })
+      .where(
+        and(eq(roomMembersTable.roomId, roomId), eq(roomMembersTable.memberKey, `human:${userId}`)),
+      )
+      .returning({ memberKey: roomMembersTable.memberKey });
+    return updated.length > 0;
+  }
+
+  /**
    * 将指定成员移出房间。
    *
    * @param roomId - 房间主键
@@ -722,6 +747,7 @@ export class RoomsRepository {
         rm.user_id AS "userId",
         rm.agent_id AS "agentId",
         rm.role AS "role",
+        rm.remark AS "remark",
         rm.last_read_seq AS "lastReadSeq",
         rm.joined_at AS "joinedAt",
         u_human.display_name AS "humanDisplayName",

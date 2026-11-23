@@ -64,6 +64,7 @@ import {
   sendRoomMessage,
   synthesizeRoomProposal,
   updateFriendRemark,
+  updateOwnRoomRemark,
   updateRoomGovernance,
 } from "../../../lib/api-client.js";
 import {
@@ -419,6 +420,38 @@ export function useAddRoomMembersMutation(roomId: RoomId) {
 }
 
 /**
+ * 保存本人群备注，并将服务端确认值合并进当前名册。
+ * @param roomId - 当前群聊主键
+ * @param userId - 用于定位缓存中本人记录的账号主键
+ * @returns 群备注更新 Mutation
+ */
+export function useUpdateOwnRoomRemarkMutation(roomId: RoomId, userId: UserId) {
+  const queryClient = useQueryClient();
+  const queryKey = huddleQueryKeys.roomDetail(roomId);
+  return useMutation({
+    mutationFn: (remark: string) => updateOwnRoomRemark(roomId, { remark }),
+    onSuccess: ({ remark }) => {
+      queryClient.setQueryData(queryKey, (cached: { ok: true; room: RoomDetailDto } | undefined) =>
+        cached === undefined
+          ? undefined
+          : {
+              ...cached,
+              room: {
+                ...cached.room,
+                members: cached.room.members.map((member) =>
+                  member.memberKind === "human" && member.userId === userId
+                    ? { ...member, remark: remark ?? undefined }
+                    : member,
+                ),
+              },
+            },
+      );
+      void queryClient.invalidateQueries({ queryKey, exact: true });
+    },
+  });
+}
+
+/**
  * 创建新 Huddle 房间并自动刷新房间列表缓存的 Mutation Hook。
  *
  * @returns 创建房间 `useMutation` 实例
@@ -632,6 +665,9 @@ export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto
                 attachment: {
                   mimeType: vars.attachment.mimeType,
                   byteLength: vars.attachment.blob.size,
+                  ...(vars.attachment.mimeType === "application/octet-stream"
+                    ? { fileName: vars.attachment.name }
+                    : {}),
                   ...(vars.attachment.stickerName !== undefined
                     ? { stickerName: vars.attachment.stickerName }
                     : {}),

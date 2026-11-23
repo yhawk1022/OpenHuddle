@@ -40,6 +40,7 @@ import {
   AlertCircle,
   ArrowDown,
   ChevronRight,
+  Clock3,
   Command,
   Copy,
   FileText,
@@ -88,14 +89,9 @@ import {
   getRoomDisplayName,
 } from "../../../lib/format.js";
 import type { OptimisticMessageItem } from "../../../lib/query-keys.js";
-import {
-  navigateTo,
-  toggleThemeMode,
-  useBrowserLocation,
-  useSessionToken,
-  useThemeMode,
-} from "../../../lib/session-store.js";
+import { navigateTo, useBrowserLocation, useSessionToken } from "../../../lib/session-store.js";
 import { type SseConnectionStatus, useRealtimeSseSync } from "../../../lib/sse-sync.js";
+import { setThemePreference, useThemeMode } from "../../../lib/theme-store.js";
 import {
   AccountSecurityModal,
   AgentOnboardingModal,
@@ -222,20 +218,6 @@ function shouldGroupWithPrevious(prev: MessageDto, current: MessageDto): boolean
   }
   const gap = Date.parse(current.createdAtIso) - Date.parse(prev.createdAtIso);
   return Number.isFinite(gap) && gap >= 0 && gap <= GROUPING_WINDOW_MS;
-}
-
-function pickLatestProposal(
-  proposals: ReadonlyArray<ProposalCardDto>,
-  predicate: (p: ProposalCardDto) => boolean,
-  timeOf: (p: ProposalCardDto) => string,
-): ProposalCardDto | null {
-  let latest: ProposalCardDto | null = null;
-  for (const p of proposals) {
-    if (predicate(p) && (latest === null || timeOf(p) > timeOf(latest))) {
-      latest = p;
-    }
-  }
-  return latest;
 }
 
 interface ActiveRoomStageProps {
@@ -457,16 +439,22 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
     return map;
   }, [proposals]);
 
-  const memberByAgentId = useMemo(() => {
-    const map = new Map<string, RoomMemberDto>();
-    if (detailQuery.data) {
-      for (const member of detailQuery.data.room.members) {
-        if (member.memberKind === "agent" && member.agentId !== undefined) {
-          map.set(member.agentId, member);
-        }
+  const { memberByAgentId, remarkByUserId } = useMemo(() => {
+    const memberByAgentId = new Map<AgentId, RoomMemberDto>();
+    const remarkByUserId = new Map<UserId, string>();
+    for (const member of detailQuery.data?.room.members ?? []) {
+      if (member.memberKind === "agent" && member.agentId !== undefined) {
+        memberByAgentId.set(member.agentId, member);
+      }
+      if (
+        member.memberKind === "human" &&
+        member.userId !== undefined &&
+        member.remark !== undefined
+      ) {
+        remarkByUserId.set(member.userId, member.remark);
       }
     }
-    return map;
+    return { memberByAgentId, remarkByUserId };
   }, [detailQuery.data]);
 
   if (detailQuery.isPending) {
@@ -526,22 +514,15 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   const roomDisplayName = getRoomDisplayName(room, props.friendRemarks);
   const liveGovernance = messagesQuery.data?.governance ?? room.governance;
   const openProposals = proposals.filter((p) => p.status === "open");
-  const pinnedProposal = pickLatestProposal(
-    proposals,
-    (p) => p.status === "open",
-    (p) => p.createdAtIso,
-  );
-  const latestDecided = pickLatestProposal(
-    proposals,
-    (p) => p.status === "approved",
-    (p) => p.decidedAtIso ?? p.createdAtIso,
+  const pinnedProposal = openProposals.reduce<ProposalCardDto | null>(
+    (latest, proposal) =>
+      latest === null || proposal.createdAtIso > latest.createdAtIso ? proposal : latest,
+    null,
   );
   const isInspectorOpen = isWideScreen ? desktopInspectorOpen : mobileInspectorOpen;
 
   // 计算顶部悬浮岛与横幅条数，确保 scrollTop=0 时首条消息永不被遮挡，同时滚动时消息流自然穿过液态玻璃下方
-  const hasGovernanceSubBanner =
-    liveGovernance.status === "paused_budget" ||
-    (latestDecided !== null && openProposals.length === 0);
+  const hasGovernanceSubBanner = liveGovernance.status === "paused_budget";
   const topTimelinePaddingClass =
     hasGovernanceSubBanner && pinnedProposal !== null
       ? "pt-[162px]"
@@ -549,6 +530,15 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         ? "pt-[118px]"
         : "pt-[74px]";
   const bottomTimelinePaddingClass = replyTarget !== null ? "pb-[184px]" : "pb-[148px]";
+
+  // 通过消息中已盖章的用户 ID 匹配群备注，支持重名和历史消息的实时显示。
+  const getAuthorRemark = (message: MessageDto | undefined | null): string | undefined => {
+    const author = message?.author;
+    return author?.kind === "human" && author.userId !== undefined
+      ? remarkByUserId.get(author.userId)
+      : undefined;
+  };
+  const replyTargetRemark = getAuthorRemark(replyTarget);
 
   const setInspectorOpen = (open: boolean): void => {
     if (isWideScreen) {
@@ -675,7 +665,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   return (
     <div className="relative flex min-w-0 flex-1 overflow-hidden">
       {/* 中央通透聊天主舞台：全高消息流 + 悬浮双岛液态玻璃顶栏 + 悬浮液态玻璃输入舱 */}
-      <div className="oh-stage-frame relative flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-[22px] [--oh-avatar-ring:#FFFFFF] dark:[--oh-avatar-ring:#1C1C1F]">
+      <div className="oh-stage-frame relative flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-[22px] [--oh-avatar-ring:var(--oh-im-canvas)]">
         {/* 顶部悬浮液态玻璃覆盖层（空白区域 pointer-events-none 允许直接滚动下方消息流） */}
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-3 sm:px-4">
           <GovernanceBar
@@ -685,7 +675,6 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
             governance={liveGovernance}
             proposalsCount={proposals.length}
             openProposalsCount={openProposals.length}
-            decidedProposalTitle={latestDecided?.draft.title ?? null}
             isUpdatingGovernance={governanceMutation.isPending}
             isInspectorOpen={isInspectorOpen}
             onUpdateGovernance={(patch) => governanceMutation.mutate(patch)}
@@ -847,6 +836,8 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                     message={message}
                     isGroupedWithPrevious={groupedFlags[index] === true}
                     repliedMessage={replied}
+                    authorDisplayName={getAuthorRemark(message)}
+                    repliedAuthorDisplayName={getAuthorRemark(replied)}
                     linkedProposal={linkedProposal}
                     authorOwnerName={agentMember?.ownerDisplayName}
                     authorReach={agentMember?.reach}
@@ -916,7 +907,14 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
             members={room.members}
             currentUserId={props.currentUser.id}
             currentUserDisplayName={props.currentUser.displayName}
-            replyTarget={replyTarget}
+            replyTarget={
+              replyTarget !== null && replyTargetRemark !== undefined
+                ? {
+                    ...replyTarget,
+                    author: { ...replyTarget.author, displayName: replyTargetRemark },
+                  }
+                : replyTarget
+            }
             pendingQuickMention={pendingQuickMention}
             onConsumeQuickMention={() => setPendingQuickMention(null)}
             onClearReplyTarget={() => setReplyTarget(null)}
@@ -1815,13 +1813,24 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         },
         {
           id: "act-toggle-theme",
-          label: isDark ? "切换至浅色外观" : "切换至深色外观",
-          subtitle: "即时切换明暗界面配色",
+          label: isDark ? "始终使用白天模式" : "始终使用夜间模式",
+          subtitle: "关闭自动切换并固定使用所选外观",
           icon: isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />,
-          keywords: ["theme", "dark", "light", "mode", "主题", "深色", "浅色"],
+          keywords: ["theme", "dark", "light", "主题", "深色", "浅色"],
           onSelect: () => {
-            toggleThemeMode();
-            toast.success(isDark ? "已切换为浅色外观" : "已切换为深色外观");
+            setThemePreference(isDark ? "light" : "dark");
+            toast.success(isDark ? "已固定使用白天模式" : "已固定使用夜间模式");
+          },
+        },
+        {
+          id: "act-automatic-theme",
+          label: "按时间自动切换外观",
+          subtitle: "07:00 白天 · 18:00 夜间",
+          icon: <Clock3 className="h-4 w-4" />,
+          keywords: ["theme", "auto", "主题", "自动"],
+          onSelect: () => {
+            setThemePreference("auto");
+            toast.success("已启用外观自动切换");
           },
         },
       ],
@@ -2158,7 +2167,7 @@ export function WorkspaceShell() {
   // 首次鉴权用连接页。网络异常后的重试应保留已打开的认证表单。
   if (meQuery.isPending && !meQuery.isFetched) {
     return (
-      <main className="flex h-dvh flex-col items-center justify-center gap-3 bg-[#FFFFFF] text-[#111318] dark:bg-[#0F1014] dark:text-[#F2F2F4]">
+      <main className="flex h-dvh flex-col items-center justify-center gap-3 bg-app-frame text-im-fg dark:bg-[#0F1014]">
         <BrandMark className="h-10 w-10 rounded-[12px] shadow-xs" />
         <span className="text-[16px] font-semibold tracking-[-0.02em]">OpenHuddle</span>
         <span className="text-xs text-[#687082] dark:text-[#8E8E96]">正在连接…</span>

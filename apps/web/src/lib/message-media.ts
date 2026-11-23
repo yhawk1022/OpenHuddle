@@ -40,5 +40,6 @@ export async function encodeMessageAttachment(
     mimeType: attachment.mimeType,
     data,
     ...(attachment.stickerName !== undefined ? { stickerName: attachment.stickerName } : {}),
+    ...(attachment.mimeType === "application/octet-stream" ? { fileName: attachment.name } : {}),
   };
 }

@@ -3,7 +3,7 @@
  * @description 基于 `motion` 弹簧物理（`layoutId` 共享布局动画）的 Apple Liquid Glass 分段滑块控制器（`SegmentedTabs`）。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 通透玻璃凹槽与晶面滑块：轨道采用半透玻璃凹槽（日光 `bg-black/[0.045]` / 暗夜 `dark:bg-white/[0.05]` + 细内环），激活态滑块采用晶亮浮起卡片（`bg-white/92` / `dark:bg-white/[0.14]` + 顶部微高光），消除生硬框线。
+ * 1. 通透玻璃凹槽与晶面滑块：轨道采用半透玻璃凹槽（日光 `bg-black/[0.045]` / 暗夜 `dark:bg-white/[0.05]` + 细内环），激活态滑块使用主题表面色与柔影，消除生硬框线。
  * 2. 实例隔离安全：未显式传入 `layoutId` 时自动通过 React 19 `useId()` 生成唯一布局命名空间，确保同一页面并存多个 `SegmentedTabs` 时滑块绝不跨组件乱飞。
  * 3. 无障碍语义与键盘导航：完整支持 `role="tablist"` / `role="tab"`、`aria-selected` 以及左右方向键（`ArrowLeft` / `ArrowRight`）循环切换。
  */
@@ -156,7 +156,7 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
                 transition={{ type: "spring", stiffness: 520, damping: 36 }}
                 className={cn(
                   "pointer-events-none absolute inset-0 -z-10",
-                  "bg-white shadow-[0_1px_4px_rgba(15,23,42,0.07),0_1px_2px_rgba(15,23,42,0.03)]",
+                  "bg-im-surface shadow-[0_1px_4px_rgba(15,23,42,0.07),0_1px_2px_rgba(15,23,42,0.03)]",
                   "dark:bg-white/[0.13] dark:shadow-[0_2px_8px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.14)]",
                   PILL_RADIUS_CLASS[size],
                 )}

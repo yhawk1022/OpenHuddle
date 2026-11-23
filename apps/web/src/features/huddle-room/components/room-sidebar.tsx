@@ -767,18 +767,18 @@ export function RoomSidebar(props: RoomSidebarProps) {
                       <div
                         className={cn(
                           "group relative z-0 flex items-center gap-1 rounded-[16px] transition-colors duration-150",
-                          "data-[state=open]:bg-white/75 dark:data-[state=open]:bg-white/[0.08]",
+                          "data-[state=open]:bg-im-surface/75 dark:data-[state=open]:bg-white/[0.08]",
                           canDeleteRoom && "pr-1.5",
-                          !isActive && "hover:bg-white/60 dark:hover:bg-white/[0.045]",
+                          !isActive && "hover:bg-im-surface/60 dark:hover:bg-white/[0.045]",
                         )}
                       >
-                        {/* 液态弹簧滑动选中底衬：纯白高光柔影（暗夜烟熏微光），彻底剔除深灰外圈描边 */}
+                        {/* 液态弹簧滑动选中底衬：用柔灰底和阴影维持选中反馈 */}
                         {isActive ? (
                           <motion.span
                             layoutId="oh-sidebar-active-room"
                             aria-hidden="true"
                             transition={{ type: "spring", stiffness: 520, damping: 38 }}
-                            className="pointer-events-none absolute inset-0 -z-10 rounded-[16px] bg-white/95 shadow-[0_3px_12px_-3px_rgba(15,23,42,0.06),0_1px_2px_rgba(15,23,42,0.025),inset_0_1px_0_#FFFFFF] dark:bg-white/[0.095] dark:shadow-[0_4px_14px_-4px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.11)]"
+                            className="pointer-events-none absolute inset-0 -z-10 rounded-[16px] bg-im-surface shadow-[0_3px_12px_-3px_rgba(15,23,42,0.06),0_1px_2px_rgba(15,23,42,0.025),inset_0_1px_0_rgba(255,255,255,0.35)] dark:bg-white/[0.095] dark:shadow-[0_4px_14px_-4px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.11)]"
                           />
                         ) : null}
 
@@ -893,7 +893,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                 {incomingRequests.map((req) => (
                   <li
                     key={req.friendshipId}
-                    className="flex items-center justify-between gap-2 rounded-[16px] bg-white/75 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.06] dark:ring-white/[0.08]"
+                    className="flex items-center justify-between gap-2 rounded-[16px] bg-im-surface/75 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.06] dark:ring-white/[0.08]"
                   >
                     <div className="flex min-w-0 items-center gap-2.5">
                       <PlatformAvatar
@@ -1014,7 +1014,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                   return (
                     <li key={friend.friendshipId}>
                       <AppContextMenu items={friendMenuItems}>
-                        <div className="group flex items-center gap-1.5 rounded-[16px] pr-2 transition-colors hover:bg-white/60 data-[state=open]:bg-white/75 dark:hover:bg-white/[0.045] dark:data-[state=open]:bg-white/[0.08]">
+                        <div className="group flex items-center gap-1.5 rounded-[16px] pr-2 transition-colors hover:bg-im-surface/60 data-[state=open]:bg-im-surface/75 dark:hover:bg-white/[0.045] dark:data-[state=open]:bg-white/[0.08]">
                           <button
                             type="button"
                             onClick={() => props.onStartDirectHumanChat?.(u.userId)}
@@ -1150,7 +1150,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                   return (
                     <li key={agent.id}>
                       <AppContextMenu items={agentMenuItems}>
-                        <div className="group flex items-center gap-1 rounded-[16px] pr-2 transition-colors hover:bg-white/60 data-[state=open]:bg-white/75 dark:hover:bg-white/[0.045] dark:data-[state=open]:bg-white/[0.08]">
+                        <div className="group flex items-center gap-1 rounded-[16px] pr-2 transition-colors hover:bg-im-surface/60 data-[state=open]:bg-im-surface/75 dark:hover:bg-white/[0.045] dark:data-[state=open]:bg-white/[0.08]">
                           <button
                             type="button"
                             onClick={() => {
@@ -1271,7 +1271,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                   const reachMeta = getReachVisualMeta(extAgent.reach);
                   return (
                     <li key={extAgent.id}>
-                      <div className="group flex items-center gap-1.5 rounded-[16px] pr-2 transition-colors hover:bg-white/60 dark:hover:bg-white/[0.045]">
+                      <div className="group flex items-center gap-1.5 rounded-[16px] pr-2 transition-colors hover:bg-im-surface/60 dark:hover:bg-white/[0.045]">
                         <button
                           type="button"
                           onClick={() => {

@@ -40,8 +40,8 @@ export const appButtonVariants = cva(
           "dark:bg-[#EAEEF6] dark:text-[#111318] dark:shadow-[0_1px_4px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.75)] dark:hover:bg-white",
         ],
         secondary: [
-          "border border-black/[0.06] bg-white/92 text-[#111318] shadow-[0_1px_2px_rgba(15,23,42,0.03),inset_0_1px_0_#FFFFFF]",
-          "hover:bg-white hover:border-black/[0.10]",
+          "border border-black/[0.06] bg-im-surface text-[#111318] shadow-[0_1px_2px_rgba(15,23,42,0.03),inset_0_1px_0_rgba(255,255,255,0.35)]",
+          "hover:bg-im-surface-muted hover:border-black/[0.10]",
           "dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#ECEFF6] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] dark:hover:bg-white/[0.095] dark:hover:border-white/[0.14]",
         ],
         soft: [
@@ -103,8 +103,8 @@ export const iconButtonVariants = cva(
           "dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white",
         ],
         secondary: [
-          "border border-black/[0.10] bg-white text-[#111318] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
-          "hover:bg-[#F6F7FA] hover:border-black/[0.16]",
+          "border border-black/[0.10] bg-im-surface text-[#111318] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
+          "hover:bg-im-surface-muted hover:border-black/[0.16]",
           "dark:border-white/[0.10] dark:bg-white/[0.05] dark:text-[#ECEFF6] dark:hover:bg-white/[0.09]",
         ],
         soft: [

@@ -17,6 +17,7 @@
 - **Your Agents Only Take Orders From You（主人优先的安全边界）**：每条消息都由服务端标注可信级别——你的 Agent 只执行你本人的指令；其他人（或其他人的 Agent）的发言一律视为不可信参考信息，从协议层面阻断群内提示词注入攻击。
 - **From Debate to Decision（从争论到拍板）**：聊到分歧点时，一键让 AI 主持人把冗长争论归纳成结构化提案卡（选项、各方论据、风险）；Agent 附带置信度投票，最终 `批准 / 驳回 / 打回重议` 的决定权只属于人类。
 - **A Workspace You'll Actually Use（去 AI 味极简工作台与跨端底座）**：温润纸感极简设计语言（零蓝紫渐变模板味），基于 `Radix UI + Motion + Vaul + Sonner + cmdk` 无头原语，支持浅色/深色高对比度双主题、80px 个人与 Agent 导轨、非对称圆角消息流、`⌘K` 全局面板、Tauri v2 / Electron 窗口拖拽预埋，以及生成含动态预览卡的公开只读分享页。
+  - 外观默认按设备本地时间切换，07:00 使用白天模式，18:00 使用夜间模式。打开「外观设置」可固定使用一种模式，或重新启用自动切换。
 - **Tiny Server, Zero Orchestration（轻量自托管）**：2 核 4G 的小云主机即可跑生产，无需 Redis，服务器上零编译——`docker compose pull && up` 两条命令完成部署。
 
 ---

@@ -1,6 +1,6 @@
 /**
  * @module web/components/ui/message-bubble
- * @description 纯 Props 驱动的清晰高对比度聊天气泡组件（本人右侧暖亚麻瓷 `#F4EFE6` / 暗夜中性石墨 `#2E2E34`；同伴鼠尾草 `#E6F5EC` / 暗夜 `#1B2B23`；Agent 清冷瓷白 `bg-white/95` / 暗夜 `#222226`），同时服务实时聊天室与公开只读分享页。
+ * @description 纯 Props 驱动的清晰高对比度聊天气泡组件（白天按本人暖亚麻、同伴鼠尾草绿、Agent 柔灰区分，夜间使用对应深色语义令牌），同时服务实时聊天室与公开只读分享页。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 身份只信服务端签名：左右对齐由 `author.isYou` 决定，同伴/Agent 底色由 `author.kind` 决定，归属灰字由 `author.trustLevel` 决定，绝不从昵称或正文推断。
@@ -55,6 +55,9 @@ import { MessageAttachment } from "./message-attachment.js";
 export interface MessageBubbleProps {
   readonly message: OptimisticMessageItem;
   readonly repliedMessage?: MessageDto | undefined;
+  /** 仅用于显示群备注，提及仍绑定原消息发送者。 */
+  readonly authorDisplayName?: string | undefined;
+  readonly repliedAuthorDisplayName?: string | undefined;
   readonly linkedProposal?: ProposalCardDto | undefined;
   readonly authorOwnerName?: string | undefined;
   readonly authorReach?: AgentReachState | undefined;
@@ -123,6 +126,7 @@ function scrollToMessageSeq(seq: MessageSeq): void {
  */
 export function MessageBubble(props: MessageBubbleProps) {
   const { message } = props;
+  const authorDisplayName = props.authorDisplayName ?? message.author.displayName;
   const [copied, setCopied] = useState(false);
   const [capturedSelection, setCapturedSelection] = useState("");
 
@@ -147,7 +151,7 @@ export function MessageBubble(props: MessageBubbleProps) {
         data-seq={message.seq}
         className="flex select-none justify-center rounded-xl px-4 py-1.5 text-center transition-colors duration-700"
       >
-        <p className="max-w-[85%] text-[12px] leading-relaxed text-[#939BAD] dark:text-[#63636B]">
+        <p className="max-w-[85%] text-[12px] leading-relaxed text-im-subtle">
           <span>{message.content}</span>
           <span aria-hidden="true" className="mx-1.5 opacity-60">
             ·
@@ -168,8 +172,8 @@ export function MessageBubble(props: MessageBubbleProps) {
         data-seq={message.seq}
         className="flex select-none justify-center rounded-xl px-4 py-1.5 text-center transition-colors duration-700"
       >
-        <p className="text-[12px] text-[#939BAD] dark:text-[#63636B]">
-          {isSelf ? "你撤回了一条消息" : `${message.author.displayName} 撤回了一条消息`}
+        <p className="text-[12px] text-im-subtle">
+          {isSelf ? "你撤回了一条消息" : `${authorDisplayName} 撤回了一条消息`}
         </p>
       </div>
     );
@@ -444,7 +448,7 @@ export function MessageBubble(props: MessageBubbleProps) {
               <span className="line-clamp-2 min-w-0">
                 {replied !== undefined ? (
                   <span className="mr-1 font-medium text-[#111318]/85 dark:text-[#F2F2F4]/90">
-                    {replied.author.displayName}：
+                    {props.repliedAuthorDisplayName ?? replied.author.displayName}：
                   </span>
                 ) : null}
                 <span>{snippet}</span>
@@ -465,7 +469,7 @@ export function MessageBubble(props: MessageBubbleProps) {
               className={cn(
                 "mt-2.5 select-none overflow-hidden rounded-2xl ring-1 ring-inset",
                 isApproved
-                  ? "bg-[#E6F5EC]/85 ring-emerald-900/[0.08] dark:bg-[#1B2B23] dark:ring-emerald-400/[0.15]"
+                  ? "bg-im-human/85 ring-emerald-900/[0.08] dark:bg-im-human dark:ring-emerald-400/[0.15]"
                   : "bg-black/[0.03] ring-black/[0.06] dark:bg-[#18181B]/90 dark:ring-white/[0.08]",
               )}
             >
@@ -523,7 +527,7 @@ export function MessageBubble(props: MessageBubbleProps) {
     attention !== undefined && props.nowMs >= Date.parse(attention.expiresAtIso);
   const attentionPanel =
     attention !== undefined ? (
-      <div className="mt-1.5 w-full min-w-0 select-none rounded-[14px] border border-black/[0.06] bg-white/85 p-2.5 dark:border-white/[0.08] dark:bg-[#18181B]/90">
+      <div className="mt-1.5 w-full min-w-0 select-none rounded-[14px] border border-black/[0.06] bg-im-surface/85 p-2.5 dark:border-white/[0.08] dark:bg-[#18181B]/90">
         <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
           <span aria-hidden="true">🙋</span>
           <span>等待人类作答</span>
@@ -569,7 +573,7 @@ export function MessageBubble(props: MessageBubbleProps) {
   );
 
   const timeNode = isPending ? (
-    <span className="inline-flex select-none items-center gap-1 text-[12px] text-[#939BAD] dark:text-[#63636B]">
+    <span className="inline-flex select-none items-center gap-1 text-[12px] text-im-subtle">
       <Loader2 className="h-3 w-3 animate-spin" />
       <span>发送中</span>
     </span>
@@ -577,14 +581,14 @@ export function MessageBubble(props: MessageBubbleProps) {
     <AppTooltip content={`消息 #${String(message.seq)} · ${timeLabel}`} side="top">
       <time
         dateTime={message.createdAtIso}
-        className="select-none text-[12px] tabular-nums text-[#939BAD] dark:text-[#63636B]"
+        className="select-none text-[12px] tabular-nums text-im-subtle"
       >
         {timeLabel}
       </time>
     </AppTooltip>
   );
 
-  // ── 3. 本人发出消息（isSelf）：右对齐暖亚麻瓷 `#F4EFE6` / 暗夜中性石墨 `#2E2E34` ──
+  // ── 3. 本人发出消息（isSelf）：右对齐并使用本人气泡的主题色 ──
   if (isSelf) {
     return (
       <article
@@ -628,8 +632,8 @@ export function MessageBubble(props: MessageBubbleProps) {
                     : cn(
                         "px-4 py-2.5",
                         isGrouped ? "rounded-[18px]" : "rounded-[18px_6px_18px_18px]",
-                        "bg-[#F4EFE6] text-[#111318] ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
-                        "dark:bg-[#2E2E34] dark:text-[#F5F5F7] dark:ring-1 dark:ring-inset dark:ring-white/[0.11] dark:shadow-[0_2px_8px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.08)]",
+                        "bg-im-self text-im-self-fg ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
+                        "dark:ring-1 dark:ring-inset dark:ring-white/[0.11] dark:shadow-[0_2px_8px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.08)]",
                       ),
                   "data-[state=open]:ring-2 data-[state=open]:ring-[#181B22]/25 dark:data-[state=open]:ring-white/30",
                   message.type === "decision" &&
@@ -648,16 +652,16 @@ export function MessageBubble(props: MessageBubbleProps) {
     );
   }
 
-  // ── 4. 对端消息：36px 圆形头像 + 发送者头部 + 鼠尾草绿（人类）或清冷瓷白/中性石墨（Agent）气泡 ──
+  // ── 4. 对端消息：36px 圆形头像 + 发送者头部 + 鼠尾草绿（人类）或中性灰（Agent）气泡 ──
   const isHumanPeer = message.author.kind === "human";
   const peerBubbleSurfaceClass = isHumanPeer
-    ? "bg-[#E6F5EC] text-[#111318] ring-1 ring-inset ring-emerald-900/[0.08] shadow-[0_1px_2px_rgba(15,23,42,0.03)] dark:bg-[#1B2B23] dark:text-[#E6F4EC] dark:ring-1 dark:ring-inset dark:ring-emerald-400/[0.14] dark:shadow-[0_2px_8px_rgba(0,0,0,0.22)]"
-    : "bg-white/95 text-[#111318] ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_3px_rgba(15,23,42,0.04)] dark:bg-[#222226] dark:text-[#ECECEF] dark:ring-1 dark:ring-inset dark:ring-white/[0.07] dark:shadow-[0_2px_8px_rgba(0,0,0,0.22)]";
+    ? "bg-im-human text-im-human-fg ring-1 ring-inset ring-emerald-900/[0.08] shadow-[0_1px_2px_rgba(15,23,42,0.03)] dark:ring-1 dark:ring-inset dark:ring-emerald-400/[0.14] dark:shadow-[0_2px_8px_rgba(0,0,0,0.22)]"
+    : "bg-im-peer text-im-peer-fg ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_3px_rgba(15,23,42,0.04)] dark:ring-1 dark:ring-inset dark:ring-white/[0.07] dark:shadow-[0_2px_8px_rgba(0,0,0,0.22)]";
 
   const avatar = (
     <PlatformAvatar
       kind={message.author.kind}
-      displayName={message.author.displayName}
+      displayName={authorDisplayName}
       platform={message.author.platform}
       reach={props.authorReach}
       size="md"
@@ -679,7 +683,7 @@ export function MessageBubble(props: MessageBubbleProps) {
         {isGrouped ? (
           <time
             dateTime={message.createdAtIso}
-            className="mt-2.5 select-none text-[11px] tabular-nums text-[#939BAD] opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100 dark:text-[#63636B]"
+            className="mt-2.5 select-none text-[11px] tabular-nums text-im-subtle opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100"
           >
             {timeLabel}
           </time>
@@ -713,11 +717,11 @@ export function MessageBubble(props: MessageBubbleProps) {
                 onClick={handleAgentInspect}
                 className="app-no-drag cursor-pointer truncate text-[13px] font-medium text-[#111318] outline-none transition-opacity hover:opacity-75 focus-visible:underline dark:text-[#F2F2F4]"
               >
-                {message.author.displayName}
+                {authorDisplayName}
               </button>
             ) : (
               <span className="truncate text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
-                {message.author.displayName}
+                {authorDisplayName}
               </span>
             )}
 

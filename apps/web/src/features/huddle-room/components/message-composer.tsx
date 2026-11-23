@@ -26,6 +26,7 @@ import {
   AtSign,
   Check,
   CornerUpLeft,
+  FileText,
   Hand,
   Loader2,
   Mic,
@@ -36,6 +37,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  type ClipboardEvent,
   type KeyboardEvent,
   useCallback,
   useEffect,
@@ -55,12 +57,13 @@ import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { ApiClientError } from "../../../lib/api-client.js";
 import {
   createClientOperationKey,
+  formatAttachmentSize,
   getMessageSnippet,
   getReachVisualMeta,
 } from "../../../lib/format.js";
 import type { DraftMessageAttachment } from "../../../lib/message-media.js";
 import { StickerPicker } from "./sticker-picker.js";
-import { MESSAGE_MEDIA_ACCEPT, useMessageMediaDraft } from "./use-message-media-draft.js";
+import { useMessageMediaDraft } from "./use-message-media-draft.js";
 
 /** 输入框自适应高度上限（像素），超出后框内滚动，保持聊天舞台比例克制 */
 const TEXTAREA_MAX_HEIGHT_PX = 168;
@@ -105,16 +108,26 @@ function AttachmentPreview(props: {
 }) {
   const [url, setUrl] = useState<string | null>(null);
   const { blob, mimeType, name, stickerName } = props.attachment;
+  const isFile = mimeType === "application/octet-stream";
   useEffect(() => {
+    if (isFile) {
+      setUrl(null);
+      return;
+    }
     const source = blob.type === mimeType ? blob : blob.slice(0, blob.size, mimeType);
     const objectUrl = URL.createObjectURL(source);
     setUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
-  }, [blob, mimeType]);
+  }, [blob, isFile, mimeType]);
 
   return (
     <div className="mb-2 flex min-w-0 items-center gap-2 rounded-xl bg-black/[0.04] px-2 py-1.5 dark:bg-white/[0.07]">
-      {mimeType.startsWith("image/") ? (
+      {isFile ? (
+        <FileText
+          aria-hidden="true"
+          className="ml-1 h-5 w-5 shrink-0 text-[#687082] dark:text-[#C4C4CA]"
+        />
+      ) : mimeType.startsWith("image/") ? (
         url !== null ? (
           <img
             src={url}
@@ -138,6 +151,11 @@ function AttachmentPreview(props: {
       <span className="min-w-0 flex-1 truncate text-xs text-[#687082] dark:text-[#C4C4CA]">
         {name}
       </span>
+      {isFile ? (
+        <span className="shrink-0 text-xs text-[#687082] dark:text-[#C4C4CA]">
+          {formatAttachmentSize(blob.size)}
+        </span>
+      ) : null}
       {props.attachment.wasCompressed === true ? (
         <span className="shrink-0 text-xs text-[#687082] dark:text-[#C4C4CA]">已压缩</span>
       ) : null}
@@ -528,6 +546,24 @@ export function MessageComposer(props: MessageComposerProps) {
   const canChooseMedia = !props.isSending && !media.isPreparingImage && media.phase === "idle";
   const canSend = canChooseMedia && (trimmed.length > 0 || (media.attachment !== null && !askMode));
 
+  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    const { files, items } = event.clipboardData;
+    // 部分浏览器只在 items 中公开粘贴的图片。普通文字仍交给输入框原生处理。
+    const attachments =
+      files.length > 0
+        ? Array.from(files)
+        : Array.from(items).flatMap((item) => {
+            const file = item.kind === "file" ? item.getAsFile() : null;
+            return file === null ? [] : [file];
+          });
+    if (attachments.length > 0) {
+      event.preventDefault();
+      if (canChooseMedia) {
+        void media.chooseFiles(attachments);
+      }
+    }
+  };
+
   const submitMessage = (): void => {
     if (!canSend) {
       return;
@@ -860,9 +896,10 @@ export function MessageComposer(props: MessageComposerProps) {
             onBlur={() => setSuggestDismissed(true)}
             onFocus={() => setSuggestDismissed(false)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             aria-label={`在 ${props.roomName} 发言`}
             placeholder={composerPlaceholder}
-            className="block max-h-[168px] min-h-[26px] w-full resize-none border-0 bg-transparent p-0 text-[14.5px] leading-[1.5] text-[#111318] caret-[#111318] outline-none placeholder:text-[#8E96A6] dark:text-[#F2F2F4] dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]"
+            className="block max-h-[168px] min-h-[26px] w-full resize-none border-0 bg-transparent p-0 text-[14.5px] leading-[1.5] text-[#111318] caret-[#111318] outline-none placeholder:text-im-placeholder dark:text-[#F2F2F4] dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]"
           />
 
           {/* 舱内底部工具栏：左侧 `@` 点名、提问模式、`@全体` 与身份微标；右侧圆形发送键 */}
@@ -1007,20 +1044,17 @@ export function MessageComposer(props: MessageComposerProps) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept={MESSAGE_MEDIA_ACCEPT}
                 hidden
                 onChange={(event) => {
-                  const file = event.currentTarget.files?.[0];
+                  const files = Array.from(event.currentTarget.files ?? []);
                   event.currentTarget.value = "";
-                  if (file !== undefined) {
-                    void media.chooseFile(file);
-                  }
+                  void media.chooseFiles(files);
                 }}
               />
               <button
                 type="button"
-                aria-label="选择图片或音频"
-                title="选择图片或音频"
+                aria-label="添加附件"
+                title="添加图片、音频或文件"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={!canChooseMedia}
                 className={MEDIA_BUTTON_CLASS}

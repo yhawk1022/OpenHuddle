@@ -162,7 +162,10 @@ const getAttachmentRoute = createRoute({
     headers: z.object({ range: z.string().optional() }),
   },
   responses: {
-    200: { description: "Image or audio in its original media type", content: binaryAttachment },
+    200: {
+      description: "Image or audio in its media type, or an opaque file download",
+      content: binaryAttachment,
+    },
     206: { description: "Requested byte range of the attachment", content: binaryAttachment },
     403: {
       description: "Not a member of this room",
@@ -294,6 +297,16 @@ export function createMessagesRouter(deps: {
       "cross-origin-resource-policy": "same-origin",
       "x-content-type-options": "nosniff",
     };
+    if (metadata.mimeType === "application/octet-stream") {
+      // 下载名采用 UTF-8 扩展参数，普通文件按原始字节下载并禁止作为页面执行。
+      const encodedName = encodeURIComponent(metadata.fileName ?? "download").replace(
+        /['()*]/g,
+        (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+      );
+      headers["content-disposition"] =
+        `attachment; filename="download"; filename*=UTF-8''${encodedName}`;
+      headers["content-security-policy"] = "sandbox; default-src 'none'";
+    }
 
     const range = resolveAttachmentRange(c.req.valid("header").range, bytes.byteLength);
     if (range === false) {

@@ -24,6 +24,8 @@ import {
   RoomIdSchema,
   RoomMemberDtoSchema,
   RoomSummaryDtoSchema,
+  UpdateOwnRoomRemarkBodySchema,
+  UpdateOwnRoomRemarkResponseSchema,
 } from "@openhuddle/protocol";
 import { createRequireAuthMiddleware } from "../../infra/auth-middleware.js";
 import type { ServerEnv } from "../../infra/env.js";
@@ -304,6 +306,42 @@ const getRoomMembersRoute = createRoute({
   },
 });
 
+const updateOwnRoomRemarkRoute = createRoute({
+  method: "patch",
+  path: "/rooms/{roomId}/members/me/remark",
+  tags: ["Rooms"],
+  summary: "Set or clear the authenticated human member's group remark",
+  request: {
+    params: RoomIdParamsSchema,
+    body: {
+      required: true,
+      content: { "application/json": { schema: UpdateOwnRoomRemarkBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Saved remark, or null if cleared",
+      content: { "application/json": { schema: UpdateOwnRoomRemarkResponseSchema } },
+    },
+    400: {
+      description: "Invalid remark or the room is a direct chat",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    401: {
+      description: "Caller is unauthenticated",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    403: {
+      description: "Caller is not a human member of the group",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    404: {
+      description: "Room not found",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+  },
+});
+
 const getPublicShareRoute = createRoute({
   method: "get",
   path: "/share/{inviteToken}",
@@ -490,6 +528,14 @@ export function createRoomsRouter(deps: {
     const body = c.req.valid("json");
     const room = await deps.roomsService.addMembersToGroupRoom(caller, roomId, body);
     return c.json({ ok: true as const, room }, 200);
+  });
+
+  router.openapi(updateOwnRoomRemarkRoute, async (c) => {
+    const caller = c.get("caller");
+    const { roomId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const result = await deps.roomsService.updateOwnRoomRemark(caller, roomId, body);
+    return c.json(result, 200);
   });
 
   router.openapi(getPublicShareRoute, async (c) => {

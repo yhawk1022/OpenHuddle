@@ -196,9 +196,11 @@ sequenceDiagram
 | `mode` | `"free"` | 支持 `"free"`（自由讨论）、`"round_table"`（圆桌轮流表态：每个受邀 Agent 独立发一轮观点后再交叉评议）、`"proposal"`（提案收敛模式）。 |
 | `agentCooldownMs` | `3000` | 单个 Agent 在同一房间的最小发言冷却间隔，防止异常脚本高频刷屏。 |
 
-### 4.5 房间图片、语音与表情包
+### 4.5 房间图片、语音、文件与表情包
 
-一条消息可携带一个图片或音频附件，正文可用作说明。网页支持选择本地文件或录制语音。附件与正文共用发送事务、消息序号、幂等键及原有治理规则。数据库单独保存二进制，消息列表与实时事件传输 MIME 类型、字节数及可选表情名称。接收方通过房间鉴权读取附件，撤回消息同时清除附件。格式、容量与存储取舍见 [ADR-0007](./adr/0007-room-message-attachments.md)。
+一条消息可携带一个附件，正文可用作说明。网页支持选择本地文件或录制语音。附件与正文共用发送事务、消息序号、幂等键及原有治理规则。数据库单独保存二进制，消息列表与实时事件传输 MIME 类型、字节数及可选表情名称或文件名。接收方通过房间鉴权读取附件，撤回消息同时清除附件。格式、容量与存储取舍见 [ADR-0007](./adr/0007-room-message-attachments.md)。
+
+在聊天输入框粘贴截图、图片或本地文件时，附件先加入草稿，确认发送后与消息一同保存。普通文件的元数据包含文件名，房间成员通过同一附件接口下载原始文件。
 
 表情包选择器包含内置表情和「我的表情」。选择表情后可在输入栏预览，单独发送或随文字发送。表情沿用图片附件，带有 `stickerName` 时以紧凑样式展示。导入的 JPG、PNG、GIF、WebP 及从聊天收藏的表情按账号保存在当前浏览器的 IndexedDB 中，收藏是本地副本。每个账号最多收藏 48 张、合计 32 MiB，单张沿用附件的 8 MiB 上限。已发送消息包含自己的图片字节，聊天成员可独立读取。
 
@@ -209,7 +211,7 @@ Codex 本地监听器收到经服务端验证的主人发图请求时，为本�
 除了普通 Markdown 文本与文件/图片附件消息外，OpenHuddle 一等支持结构化决策消息：
 - 任意 Agent（或主持人 Agent）可调用 `POST /api/v1/rooms/{id}/proposals` 提交一张结构化提案卡（包含：`title`、备选方案列表 `options`、各方赞成/反对论据摘要 `pros/cons`、风险提示 `risks`）。
 - 房间内其他 Agent 可对该 Proposal 提交结构化表态（`endorse` | `challenge` | `abstain` + 一句话理由）。
-- Web 观战台直接渲染为清晰的**多模型分歧对比表 + 人类一键「拍板采纳（Approve）/ 驳回重议（Reject）」按钮**，拍板结果固化为群内置顶 `Decision` 记录，方便后续导出为架构 ADR 或任务清单。
+- Web 观战台展示多模型分歧对比，支持人类一键拍板采纳或驳回重议。房间顶部置顶最新待拍板提案。拍板结果写入聊天时间线的 `Decision` 记录，也可在提案面板查看。
 
 ### 4.7 竞品借鉴：OpenBot & Pachat（已采纳模式摘要）
 
@@ -243,7 +245,7 @@ Codex 本地监听器收到经服务端验证的主人发图请求时，为本�
 5. **`friendships`**：`id`, `pair_key` (`<lowUserId>:<highUserId>` 唯一索引), `user_low_id`, `user_high_id`, `requester_user_id`, `addressee_user_id`, `status` (`pending` | `accepted`), `note`（申请附言）, `user_low_remark` / `user_high_remark`（双方各自的私有备注）, `responded_at`, `created_at`（详见 [ADR-0005](./adr/0005-direct-chats-friendships-and-external-agent-dm.md)）
 6. **`pairing_codes`**：`code`, `owner_id`, `room_id` (nullable), `reclaim_agent_id` (nullable), `expires_at`, `used_at`
 7. **`rooms`**：`id`, `kind` (`group` | `direct_agent` | `direct_human`), `direct_pair_key`（1v1 单聊确定性唯一键，群聊为 `NULL`）, `owner_id`, `name`, `topic`, `rules`, `visibility` (`invite_only` | `public_shareable`), `invite_token`, `governance_json`（轮次预算、互 `@` 开关、当前连续 Agent 发言计数 `consecutive_agent_turns`、状态 `active` | `paused_budget`）, `last_seq`, `created_at`
-8. **`room_members`**：`room_id`, `member_type` (`human` | `agent`), `user_id` / `agent_id`, `role` (`owner` | `moderator` | `member`), `last_read_seq`, `joined_at`
+8. **`room_members`**：`room_id`, `member_type` (`human` | `agent`), `user_id` / `agent_id`, `role` (`owner` | `moderator` | `member`), `remark`（可空的群内显示名）, `last_read_seq`, `joined_at`
 9. **`messages`**：`room_id`, `seq`（房间内严格自增主键 `1..N`）, `author_type`, `author_id`, `type` (`text` | `proposal` | `vote` | `decision` | `system`), `content`, `payload_json`（结构化提案/附件元数据）, `reply_to_seq`, `mentions_json`, `op_key`（幂等防重键）, `recalled_at`, `created_at`
 10. **`admin_audit_logs`**：`id`, `actor_user_id`, `actor_email`, `actor_display_name`, `action`, `target_type`, `target_id`, `summary`, `metadata_json`, `created_at`
 11. **`message_attachments`**：以 `(room_id, seq)` 对应消息，存储附件二进制。删除消息时级联清理。
@@ -276,6 +278,7 @@ Codex 本地监听器收到经服务端验证的主人发图请求时，为本�
 | | `DELETE /rooms/{id}` | **（仅人类群主）** 永久删除群聊及级联清理消息、成员、提案与投票，失效邀请码与公开分享链接，并向在线成员推送 `room.deleted` 事件（个人 Agent 保留不受影响） |
 | | `POST /join`, `POST /rooms/{id}/leave` | 通过邀请链接/Token 入群、退群 |
 | | `GET /rooms/{id}/members` | 获取房间内所有人类与 Agent 列表（含各自平台、归属主人与实时 `reach` 状态） |
+| | `PATCH /rooms/{id}/members/me/remark` | 人类群成员通过群信息面板设置或清空自己的群备注。群成员可在成员名单和聊天消息中看到备注，清空后显示账号昵称。服务端按认证身份更新成员行，提交后广播 `room.upserted`。公开分享快照省略备注。 |
 | | `PATCH /rooms/{id}/governance` | **（人类权限）** 实时调整轮次预算、一键开关 Agent 互 `@`、重置挂起预算或切换圆桌模式 |
 | **消息与提案** | `GET /rooms/{id}/messages` | 按 `seq` 增量拉取消息并自动推进 `last_read_seq`。Web 首次打开和重连后按游标补齐历史，断线期间的常规轮询从上次 HTTP 确认的游标继续，补拉结果按序号与实时消息合并。 |
 | | `POST /rooms/{id}/messages` | 发送消息（支持 `replyToSeq`, `mentions`, `opKey`, `ignoreUnread` 与可选 `attachment`）；受并发读锁与治理预算保护 |

@@ -98,7 +98,7 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     await database.close();
   });
 
-  it("shares images, stickers and voice only with room members and removes recalled media", async () => {
+  it("shares room attachments with members and removes their bytes on recall", async () => {
     const app = createServerApp({
       env: parseServerEnv({ NODE_ENV: "test", LOG_LEVEL: "silent", DATABASE_URL: "memory://" }),
       database,
@@ -234,6 +234,36 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     expect(stickerMedia.status).toBe(200);
     expect(Buffer.from(await stickerMedia.arrayBuffer())).toEqual(png);
 
+    const document = Buffer.from("<p>文档附件</p>", "utf8");
+    const fileName = "项目 (记录).html";
+    const fileUpload = {
+      mimeType: "application/octet-stream",
+      data: document.toString("base64"),
+    };
+    expect((await send({ content: "", attachment: fileUpload })).status).toBe(400);
+    expect(
+      (await send({ content: "", attachment: { ...fileUpload, fileName: "../unsafe.html" } }))
+        .status,
+    ).toBe(400);
+    const file = await send({ content: "", attachment: { ...fileUpload, fileName } });
+    expect(file.status).toBe(201);
+    const { message: fileMessage } = (await file.json()) as { message: MessageDto };
+    expect(fileMessage.attachment).toEqual({
+      mimeType: fileUpload.mimeType,
+      byteLength: document.byteLength,
+      fileName,
+    });
+    const fileUrl = `${messagesUrl}/${fileMessage.seq}/attachment`;
+    expect((await app.request(fileUrl)).status).toBe(401);
+    const download = await app.request(fileUrl, { headers: readerHeaders });
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-type")).toBe("application/octet-stream");
+    expect(download.headers.get("content-disposition")).toBe(
+      "attachment; filename=\"download\"; filename*=UTF-8''%E9%A1%B9%E7%9B%AE%20%28%E8%AE%B0%E5%BD%95%29.html",
+    );
+    expect(download.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(Buffer.from(await download.arrayBuffer())).toEqual(document);
+
     const read = await app.request(messagesUrl, { headers: readerHeaders });
     expect(read.status).toBe(200);
     expect(await read.json()).toMatchObject({
@@ -242,8 +272,9 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
         { attachment: imageMessage.attachment },
         { attachment: voiceMessage.attachment, attention: voiceMessage.attention },
         { attachment: stickerMessage.attachment },
+        { attachment: fileMessage.attachment },
       ],
-      latestSeq: 4,
+      latestSeq: 5,
     });
 
     const recall = await app.request(`${messagesUrl}/${imageMessage.seq}`, {
@@ -268,6 +299,12 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     expect(stickerRecall.status).toBe(200);
     expect((await stickerRecall.json()).message).not.toHaveProperty("attachment");
     expect((await app.request(stickerUrl, { headers: readerHeaders })).status).toBe(404);
+    const fileRecall = await app.request(`${messagesUrl}/${fileMessage.seq}`, {
+      method: "DELETE",
+      headers: ownerHeaders,
+    });
+    expect(fileRecall.status).toBe(200);
+    expect((await app.request(fileUrl, { headers: readerHeaders })).status).toBe(404);
     expect(await database.db.select().from(messageAttachmentsTable)).toEqual([]);
 
     expect((await send({ content: "", attachment: pngUpload })).status).toBe(201);

@@ -24,6 +24,8 @@ import {
   type RoomId,
   type RoomMemberDto,
   type RoomSummaryDto,
+  type UpdateOwnRoomRemarkBody,
+  type UpdateOwnRoomRemarkResponse,
   type UserId,
   asReadCursorSeq,
   createDefaultGovernanceState,
@@ -858,6 +860,46 @@ export class RoomsService {
   }
 
   /**
+   * 保存当前人类成员的群备注，并在提交后通知群内在线成员刷新名册。
+   * @param caller - 当前已认证身份
+   * @param roomId - 目标群聊主键
+   * @param body - 已校验的备注，空字符串表示清除
+   * @returns 已保存的备注
+   * @throws 调用者不是人类群成员，或目标会话不存在或属于单聊
+   */
+  public async updateOwnRoomRemark(
+    caller: Readonly<AuthenticatedCaller>,
+    roomId: RoomId,
+    body: Readonly<UpdateOwnRoomRemarkBody>,
+  ): Promise<UpdateOwnRoomRemarkResponse> {
+    const human = assertHumanCaller(caller);
+    const room = await this.roomsRepo.findRoomById(roomId);
+    if (!room) {
+      throw new AppError({ code: "NOT_FOUND", statusCode: 404, message: "群聊不存在。" });
+    }
+    if (room.kind !== "group") {
+      throw new AppError({
+        code: "VALIDATION_ERROR",
+        statusCode: 400,
+        message: "仅群聊支持群备注。",
+      });
+    }
+
+    const remark = body.remark === "" ? null : body.remark;
+    const updated = await this.roomsRepo.updateHumanMemberRemark(roomId, human.userId, remark);
+    if (!updated) {
+      throw new AppError({
+        code: "FORBIDDEN_NOT_ROOM_MEMBER",
+        statusCode: 403,
+        message: "加入群聊后才能设置自己的群备注。",
+      });
+    }
+
+    await this.realtimeBus.publishToRoom(roomId, { type: "room.upserted", roomId });
+    return { ok: true, remark };
+  }
+
+  /**
    * 获取房间成员列表（含实时在线通道状态灯）。
    *
    * @param caller - 当前已认证调用者
@@ -911,7 +953,9 @@ export class RoomsService {
       this.proposalsRepo.listHydratedProposalsByRoom(room.id),
     ]);
 
-    const roomDto = buildRoomDetailDto(room, members, {
+    // 群备注用于群内展示，公开分享页沿用账号昵称。
+    const publicMembers = members.map(({ remark: _remark, ...member }) => member);
+    const roomDto = buildRoomDetailDto(room, publicMembers, {
       yourLastReadSeq: room.lastSeq,
       includeInviteToken: false,
     });

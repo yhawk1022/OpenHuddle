@@ -7,7 +7,7 @@
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 严格不嵌套重度模糊：外层胶囊挂载 `relative liquid-glass-bar`（含 135° 菲涅尔高光边框），内部子胶囊仅使用轻触态半透色阶，杜绝多层 `backdrop-filter` 叠加。
- * 2. 异常才提醒：平时 `轮次 X/Y` 保持安静中性；仅当 `status === "paused_budget"` 需要人类续期，或存在刚拍板通过的结论时，才在双岛下方展开独立悬浮玻璃横幅。
+ * 2. 预算挂起才展开横幅：双岛下方仅提示需要人类续期的轮次预算。
  * 3. Tauri v2 & Electron 双端无边框拖拽就绪：顶栏与玻璃岛标记 `data-tauri-drag-region` 与 `.app-drag-region`，交互按钮均带 `.app-no-drag`，且外层对空白处保持 `pointer-events-none` 以允许下方消息流自由滚动。
  */
 import type {
@@ -21,7 +21,6 @@ import {
   AlertTriangle,
   AtSign,
   Bot,
-  CheckCircle2,
   ChevronLeft,
   FileText,
   Lock,
@@ -30,7 +29,6 @@ import {
   ShieldAlert,
   UserRound,
   Users,
-  X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
@@ -58,8 +56,6 @@ export interface GovernanceBarProps {
   readonly governance: RoomGovernanceState;
   readonly proposalsCount: number;
   readonly openProposalsCount: number;
-  /** 最近一次已拍板通过的提案标题；为 `null` 时不展示「已拍板」结论条 */
-  readonly decidedProposalTitle: string | null;
   readonly isUpdatingGovernance: boolean;
   readonly isInspectorOpen: boolean;
   readonly onUpdateGovernance: (patch: UpdateGovernanceBody) => void;
@@ -98,7 +94,7 @@ const CONTROL_ITEM_ACTIVE_CLASS =
   "bg-black/[0.08] text-[#111318] shadow-[inset_0_1px_0_rgba(255,255,255,0.5)] dark:bg-white/[0.14] dark:text-white dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]";
 
 /**
- * 渲染悬浮双岛 Apple Liquid Glass 群聊顶栏、Radix 治理配置浮层及按需展开的预算检查点/拍板横幅。
+ * 渲染悬浮双岛群聊顶栏、Radix 治理配置浮层及按需展开的预算挂起横幅。
  *
  * @param props - 房间详情、实时治理快照、抽屉开关状态与各项治理回调
  * @returns 顶部悬浮液态玻璃群聊头组件
@@ -107,7 +103,6 @@ export function GovernanceBar(props: GovernanceBarProps) {
   const { governance } = props;
   const { config } = governance;
   const [governanceOpen, setGovernanceOpen] = useState<boolean>(false);
-  const [dismissedDecision, setDismissedDecision] = useState<string | null>(null);
 
   const usedTurns = governance.consecutiveAgentTurns;
   const maxTurns = config.maxConsecutiveAgentTurns;
@@ -140,13 +135,6 @@ export function GovernanceBar(props: GovernanceBarProps) {
       label: `${String(cap)} 轮连续发言`,
     }));
   }, [maxTurns]);
-
-  const showDecided =
-    props.room.kind !== "direct_human" &&
-    !isPaused &&
-    props.decidedProposalTitle !== null &&
-    props.openProposalsCount === 0 &&
-    dismissedDecision !== props.decidedProposalTitle;
 
   const isGroupRoom = props.room.kind === "group";
   const isDirectAgent = props.room.kind === "direct_agent";
@@ -539,7 +527,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
         </div>
       </div>
 
-      {/* 按需平滑展开的悬浮液态玻璃副横幅（预算挂起检查点 / 最新拍板结论） */}
+      {/* 预算挂起时展开横幅，提供继续讨论的入口 */}
       <AnimatePresence initial={false}>
         {isPaused ? (
           <motion.div
@@ -570,38 +558,6 @@ export function GovernanceBar(props: GovernanceBarProps) {
               >
                 继续讨论 (+{maxTurns})
               </AppButton>
-            </div>
-          </motion.div>
-        ) : showDecided ? (
-          <motion.div
-            key="banner-decided"
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.18, ease: "easeOut" }}
-            className="pointer-events-auto relative liquid-glass-bar mx-auto mt-2 max-w-3xl overflow-hidden rounded-[18px]"
-          >
-            <div className="flex items-center justify-between gap-3 bg-emerald-500/[0.08] px-3.5 py-2 text-xs text-[#145335] sm:px-4 dark:bg-emerald-400/[0.08] dark:text-[#A7F3D0]">
-              <button
-                type="button"
-                onClick={props.onOpenProposals}
-                className="app-no-drag flex min-w-0 cursor-pointer items-center gap-2 text-left transition hover:opacity-85"
-              >
-                <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
-                <span className="truncate">
-                  <strong>已拍板：</strong>
-                  {props.decidedProposalTitle}
-                </span>
-              </button>
-              <IconButton
-                size="xs"
-                variant="ghost"
-                label="关闭已拍板提示"
-                onClick={() => setDismissedDecision(props.decidedProposalTitle)}
-                className="text-[#145335]/75 hover:bg-black/[0.05] dark:text-[#A7F3D0]/80 dark:hover:bg-white/[0.08]"
-              >
-                <X className="h-3.5 w-3.5" />
-              </IconButton>
             </div>
           </motion.div>
         ) : null}

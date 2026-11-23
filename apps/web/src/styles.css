@@ -1,6 +1,6 @@
 /**
  * @module web/styles
- * @description OpenHuddle 全局设计系统（Tailwind CSS v4 + Neutral Apple Liquid Glass 液态玻璃光学引擎，支持 Daylight 暖瓷日光 & Midnight 烟熏石墨深夜双模式）。
+ * @description OpenHuddle 全局设计系统（Tailwind CSS v4 + Liquid Glass，支持柔灰日光和烟熏石墨深夜双模式）。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 中性烟熏石墨与有机柔雾协调体系：暗色模式采用纯中性烟熏石墨灰（`#111113` / `#18181B` / `#1B1B1F` / `#222226` / `#2E2E34`），杜绝偏冷藏青蓝底色；`body::before` 提供有机柔雾光场，使半透玻璃自然折射周围环境层次。
@@ -14,54 +14,54 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ─────────────────────────────────────────────────────────────
- * 1. Daylight Porcelain & Midnight Smoked Graphite 光学与语义令牌
+ * 1. Daylight & Midnight 光学与语义令牌
  * ───────────────────────────────────────────────────────────── */
 :root {
   color-scheme: light;
 
-  /* 外框与空间背景阶梯：浅色使用清透雾灰瓷底，使纯白活跃项依靠自然明度与柔影浮起，无需深灰硬描边 */
-  --oh-app-frame: #ebeef3;
-  --oh-rail-surface: #f2f4f8;
-  --oh-sidebar-surface: #f5f7fb;
+  /* 浅色界面用相邻的柔灰色阶区分外框、导航和内容表面，减少大面积高亮。 */
+  --oh-app-frame: #dfe2e6;
+  --oh-rail-surface: #e3e6e9;
+  --oh-sidebar-surface: #e7e9ec;
 
   /* 舞台画布与渐隐遮罩（供通顶滚动的消息流在悬浮顶栏/输入舱下方自然消隐） */
-  --oh-stage-surface: rgba(255, 255, 255, 0.84);
-  --oh-stage-scrim: rgba(249, 250, 253, 0.9);
-  --oh-stage-scrim-mid: rgba(249, 250, 253, 0.56);
+  --oh-stage-surface: rgba(236, 238, 240, 0.9);
+  --oh-stage-scrim: rgba(236, 238, 240, 0.9);
+  --oh-stage-scrim-mid: rgba(236, 238, 240, 0.56);
 
   /* 画布与分级卡片表面 */
-  --oh-im-canvas: #ffffff;
-  --oh-im-surface: #ffffff;
-  --oh-im-surface-muted: #f2f4f8;
-  --oh-im-surface-elevated: #eaeef4;
+  --oh-im-canvas: #eceef0;
+  --oh-im-surface: #f0f1f2;
+  --oh-im-surface-muted: #e5e8eb;
+  --oh-im-surface-elevated: #dddfe3;
 
-  /* Apple Liquid Glass 光学表面令牌（日光下全白折射高光边缘，彻底剔除转角脏灰阴影色标） */
-  --oh-lg-panel-bg: rgba(245, 247, 251, 0.74);
-  --oh-lg-bar-bg: rgba(255, 255, 255, 0.78);
-  --oh-lg-composer-bg: rgba(255, 255, 255, 0.84);
-  --oh-lg-pill-bg: rgba(255, 255, 255, 0.78);
-  --oh-lg-pill-hover: rgba(255, 255, 255, 0.95);
-  --oh-lg-modal-bg: rgba(252, 253, 255, 0.9);
+  /* 玻璃表面保留柔和反光，避免半透明底色与高光叠加成白块。 */
+  --oh-lg-panel-bg: rgba(229, 232, 235, 0.82);
+  --oh-lg-bar-bg: rgba(236, 238, 240, 0.86);
+  --oh-lg-composer-bg: rgba(231, 233, 236, 0.92);
+  --oh-lg-pill-bg: rgba(234, 236, 239, 0.86);
+  --oh-lg-pill-hover: var(--oh-im-surface);
+  --oh-lg-modal-bg: rgba(240, 241, 242, 0.94);
   --oh-lg-sheen: linear-gradient(
     155deg,
-    rgba(255, 255, 255, 0.65) 0%,
-    rgba(255, 255, 255, 0.18) 45%,
-    rgba(255, 255, 255, 0.04) 100%
+    rgba(255, 255, 255, 0.2) 0%,
+    rgba(255, 255, 255, 0.07) 45%,
+    rgba(255, 255, 255, 0) 100%
   );
   --oh-lg-rim: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.98) 0%,
-    rgba(255, 255, 255, 0.62) 42%,
-    rgba(255, 255, 255, 0.36) 72%,
-    rgba(255, 255, 255, 0.88) 100%
+    rgba(255, 255, 255, 0.48) 0%,
+    rgba(255, 255, 255, 0.26) 42%,
+    rgba(255, 255, 255, 0.12) 72%,
+    rgba(255, 255, 255, 0.36) 100%
   );
   --oh-lg-rim-subtle: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.94) 0%,
-    rgba(255, 255, 255, 0.5) 50%,
-    rgba(255, 255, 255, 0.8) 100%
+    rgba(255, 255, 255, 0.36) 0%,
+    rgba(255, 255, 255, 0.14) 50%,
+    rgba(255, 255, 255, 0.28) 100%
   );
-  --oh-lg-inner: inset 0 1px 0.5px rgba(255, 255, 255, 0.92);
+  --oh-lg-inner: inset 0 1px 0.5px rgba(255, 255, 255, 0.34);
   --oh-lg-shadow-panel: 0 10px 30px -10px rgba(15, 23, 42, 0.065), 0 1px 3px rgba(15, 23, 42, 0.025);
   --oh-lg-shadow-bar: 0 8px 24px -8px rgba(15, 23, 42, 0.075), 0 1px 3px rgba(15, 23, 42, 0.03);
   --oh-lg-shadow-modal: 0 24px 64px -14px rgba(15, 23, 42, 0.16), 0 4px 16px -4px
@@ -74,34 +74,34 @@
   /* 文本层级 */
   --oh-im-fg: #111318;
   --oh-im-fg-soft: #3b414e;
-  --oh-im-muted: #687082;
-  --oh-im-subtle: #939bad;
+  --oh-im-muted: #545d6c;
+  --oh-im-subtle: #5b6472;
 
-  /* 三角色对话气泡表面：Agent 清冷瓷白 / 同伴清透鼠尾草 / 本人暖亚麻瓷 */
-  --oh-im-peer: #ffffff;
+  /* 三角色对话气泡表面：Agent 柔灰 / 同伴鼠尾草绿 / 本人暖亚麻 */
+  --oh-im-peer: #f0f1f2;
   --oh-im-peer-fg: #111318;
   --oh-im-peer-border: rgba(15, 23, 42, 0.06);
-  --oh-im-human: #e6f5ec;
+  --oh-im-human: #ddebe2;
   --oh-im-human-fg: #111318;
   --oh-im-human-border: rgba(16, 120, 76, 0.09);
-  --oh-im-self: #f4efe6;
+  --oh-im-self: #ebe4d9;
   --oh-im-self-fg: #111318;
   --oh-im-self-border: rgba(24, 27, 34, 0.06);
-  --oh-im-self-muted: #687082;
+  --oh-im-self-muted: var(--oh-im-muted);
 
   /* 代码块与凹陷输入框 */
-  --oh-im-code: #f6f8fb;
-  --oh-im-input: #f6f7fa;
-  --oh-im-input-focus: #ffffff;
+  --oh-im-code: #e5e8eb;
+  --oh-im-input: #e5e8eb;
+  --oh-im-input-focus: #eceef0;
   --oh-im-input-fg: #111318;
   --oh-im-input-border: rgba(15, 23, 42, 0.1);
   --oh-im-input-ring: rgba(24, 27, 34, 0.07);
-  --oh-im-placeholder: #939bad;
+  --oh-im-placeholder: var(--oh-im-subtle);
 
   /* 系统提示与悬浮表面 */
-  --oh-im-system: #f3f4f6;
-  --oh-im-system-fg: #939bad;
-  --oh-im-floating: rgba(255, 255, 255, 0.86);
+  --oh-im-system: #e5e8eb;
+  --oh-im-system-fg: var(--oh-im-subtle);
+  --oh-im-floating: rgba(240, 241, 242, 0.94);
 
   /* 主强调色与功能语义色 */
   --oh-im-accent: #181b22;
@@ -462,7 +462,7 @@ body::before {
 /* 主聊天舞台底壳（轻透底色 + 纯净高光边，不施加重度 blur 以确保消息流 120Hz 顺滑） */
 @utility oh-stage-frame {
   background-color: var(--oh-stage-surface);
-  border: 1px solid rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.38);
   box-shadow: 0 10px 30px -10px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.025);
 
   &:where(.dark, .dark *) {
@@ -473,9 +473,9 @@ body::before {
 
 /* 数据看板与管理卡片浮起表面（供多卡片密集区使用，免重度 blur 且保持与液态玻璃一致的微高光色阶） */
 @utility oh-elevated-card {
-  background-color: rgba(255, 255, 255, 0.78);
+  background-color: var(--oh-im-surface);
   border: 1px solid var(--oh-im-border);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 8px 24px -8px rgba(15, 23, 42, 0.06), 0 1px
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34), 0 8px 24px -8px rgba(15, 23, 42, 0.06), 0 1px
     3px rgba(15, 23, 42, 0.03);
 
   &:where(.dark, .dark *) {
@@ -574,7 +574,7 @@ body::before {
   }
 
   &:focus-within {
-    background-color: rgba(255, 255, 255, 0.88);
+    background-color: var(--oh-im-input-focus);
     box-shadow: var(--oh-lg-inner), 0 0 0 3px rgba(24, 27, 34, 0.06), var(--oh-lg-shadow-bar);
 
     &:where(.dark, .dark *) {
@@ -722,13 +722,12 @@ body::before {
 /* biome-ignore lint/correctness/noUnknownMediaFeatureName: W3C Media Queries Level 5 规范特性，适配 macOS / iOS 系统「降低透明度」设置 */
 @media (prefers-reduced-transparency: reduce) {
   :root {
-    --oh-stage-surface: rgba(255, 255, 255, 0.96);
-    --oh-lg-panel-bg: rgba(249, 250, 251, 0.96);
-    --oh-lg-bar-bg: rgba(255, 255, 255, 0.96);
-    --oh-lg-composer-bg: rgba(255, 255, 255, 0.98);
-    --oh-lg-pill-bg: rgba(255, 255, 255, 0.95);
-    --oh-lg-pill-hover: #ffffff;
-    --oh-lg-modal-bg: rgba(255, 255, 255, 0.98);
+    --oh-stage-surface: var(--oh-im-canvas);
+    --oh-lg-panel-bg: var(--oh-sidebar-surface);
+    --oh-lg-bar-bg: var(--oh-im-canvas);
+    --oh-lg-composer-bg: var(--oh-sidebar-surface);
+    --oh-lg-pill-bg: var(--oh-im-canvas);
+    --oh-lg-modal-bg: var(--oh-im-surface);
   }
 
   .dark {
@@ -744,13 +743,12 @@ body::before {
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   :root {
-    --oh-stage-surface: rgba(255, 255, 255, 0.96);
-    --oh-lg-panel-bg: rgba(249, 250, 251, 0.96);
-    --oh-lg-bar-bg: rgba(255, 255, 255, 0.96);
-    --oh-lg-composer-bg: rgba(255, 255, 255, 0.98);
-    --oh-lg-pill-bg: rgba(255, 255, 255, 0.95);
-    --oh-lg-pill-hover: #ffffff;
-    --oh-lg-modal-bg: rgba(255, 255, 255, 0.98);
+    --oh-stage-surface: var(--oh-im-canvas);
+    --oh-lg-panel-bg: var(--oh-sidebar-surface);
+    --oh-lg-bar-bg: var(--oh-im-canvas);
+    --oh-lg-composer-bg: var(--oh-sidebar-surface);
+    --oh-lg-pill-bg: var(--oh-im-canvas);
+    --oh-lg-modal-bg: var(--oh-im-surface);
   }
 
   .dark {

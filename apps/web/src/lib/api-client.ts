@@ -62,6 +62,8 @@ import {
   type UpdateFriendRemarkResponse,
   type UpdateGovernanceBody,
   type UpdateMeBody,
+  type UpdateOwnRoomRemarkBody,
+  type UpdateOwnRoomRemarkResponse,
   type UpdateOwnedAgentBody,
   type UpdateOwnedAgentResponse,
   type UserId,
@@ -709,6 +711,22 @@ export async function fetchRoomDetail(
 ): Promise<{ readonly ok: true; readonly room: RoomDetailDto }> {
   return requestJson<{ readonly ok: true; readonly room: RoomDetailDto }>(
     `/api/v1/rooms/${encodeURIComponent(roomId)}`,
+  );
+}
+
+/**
+ * 保存当前登录成员的群备注。
+ * @param roomId - 目标群聊主键
+ * @param body - 新备注，空字符串表示清除
+ * @returns 服务端确认的备注
+ */
+export async function updateOwnRoomRemark(
+  roomId: RoomId,
+  body: Readonly<UpdateOwnRoomRemarkBody>,
+): Promise<UpdateOwnRoomRemarkResponse> {
+  return requestJson<UpdateOwnRoomRemarkResponse>(
+    `/api/v1/rooms/${encodeURIComponent(roomId)}/members/me/remark`,
+    { method: "PATCH", body },
   );
 }
 

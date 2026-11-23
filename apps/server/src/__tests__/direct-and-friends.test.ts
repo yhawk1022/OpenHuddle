@@ -20,6 +20,7 @@ import type {
   OpenDirectRoomResponse,
   PairAgentResponse,
   RoomDetailDto,
+  RoomMemberDto,
   RoomSummaryDto,
   SendFriendRequestResponse,
   SseEvent,
@@ -867,6 +868,110 @@ describe("@openhuddle/server — ADR-0005 direct chats, friendships & external a
       expect((await agentEvents.read()).value).toContain("event: message.created");
     } finally {
       abort.abort();
+    }
+  });
+
+  it("lets group members set and clear only their own room remark", async () => {
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      PUBLIC_BASE_URL: "https://huddle.example.com",
+      DATABASE_URL: "memory://",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus });
+    const alice = await loginHuman(app, "alice@example.com", "Alice");
+    const bob = await loginHuman(app, "bob@example.com", "Bob");
+    const bobAgent = await pairOwnedAgent(app, bob.sessionToken, "BobHelper");
+
+    const write = (path: string, method: "POST" | "PATCH", token: string, body: object) =>
+      app.request(`/api/v1${path}`, {
+        method,
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+    const created = await write("/rooms", "POST", alice.sessionToken, {
+      name: "Planning",
+      visibility: "public_shareable",
+    });
+    expect(created.status).toBe(201);
+    const { room } = (await created.json()) as { room: RoomDetailDto };
+    const roomPath = `/rooms/${room.id}`;
+    const update = (token: string, body: object) =>
+      write(`${roomPath}/members/me/remark`, "PATCH", token, body);
+    const getRoster = async () => {
+      const response = await app.request(`/api/v1${roomPath}/members`, {
+        headers: { authorization: `Bearer ${alice.sessionToken}` },
+      });
+      expect(response.status).toBe(200);
+      return ((await response.json()) as { members: RoomMemberDto[] }).members;
+    };
+
+    expect((await update(bob.sessionToken, { remark: "Planning Bob" })).status).toBe(403);
+    for (const token of [bob.sessionToken, bobAgent.token]) {
+      expect((await write("/join", "POST", token, { inviteToken: room.inviteToken })).status).toBe(
+        200,
+      );
+    }
+    expect((await update(bobAgent.token, { remark: "Agent remark" })).status).toBe(403);
+    expect((await update(bob.sessionToken, { remark: "a".repeat(81) })).status).toBe(400);
+    expect((await update(bob.sessionToken, { remark: "line\nbreak" })).status).toBe(400);
+    expect(
+      (await update(bob.sessionToken, { remark: "Fake Alice", userId: alice.user.id })).status,
+    ).toBe(400);
+
+    const events: SseEvent[] = [];
+    const unsubscribe = bus.subscribeRoom(room.id, (event) => events.push(event));
+    try {
+      const saved = await update(bob.sessionToken, { remark: "  策划小鲍  " });
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toEqual({ ok: true, remark: "策划小鲍" });
+      expect(events).toEqual([{ type: "room.upserted", roomId: room.id }]);
+      const members = await getRoster();
+      expect(members.find((m) => m.userId === bob.user.id)).toMatchObject({
+        role: "member",
+        displayName: "Bob",
+        remark: "策划小鲍",
+      });
+      expect(members.find((m) => m.userId === alice.user.id)).not.toHaveProperty("remark");
+      const detail = await app.request(`/api/v1${roomPath}`, {
+        headers: { authorization: `Bearer ${alice.sessionToken}` },
+      });
+      expect(detail.status).toBe(200);
+      const { room: groupDetail } = (await detail.json()) as { room: RoomDetailDto };
+      expect(groupDetail.members.find((m) => m.userId === bob.user.id)?.remark).toBe("策划小鲍");
+
+      const otherGroup = await write("/rooms", "POST", bob.sessionToken, { name: "Another group" });
+      expect(otherGroup.status).toBe(201);
+      const { room: otherRoom } = (await otherGroup.json()) as { room: RoomDetailDto };
+      expect(otherRoom.members[0]).not.toHaveProperty("remark");
+
+      const shared = await app.request(`/api/v1/share/${room.inviteToken}`);
+      expect(shared.status).toBe(200);
+      const { room: publicRoom } = (await shared.json()) as { room: RoomDetailDto };
+      expect(publicRoom.members.find((m) => m.userId === bob.user.id)).not.toHaveProperty("remark");
+
+      const direct = await write("/rooms/direct/agent", "POST", bob.sessionToken, {
+        agentId: bobAgent.agent.id,
+      });
+      expect(direct.status).toBe(201);
+      const { room: directRoom } = (await direct.json()) as OpenDirectRoomResponse;
+      expect(
+        (
+          await write(`/rooms/${directRoom.id}/members/me/remark`, "PATCH", bob.sessionToken, {
+            remark: "Direct remark",
+          })
+        ).status,
+      ).toBe(400);
+
+      const cleared = await update(bob.sessionToken, { remark: "   " });
+      expect(cleared.status).toBe(200);
+      expect(await cleared.json()).toEqual({ ok: true, remark: null });
+      const clearedMember = (await getRoster()).find((m) => m.userId === bob.user.id);
+      expect(clearedMember).toMatchObject({ displayName: "Bob" });
+      expect(clearedMember).not.toHaveProperty("remark");
+    } finally {
+      unsubscribe();
     }
   });
 });

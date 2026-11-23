@@ -19,6 +19,9 @@ const WEBM_DOC_TYPE = Buffer.from([0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d]);
 
 function matchesMagicBytes(bytes: Buffer, mimeType: MessageAttachmentMimeType): boolean {
   switch (mimeType) {
+    case "application/octet-stream":
+      // 通用附件只作为下载返回，因此保留原始字节，不按用户声明的格式解析。
+      return true;
     case "image/jpeg":
       return bytes.subarray(0, JPEG_SIGNATURE.length).equals(JPEG_SIGNATURE);
     case "image/png":
@@ -92,6 +95,7 @@ export function decodeMessageAttachment(
       mimeType: upload.mimeType,
       byteLength: bytes.byteLength,
       ...(upload.stickerName !== undefined ? { stickerName: upload.stickerName } : {}),
+      ...(upload.fileName !== undefined ? { fileName: upload.fileName } : {}),
     },
   };
 }
