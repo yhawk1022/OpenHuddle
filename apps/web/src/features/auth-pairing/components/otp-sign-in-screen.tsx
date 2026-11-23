@@ -38,7 +38,6 @@ import {
   toast,
 } from "../../../components/primitives/index.js";
 import { HuddleConstellationBackground } from "../../../components/ui/huddle-constellation-background.js";
-import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
 import { ApiClientError } from "../../../lib/api-client.js";
 import {
   authConfigQueryOptions,
@@ -670,15 +669,12 @@ export function AuthScreen() {
         data-tauri-drag-region=""
         className="app-drag-region pt-safe relative z-20 shrink-0 select-none"
       >
-        <div className="mx-auto flex w-full max-w-[1140px] items-center justify-between px-6 py-4 sm:px-10">
+        <div className="mx-auto flex w-full max-w-[1140px] items-center px-6 py-4 sm:px-10">
           <div className="pointer-events-none flex items-center gap-2.5">
             <BrandMark className="h-6 w-6 shrink-0" />
             <span className="text-[17.5px] font-bold tracking-[-0.025em] text-[#111318] dark:text-white">
               OpenHuddle
             </span>
-          </div>
-          <div className="app-no-drag rounded-full bg-im-surface/70 backdrop-blur-md dark:bg-white/[0.06]">
-            <ThemeToggle showLabel={true} />
           </div>
         </div>
       </header>

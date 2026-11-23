@@ -7,6 +7,7 @@ export {
   currentMeQueryOptions,
   useChangePasswordMutation,
   useConfirmPasswordResetMutation,
+  useAccountThemePreference,
   useCreatePairingCodeMutation,
   useDeleteOwnedAgentMutation,
   useLoginWithPasswordMutation,
@@ -24,6 +25,7 @@ export {
   AccountSecurityModal,
   type AccountSecurityModalProps,
 } from "./components/account-security-modal.js";
+export { AccountThemeMenu } from "./components/account-theme-menu.js";
 export {
   AgentOnboardingModal,
   type AgentOnboardingModalProps,

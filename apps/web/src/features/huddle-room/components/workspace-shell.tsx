@@ -82,7 +82,6 @@ import {
 } from "../../../components/ui/agent-profile-dialog.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { MessageBubble } from "../../../components/ui/message-bubble.js";
-import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
 import {
   getPlatformVisualMeta,
   getReachVisualMeta,
@@ -91,13 +90,15 @@ import {
 import type { OptimisticMessageItem } from "../../../lib/query-keys.js";
 import { navigateTo, useBrowserLocation, useSessionToken } from "../../../lib/session-store.js";
 import { type SseConnectionStatus, useRealtimeSseSync } from "../../../lib/sse-sync.js";
-import { setThemePreference, useThemeMode } from "../../../lib/theme-store.js";
+import { useThemeMode } from "../../../lib/theme-store.js";
 import {
   AccountSecurityModal,
+  AccountThemeMenu,
   AgentOnboardingModal,
   type OnboardingModalTab,
   OtpSignInScreen,
   currentMeQueryOptions,
+  useAccountThemePreference,
   useDeleteOwnedAgentMutation,
   useLogoutMutation,
   useUpdateOwnedAgentMutation,
@@ -1040,7 +1041,7 @@ function formatCompactRailAgentLabel(agentDisplayName: string, ownerDisplayName:
  * - 顶部：晶亮微浮起的 `38px` 圆形本人头像 + `我` 标签（点击打开账号与密码安全弹窗）；
  * - 中部滚动区：竖向排列当前用户已绑定的全部个人 Agent（`36px` 圆形粉彩头像 + 精致在线点 + 单行省略短名），
  *   紧随其后展示轻透虚线圆环 `+` 按钮与 `接入 agent` 标签；
- * - 底部：`⌘K` 搜索面板图标、`ThemeToggle` 与退出按钮。
+ * - 底部：`⌘K` 搜索面板图标、账号外观菜单与退出按钮。
  */
 function PersonalAgentRail(props: PersonalAgentRailProps) {
   return (
@@ -1217,7 +1218,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
         ) : null}
 
         <div className="app-no-drag">
-          <ThemeToggle variant="ghost" />
+          <AccountThemeMenu />
         </div>
 
         <AppTooltip side="right" content="退出登录">
@@ -1246,6 +1247,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const location = useBrowserLocation();
   const sessionToken = useSessionToken();
   const themeMode = useThemeMode();
+  const { setPreference: setThemePreference } = useAccountThemePreference();
   const isDesktopChat = useIsDesktopChat();
   const connectionStatusRef = useRef<SseConnectionStatus>("connecting");
   const notificationRefetchInterval = () =>
@@ -1822,10 +1824,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           subtitle: "关闭自动切换并固定使用所选外观",
           icon: isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />,
           keywords: ["theme", "dark", "light", "主题", "深色", "浅色"],
-          onSelect: () => {
-            setThemePreference(isDark ? "light" : "dark");
-            toast.success(isDark ? "已固定使用白天模式" : "已固定使用夜间模式");
-          },
+          onSelect: () => setThemePreference(isDark ? "light" : "dark"),
         },
         {
           id: "act-automatic-theme",
@@ -1833,10 +1832,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           subtitle: "07:00 白天 · 18:00 夜间",
           icon: <Clock3 className="h-4 w-4" />,
           keywords: ["theme", "auto", "主题", "自动"],
-          onSelect: () => {
-            setThemePreference("auto");
-            toast.success("已启用外观自动切换");
-          },
+          onSelect: () => setThemePreference("auto"),
         },
       ],
     };
@@ -1927,6 +1923,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     props.currentUser.role,
     props.ownedAgents,
     rooms,
+    setThemePreference,
     themeMode,
   ]);
 

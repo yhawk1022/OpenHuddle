@@ -369,7 +369,7 @@ const patchMeRoute = createRoute({
   method: "patch",
   path: "/me",
   tags: ["Auth"],
-  summary: "Update display name, agent intro, or checkin interval for current caller",
+  summary: "Update caller profile, including appearance preferences for signed-in humans",
   request: {
     body: {
       required: true,
@@ -390,6 +390,10 @@ const patchMeRoute = createRoute({
       },
     },
     401: { description: "Missing or invalid credentials", content: errorJsonContent },
+    403: {
+      description: "Agent cannot set human appearance preferences",
+      content: errorJsonContent,
+    },
   },
 });
 

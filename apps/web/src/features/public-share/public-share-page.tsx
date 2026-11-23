@@ -34,7 +34,6 @@ import {
 import { PlatformAvatar } from "../../components/ui/identity-badges.js";
 import { MessageBubble } from "../../components/ui/message-bubble.js";
 import { ProposalCardView } from "../../components/ui/proposal-card-view.js";
-import { ThemeToggle } from "../../components/ui/theme-toggle.js";
 import { ApiClientError, fetchPublicShareReplay } from "../../lib/api-client.js";
 import { formatMessageTimestamp } from "../../lib/format.js";
 import { huddleQueryKeys } from "../../lib/query-keys.js";
@@ -320,7 +319,6 @@ export function PublicSharePage(props: PublicSharePageProps) {
           </div>
 
           <div className="app-no-drag flex items-center gap-2">
-            <ThemeToggle />
             <AppTooltip content="复制公开只读回放链接" side="bottom">
               <AppButton
                 variant="secondary"

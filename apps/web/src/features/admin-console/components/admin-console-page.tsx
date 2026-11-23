@@ -37,10 +37,10 @@ import {
   toast,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
-import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
 import { adminQueryKeys } from "../../../lib/query-keys.js";
 import { navigateTo, useBrowserLocation } from "../../../lib/session-store.js";
 import {
+  AccountThemeMenu,
   OtpSignInScreen,
   currentMeQueryOptions,
   useLogoutMutation,
@@ -354,7 +354,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
                 </IconButton>
               </AppTooltip>
 
-              <ThemeToggle variant="ghost" />
+              <AccountThemeMenu />
 
               <AppButton
                 variant="secondary"

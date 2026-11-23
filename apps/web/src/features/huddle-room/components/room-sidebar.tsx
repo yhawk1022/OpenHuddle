@@ -7,7 +7,7 @@
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 四态完备渲染：显式区分加载骨架、失败重试、空列表引导、搜索无结果与正常会话列表。
- * 2. 反技术噪音排版：会话行仅展示圆角方标首字母头像、粗体群名、自然议题/状态副文案与珊瑚红未读数，严禁暴露 `#lastSeq` 等内部序号。
+ * 2. 会话图标、类型文字与快捷筛选统一依据服务端提供的 `room.kind`，类型标签独立于可能截断的议题或状态。
  * 3. 多端拖拽与安全区就绪：挂载 `relative liquid-glass-panel`，顶栏携带 `data-tauri-drag-region` 与 `.app-drag-region`；移动端（`< md`）在底部操作栏自然补齐接入 Agent 与退出入口。
  */
 import type {
@@ -19,6 +19,7 @@ import type {
   HumanUserDto,
   OwnedAgentSummaryDto,
   RoomId,
+  RoomKind,
   RoomSummaryDto,
   SharedExternalAgentDto,
   UpdateGovernanceBody,
@@ -71,7 +72,6 @@ import {
   toast,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
-import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
 import {
   getInitials,
   getPlatformVisualMeta,
@@ -79,12 +79,49 @@ import {
   getRoomDisplayName,
 } from "../../../lib/format.js";
 import type { SseConnectionStatus } from "../../../lib/sse-sync.js";
+import { AccountThemeMenu } from "../../auth-pairing/index.js";
 
 /** 侧栏顶部分段标签枚举：`chats` = 聊天会话，`contacts` = 好友与 Agent 通讯录 */
 export type SidebarSectionTab = "chats" | "contacts";
 
 /** 聊天列表二级快捷过滤标签 */
-type ChatListFilter = "all" | "group" | "direct";
+type ChatListFilter = "all" | RoomKind;
+
+const CHAT_KIND_META = {
+  group: {
+    label: "群聊",
+    icon: Users,
+    badgeClass: "bg-[#DDF1E8] text-[#185A43] dark:bg-[#243B33] dark:text-[#A8E1C7]",
+    emptyMessage: "暂无群聊，可以发起群聊或通过邀请码加入。",
+  },
+  direct_human: {
+    label: "真人",
+    icon: UserRound,
+    badgeClass: "bg-[#E2ECFC] text-[#284C81] dark:bg-[#27364C] dark:text-[#B7D3FF]",
+    emptyMessage: "暂无真人私聊，去「通讯录」选择好友发起会话。",
+  },
+  direct_agent: {
+    label: "Agent",
+    icon: Bot,
+    badgeClass: "bg-[#EDE5FA] text-[#5A3888] dark:bg-[#382C4C] dark:text-[#DAC4FA]",
+    emptyMessage: "暂无 Agent 单聊，去「通讯录」选择 Agent 发起会话。",
+  },
+} as const satisfies Record<
+  RoomKind,
+  {
+    readonly label: string;
+    readonly icon: typeof Bot;
+    readonly badgeClass: string;
+    readonly emptyMessage: string;
+  }
+>;
+
+const CHAT_KIND_FILTERS: ReadonlyArray<ChatListFilter> = [
+  "all",
+  "group",
+  "direct_human",
+  "direct_agent",
+];
 
 /** `RoomSidebar` 入参属性 */
 export interface RoomSidebarProps {
@@ -247,10 +284,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
   const filteredRooms = useMemo(() => {
     const q = searchText.trim().toLowerCase();
     return props.rooms.filter((r) => {
-      if (chatFilter === "group" && r.kind !== "group") {
-        return false;
-      }
-      if (chatFilter === "direct" && r.kind === "group") {
+      if (chatFilter !== "all" && r.kind !== chatFilter) {
         return false;
       }
       if (q.length === 0) {
@@ -374,7 +408,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
 
         <div className="flex shrink-0 items-center gap-0.5">
           <div className="app-no-drag md:hidden">
-            <ThemeToggle variant="ghost" />
+            <AccountThemeMenu />
           </div>
           <AppPopover
             open={quickMenuOpen}
@@ -523,33 +557,28 @@ export function RoomSidebar(props: RoomSidebarProps) {
       {activeTab === "chats" ? (
         <nav aria-label="会话列表" className="flex-1 overflow-y-auto px-3 pb-3">
           {props.rooms.length > 0 ? (
-            <div className="mb-2 flex items-center gap-1 px-0.5">
-              {(
-                [
-                  { id: "all", label: "全部" },
-                  { id: "group", label: "群聊" },
-                  { id: "direct", label: "单聊" },
-                ] as const
-              ).map((pill) => {
-                const selected = chatFilter === pill.id;
+            <fieldset className="mb-2 flex min-w-0 flex-wrap items-center gap-1 px-0.5">
+              <legend className="sr-only">按会话类型筛选</legend>
+              {CHAT_KIND_FILTERS.map((filter) => {
+                const selected = chatFilter === filter;
                 return (
                   <button
-                    key={pill.id}
+                    key={filter}
                     type="button"
                     aria-pressed={selected}
-                    onClick={() => setChatFilter(pill.id)}
+                    onClick={() => setChatFilter(filter)}
                     className={cn(
-                      "cursor-pointer rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors",
+                      "min-h-6 cursor-pointer rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors",
                       selected
                         ? "bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]"
                         : "text-[#687082] hover:bg-black/[0.045] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.07] dark:hover:text-[#F2F2F4]",
                     )}
                   >
-                    {pill.label}
+                    {filter === "all" ? "全部" : CHAT_KIND_META[filter].label}
                   </button>
                 );
               })}
-            </div>
+            </fieldset>
           ) : null}
 
           {props.isLoadingRooms ? (
@@ -593,17 +622,17 @@ export function RoomSidebar(props: RoomSidebarProps) {
               </p>
             </div>
           ) : filteredRooms.length === 0 ? (
-            <p className="px-3 py-6 text-center text-xs text-[#8E96A6] dark:text-[#63636B]">
+            <p className="px-3 py-6 text-center text-xs text-[#687082] dark:text-[#8E8E96]">
               {searchText.trim().length > 0
                 ? `没有找到匹配「${searchText}」的会话`
-                : chatFilter === "direct"
-                  ? "暂无 1v1 单聊会话，去「通讯录」点击好友或 Agent 即可发起"
-                  : "暂无群聊会话"}
+                : chatFilter !== "all" && CHAT_KIND_META[chatFilter].emptyMessage}
             </p>
           ) : (
             <ul className="space-y-1">
               {filteredRooms.map((room) => {
                 const displayName = getRoomDisplayName(room, props.friendRemarks);
+                const kindMeta = CHAT_KIND_META[room.kind];
+                const KindIcon = kindMeta.icon;
                 const isActive = props.activeRoomId === room.id;
                 const isGroup = room.kind === "group";
                 const unreadCount = Math.max(0, room.lastSeq - room.yourLastReadSeq);
@@ -623,17 +652,13 @@ export function RoomSidebar(props: RoomSidebarProps) {
                     if (room.peer?.kind === "agent") {
                       const reachLabel = getReachVisualMeta(room.peer.reach).shortLabel;
                       return room.peer.ownerUserId === props.currentUser.id
-                        ? `我的 Agent · ${reachLabel}`
-                        : `${room.peer.ownerDisplayName} 的 Agent · ${reachLabel}`;
+                        ? `我的 · ${reachLabel}`
+                        : `来自 ${room.peer.ownerDisplayName} · ${reachLabel}`;
                     }
-                    return "Agent 单聊";
+                    return "";
                   }
                   if (room.kind === "direct_human") {
-                    return room.peer?.kind === "human" &&
-                      room.peer.email !== undefined &&
-                      room.peer.email.length > 0
-                      ? `好友私聊 · ${room.peer.email}`
-                      : "好友私聊";
+                    return room.peer?.kind === "human" ? (room.peer.email ?? "") : "";
                   }
                   if (room.topic.length > 0) {
                     return room.topic;
@@ -799,15 +824,14 @@ export function RoomSidebar(props: RoomSidebarProps) {
                                 room.peer?.kind === "agent" ? room.peer.platform : undefined
                               }
                               reach={room.peer?.kind === "agent" ? room.peer.reach : undefined}
-                              size="md"
-                              className="[&>div]:rounded-full"
+                              size="lg"
+                              className="[&>div]:rounded-[12px]"
                             />
                           ) : room.kind === "direct_human" ? (
                             <PlatformAvatar
                               kind="human"
                               displayName={room.peer?.displayName ?? room.name}
-                              size="md"
-                              className="[&>div]:rounded-full"
+                              size="lg"
                             />
                           ) : (
                             <SidebarRoomAvatar
@@ -821,17 +845,30 @@ export function RoomSidebar(props: RoomSidebarProps) {
                             <span className="block truncate text-[13.5px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
                               {displayName}
                             </span>
-                            <span
-                              className={cn(
-                                "mt-0.5 block truncate text-[12px]",
-                                isPausedBudget
-                                  ? "font-medium text-[#9A6700] dark:text-[#FCD34D]"
-                                  : isActive
-                                    ? "text-[#4B5565] dark:text-[#B4B4BC]"
-                                    : "text-[#687082] dark:text-[#8E8E96]",
-                              )}
-                            >
-                              {subtitleText}
+                            <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                              <span
+                                className={cn(
+                                  "inline-flex shrink-0 items-center gap-[3px] rounded-md px-1.5 text-[11px] font-semibold leading-4",
+                                  kindMeta.badgeClass,
+                                )}
+                              >
+                                <KindIcon aria-hidden="true" className="h-3 w-3" />
+                                {kindMeta.label}
+                              </span>
+                              {subtitleText.length > 0 ? (
+                                <span
+                                  className={cn(
+                                    "min-w-0 truncate text-[12px]",
+                                    isPausedBudget
+                                      ? "font-medium text-[#9A6700] dark:text-[#FCD34D]"
+                                      : isActive
+                                        ? "text-[#4B5565] dark:text-[#B4B4BC]"
+                                        : "text-[#687082] dark:text-[#8E8E96]",
+                                  )}
+                                >
+                                  {subtitleText}
+                                </span>
+                              ) : null}
                             </span>
                           </span>
 

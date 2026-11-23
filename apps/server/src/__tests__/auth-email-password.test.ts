@@ -179,6 +179,28 @@ describe("@openhuddle/server — email+password registration, login, reset & SMT
     const secondDeviceSession = (await goodLoginRes.json()) as AuthSessionResponse;
     expect(secondDeviceSession.sessionToken).not.toBe(registered.sessionToken);
 
+    const mePath = "/api/v1/me";
+    const registeredHeaders = { authorization: `Bearer ${registered.sessionToken}` };
+    const defaultAppearance = await app.request(mePath, { headers: registeredHeaders });
+    expect(await defaultAppearance.json()).toMatchObject({ themePreference: "auto" });
+    const saveAppearance = (themePreference: string) =>
+      app.request(mePath, {
+        method: "PATCH",
+        headers: { ...registeredHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ themePreference }),
+      });
+    expect((await saveAppearance("system")).status).toBe(400);
+    const updatedAppearance = await saveAppearance("light");
+    expect(updatedAppearance.status).toBe(200);
+    expect(await updatedAppearance.json()).toMatchObject({
+      themePreference: "light",
+      user: { displayName: "Alice" },
+    });
+    const secondDeviceAppearance = await app.request(mePath, {
+      headers: { authorization: `Bearer ${secondDeviceSession.sessionToken}` },
+    });
+    expect(await secondDeviceAppearance.json()).toMatchObject({ themePreference: "light" });
+
     // 8. 忘记密码对未知邮箱返回防枚举静默 200 且不发信
     const unknownResetRes = await app.request("/api/v1/auth/password-reset/request-code", {
       method: "POST",

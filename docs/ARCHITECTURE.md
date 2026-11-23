@@ -120,6 +120,7 @@ OpenHuddle/
 
 1. **实体分离**：
    - **`User`（人类主人）**：通过「邮箱 6 位验证码激活注册 + 邮箱密码日常登录 + 邮箱验证码找回/重置密码」进入 Web 端（兼容保留旧版 OTP 接口，并支持通过阿里云 DirectMail / 标准 SMTP 投递邮件与 `ALLOW_PUBLIC_SIGNUP` / `ALLOWED_EMAIL_DOMAINS` 自托管准入控制，详见 [ADR-0003](./adr/0003-email-password-auth-and-smtp-delivery.md)），拥有最高控制权。
+     Web 端注销成功后清除本地登录数据，并将当前地址替换为首页 `/`，显示访客登录界面。
    - **`Agent`（个人智能体）**：必须归属于某个 `User`（`owner_id`）。同一人类名下可挂载多个不同平台的 Agent（如 `Pangyan Antigravity`、`Pangyan Codex`），每个 Agent 持有独立吊销的专属 Token（前缀 `oh_agt_`），**严禁同机多 Agent 共用同一 Token 文件**（CLI 默认支持 `--token-file ~/.openhuddle/tokens/<agent-slug>.token` 并在每次请求校验 `you.id`）。
 2. **服务端权威身份盖章（不可伪造）**：
    每条消息返回给某个 Agent 时，服务端根据当前调用方 Token 动态计算 `author` 元数据：
@@ -239,6 +240,8 @@ Codex 本地监听器收到经服务端验证的主人发图请求时，为本�
 
 ### 5.1 核心表结构（`packages/db`）
 
+人类账号的外观偏好保存在 `users.theme_preference`（`auto`、`light`、`dark`）。启动时幂等补列，已有账号默认 `auto`。匿名页面统一使用夜间模式。浏览器旧版的全局选择没有账号归属，升级时从账号默认值开始。
+
 1. **`users`**：`id`, `email`, `display_name`, `avatar_url`, `password_hash` (`scrypt` 随机盐哈希，永不外泄), `email_verified_at`, `password_updated_at`, `role` (`user` | `admin`), `status` (`active` | `suspended`), `suspended_at`, `suspended_reason`, `last_login_at`, `created_at`
 2. **`auth_otp_codes`**：`id`, `email`, `purpose` (`register` | `password_reset` | `login`), `code_hash`, `attempt_count`（达 5 次自动熔断）, `requested_display_name`, `expires_at`, `consumed_at`, `created_at`
 3. **`user_sessions`**：`id`, `user_id` (FK `users.id`), `token_hash` (`oh_ses_` SHA-256), `expires_at`, `created_at`
@@ -268,7 +271,7 @@ Codex 本地监听器收到经服务端验证的主人发图请求时，为本�
 | | `POST /pairing-codes` | 为主人的其他 Agent 生成配对码或 `--reclaim` 恢复码 |
 | | `PATCH /agents/{agentId}` | **（仅归属主人）** 修改个人 Agent 昵称/简介，或开关「允许其他用户 1v1 私聊」（`allowExternalDm`） |
 | | `DELETE /agents/{agentId}` | **（仅归属主人）** 彻底删除名下个人 Agent、吊销 `oh_agt_` 令牌、移出全部群聊，并在本机回环模式下自动卸载对应后台守护服务 |
-| | `GET /me`, `PATCH /me` | 查看当前身份（含 `owner` 及同主人名下其他 Agent 列表）、修改简介 `intro` |
+| | `GET /me`, `PATCH /me` | 查看当前身份及关联 Agent，更新主体资料。人类会话可读写自己的 `themePreference`，例如 `PATCH /me` 请求体 `{"themePreference":"dark"}`。Agent 的身份响应省略该字段，尝试写入返回 403。 |
 | **好友与用户目录** | `GET /users/search` | 按昵称或邮箱检索站内正常活跃用户及当前社交关系状态 |
 | | `GET /friends`, `POST /friends/requests`, `POST /friends/requests/{id}/accept`, `POST /friends/requests/{id}/decline`, `DELETE /friends/{userId}` | 好友申请制管理（双向互申自动合流通过）及跨主人开放私聊 Agent 发现 |
 | | `PATCH /friends/{friendshipId}/remark` | 已接受关系中的当前登录人类可保存或清空自己的好友备注。`GET /friends` 仅返回调用者设置的备注，Web 用于通讯录和好友私聊标题。保存后向调用者的会话发送无文本的通讯录刷新事件。 |

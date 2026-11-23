@@ -13,12 +13,22 @@ import type {
   RoomId,
   RoomSummaryDto,
   RoomVisibility,
+  ThemePreference,
   UpdateOwnedAgentBody,
 } from "@openhuddle/protocol";
-import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  queryOptions,
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useCallback } from "react";
+import { toast } from "../../../components/primitives/index.js";
 import {
   ApiClientError,
   type CreatePairingCodeInput,
+  type HumanMeResponseDto,
   changePassword,
   confirmPasswordReset,
   connectLocalAgent,
@@ -40,7 +50,9 @@ import {
   verifyEmailOtp,
 } from "../../../lib/api-client.js";
 import { huddleQueryKeys } from "../../../lib/query-keys.js";
-import { setStoredSessionToken } from "../../../lib/session-store.js";
+import { navigateTo, setStoredSessionToken } from "../../../lib/session-store.js";
+
+const updateMeMutationKey = [...huddleQueryKeys.me(), "update"];
 
 /**
  * 构造认证与注册公开策略配置（`/api/v1/auth/config`）的 `queryOptions`。
@@ -170,18 +182,67 @@ export function useChangePasswordMutation() {
 }
 
 /**
- * 更新当前人类用户展示昵称的 Mutation Hook。
+ * 更新当前人类用户的展示昵称或外观偏好。
  *
  * @returns 更新成功后自动同步 `["me"]` 缓存的 `useMutation` 实例
  */
 export function useUpdateMeMutation() {
   const queryClient = useQueryClient();
+  const queryKey = huddleQueryKeys.me();
   return useMutation({
+    mutationKey: updateMeMutationKey,
     mutationFn: updateCurrentMe,
-    onSuccess: (data) => {
-      queryClient.setQueryData(huddleQueryKeys.me(), data);
+    onSuccess: async (data, patch) => {
+      if (queryClient.getQueryData<HumanMeResponseDto | null>(queryKey)?.user.id !== data.user.id) {
+        return;
+      }
+      // 旧请求应在保存完成后失效，但迟到的响应也不能写进已切换的账号。
+      await queryClient.cancelQueries({ queryKey, exact: true });
+      queryClient.setQueryData<HumanMeResponseDto | null>(queryKey, (current) =>
+        current?.user.id === data.user.id
+          ? {
+              ...current,
+              ...(patch.displayName !== undefined ? { user: data.user } : {}),
+              ...(patch.themePreference !== undefined && data.themePreference !== undefined
+                ? { themePreference: data.themePreference }
+                : {}),
+            }
+          : current,
+      );
     },
   });
+}
+
+/**
+ * 读取账号外观并保存用户选择。多个入口共用保存状态，避免重复写入。
+ *
+ * @returns 当前偏好、保存状态和选择回调。
+ */
+export function useAccountThemePreference() {
+  const { data } = useQuery({ ...currentMeQueryOptions(), enabled: false });
+  const preference = data?.themePreference ?? "auto";
+  const { mutate } = useUpdateMeMutation();
+  const isSaving = useIsMutating({ mutationKey: updateMeMutationKey }) > 0;
+  const setPreference = useCallback(
+    (nextPreference: ThemePreference) => {
+      if (data?.callerKind !== "human" || preference === nextPreference || isSaving) {
+        return;
+      }
+      mutate(
+        { themePreference: nextPreference },
+        {
+          onSuccess: (updated) => {
+            if (updated.themePreference !== nextPreference) {
+              toast.error("账号外观未保存，请稍后重试");
+            }
+          },
+          onError: () => toast.error("账号外观保存失败，请重试"),
+        },
+      );
+    },
+    [data?.callerKind, isSaving, mutate, preference],
+  );
+  return { preference, isSaving, setPreference };
 }
 
 /**
@@ -213,17 +274,29 @@ export function useVerifyOtpMutation() {
 }
 
 /**
- * 退出当前人类登录会话并清空敏感缓存的 Mutation Hook。
+ * 退出当前人类登录会话并清理本地登录数据的 Mutation Hook。
  *
- * @returns 注销成功后擦除本地令牌与 `QueryClient` 缓存的 `useMutation` 实例
+ * @returns 注销成功后回到首页并显示登录界面的 `useMutation` 实例
  */
 export function useLogoutMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: logoutSession,
-    onSettled: () => {
+    onSettled: async (_data, error) => {
       setStoredSessionToken(null);
-      queryClient.clear();
+      if (error !== null) {
+        queryClient.clear();
+        return;
+      }
+
+      const meQueryKey = huddleQueryKeys.me();
+      await queryClient.cancelQueries({ queryKey: meQueryKey, exact: true });
+      // 保留身份查询的订阅，让已经位于首页的工作台也立即切换到登录界面。
+      queryClient.setQueryData(meQueryKey, null);
+      const meQuery = queryClient.getQueryCache().find({ queryKey: meQueryKey });
+      queryClient.removeQueries({ predicate: (query) => query !== meQuery });
+      queryClient.getMutationCache().clear();
+      navigateTo("/", { replace: true });
     },
   });
 }

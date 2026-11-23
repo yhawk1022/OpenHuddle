@@ -669,6 +669,32 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
       expect(antigravityMe.owner.id).toBe(aliceSession.user.id);
       expect(antigravityMe.siblingAgents.some((a) => a.id === codexId)).toBe(true);
     }
+    expect(antigravityMe).not.toHaveProperty("themePreference");
+    expect(antigravityMe).not.toHaveProperty("owner.themePreference");
+    const changeAppearance = (sessionToken: string, body: unknown) =>
+      app.request("/api/v1/me", {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${sessionToken}`,
+        },
+        body: JSON.stringify(body),
+      });
+    expect((await changeAppearance(antigravityToken, { themePreference: "light" })).status).toBe(
+      403,
+    );
+    const aliceAppearance = await changeAppearance(aliceSession.sessionToken, {
+      themePreference: "light",
+      userId: bobSession.user.id,
+    });
+    expect(await aliceAppearance.json()).toMatchObject({
+      themePreference: "light",
+      user: { id: aliceSession.user.id },
+    });
+    const bobAppearance = await app.request("/api/v1/me", {
+      headers: { authorization: `Bearer ${bobSession.sessionToken}` },
+    });
+    expect(await bobAppearance.json()).toMatchObject({ themePreference: "auto" });
 
     // 5. 红队安全测试：外部成员 Bob 伪造 JSON 字段试图冒充主人下发恶意指令
     const aliceCmdRes = await app.request(`/api/v1/rooms/${roomId}/messages`, {

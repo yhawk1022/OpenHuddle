@@ -60,6 +60,7 @@ import {
   type RoomVisibility,
   type SendFriendRequestBody,
   type SendFriendRequestResponse,
+  type ThemePreference,
   type UpdateFriendRemarkBody,
   type UpdateFriendRemarkResponse,
   type UpdateGovernanceBody,
@@ -114,6 +115,7 @@ export interface HumanMeResponseDto {
   readonly ok: true;
   readonly callerKind: "human";
   readonly user: HumanUserDto;
+  readonly themePreference?: ThemePreference;
   readonly agents: ReadonlyArray<OwnedAgentSummaryDto>;
 }
 
@@ -439,9 +441,9 @@ export async function fetchCurrentMe(): Promise<HumanMeResponseDto> {
 }
 
 /**
- * 更新当前已登录人类用户的公开展示昵称。
+ * 更新当前已登录人类用户的展示昵称或账号外观偏好。
  *
- * @param body - 包含新 `displayName` 的资料更新载荷
+ * @param body - 待保存的账号资料字段
  * @returns 更新后的 `HumanMeResponseDto`
  */
 export async function updateCurrentMe(body: Readonly<UpdateMeBody>): Promise<HumanMeResponseDto> {

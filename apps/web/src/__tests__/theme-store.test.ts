@@ -2,24 +2,17 @@
  * @module web/__tests__/theme-store
  * @description 验证本地时间边界、固定模式和后台恢复后的主题同步。
  */
+import type { ThemePreference } from "@openhuddle/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { setThemePreference, startThemeSync } from "../lib/theme-store.js";
+import { startThemeSync } from "../lib/theme-store.js";
 
 let stopThemeSync: (() => void) | undefined;
 
-function mountThemeAt(now: Date, savedPreference?: string) {
+function mountThemeAt(now: Date, preference: ThemePreference = "auto") {
   vi.useFakeTimers();
   vi.setSystemTime(now);
-  const storage = new Map<string, string>();
-  if (savedPreference !== undefined) {
-    storage.set("oh_theme", savedPreference);
-  }
   const classes = new Set<string>();
   const browserWindow = Object.assign(new EventTarget(), {
-    localStorage: {
-      getItem: (key: string) => storage.get(key) ?? null,
-      setItem: (key: string, value: string) => storage.set(key, value),
-    },
     setTimeout,
     clearTimeout,
   });
@@ -39,8 +32,8 @@ function mountThemeAt(now: Date, savedPreference?: string) {
   });
   vi.stubGlobal("window", browserWindow);
   vi.stubGlobal("document", browserDocument);
-  stopThemeSync = startThemeSync();
-  return { browserDocument, storage, isDark: () => classes.has("dark") };
+  stopThemeSync = startThemeSync(preference);
+  return { browserDocument, isDark: () => classes.has("dark") };
 }
 
 afterEach(() => {
@@ -63,19 +56,12 @@ describe("theme schedule", () => {
     expect(isDark()).toBe(after);
   });
 
-  it("keeps a saved fixed mode until the user re-enables automatic switching", () => {
-    const { isDark, storage } = mountThemeAt(new Date(2026, 10, 23, 17, 59, 59), "light");
-    expect(vi.getTimerCount()).toBe(0);
+  it("stops the automatic schedule when switching to the guest theme", () => {
+    const { isDark } = mountThemeAt(new Date(2026, 10, 23, 6, 59, 59), "auto");
+    stopThemeSync?.();
+    stopThemeSync = startThemeSync("dark");
     vi.advanceTimersByTime(1_000);
-    expect(isDark()).toBe(false);
-
-    setThemePreference("auto");
-    expect(storage.get("oh_theme")).toBe("auto");
     expect(isDark()).toBe(true);
-
-    setThemePreference("light");
-    expect(storage.get("oh_theme")).toBe("light");
-    expect(isDark()).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
   });
 

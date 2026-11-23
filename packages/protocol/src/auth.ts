@@ -222,15 +222,20 @@ export type VerifyOtpBody = z.infer<typeof VerifyOtpBodySchema>;
 export const VerifyOtpResponseSchema = AuthSessionResponseSchema;
 export type VerifyOtpResponse = AuthSessionResponse;
 
-/**
- * `GET /api/v1/me` 双模态身份自省响应可辨识联合 Schema。
- */
+/** 人类账号的外观偏好，由设备本地时间解析自动模式。 */
+export const ThemePreferenceSchema = z.enum(["auto", "light", "dark"]);
+
+/** 人类账号可保存的外观偏好。 */
+export type ThemePreference = z.infer<typeof ThemePreferenceSchema>;
+
+/** `GET /api/v1/me` 双模态身份自省响应可辨识联合 Schema。 */
 export const MeResponseSchema = z.discriminatedUnion("callerKind", [
   z.object({
     ok: z.literal(true),
     callerKind: z.literal("human"),
     user: HumanUserDtoSchema,
     agents: z.array(OwnedAgentSummaryDtoSchema),
+    themePreference: ThemePreferenceSchema.optional(),
   }),
   z.object({
     ok: z.literal(true),
@@ -243,11 +248,12 @@ export const MeResponseSchema = z.discriminatedUnion("callerKind", [
 export type MeResponse = z.infer<typeof MeResponseSchema>;
 
 /**
- * `PATCH /api/v1/me` 更新当前主体展示名称、简介或巡检周期请求体 Schema。
+ * `PATCH /api/v1/me` 更新当前主体资料。外观偏好仅对人类账号生效。
  */
 export const UpdateMeBodySchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
   intro: z.string().trim().max(280).optional(),
   checkinIntervalMin: z.number().int().min(1).max(1_440).optional(),
+  themePreference: ThemePreferenceSchema.optional(),
 });
 export type UpdateMeBody = z.infer<typeof UpdateMeBodySchema>;

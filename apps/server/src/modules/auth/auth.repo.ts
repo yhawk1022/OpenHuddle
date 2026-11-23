@@ -23,6 +23,8 @@ import {
   type OtpPurpose,
   OtpPurposeSchema,
   type OwnedAgentSummaryDto,
+  type ThemePreference,
+  ThemePreferenceSchema,
   type UserId,
   type UserRole,
   UserRoleSchema,
@@ -784,16 +786,18 @@ export class AuthRepository {
   }
 
   /**
-   * 按主键查询人类用户公开资料。
+   * 按主键查询人类用户公开资料及独立的账号外观偏好。
    *
    * @param userId - 人类用户主键
    * @param adminEmails - 可选 `ADMIN_EMAILS` 白名单集合
-   * @returns `HumanUserDto` 或 `undefined`
+   * @returns 用户资料与外观偏好。分开返回以便 Agent 自省仅投影公开资料。
    */
   public async findUserById(
     userId: UserId,
     adminEmails?: ReadonlySet<string>,
-  ): Promise<HumanUserDto | undefined> {
+  ): Promise<
+    { readonly user: HumanUserDto; readonly themePreference: ThemePreference } | undefined
+  > {
     const rows = await this.db
       .select({
         id: usersTable.id,
@@ -803,6 +807,7 @@ export class AuthRepository {
         emailVerifiedAt: usersTable.emailVerifiedAt,
         role: usersTable.role,
         status: usersTable.status,
+        themePreference: usersTable.themePreference,
         createdAt: usersTable.createdAt,
       })
       .from(usersTable)
@@ -810,7 +815,13 @@ export class AuthRepository {
       .limit(1);
 
     const row = rows[0];
-    return row ? mapUserRowToDto(row, adminEmails) : undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    return {
+      user: mapUserRowToDto(row, adminEmails),
+      themePreference: ThemePreferenceSchema.catch("auto").parse(row.themePreference),
+    };
   }
 
   /**
@@ -873,13 +884,16 @@ export class AuthRepository {
   }
 
   /**
-   * 更新人类用户的公开展示名称。
+   * 在一次行更新中保存人类用户的展示昵称和外观偏好。
    *
    * @param userId - 人类用户主键
-   * @param displayName - 新展示昵称
+   * @param patch - 仅包含本次要写入的字段，避免覆盖其他会话的资料更新。
    */
-  public async updateHumanDisplayName(userId: UserId, displayName: string): Promise<void> {
-    await this.db.update(usersTable).set({ displayName }).where(eq(usersTable.id, userId));
+  public async updateHumanProfile(
+    userId: UserId,
+    patch: { readonly displayName?: string; readonly themePreference?: ThemePreference },
+  ): Promise<void> {
+    await this.db.update(usersTable).set(patch).where(eq(usersTable.id, userId));
   }
 
   /**

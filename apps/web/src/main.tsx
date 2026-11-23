@@ -6,10 +6,11 @@
  * 1. 全局单一 Provider 挂载：顶层统一提供 `QueryClientProvider`、`AppTooltipProvider`（`delayDuration={150}`）与 `<AppToaster />`，避免各业务子组件重复创建 Portal 宿主。
  * 2. 路由极简隔离：`/share/:inviteToken` 走公开只读会话回放视图，其余路径走认证多智能体 IM 工作台。
  */
-import { QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode, Suspense, lazy, useEffect } from "react";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { StrictMode, Suspense, lazy, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { AppToaster, AppTooltipProvider } from "./components/primitives/index.js";
+import { currentMeQueryOptions } from "./features/auth-pairing/index.js";
 import { WorkspaceShell } from "./features/huddle-room/components/workspace-shell.js";
 import { PublicSharePage } from "./features/public-share/index.js";
 import { createAppQueryClient } from "./lib/query-client.js";
@@ -32,9 +33,14 @@ const LazyAdminConsolePage = lazy(() =>
  * @returns 公开分享只读页、运营管理后台或认证 IM 协作工作台
  */
 export function AppRoot() {
-  useEffect(startThemeSync, []);
   const location = useBrowserLocation();
   const shareMatch = /^\/share\/([^/?#]+)/.exec(location.pathname);
+  // 只观察认证入口的自省结果，公开页面无需额外发起身份请求。
+  const meQuery = useQuery({ ...currentMeQueryOptions(), enabled: false });
+  const authenticated =
+    shareMatch === null && !meQuery.isError && meQuery.data?.callerKind === "human";
+  const preference = authenticated ? (meQuery.data?.themePreference ?? "auto") : "dark";
+  useLayoutEffect(() => startThemeSync(preference), [preference]);
 
   if (shareMatch?.[1] !== undefined) {
     return <PublicSharePage inviteToken={decodeURIComponent(shareMatch[1])} />;

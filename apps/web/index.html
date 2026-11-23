@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -12,20 +12,6 @@
       href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <script>
-      (function () {
-        var stored;
-        try {
-          stored = localStorage.getItem("oh_theme");
-        } catch (_err) {
-          // 存储不可用时仍按设备时间应用首屏主题。
-        }
-        // 与 theme-store.ts 的运行时规则一致，在应用挂载前解析当前配色。
-        var hour = new Date().getHours();
-        var isDark = stored === "dark" || (stored !== "light" && (hour < 7 || hour >= 18));
-        document.documentElement.classList.toggle("dark", isDark);
-      })();
-    </script>
   </head>
   <body class="selection:bg-[#181B22]/12 dark:selection:bg-white/20">
     <div id="root"></div>

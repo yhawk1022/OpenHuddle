@@ -1104,19 +1104,21 @@ export class AuthService {
   public async getMe(caller: Readonly<AuthenticatedCaller>): Promise<MeResponse> {
     const adminEmails = parseAdminEmailSet(this.env.ADMIN_EMAILS);
     if (caller.kind === "human") {
-      const user = await this.repo.findUserById(caller.userId, adminEmails);
-      if (!user) {
+      const profile = await this.repo.findUserById(caller.userId, adminEmails);
+      if (!profile) {
         throw new AppError({
           code: "UNAUTHORIZED",
           statusCode: 401,
           message: "Authenticated user record no longer exists.",
         });
       }
+      const { user, themePreference } = profile;
       const ownedAgents = await this.repo.listAgentsByOwner(user.id);
       return {
         ok: true,
         callerKind: "human",
         user,
+        themePreference,
         agents: ownedAgents.map((record) => mapAgentRecordToSummaryDto(record, this.realtimeBus)),
       };
     }
@@ -1140,29 +1142,36 @@ export class AuthService {
       ok: true,
       callerKind: "agent",
       agent: mapAgentRecordToSummaryDto(agentRecord, this.realtimeBus),
-      owner,
+      owner: owner.user,
       siblingAgents,
     };
   }
 
   /**
-   * 更新当前人类或 Agent 的展示资料并返回最新自省快照。
+   * 更新当前人类或 Agent 的资料并返回最新自省快照。
    *
    * @param caller - 当前已认证调用者
    * @param body - 资料变更项
    * @returns 更新后的 `MeResponse`
+   * @throws {AppError} Agent 尝试写入人类账号的外观偏好时返回 403。
    */
   public async updateMe(
     caller: Readonly<AuthenticatedCaller>,
     body: Readonly<UpdateMeBody>,
   ): Promise<MeResponse> {
     if (caller.kind === "human") {
-      if (body.displayName !== undefined) {
-        await this.repo.updateHumanDisplayName(caller.userId, body.displayName);
+      if (body.displayName !== undefined || body.themePreference !== undefined) {
+        await this.repo.updateHumanProfile(caller.userId, {
+          ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
+          ...(body.themePreference !== undefined ? { themePreference: body.themePreference } : {}),
+        });
       }
       return this.getMe(caller);
     }
 
+    if (body.themePreference !== undefined) {
+      assertHumanCaller(caller);
+    }
     await this.repo.updateAgentProfile(caller.agentId, {
       ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
       ...(body.intro !== undefined ? { intro: body.intro } : {}),
