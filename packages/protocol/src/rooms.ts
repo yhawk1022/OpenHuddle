@@ -24,6 +24,40 @@ import {
 } from "./ids.js";
 
 /**
+ * 会话房间模态分类枚举（ADR-0005）。
+ * - `group`：多方群聊协作与决策房间（Huddle）
+ * - `direct_agent`：人类与单个 Agent 的 1v1 单聊会话（本人 Agent 或已开启 `allowExternalDm` 的外部 Agent）
+ * - `direct_human`：两名已建立好友关系的人类用户之间的 1v1 私聊会话
+ */
+export const RoomKindSchema = z.enum(["group", "direct_agent", "direct_human"]);
+export type RoomKind = z.infer<typeof RoomKindSchema>;
+
+/**
+ * 1v1 单聊会话针对当前查看者视角动态解析的对端身份信息 Schema（ADR-0005）。
+ */
+export const DirectChatPeerDtoSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("human"),
+    userId: UserIdSchema,
+    displayName: z.string().min(1).max(80),
+    email: z.string().email().optional(),
+  }),
+  z.object({
+    kind: z.literal("agent"),
+    agentId: AgentIdSchema,
+    displayName: z.string().min(1).max(80),
+    slug: z.string().min(1).max(80),
+    platform: AgentPlatformSchema,
+    intro: z.string().max(280).optional(),
+    reach: AgentReachStateSchema,
+    ownerUserId: UserIdSchema,
+    ownerDisplayName: z.string().min(1).max(80),
+    allowExternalDm: z.boolean(),
+  }),
+]);
+export type DirectChatPeerDto = z.infer<typeof DirectChatPeerDtoSchema>;
+
+/**
  * 房间可见性策略枚举。
  */
 export const RoomVisibilitySchema = z.enum(["invite_only", "public_shareable"]);
@@ -40,6 +74,7 @@ export type RoomMemberRole = z.infer<typeof RoomMemberRoleSchema>;
  */
 export const RoomSummaryDtoSchema = z.object({
   id: RoomIdSchema,
+  kind: RoomKindSchema.default("group"),
   ownerUserId: UserIdSchema,
   name: z.string().trim().min(1).max(100),
   topic: z.string().trim().max(500),
@@ -47,6 +82,7 @@ export const RoomSummaryDtoSchema = z.object({
   lastSeq: ReadCursorSeqSchema,
   yourLastReadSeq: ReadCursorSeqSchema,
   governance: RoomGovernanceStateSchema,
+  peer: DirectChatPeerDtoSchema.optional(),
   createdAtIso: z.string().datetime(),
 });
 export type RoomSummaryDto = z.infer<typeof RoomSummaryDtoSchema>;
@@ -61,6 +97,9 @@ export const RoomMemberDtoSchema = z.object({
   ownerUserId: UserIdSchema,
   ownerDisplayName: z.string().min(1).max(80),
   displayName: z.string().min(1).max(80),
+  slug: z.string().min(1).max(80).optional(),
+  intro: z.string().max(280).optional(),
+  allowExternalDm: z.boolean().optional(),
   role: RoomMemberRoleSchema,
   platform: AgentPlatformSchema.optional(),
   reach: AgentReachStateSchema.optional(),
@@ -93,8 +132,52 @@ export const CreateRoomBodySchema = z.object({
    * 服务端逐个校验归属后写入成员表，替代"生成提示词让 Agent 自己进群"的旧链路）。
    */
   initialAgentIds: z.array(AgentIdSchema).max(10).default([]),
+  /**
+   * 建群时直接拉入的已添加人类好友列表（ADR-0005：服务端逐个校验双方 `accepted` 好友关系）。
+   */
+  initialUserIds: z.array(UserIdSchema).max(50).default([]),
 });
 export type CreateRoomBody = z.infer<typeof CreateRoomBodySchema>;
+
+/**
+ * 向现有群聊房间直接拉入好友或本人名下 Agent 的请求体 Schema（ADR-0005）。
+ */
+export const AddRoomMembersBodySchema = z
+  .object({
+    userIds: z.array(UserIdSchema).max(50).default([]),
+    agentIds: z.array(AgentIdSchema).max(20).default([]),
+  })
+  .refine(
+    (val) => val.userIds.length > 0 || val.agentIds.length > 0,
+    "At least one userId or agentId must be provided",
+  );
+export type AddRoomMembersBody = z.infer<typeof AddRoomMembersBodySchema>;
+
+/**
+ * 打开或幂等复用与指定 Agent 的 1v1 单聊会话请求体 Schema（ADR-0005）。
+ */
+export const OpenDirectAgentRoomBodySchema = z.object({
+  agentId: AgentIdSchema,
+});
+export type OpenDirectAgentRoomBody = z.infer<typeof OpenDirectAgentRoomBodySchema>;
+
+/**
+ * 打开或幂等复用与指定人类好友的 1v1 私聊会话请求体 Schema（ADR-0005）。
+ */
+export const OpenDirectHumanRoomBodySchema = z.object({
+  targetUserId: UserIdSchema,
+});
+export type OpenDirectHumanRoomBody = z.infer<typeof OpenDirectHumanRoomBodySchema>;
+
+/**
+ * 打开或复用 1v1 单聊会话成功响应体 Schema（`created` 标识本次是否为首次创建）。
+ */
+export const OpenDirectRoomResponseSchema = z.object({
+  ok: z.literal(true),
+  created: z.boolean(),
+  room: RoomDetailDtoSchema,
+});
+export type OpenDirectRoomResponse = z.infer<typeof OpenDirectRoomResponseSchema>;
 
 /**
  * 凭邀请令牌加入房间请求体 Schema。
@@ -217,6 +300,25 @@ export const ConnectLocalAgentResponseSchema = z.object({
   serviceId: z.string(),
 });
 export type ConnectLocalAgentResponse = z.infer<typeof ConnectLocalAgentResponseSchema>;
+
+/**
+ * 人类主人更新名下指定 Agent 资料或外部私聊权限请求体 Schema（ADR-0005）。
+ */
+export const UpdateOwnedAgentBodySchema = z.object({
+  displayName: z.string().trim().min(2).max(60).optional(),
+  intro: z.string().trim().max(280).optional(),
+  allowExternalDm: z.boolean().optional(),
+});
+export type UpdateOwnedAgentBody = z.infer<typeof UpdateOwnedAgentBodySchema>;
+
+/**
+ * 人类主人更新名下指定 Agent 成功响应体 Schema。
+ */
+export const UpdateOwnedAgentResponseSchema = z.object({
+  ok: z.literal(true),
+  agent: OwnedAgentSummaryDtoSchema,
+});
+export type UpdateOwnedAgentResponse = z.infer<typeof UpdateOwnedAgentResponseSchema>;
 
 /**
  * 人类主人彻底删除名下个人 Agent 成功响应体 Schema。

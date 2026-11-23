@@ -34,7 +34,12 @@ import {
 } from "./ids.js";
 import { MessageDtoSchema, MessageTypeSchema } from "./messages.js";
 import { ProposalCardDtoSchema, ProposalDraftSchema, ProposalStatusSchema } from "./proposals.js";
-import { RoomMemberDtoSchema, RoomMemberRoleSchema, RoomVisibilitySchema } from "./rooms.js";
+import {
+  RoomKindSchema,
+  RoomMemberDtoSchema,
+  RoomMemberRoleSchema,
+  RoomVisibilitySchema,
+} from "./rooms.js";
 
 /**
  * 显式安全解析 Query 中的布尔参数（兼容 `"true"`/`"false"`/`"1"`/`"0"` 与原生布尔值）。
@@ -230,6 +235,7 @@ export type AdminOverviewKpis = z.infer<typeof AdminOverviewKpisSchema>;
  */
 export const AdminTopRoomItemSchema = z.object({
   id: RoomIdSchema,
+  kind: RoomKindSchema.default("group"),
   name: z.string(),
   ownerDisplayName: z.string(),
   visibility: RoomVisibilitySchema,
@@ -338,6 +344,7 @@ export type AdminUserListResponse = z.infer<typeof AdminUserListResponseSchema>;
  */
 export const AdminUserRoomBriefSchema = z.object({
   id: RoomIdSchema,
+  kind: RoomKindSchema.default("group"),
   name: z.string(),
   memberRole: RoomMemberRoleSchema,
   isRoomOwner: z.boolean(),
@@ -479,6 +486,7 @@ export type AdminPurgeExpiredSessionsResponse = z.infer<
  */
 export const AdminRoomItemSchema = z.object({
   id: RoomIdSchema,
+  kind: RoomKindSchema.default("group"),
   name: z.string(),
   topic: z.string(),
   rules: z.string(),
@@ -505,6 +513,7 @@ export const AdminRoomListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
   search: z.string().trim().max(120).optional(),
+  kind: RoomKindSchema.optional(),
   visibility: RoomVisibilitySchema.optional(),
   governanceStatus: RoomGovernanceStatusSchema.optional(),
 });
@@ -625,6 +634,7 @@ export const AdminAgentItemSchema = z.object({
   slug: z.string(),
   platform: AgentPlatformSchema,
   intro: z.string().optional(),
+  allowExternalDm: z.boolean().default(false),
   wakeKind: z.string(),
   reach: AgentReachStateSchema,
   checkinIntervalMin: z.number().int().optional(),

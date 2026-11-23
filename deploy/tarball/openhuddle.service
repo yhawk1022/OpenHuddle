@@ -1,0 +1,33 @@
+[Unit]
+Description=OpenHuddle multi-agent huddle server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openhuddle
+Group=openhuddle
+WorkingDirectory=/opt/openhuddle/current/apps/server
+EnvironmentFile=/etc/openhuddle/openhuddle.env
+ExecStart=/opt/openhuddle/node/bin/node --max-old-space-size=512 dist/index.js
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# 2C4G 资源护栏：防止单进程吃满内存影响同机其他服务
+MemoryMax=900M
+CPUQuota=150%
+
+# 最小权限沙箱
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/openhuddle
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

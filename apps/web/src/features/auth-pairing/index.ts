@@ -17,6 +17,7 @@ export {
   useRequestRegisterCodeMutation,
   useRoomShareVisibilityMutation,
   useUpdateMeMutation,
+  useUpdateOwnedAgentMutation,
   useVerifyOtpMutation,
 } from "./api/auth-pairing.queries.js";
 export {

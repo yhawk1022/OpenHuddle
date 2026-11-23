@@ -436,7 +436,8 @@ export function AdminConsolePage() {
   const meQuery = useQuery(currentMeQueryOptions());
   const logoutMutation = useLogoutMutation();
 
-  if (meQuery.isPending) {
+  // 后台入口与工作台共用认证表单，重试时保持用户输入。
+  if (meQuery.isPending && !meQuery.isFetched) {
     return (
       <main className="flex h-dvh flex-col items-center justify-center gap-2.5 bg-app-frame text-im-fg">
         <Shield className="h-6 w-6 animate-pulse text-im-muted" />

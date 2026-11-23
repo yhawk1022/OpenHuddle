@@ -6,7 +6,7 @@
  * 1. 严格事务后投递（Post-Commit Only）：上游服务必须在数据库事务成功提交后才允许调用 `publish*`，绝不允许把未提交数据推送给订阅者。
  * 2. 单机零依赖、多进程平滑演进：默认采用 `InMemoryRealtimeBus`（零外部容器、微秒级延迟）；后续多进程部署实现相同接口挂载 `Postgres LISTEN/NOTIFY` 即可无缝切换。
  */
-import type { AgentId, RoomId, SseEvent } from "@openhuddle/protocol";
+import type { AgentId, RoomId, SseEvent, UserId } from "@openhuddle/protocol";
 
 /** 订阅取消函数签名 */
 export type UnsubscribeFn = () => void;
@@ -36,6 +36,11 @@ export interface RealtimeBus {
   publishToAgent(agentId: AgentId, event: SseEvent): Promise<void>;
 
   /**
+   * 向指定人类用户的所有活跃 Web SSE 连接定向推送事件（如 `room.upserted` 新私聊/新入群通知、`friendship.updated` 好友动态）。
+   */
+  publishToUser(userId: UserId, event: SseEvent): Promise<void>;
+
+  /**
    * 订阅某个房间的实时事件流。
    * @returns 调用后立即解除监听的清理函数
    */
@@ -48,6 +53,12 @@ export interface RealtimeBus {
   subscribeAgent(agentId: AgentId, listener: (event: SseEvent) => void): UnsubscribeFn;
 
   /**
+   * 订阅某个人类用户的专属事件流（接收跨人新建单聊、拉群与好友通知）。
+   * @returns 调用后立即解除监听的清理函数
+   */
+  subscribeUser(userId: UserId, listener: (event: SseEvent) => void): UnsubscribeFn;
+
+  /**
    * 获取指定 Agent 当前挂载的活跃实时 SSE 连接数量（用于实时计算 `online_sse` 在线状态灯）。
    */
   getActiveAgentConnectionCount(agentId: AgentId): number;
@@ -56,6 +67,11 @@ export interface RealtimeBus {
    * 当某个 Agent 被其主人彻底删除吊销时，立即驱逐该 Agent 名下挂载的所有内存唤醒订阅器。
    */
   evictAgentSubscribers(agentId: AgentId): void;
+
+  /**
+   * 当某个人类账号被封禁或删除时，立即驱逐该用户名下挂载的内存订阅器。
+   */
+  evictUserSubscribers(userId: UserId): void;
 
   /**
    * 当某个群聊房间被群主彻底删除时，在投递 `room.deleted` 广播后立即清理该房间残留的监听器集合，防止内存泄漏。
@@ -79,6 +95,7 @@ export interface RealtimeBus {
 export class InMemoryRealtimeBus implements RealtimeBus {
   private readonly roomSubscribers = new Map<RoomId, Set<(event: SseEvent) => void>>();
   private readonly agentSubscribers = new Map<AgentId, Set<(event: SseEvent) => void>>();
+  private readonly userSubscribers = new Map<UserId, Set<(event: SseEvent) => void>>();
 
   /** {@inheritDoc RealtimeBus.publishToRoom} */
   public async publishToRoom(roomId: RoomId, event: SseEvent): Promise<void> {
@@ -94,6 +111,17 @@ export class InMemoryRealtimeBus implements RealtimeBus {
   /** {@inheritDoc RealtimeBus.publishToAgent} */
   public async publishToAgent(agentId: AgentId, event: SseEvent): Promise<void> {
     const listeners = this.agentSubscribers.get(agentId);
+    if (!listeners) {
+      return;
+    }
+    for (const listener of listeners) {
+      listener(event);
+    }
+  }
+
+  /** {@inheritDoc RealtimeBus.publishToUser} */
+  public async publishToUser(userId: UserId, event: SseEvent): Promise<void> {
+    const listeners = this.userSubscribers.get(userId);
     if (!listeners) {
       return;
     }
@@ -144,6 +172,27 @@ export class InMemoryRealtimeBus implements RealtimeBus {
     };
   }
 
+  /** {@inheritDoc RealtimeBus.subscribeUser} */
+  public subscribeUser(userId: UserId, listener: (event: SseEvent) => void): UnsubscribeFn {
+    let set = this.userSubscribers.get(userId);
+    if (!set) {
+      set = new Set();
+      this.userSubscribers.set(userId, set);
+    }
+    set.add(listener);
+
+    return () => {
+      const current = this.userSubscribers.get(userId);
+      if (!current) {
+        return;
+      }
+      current.delete(listener);
+      if (current.size === 0) {
+        this.userSubscribers.delete(userId);
+      }
+    };
+  }
+
   /** {@inheritDoc RealtimeBus.getActiveAgentConnectionCount} */
   public getActiveAgentConnectionCount(agentId: AgentId): number {
     return this.agentSubscribers.get(agentId)?.size ?? 0;
@@ -152,6 +201,11 @@ export class InMemoryRealtimeBus implements RealtimeBus {
   /** {@inheritDoc RealtimeBus.evictAgentSubscribers} */
   public evictAgentSubscribers(agentId: AgentId): void {
     this.agentSubscribers.delete(agentId);
+  }
+
+  /** {@inheritDoc RealtimeBus.evictUserSubscribers} */
+  public evictUserSubscribers(userId: UserId): void {
+    this.userSubscribers.delete(userId);
   }
 
   /** {@inheritDoc RealtimeBus.evictRoomSubscribers} */
@@ -181,5 +235,6 @@ export class InMemoryRealtimeBus implements RealtimeBus {
   public async close(): Promise<void> {
     this.roomSubscribers.clear();
     this.agentSubscribers.clear();
+    this.userSubscribers.clear();
   }
 }

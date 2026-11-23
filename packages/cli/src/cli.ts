@@ -8,14 +8,15 @@
  * 3. 乐观并发读锁自动衔接：`read` 自动在本地推进房间 `lastReadSeq`，`send` 自动携带该游标并在命中 `409` 时打印漏读上下文。
  */
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   AgentId,
   AgentPlatform,
   CastProposalVoteBody,
+  MessageDto,
   MessageMention,
   MessageSeq,
   OperationKey,
@@ -37,10 +38,15 @@ import {
   spawnDetachedDaemonWorker,
   stopDaemonService,
 } from "./daemon-manager.js";
+import { isPresetCliBinaryAvailable } from "./host-env.js";
 import { OpenHuddleApiError, OpenHuddleHttpClient, formatOpenHuddleError } from "./http-client.js";
+import { runCliMcpStdioServer } from "./mcp-stdio.js";
 import {
+  type WakeAgentPreset,
   type WakeExecutionTarget,
   parseWakeAgentPreset,
+  parseWakeEventFrame,
+  readSseFrames,
   startSseListener,
 } from "./sse-listener.js";
 import {
@@ -49,8 +55,12 @@ import {
   getDefaultTokenFilePath,
   getRoomLastReadSeq,
   normalizeServerUrl,
+  readActiveCliProfile,
   readStoredCredentials,
+  rememberDefaultRoomId,
+  sanitizeTokenSlug,
   updateRoomLastReadSeq,
+  writeActiveCliProfile,
   writeStoredCredentials,
 } from "./token-store.js";
 
@@ -78,6 +88,8 @@ export interface CliExecutionContext {
   readonly stdout?: (line: string) => void;
   readonly stderr?: (line: string) => void;
   readonly daemonDeps?: DaemonSystemDeps;
+  readonly hasPresetBinary?: (preset: WakeAgentPreset) => boolean;
+  readonly mcpInputStream?: AsyncIterable<string | Buffer>;
   readonly listenerSignal?: AbortSignal;
   readonly cliScriptPath?: string;
   readonly nodeBinaryPath?: string;
@@ -87,7 +99,9 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "--json",
   "--reclaim",
   "--listen",
+  "--no-listen",
   "--greet",
+  "--no-greet",
   "--ignore-unread",
   "--help",
   "-h",
@@ -185,6 +199,15 @@ export function parseCliArgs(argv: readonly string[], customHomeDir?: string): P
         pushFlag(flagName, value);
         if (rawFlag === "--token-file") {
           tokenFilePath = value;
+          hasExplicitTokenFile = true;
+        } else if (rawFlag === "--profile" && !hasExplicitTokenFile) {
+          const baseHome = customHomeDir ?? homedir();
+          tokenFilePath = join(
+            baseHome,
+            ".openhuddle",
+            "tokens",
+            `${sanitizeTokenSlug(value)}.token`,
+          );
           hasExplicitTokenFile = true;
         } else if (rawFlag === "--server") {
           serverUrl = normalizeServerUrl(value);
@@ -426,42 +449,89 @@ function resolveWakeTarget(
 }
 
 /**
+ * 从配对码或完整接入 URL（如 `https://huddle.example.com?code=HUDDLE-XXXX`）中提取配对码与可选内嵌服务地址。
+ *
+ * @param rawInput - 原始配对码或接入链接
+ * @returns 配对码与可选解析出的 `serverUrl`
+ */
+function parseConnectInput(rawInput: string | undefined): {
+  readonly code?: string;
+  readonly embeddedServerUrl?: string;
+  readonly embeddedName?: string;
+  readonly embeddedPlatform?: AgentPlatform;
+} {
+  if (rawInput === undefined || rawInput.trim().length === 0) {
+    return {};
+  }
+  const trimmed = rawInput.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      const queryCode = url.searchParams.get("code")?.trim();
+      const queryName = url.searchParams.get("name")?.trim();
+      const queryPlatform = resolveAgentPlatform(url.searchParams.get("platform") ?? undefined);
+      const pathSegments = url.pathname.split("/").filter((s) => s.length > 0);
+      const lastSeg = pathSegments[pathSegments.length - 1];
+      const fallbackCode =
+        lastSeg !== undefined && /^HUDDLE-/i.test(lastSeg) ? lastSeg.trim() : undefined;
+      const finalCode = queryCode && queryCode.length > 0 ? queryCode : fallbackCode;
+      return {
+        ...(finalCode !== undefined ? { code: finalCode } : {}),
+        embeddedServerUrl: normalizeServerUrl(url.origin),
+        ...(queryName !== undefined && queryName.length > 0 ? { embeddedName: queryName } : {}),
+        ...(queryPlatform !== undefined ? { embeddedPlatform: queryPlatform } : {}),
+      };
+    } catch {
+      return { code: trimmed };
+    }
+  }
+  return { code: trimmed };
+}
+
+/**
  * 渲染 CLI 帮助手册文本。
  *
  * @returns 多行帮助说明
  */
 function buildHelpText(): string {
   return [
-    "OpenHuddle CLI v0.1.0 — Zero-Dependency Personal Agent Bridge",
-    "Usage: node openhuddle.mjs <command> [options]",
+    "OpenHuddle CLI v0.1.0 — Cloud & Cross-Platform Personal Agent Bridge",
+    "Usage: openhuddle <command> [options]",
     "",
     "Global Options:",
     "  --server <url>                OpenHuddle server URL (or OPENHUDDLE_URL)",
-    "  --token-file <path>           Isolated agent token path (default: ~/.openhuddle/tokens/default.token)",
+    "  --token-file <path>           Isolated agent token path (or --profile <slug>)",
     "  --json                        Emit machine-readable JSON output",
     "",
     "Commands:",
+    "  connect <codeOrUrl> [--name <n>] [--platform <p>] [--reclaim] [--no-listen] [--no-greet]",
+    "                                Agile 1-step connect for cloud containers, remote VMs & local hosts",
     "  pair <code> --name <n> --platform <p> [--listen] [--greet] [--intro <text>] [--reclaim]",
     "                                Bind agent, optionally start SSE daemon & post join greeting in 1 step",
     "  whoami                        Inspect authenticated agent, human owner & sibling agents",
     "  profile [--name <n>] [--intro <text>] [--checkin-interval <min>]",
     "                                Update agent display name, intro, or check-in cadence",
     "  inbox [--wait <0..25>]        Fetch pending mentions, owner commands & unread summary",
+    "  wait [--room <id>] [--timeout <1..300>]",
+    "                                Block on SSE / long-polling until woken, then read new messages",
     "  rooms                         List joined Huddle rooms and governance states",
     "  create <name> [--topic <t>] [--rules <r>] [--visibility invite_only|public_shareable]",
     "                                Create a new Huddle room",
     "  join <inviteTokenOrUrl>       Join a room via invite token or invite link",
-    "  members <roomId>              List room members with owner attribution & live reach state",
-    "  read <roomId> [--after <seq>] [--limit <n>]",
+    "  members [roomId]              List room members with owner attribution & live reach state",
+    "  read [roomId] [--after <seq>] [--limit <n>]",
     "                                Read incremental messages and advance local lastReadSeq cursor",
+    "  reply <content> [--room <id>] [--reply <seq>] [--ignore-unread]",
+    "                                Reply to active/default room with automatic read-lock cursor",
     "  send <roomId> <content> [--reply <seq>] [--last-read-seq <seq>] [--ignore-unread]",
     "                                Send message with automatic optimistic read-lock cursor",
-    "  propose <roomId> (--draft-json <json> | --title <t> --summary <s> --option <k:l:s>)",
+    "  propose [roomId] (--draft-json <json> | --title <t> --summary <s> --option <k:l:s>)",
     "                                Submit a structured multi-option proposal card (or --list)",
     "  vote <proposalId> --stance <endorse|challenge|abstain> --rationale <text> [--option <key>]",
     "                                Cast a structured vote on a proposal card",
     "  listen <run|install|status|stop> [--agent antigravity|codex|claude_code|gemini | --run <cmd>]",
-    "                                Run or manage macOS/Linux/Windows background SSE wake daemon",
+    "                                Run or manage macOS/Linux/Windows/Container SSE wake daemon",
+    "  mcp                           Start built-in zero-dependency MCP stdio JSON-RPC server",
     "  help                          Show this command reference",
   ].join("\n");
 }
@@ -497,19 +567,23 @@ export async function runCli(
         ok: true,
         version: "0.1.0",
         commands: [
+          "connect",
           "pair",
           "whoami",
           "profile",
           "inbox",
+          "wait",
           "rooms",
           "create",
           "join",
           "members",
           "read",
+          "reply",
           "send",
           "propose",
           "vote",
           "listen",
+          "mcp",
           "help",
         ],
       });
@@ -520,46 +594,102 @@ export async function runCli(
   }
 
   try {
-    if (parsed.command === "pair") {
-      const pairingCode = parsed.positionals[0]?.trim() ?? getLastFlag(parsed, "code")?.trim();
-      const requestedName = getLastFlag(parsed, "name")?.trim();
-      const platform = resolveAgentPlatform(getLastFlag(parsed, "platform"));
+    if (parsed.command === "pair" || parsed.command === "connect") {
+      const isConnect = parsed.command === "connect";
+      const parsedInput = parseConnectInput(parsed.positionals[0] ?? getLastFlag(parsed, "code"));
+      const pairingCode = parsedInput.code;
+      const effectivePairServerUrl = parsed.hasExplicitServerUrl
+        ? parsed.serverUrl
+        : (parsedInput.embeddedServerUrl ?? parsed.serverUrl);
+
+      const explicitPlatform =
+        resolveAgentPlatform(getLastFlag(parsed, "platform")) ?? parsedInput.embeddedPlatform;
+      const platform: AgentPlatform | undefined = isConnect
+        ? (explicitPlatform ?? "custom")
+        : explicitPlatform;
+
+      const explicitName = getLastFlag(parsed, "name")?.trim() ?? parsedInput.embeddedName;
+      const requestedName = isConnect
+        ? explicitName && explicitName.length > 0
+          ? explicitName
+          : `Agent-${platform === "custom" ? "Cloud" : platform}-${(pairingCode ?? "0000").slice(-4)}`
+        : explicitName;
+
       const intro = getLastFlag(parsed, "intro")?.trim();
       const reclaim = parsed.booleanFlags.has("--reclaim");
-      const listenRequested = parsed.booleanFlags.has("--listen");
-      const greetRequested = parsed.booleanFlags.has("--greet");
+      const listenRequested = isConnect
+        ? !parsed.booleanFlags.has("--no-listen")
+        : parsed.booleanFlags.has("--listen");
+      const greetRequested = isConnect
+        ? !parsed.booleanFlags.has("--no-greet")
+        : parsed.booleanFlags.has("--greet");
 
       if (!pairingCode || !requestedName || platform === undefined) {
         writeErr(
-          "Usage: openhuddle pair <code> --name <name> --platform <antigravity|codex|claude_code|cursor|deepseek|openclaw|gemini|chatgpt|hosted|custom> [--listen] [--greet] [--intro <text>] [--reclaim]",
+          isConnect
+            ? "Usage: openhuddle connect <codeOrUrl> [--name <name>] [--platform <platform>] [--server <url>] [--reclaim] [--no-listen] [--no-greet]"
+            : "Usage: openhuddle pair <code> --name <name> --platform <antigravity|codex|claude_code|cursor|deepseek|openclaw|gemini|chatgpt|hosted|custom> [--listen] [--greet] [--intro <text>] [--reclaim]",
         );
         return 1;
       }
 
+      const inspectExistingTokenFn = async (probeUrl: string, existingToken: string) => {
+        try {
+          const probeClient = new OpenHuddleHttpClient({
+            serverUrl: probeUrl,
+            token: existingToken,
+            ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
+          });
+          return await probeClient.getMe();
+        } catch (err) {
+          if (err instanceof OpenHuddleApiError && err.status === 401) {
+            return undefined;
+          }
+          return undefined;
+        }
+      };
+
+      // `connect` 未显式指定 `--token-file` 时自动按 slug 分配独立凭据路径（被其他活跃 Agent 占用时自动顺延 `-2`, `-3`），彻底免除手工挑选路径
+      let targetTokenFilePath = parsed.tokenFilePath;
+      if (isConnect && !parsed.hasExplicitTokenFile) {
+        const baseSlug = sanitizeTokenSlug(getLastFlag(parsed, "slug") ?? requestedName);
+        let candidateSlug = baseSlug;
+        let suffixIdx = 2;
+        while (suffixIdx <= 20) {
+          const candidatePath = join(baseHome, ".openhuddle", "tokens", `${candidateSlug}.token`);
+          if (!existsSync(candidatePath)) {
+            targetTokenFilePath = candidatePath;
+            break;
+          }
+          const check = await checkTokenFileCollision({
+            tokenFilePath: candidatePath,
+            serverUrl: effectivePairServerUrl,
+            pairingCode,
+            requestedName,
+            requestedPlatform: platform,
+            reclaim,
+            homeDir: baseHome,
+            inspectExistingToken: inspectExistingTokenFn,
+          });
+          if (check.status === "clear") {
+            targetTokenFilePath = candidatePath;
+            break;
+          }
+          candidateSlug = `${baseSlug}-${suffixIdx}`;
+          suffixIdx += 1;
+        }
+      }
+
       // 配对前防覆盖卫士：在核销一次性配对码前，先用本地既有 Token 调用 GET /api/v1/me 检查是否属于另一活跃 Agent
       const collision = await checkTokenFileCollision({
-        tokenFilePath: parsed.tokenFilePath,
-        serverUrl: parsed.serverUrl,
+        tokenFilePath: targetTokenFilePath,
+        serverUrl: effectivePairServerUrl,
         pairingCode,
         requestedName,
         requestedPlatform: platform,
         reclaim,
         homeDir: baseHome,
-        inspectExistingToken: async (probeUrl, existingToken) => {
-          try {
-            const probeClient = new OpenHuddleHttpClient({
-              serverUrl: probeUrl,
-              token: existingToken,
-              ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
-            });
-            return await probeClient.getMe();
-          } catch (err) {
-            if (err instanceof OpenHuddleApiError && err.status === 401) {
-              return undefined;
-            }
-            return undefined;
-          }
-        },
+        inspectExistingToken: inspectExistingTokenFn,
       });
 
       if (collision.status === "collision") {
@@ -582,7 +712,7 @@ export async function runCli(
       }
 
       const unauthClient = new OpenHuddleHttpClient({
-        serverUrl: parsed.serverUrl,
+        serverUrl: effectivePairServerUrl,
         ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
       });
       const pairRes = await unauthClient.pairAgent({
@@ -593,27 +723,66 @@ export async function runCli(
         reclaim,
       });
 
-      writeStoredCredentials(parsed.tokenFilePath, pairRes.token, {
-        serverUrl: parsed.serverUrl,
+      const nowIso = new Date().toISOString();
+      writeStoredCredentials(targetTokenFilePath, pairRes.token, {
+        serverUrl: effectivePairServerUrl,
         agentId: pairRes.agent.id,
         slug: pairRes.agent.slug,
         displayName: pairRes.agent.displayName,
         platform: pairRes.agent.platform,
-        updatedAtIso: new Date().toISOString(),
+        ...(pairRes.autoJoinedRoomId !== undefined
+          ? { defaultRoomId: pairRes.autoJoinedRoomId }
+          : {}),
+        updatedAtIso: nowIso,
       });
+      writeActiveCliProfile(
+        {
+          tokenFilePath: resolve(targetTokenFilePath),
+          serverUrl: effectivePairServerUrl,
+          agentId: pairRes.agent.id,
+          slug: pairRes.agent.slug,
+          displayName: pairRes.agent.displayName,
+          platform: pairRes.agent.platform,
+          ...(pairRes.autoJoinedRoomId !== undefined
+            ? { defaultRoomId: pairRes.autoJoinedRoomId }
+            : {}),
+          updatedAtIso: nowIso,
+        },
+        baseHome,
+      );
 
-      // 一键极速体验（1）：先发送进群打招呼消息，推进服务端与本地 `lastReadSeq` 游标并即时通过 SSE 通知前端群聊时间线
+      // 先判定当前环境是否具备可常驻拉起的本地预设 CLI 或自定义 `--run` 脚本，以便生成准确的报到文案
+      const explicitRunCmd = getLastFlag(parsed, "run");
+      const explicitAgentPreset = getLastFlag(parsed, "agent");
+      const inferredPreset = parseWakeAgentPreset(pairRes.agent.platform);
+      const checkPresetBinary =
+        context.hasPresetBinary ??
+        (context.daemonDeps !== undefined
+          ? (): boolean => true
+          : (preset: WakeAgentPreset): boolean => isPresetCliBinaryAvailable(preset, baseHome));
+
+      const canStartBackgroundListener =
+        listenRequested &&
+        (explicitRunCmd !== undefined ||
+          explicitAgentPreset !== undefined ||
+          (inferredPreset !== undefined && checkPresetBinary(inferredPreset)));
+
+      // 一键极速体验（1）：发送进群打招呼消息，推进服务端与本地 `lastReadSeq` 游标并即时通知前端群聊时间线
       let greetedMessageSeq: MessageSeq | undefined;
       if (greetRequested && pairRes.autoJoinedRoomId !== undefined) {
         try {
           const authedClient = new OpenHuddleHttpClient({
-            serverUrl: parsed.serverUrl,
+            serverUrl: effectivePairServerUrl,
             token: pairRes.token,
             ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
           });
-          const greetingContent = reclaim
-            ? `${pairRes.agent.displayName} 已重新连回群聊并恢复实时监听，直接 @ 我即可继续讨论。`
-            : `大家好，我是 ${pairRes.agent.displayName}，已连入群聊并开启实时监听，直接 @ 我即可开始讨论。`;
+          const greetingContent = canStartBackgroundListener
+            ? reclaim
+              ? `${pairRes.agent.displayName} 已重新连回群聊并恢复实时监听，直接 @ 我即可继续讨论。`
+              : `大家好，我是 ${pairRes.agent.displayName}，已连入群聊并开启实时监听，直接 @ 我即可开始讨论。`
+            : reclaim
+              ? `${pairRes.agent.displayName} 已从当前环境重新连回群聊，随时可通过 CLI 参与讨论。`
+              : `大家好，我是 ${pairRes.agent.displayName}，已连入群聊就绪，随时参与讨论与提案协作。`;
           const sentGreeting = await authedClient.sendRoomMessage(pairRes.autoJoinedRoomId, {
             content: greetingContent,
             ignoreUnread: true,
@@ -636,39 +805,48 @@ export async function runCli(
         }
       }
 
-      // 一键极速体验（2）：在同一进程内直接安装并拉起后台常驻 SSE 守护进程，省去 Agent 第二轮工具调用与审批等待
+      // 一键极速体验（2）：在具备唤醒目标时启动后台常驻 SSE 守护（自动兼容 systemd/launchd/schtasks 与云端容器脱离进程兜底）
       let daemonReport: DaemonControlReport | undefined;
       let daemonSkippedNote: string | undefined;
+      let listenerMode: "daemon" | "on_demand_cli" | "disabled" = listenRequested
+        ? "on_demand_cli"
+        : "disabled";
+
       if (listenRequested) {
-        const hasWakeConfig =
-          getLastFlag(parsed, "run") !== undefined ||
-          getLastFlag(parsed, "agent") !== undefined ||
-          parseWakeAgentPreset(pairRes.agent.platform) !== undefined;
+        if (canStartBackgroundListener) {
+          try {
+            const target = resolveWakeTarget(parsed, pairRes.agent.platform);
+            const slug =
+              getLastFlag(parsed, "slug") ??
+              pairRes.agent.slug ??
+              deriveSlugFromTokenPath(targetTokenFilePath);
+            const cliScriptPath =
+              context.cliScriptPath ?? process.argv[1] ?? fileURLToPath(import.meta.url);
+            const nodeBinaryPath = context.nodeBinaryPath ?? process.execPath;
 
-        if (hasWakeConfig) {
-          const target = resolveWakeTarget(parsed, pairRes.agent.platform);
-          const slug =
-            getLastFlag(parsed, "slug") ??
-            pairRes.agent.slug ??
-            deriveSlugFromTokenPath(parsed.tokenFilePath);
-          const cliScriptPath =
-            context.cliScriptPath ?? process.argv[1] ?? fileURLToPath(import.meta.url);
-          const nodeBinaryPath = context.nodeBinaryPath ?? process.execPath;
-
-          daemonReport = installDaemonService(
-            {
-              slug,
-              nodeBinaryPath,
-              cliScriptPath,
-              serverUrl: parsed.serverUrl,
-              tokenFilePath: resolve(parsed.tokenFilePath),
-              target,
-              homeDir: baseHome,
-            },
-            context.daemonDeps,
-          );
+            daemonReport = installDaemonService(
+              {
+                slug,
+                nodeBinaryPath,
+                cliScriptPath,
+                serverUrl: effectivePairServerUrl,
+                tokenFilePath: resolve(targetTokenFilePath),
+                target,
+                homeDir: baseHome,
+              },
+              context.daemonDeps,
+            );
+            listenerMode = "daemon";
+          } catch (daemonErr) {
+            // 云端极端受限沙箱（如禁止 fork 后台进程）下绝不废弃已核销的 Token，优雅降级为按需 CLI 模式
+            daemonSkippedNote = `Cloud/sandbox fallback: background daemon unavailable (${
+              daemonErr instanceof Error ? daemonErr.message : String(daemonErr)
+            }); use "openhuddle read", "openhuddle reply", or "openhuddle wait" directly.`;
+          }
+        } else if (inferredPreset !== undefined) {
+          daemonSkippedNote = `Mode: Cloud / interactive CLI ready (no local "${inferredPreset}" binary on PATH; use "openhuddle read", "openhuddle reply", or "openhuddle wait" directly).`;
         } else {
-          daemonSkippedNote = `Note: Platform "${pairRes.agent.platform}" has no built-in headless CLI preset; pass --run "<cmd>" to "listen install" to enable auto-replies.`;
+          daemonSkippedNote = `Mode: Interactive CLI ready (use "openhuddle read", "openhuddle reply", or "openhuddle wait"; or pass --run "<cmd>" to "listen install" for custom auto-wake).`;
         }
       }
 
@@ -677,19 +855,22 @@ export async function runCli(
           ok: true,
           agent: pairRes.agent,
           owner: pairRes.owner,
-          tokenFilePath: resolve(parsed.tokenFilePath),
+          serverUrl: effectivePairServerUrl,
+          tokenFilePath: resolve(targetTokenFilePath),
+          listenerMode,
           ...(pairRes.autoJoinedRoomId !== undefined
             ? { autoJoinedRoomId: pairRes.autoJoinedRoomId }
             : {}),
           ...(greetedMessageSeq !== undefined ? { greetedMessageSeq } : {}),
           ...(daemonReport !== undefined ? { listener: daemonReport } : {}),
+          ...(daemonSkippedNote !== undefined ? { note: daemonSkippedNote } : {}),
         });
       } else {
         writeOut(
           [
             `Paired agent "${pairRes.agent.displayName}" (${pairRes.agent.id}, platform=${pairRes.agent.platform}).`,
             `Verified human owner: ${pairRes.owner.displayName} <${pairRes.owner.email}> (${pairRes.owner.id}).`,
-            `Isolated 0600 token saved to: ${resolve(parsed.tokenFilePath)}`,
+            `Isolated 0600 token saved to: ${resolve(targetTokenFilePath)}`,
             ...(pairRes.autoJoinedRoomId !== undefined
               ? [`Auto-joined room: ${pairRes.autoJoinedRoomId}`]
               : []),
@@ -708,15 +889,22 @@ export async function runCli(
       return 0;
     }
 
+    // 未显式指定 `--token-file` 时优先读取最近一次 `connect`/`pair` 激活的 `active-profile.json`，兼容回退 `default.token`
+    const activeProfile = !parsed.hasExplicitTokenFile ? readActiveCliProfile(baseHome) : undefined;
+    const effectiveTokenFilePath =
+      !parsed.hasExplicitTokenFile && activeProfile !== undefined
+        ? activeProfile.tokenFilePath
+        : parsed.tokenFilePath;
+
     // `listen status` 与 `listen stop` 属于纯本机 OS 守护进程查询/卸载操作，即使 `.token` 文件已被先行删除也允许凭 `--slug` 正常执行
     if (parsed.command === "listen") {
       const subcommand = parsed.positionals[0] ?? "status";
       if (subcommand === "status" || subcommand === "stop") {
-        const optionalStored = readStoredCredentials(parsed.tokenFilePath);
+        const optionalStored = readStoredCredentials(effectiveTokenFilePath);
         const slug =
           getLastFlag(parsed, "slug") ??
           optionalStored?.metadata?.slug ??
-          deriveSlugFromTokenPath(parsed.tokenFilePath);
+          deriveSlugFromTokenPath(effectiveTokenFilePath);
         const report =
           subcommand === "status"
             ? getDaemonServiceStatus({ slug, homeDir: baseHome }, context.daemonDeps)
@@ -732,10 +920,12 @@ export async function runCli(
       }
     }
 
-    // 除 help、pair 与本机守护 status/stop 外，其余所有命令均需读取已隔离保存的本地 Agent 凭据
-    const stored = readStoredCredentials(parsed.tokenFilePath);
+    // 除 help、pair/connect 与本机守护 status/stop 外，其余所有命令均需读取已隔离保存的本地 Agent 凭据
+    const stored =
+      readStoredCredentials(effectiveTokenFilePath) ??
+      (!parsed.hasExplicitTokenFile ? readStoredCredentials(parsed.tokenFilePath) : undefined);
     if (stored === undefined) {
-      const msg = `No agent token found at ${resolve(parsed.tokenFilePath)}. Run "pair <code> --name <name> --platform <platform>" first.`;
+      const msg = `No agent token found at ${resolve(effectiveTokenFilePath)}. Run "openhuddle connect <code> --name <name> --platform <platform>" first.`;
       if (parsed.json) {
         emitJson({ ok: false, error: { code: "MISSING_TOKEN_FILE", message: msg } });
       } else {
@@ -746,7 +936,7 @@ export async function runCli(
 
     const effectiveServerUrl = parsed.hasExplicitServerUrl
       ? parsed.serverUrl
-      : (stored.metadata?.serverUrl ?? parsed.serverUrl);
+      : (stored.metadata?.serverUrl ?? activeProfile?.serverUrl ?? parsed.serverUrl);
 
     const client = new OpenHuddleHttpClient({
       serverUrl: effectiveServerUrl,
@@ -760,6 +950,34 @@ export async function runCli(
       }
       const me = await client.getMe();
       return me.callerKind === "agent" ? me.agent.id : undefined;
+    };
+
+    const resolveTargetRoomId = async (explicitRoomCandidate?: string): Promise<RoomId> => {
+      const fromArg = explicitRoomCandidate?.trim() || getLastFlag(parsed, "room")?.trim();
+      if (fromArg !== undefined && fromArg.length > 0) {
+        return fromArg as RoomId;
+      }
+      const fromEnv = process.env.OPENHUDDLE_ROOM_ID?.trim();
+      if (fromEnv !== undefined && fromEnv.length > 0) {
+        return fromEnv as RoomId;
+      }
+      const remembered = stored.metadata?.defaultRoomId ?? activeProfile?.defaultRoomId;
+      if (remembered !== undefined) {
+        return remembered;
+      }
+      const roomsRes = await client.listRooms();
+      if (roomsRes.rooms.length === 1 && roomsRes.rooms[0] !== undefined) {
+        const onlyRoomId = roomsRes.rooms[0].id;
+        rememberDefaultRoomId(stored.tokenFilePath, onlyRoomId, baseHome);
+        return onlyRoomId;
+      }
+      if (roomsRes.rooms.length === 0) {
+        throw new Error(
+          'Your agent has not joined any Huddle room yet. Run "openhuddle join <inviteToken>" first.',
+        );
+      }
+      const roomChoices = roomsRes.rooms.map((r) => `${r.id} (${r.name})`).join(", ");
+      throw new Error(`Multiple rooms joined (${roomChoices}). Pass <roomId> or --room <roomId>.`);
     };
 
     switch (parsed.command) {
@@ -856,7 +1074,7 @@ export async function runCli(
           const lines = [`Joined Rooms (${res.rooms.length}):`];
           for (const room of res.rooms) {
             lines.push(
-              `  - ${room.name} (${room.id}) [seq=${room.yourLastReadSeq}/${room.lastSeq}, mode=${room.governance.config.mode}, status=${room.governance.status}]`,
+              `  - ${room.name} (${room.id}) [kind=${room.kind}, seq=${room.yourLastReadSeq}/${room.lastSeq}, mode=${room.governance.config.mode}, status=${room.governance.status}]`,
             );
           }
           writeOut(lines.join("\n"));
@@ -885,6 +1103,7 @@ export async function runCli(
           ...(rules !== undefined ? { rules } : {}),
           ...(visibility !== undefined ? { visibility } : {}),
         });
+        rememberDefaultRoomId(stored.tokenFilePath, created.room.id, baseHome);
 
         if (parsed.json) {
           emitJson(created);
@@ -905,6 +1124,7 @@ export async function runCli(
         }
         const inviteToken = extractInviteToken(rawInvite);
         const joined = await client.joinRoom(inviteToken);
+        rememberDefaultRoomId(stored.tokenFilePath, joined.room.id, baseHome);
         const agentId = await resolveCurrentAgentId();
         if (agentId !== undefined) {
           updateRoomLastReadSeq(agentId, joined.room.id, joined.room.yourLastReadSeq, baseHome);
@@ -918,10 +1138,7 @@ export async function runCli(
       }
 
       case "members": {
-        const roomId = parsed.positionals[0]?.trim();
-        if (!roomId) {
-          throw new Error("Usage: openhuddle members <roomId>");
-        }
+        const roomId = await resolveTargetRoomId(parsed.positionals[0]);
         const res = await client.listRoomMembers(roomId);
         if (parsed.json) {
           emitJson(res);
@@ -942,10 +1159,7 @@ export async function runCli(
       }
 
       case "read": {
-        const roomId = parsed.positionals[0]?.trim() as RoomId | undefined;
-        if (!roomId) {
-          throw new Error("Usage: openhuddle read <roomId> [--after <seq>] [--limit <n>]");
-        }
+        const roomId = await resolveTargetRoomId(parsed.positionals[0]);
         const agentId = await resolveCurrentAgentId();
         const explicitAfterRaw = getLastFlag(parsed, "after");
         const limitRaw = getLastFlag(parsed, "limit");
@@ -992,20 +1206,43 @@ export async function runCli(
         return 0;
       }
 
+      case "reply":
       case "send": {
-        const roomId = parsed.positionals[0]?.trim() as RoomId | undefined;
-        const content =
-          parsed.positionals.slice(1).join(" ").trim() || getLastFlag(parsed, "content")?.trim();
+        const isReplyShortcut = parsed.command === "reply";
+        const roomId = isReplyShortcut
+          ? await resolveTargetRoomId(getLastFlag(parsed, "room"))
+          : (parsed.positionals[0]?.trim() as RoomId | undefined);
+        const content = isReplyShortcut
+          ? parsed.positionals.join(" ").trim() || getLastFlag(parsed, "content")?.trim()
+          : parsed.positionals.slice(1).join(" ").trim() || getLastFlag(parsed, "content")?.trim();
+
         if (!roomId || !content) {
           throw new Error(
-            "Usage: openhuddle send <roomId> <content> [--reply <seq>] [--last-read-seq <seq>] [--ignore-unread]",
+            isReplyShortcut
+              ? "Usage: openhuddle reply <content> [--room <roomId>] [--reply <seq>] [--ignore-unread]"
+              : "Usage: openhuddle send <roomId> <content> [--reply <seq>] [--last-read-seq <seq>] [--ignore-unread]",
           );
         }
 
         const agentId = await resolveCurrentAgentId();
         const explicitLastReadRaw = getLastFlag(parsed, "last-read-seq");
-        const cachedLastRead =
+        let cachedLastRead =
           agentId !== undefined ? getRoomLastReadSeq(agentId, roomId, baseHome) : undefined;
+
+        // `reply` 快捷指令在临时云端容器首次调用且尚无本地游标时，若未开启 `--ignore-unread`，自动查一次房间当前游标对齐
+        if (
+          isReplyShortcut &&
+          explicitLastReadRaw === undefined &&
+          cachedLastRead === undefined &&
+          !parsed.booleanFlags.has("--ignore-unread")
+        ) {
+          const snapshot = await client.readRoomMessages(roomId, { limit: 1 });
+          cachedLastRead = snapshot.latestSeq;
+          if (agentId !== undefined) {
+            updateRoomLastReadSeq(agentId, roomId, snapshot.latestSeq, baseHome);
+          }
+        }
+
         const lastReadSeq =
           explicitLastReadRaw !== undefined
             ? (Number.parseInt(explicitLastReadRaw, 10) as ReadCursorSeq)
@@ -1046,11 +1283,200 @@ export async function runCli(
         return 0;
       }
 
-      case "proposals": {
-        const roomId = parsed.positionals[0]?.trim();
-        if (!roomId) {
-          throw new Error("Usage: openhuddle proposals <roomId>");
+      case "wait": {
+        const timeoutRaw = getLastFlag(parsed, "timeout") ?? getLastFlag(parsed, "wait");
+        const timeoutSec = timeoutRaw !== undefined ? Number.parseInt(timeoutRaw, 10) : 30;
+        if (!Number.isSafeInteger(timeoutSec) || timeoutSec < 1 || timeoutSec > 300) {
+          throw new Error("--timeout must be an integer between 1 and 300 seconds.");
         }
+        const explicitRoomFilter = (parsed.positionals[0] ?? getLastFlag(parsed, "room"))?.trim() as
+          | RoomId
+          | undefined;
+        const agentId = await resolveCurrentAgentId();
+
+        const collectUnreadMessages = async (
+          candidateRoomIds: readonly RoomId[],
+        ): Promise<
+          Array<{ readonly roomId: RoomId; readonly messages: readonly MessageDto[] }>
+        > => {
+          const batches: Array<{
+            readonly roomId: RoomId;
+            readonly messages: readonly MessageDto[];
+          }> = [];
+          for (const candidateRoomId of candidateRoomIds) {
+            const afterSeq =
+              agentId !== undefined
+                ? getRoomLastReadSeq(agentId, candidateRoomId, baseHome)
+                : undefined;
+            const res = await client.readRoomMessages(candidateRoomId, {
+              ...(afterSeq !== undefined ? { afterSeq } : {}),
+              limit: 50,
+            });
+            if (agentId !== undefined) {
+              const highest =
+                res.messages.length > 0
+                  ? (Math.max(...res.messages.map((m) => m.seq)) as ReadCursorSeq)
+                  : res.latestSeq;
+              updateRoomLastReadSeq(agentId, candidateRoomId, highest, baseHome);
+            }
+            if (res.messages.length > 0) {
+              batches.push({ roomId: candidateRoomId, messages: res.messages });
+            }
+          }
+          return batches;
+        };
+
+        // 1. 先做一次零等待收件箱快检：若已有未读消息则立即返回，绝不空等
+        const initialInbox = await client.getInbox(0);
+        const unreadRoomsNow = initialInbox.rooms
+          .filter(
+            (r) =>
+              r.unreadCount > 0 &&
+              (explicitRoomFilter === undefined || r.roomId === explicitRoomFilter),
+          )
+          .map((r) => r.roomId);
+
+        let triggeredReason = "timeout";
+        let collected =
+          unreadRoomsNow.length > 0 ? await collectUnreadMessages(unreadRoomsNow) : [];
+
+        if (collected.length > 0) {
+          triggeredReason = "unread_present";
+        } else {
+          // 2. 建立带超时的 SSE 监听（若上游网关不支持流式 SSE 则自动回退至 /api/v1/inbox 长轮询）
+          const fetchFn = context.fetchImpl ?? globalThis.fetch;
+          const waitController = new AbortController();
+          const onParentAbort = (): void => waitController.abort();
+          context.listenerSignal?.addEventListener("abort", onParentAbort, { once: true });
+          const deadlineMs = Date.now() + timeoutSec * 1_000;
+          const timer = setTimeout(() => waitController.abort(), timeoutSec * 1_000);
+          let wokenRoomId: RoomId | undefined;
+
+          try {
+            const sseRes = await fetchFn(`${effectiveServerUrl}/api/v1/events`, {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${stored.token}`,
+                Accept: "text/event-stream",
+                "Cache-Control": "no-cache",
+              },
+              signal: waitController.signal,
+            });
+            if (sseRes.ok && sseRes.body !== null) {
+              for await (const frame of readSseFrames(sseRes.body, waitController.signal)) {
+                const wake = parseWakeEventFrame(frame);
+                if (
+                  wake !== undefined &&
+                  (explicitRoomFilter === undefined || wake.roomId === explicitRoomFilter)
+                ) {
+                  wokenRoomId = wake.roomId;
+                  triggeredReason = wake.reason;
+                  waitController.abort();
+                  break;
+                }
+                if (frame.event === "message.created") {
+                  try {
+                    const parsedEvt = JSON.parse(frame.data) as Record<string, unknown>;
+                    const evtRoomId =
+                      typeof parsedEvt.roomId === "string"
+                        ? (parsedEvt.roomId as RoomId)
+                        : undefined;
+                    if (
+                      evtRoomId !== undefined &&
+                      (explicitRoomFilter === undefined || evtRoomId === explicitRoomFilter)
+                    ) {
+                      wokenRoomId = evtRoomId;
+                      triggeredReason = "message.created";
+                      waitController.abort();
+                      break;
+                    }
+                  } catch {
+                    // 忽略非预期帧
+                  }
+                }
+              }
+            } else {
+              const remainingSec = Math.max(
+                1,
+                Math.min(25, Math.ceil((deadlineMs - Date.now()) / 1_000)),
+              );
+              const polled = await client.getInbox(remainingSec);
+              const matched = polled.rooms.find(
+                (r) =>
+                  r.unreadCount > 0 &&
+                  (explicitRoomFilter === undefined || r.roomId === explicitRoomFilter),
+              );
+              if (matched !== undefined) {
+                wokenRoomId = matched.roomId;
+                triggeredReason = matched.hasOwnerCommand ? "owner_command" : "inbox_poll";
+              }
+            }
+          } catch {
+            // AbortError 代表超时或已捕获事件正常中断；若尚未到截止时间则用长轮询兜底
+            const remainingMs = deadlineMs - Date.now();
+            if (
+              wokenRoomId === undefined &&
+              remainingMs > 500 &&
+              !context.listenerSignal?.aborted
+            ) {
+              try {
+                const polled = await client.getInbox(
+                  Math.max(1, Math.min(25, Math.ceil(remainingMs / 1_000))),
+                );
+                const matched = polled.rooms.find(
+                  (r) =>
+                    r.unreadCount > 0 &&
+                    (explicitRoomFilter === undefined || r.roomId === explicitRoomFilter),
+                );
+                if (matched !== undefined) {
+                  wokenRoomId = matched.roomId;
+                  triggeredReason = matched.hasOwnerCommand ? "owner_command" : "inbox_poll";
+                }
+              } catch {
+                // 忽略兜底轮询中断
+              }
+            }
+          } finally {
+            clearTimeout(timer);
+            context.listenerSignal?.removeEventListener("abort", onParentAbort);
+          }
+
+          if (wokenRoomId !== undefined) {
+            collected = await collectUnreadMessages([wokenRoomId]);
+          } else if (explicitRoomFilter !== undefined) {
+            collected = await collectUnreadMessages([explicitRoomFilter]);
+            if (collected.length > 0) {
+              triggeredReason = "room_activity";
+            }
+          }
+        }
+
+        if (parsed.json) {
+          emitJson({
+            ok: true,
+            woken: collected.length > 0,
+            reason: triggeredReason,
+            rooms: collected,
+          });
+        } else if (collected.length === 0) {
+          writeOut(`No new messages within ${timeoutSec}s.`);
+        } else {
+          const lines: string[] = [`Woken (${triggeredReason}):`];
+          for (const batch of collected) {
+            lines.push(`Room ${batch.roomId}:`);
+            for (const msg of batch.messages) {
+              lines.push(
+                `  [#${msg.seq}] ${msg.author.displayName} (${msg.author.kind}, trust=${msg.author.trustLevel}): ${msg.content}`,
+              );
+            }
+          }
+          writeOut(lines.join("\n"));
+        }
+        return 0;
+      }
+
+      case "proposals": {
+        const roomId = await resolveTargetRoomId(parsed.positionals[0]);
         const res = await client.listRoomProposals(roomId);
         if (parsed.json) {
           emitJson(res);
@@ -1067,12 +1493,7 @@ export async function runCli(
       }
 
       case "propose": {
-        const roomId = parsed.positionals[0]?.trim();
-        if (!roomId) {
-          throw new Error(
-            'Usage: openhuddle propose <roomId> (--draft-json \'<json>\' | --title "..." --summary "..." --option "k:l:s")',
-          );
-        }
+        const roomId = await resolveTargetRoomId(parsed.positionals[0]);
         if (parsed.booleanFlags.has("--list")) {
           const listRes = await client.listRoomProposals(roomId);
           if (parsed.json) {
@@ -1125,12 +1546,25 @@ export async function runCli(
         return 0;
       }
 
+      case "mcp": {
+        await runCliMcpStdioServer({
+          client,
+          homeDir: baseHome,
+          ...(stored.metadata?.agentId !== undefined
+            ? { cachedAgentId: stored.metadata.agentId }
+            : {}),
+          ...(context.mcpInputStream !== undefined ? { inputStream: context.mcpInputStream } : {}),
+          ...(context.stdout !== undefined ? { writeStdoutLine: context.stdout } : {}),
+        });
+        return 0;
+      }
+
       case "listen": {
         const subcommand = parsed.positionals[0] ?? "status";
         const slug =
           getLastFlag(parsed, "slug") ??
           stored.metadata?.slug ??
-          deriveSlugFromTokenPath(parsed.tokenFilePath);
+          deriveSlugFromTokenPath(stored.tokenFilePath);
         const cliScriptPath =
           context.cliScriptPath ?? process.argv[1] ?? fileURLToPath(import.meta.url);
         const nodeBinaryPath = context.nodeBinaryPath ?? process.execPath;
@@ -1140,7 +1574,7 @@ export async function runCli(
           await startSseListener({
             serverUrl: effectiveServerUrl,
             token: stored.token,
-            tokenFilePath: resolve(parsed.tokenFilePath),
+            tokenFilePath: resolve(stored.tokenFilePath),
             target,
             cliScriptPath,
             homeDir: baseHome,
@@ -1159,7 +1593,7 @@ export async function runCli(
               nodeBinaryPath,
               cliScriptPath,
               serverUrl: effectiveServerUrl,
-              tokenFilePath: resolve(parsed.tokenFilePath),
+              tokenFilePath: resolve(stored.tokenFilePath),
               target,
               homeDir: baseHome,
             },
@@ -1181,7 +1615,7 @@ export async function runCli(
               nodeBinaryPath,
               cliScriptPath,
               serverUrl: effectiveServerUrl,
-              tokenFilePath: resolve(parsed.tokenFilePath),
+              tokenFilePath: resolve(stored.tokenFilePath),
               target,
               homeDir: baseHome,
             },
@@ -1283,6 +1717,7 @@ export {
 export {
   discoverUserCliBinDirs,
   ensureLoopbackNoProxyValue,
+  isPresetCliBinaryAvailable,
   resolveAntigravityManagedProxyEnv,
   resolveShellWrapperEnvForBinary,
 } from "./host-env.js";
@@ -1293,6 +1728,11 @@ export {
   OpenHuddleApiError,
   OpenHuddleHttpClient,
 } from "./http-client.js";
+
+export {
+  runCliMcpStdioServer,
+  type CliMcpStdioOptions,
+} from "./mcp-stdio.js";
 
 export {
   buildBrokeredWakePrompt,
@@ -1320,19 +1760,25 @@ export {
 
 export {
   checkTokenFileCollision,
+  getActiveCliProfilePath,
   getDefaultTokenFilePath,
   getRoomLastReadSeq,
+  readActiveCliProfile,
   readStoredCredentials,
+  rememberDefaultRoomId,
   sanitizeTokenSlug,
   updateRoomLastReadSeq,
+  writeActiveCliProfile,
   writeStoredCredentials,
+  type ActiveCliProfile,
 } from "./token-store.js";
 
-// 跨平台入口自检：Windows 下 process.argv[1] 为反斜杠盘符路径（如 C:\...），必须经由 pathToFileURL 规范化后再与 import.meta.url 比对
+// Node 加载模块时会解析符号链接。入口参数也要使用真实路径，再转成跨平台的文件 URL。
 const entryScriptArg = process.argv[1];
 if (
   entryScriptArg !== undefined &&
-  import.meta.url === pathToFileURL(resolve(entryScriptArg)).href
+  existsSync(entryScriptArg) &&
+  import.meta.url === pathToFileURL(realpathSync(entryScriptArg)).href
 ) {
   void runCli(process.argv.slice(2)).then((code) => {
     process.exitCode = code;

@@ -62,6 +62,13 @@ export const SseEventSchema = z.discriminatedUnion("type", [
     type: z.literal("room.deleted"),
     roomId: RoomIdSchema,
   }),
+  z.object({
+    type: z.literal("room.upserted"),
+    roomId: RoomIdSchema,
+  }),
+  z.object({
+    type: z.literal("friendship.updated"),
+  }),
 ]);
 export type SseEvent = z.infer<typeof SseEventSchema>;
 

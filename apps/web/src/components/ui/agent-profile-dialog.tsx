@@ -20,7 +20,10 @@ import {
   Check,
   Clock,
   Copy,
+  Globe,
   KeyRound,
+  Lock,
+  MessageCircle,
   Radio,
   ShieldCheck,
   Trash2,
@@ -35,6 +38,7 @@ import {
 import {
   AppButton,
   AppModal,
+  AppSwitch,
   AppTooltip,
   IconButton,
   cn,
@@ -51,6 +55,7 @@ export interface InspectedAgentProfile {
   readonly ownerUserId: UserId;
   readonly ownerDisplayName: string;
   readonly intro?: string | undefined;
+  readonly allowExternalDm?: boolean | undefined;
   readonly reach?: AgentReachState | undefined;
   readonly checkinIntervalMin?: number | undefined;
   readonly lastSeenAtIso?: string | undefined;
@@ -61,6 +66,14 @@ export interface AgentProfileDialogProps {
   readonly profile: InspectedAgentProfile | null;
   readonly currentUserId?: UserId | undefined;
   readonly onClose: () => void;
+  /** 一键发起或跳转至与该 Agent 的 1v1 单聊会话 */
+  readonly onStartDirectChat?: ((agentId: AgentId) => void) | undefined;
+  readonly isOpeningDirectChat?: boolean | undefined;
+  /** 主人切换该 Agent 是否允许站内其他用户发起 1v1 私聊 */
+  readonly onToggleAllowExternalDm?:
+    | ((agentId: AgentId, allowExternalDm: boolean) => void)
+    | undefined;
+  readonly isUpdatingAgent?: boolean | undefined;
   readonly onMentionAgent?: ((agentId: AgentId, displayName: string) => void) | undefined;
   readonly onReclaimAgent?: ((agentId: AgentId) => void) | undefined;
   /** 是否在打开名片时直接展开删除二次确认卡片（如从左侧 80px 导轨悬停 `×` 触发） */
@@ -374,6 +387,41 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
           </p>
         ) : null}
 
+        {/* 主人专属：是否允许站内其他用户与该 Agent 1v1 私聊 */}
+        {isOwnedByMe && props.onToggleAllowExternalDm !== undefined ? (
+          <div className="flex items-center justify-between gap-3 rounded-[18px] bg-black/[0.035] px-3.5 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
+            <div className="flex min-w-0 items-start gap-2.5">
+              {profile.allowExternalDm === true ? (
+                <Globe className="mt-0.5 h-4 w-4 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
+              ) : (
+                <Lock className="mt-0.5 h-4 w-4 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
+              )}
+              <div className="min-w-0">
+                <p className="text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                  允许站内其他用户私聊此 Agent
+                </p>
+                <p className="mt-0.5 text-[11px] leading-snug text-[#687082] dark:text-[#8E8E96]">
+                  外部用户的发言恒标记为参考信息，无本机命令授权；可随时关停
+                </p>
+              </div>
+            </div>
+            <AppSwitch
+              size="sm"
+              ariaLabel="切换允许其他用户私聊此 Agent"
+              checked={profile.allowExternalDm === true}
+              disabled={props.isUpdatingAgent === true}
+              onCheckedChange={(checked) =>
+                props.onToggleAllowExternalDm?.(profile.agentId, checked)
+              }
+            />
+          </div>
+        ) : !isOwnedByMe && profile.allowExternalDm === true ? (
+          <div className="flex items-center gap-2 rounded-[16px] bg-[#E6F5EC]/75 px-3.5 py-2.5 text-xs text-[#145335] ring-1 ring-inset ring-[#16A34A]/15 dark:bg-[#1B2B23]/75 dark:text-[#A7F3D0] dark:ring-[#34D399]/20">
+            <Globe className="h-3.5 w-3.5 shrink-0" />
+            <span>主人已开放该 Agent 的 1v1 私聊咨询（外部消息仅作参考）</span>
+          </div>
+        ) : null}
+
         <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-[#939BAD] dark:text-[#63636B]">
           <ShieldCheck
             aria-hidden="true"
@@ -383,12 +431,37 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
         </p>
 
         {/* 底部胶囊操作栏 */}
-        {props.onMentionAgent || (isOwnedByMe && (props.onReclaimAgent || props.onDeleteAgent)) ? (
+        {(props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true)) ||
+        props.onMentionAgent ||
+        (isOwnedByMe && (props.onReclaimAgent || props.onDeleteAgent)) ? (
           <div className="flex flex-col gap-2 pt-1">
-            {props.onMentionAgent ? (
+            {props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true) ? (
               <AppButton
                 variant="primary"
                 size="lg"
+                fullWidth={true}
+                isLoading={props.isOpeningDirectChat === true}
+                leadingIcon={<MessageCircle aria-hidden="true" className="h-4 w-4" />}
+                onClick={() => {
+                  props.onStartDirectChat?.(profile.agentId);
+                }}
+              >
+                发消息（1v1 单聊）
+              </AppButton>
+            ) : null}
+
+            {props.onMentionAgent ? (
+              <AppButton
+                variant={
+                  props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true)
+                    ? "secondary"
+                    : "primary"
+                }
+                size={
+                  props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true)
+                    ? "md"
+                    : "lg"
+                }
                 fullWidth={true}
                 leadingIcon={<AtSign aria-hidden="true" className="h-4 w-4" />}
                 onClick={() => {

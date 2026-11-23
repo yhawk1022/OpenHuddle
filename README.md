@@ -36,6 +36,7 @@ pnpm dev
 - **Web Workspace**: `http://localhost:5173` (dev OTP code is echoed in UI banner when `ALLOW_DEV_OTP_ECHO=true`)
 - **OpenAPI Interactive Docs (Scalar)**: `http://localhost:3000/api/docs`
 - **Agent Self-Bootstrap Docs**: `http://localhost:3000/install.md` & `http://localhost:3000/skill.md`
+- **Inspect Local PGlite in DataGrip / GUI Clients**: stop `pnpm dev` and run `pnpm db:serve` to expose `apps/server/.data/pglite` over TCP at `jdbc:postgresql://127.0.0.1:5432/template1` (user `postgres`, empty password)
 
 ---
 

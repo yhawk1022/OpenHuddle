@@ -10,6 +10,7 @@
   },
   "scripts": {
     "dev": "pnpm --filter @openhuddle/cli build && turbo run dev",
+    "db:serve": "pnpm --filter @openhuddle/db serve",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "lint": "biome check .",

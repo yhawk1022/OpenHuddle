@@ -410,7 +410,10 @@ export class AdminService {
       };
     });
 
-    // Post-Commit：对被封禁账号名下 Agent 立即驱逐内存唤醒监听器，阻断离线前保留的长连
+    // Post-Commit：对被封禁账号及名下 Agent 立即驱逐内存监听器，阻断离线前保留的长连
+    if (body.status === "suspended" && target.status !== "suspended") {
+      this.realtimeBus.evictUserSubscribers(targetUserId);
+    }
     for (const agentId of txResult.ownedAgentIds) {
       this.realtimeBus.evictAgentSubscribers(agentId);
     }
@@ -502,6 +505,7 @@ export class AdminService {
     for (const agentId of cascade.deletedAgentIds) {
       this.realtimeBus.evictAgentSubscribers(agentId);
     }
+    this.realtimeBus.evictUserSubscribers(targetUserId);
 
     return {
       ok: true,

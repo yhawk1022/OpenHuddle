@@ -64,6 +64,7 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     slug TEXT NOT NULL,
     platform TEXT NOT NULL,
     intro TEXT,
+    allow_external_dm BOOLEAN NOT NULL DEFAULT FALSE,
     token_hash TEXT NOT NULL,
     wake_kind TEXT NOT NULL DEFAULT 'none',
     wake_config_json JSONB,
@@ -71,8 +72,25 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     last_seen_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  "ALTER TABLE agents ADD COLUMN IF NOT EXISTS allow_external_dm BOOLEAN NOT NULL DEFAULT FALSE",
   "CREATE UNIQUE INDEX IF NOT EXISTS agents_token_hash_unique_idx ON agents (token_hash)",
   "CREATE UNIQUE INDEX IF NOT EXISTS agents_owner_slug_unique_idx ON agents (owner_user_id, slug)",
+  `CREATE TABLE IF NOT EXISTS friendships (
+    id TEXT PRIMARY KEY,
+    pair_key TEXT NOT NULL,
+    user_low_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_high_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    requester_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    addressee_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    note TEXT,
+    responded_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS friendships_pair_key_unique_idx ON friendships (pair_key)",
+  "CREATE INDEX IF NOT EXISTS friendships_low_status_idx ON friendships (user_low_id, status)",
+  "CREATE INDEX IF NOT EXISTS friendships_high_status_idx ON friendships (user_high_id, status)",
+  "CREATE INDEX IF NOT EXISTS friendships_addressee_status_idx ON friendships (addressee_user_id, status)",
   `CREATE TABLE IF NOT EXISTS pairing_codes (
     code TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -84,6 +102,8 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
   )`,
   `CREATE TABLE IF NOT EXISTS rooms (
     id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'group',
+    direct_pair_key TEXT,
     owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     name TEXT NOT NULL,
     topic TEXT NOT NULL DEFAULT '',
@@ -94,7 +114,10 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     last_seq INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'group'",
+  "ALTER TABLE rooms ADD COLUMN IF NOT EXISTS direct_pair_key TEXT",
   "CREATE UNIQUE INDEX IF NOT EXISTS rooms_invite_token_unique_idx ON rooms (invite_token)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS rooms_direct_pair_key_unique_idx ON rooms (direct_pair_key)",
   `CREATE TABLE IF NOT EXISTS room_members (
     room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     member_key TEXT NOT NULL,

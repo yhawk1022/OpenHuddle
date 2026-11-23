@@ -8,6 +8,7 @@
  * 3. 401 自愈清理：当已持有本地备份令牌却收到服务端 `401 UNAUTHORIZED` 时，自动清理失效本地令牌以驱动视图平滑回退至登录门禁。
  */
 import {
+  type AcceptFriendRequestResponse,
   type AgentId,
   type ApiErrorEnvelope,
   ApiErrorEnvelopeSchema,
@@ -24,7 +25,10 @@ import {
   type DecideProposalBody,
   type DeleteOwnedAgentResponse,
   type DeleteRoomResponse,
+  type DirectoryUserSearchResponse,
   type ErrorCode,
+  type FriendsOverviewResponse,
+  type FriendshipId,
   type HumanUserDto,
   type JoinRoomBody,
   type LocalAgentsStatusResponse,
@@ -32,6 +36,7 @@ import {
   type MessageDto,
   type MessageMention,
   type MessageSeq,
+  type OpenDirectRoomResponse,
   type OperationKey,
   type OwnedAgentSummaryDto,
   type ProposalCardDto,
@@ -39,6 +44,7 @@ import {
   type ProposalId,
   type ReadCursorSeq,
   type RegisterWithPasswordBody,
+  type RemoveFriendshipResponse,
   type RequestOtpBody,
   type RequestOtpResponse,
   type RequestPasswordResetCodeBody,
@@ -49,8 +55,13 @@ import {
   type RoomId,
   type RoomSummaryDto,
   type RoomVisibility,
+  type SendFriendRequestBody,
+  type SendFriendRequestResponse,
   type UpdateGovernanceBody,
   type UpdateMeBody,
+  type UpdateOwnedAgentBody,
+  type UpdateOwnedAgentResponse,
+  type UserId,
   type VerifyOtpBody,
   type VerifyOtpResponse,
 } from "@openhuddle/protocol";
@@ -115,6 +126,8 @@ export interface CreateRoomInput {
   readonly governance?: Partial<RoomGovernanceConfig>;
   /** 建群时直拉入群的本人 Agent（服务端逐个校验归属） */
   readonly initialAgentIds?: readonly AgentId[];
+  /** 建群时直拉入群的已添加好友（服务端逐个校验 accepted 好友关系） */
+  readonly initialUserIds?: readonly UserId[];
 }
 
 /** 房间消息增量拉取响应结构 */
@@ -469,6 +482,23 @@ export async function connectLocalAgent(
 }
 
 /**
+ * 更新当前人类主人名下的指定个人 Agent 设置（展示名称、简介或「允许其他用户私聊」开关）。
+ *
+ * @param agentId - 目标个人 Agent ID
+ * @param body - 待更新的设置字段
+ * @returns 更新后的 `UpdateOwnedAgentResponse`
+ */
+export async function updateOwnedAgentSettings(
+  agentId: AgentId,
+  body: Readonly<UpdateOwnedAgentBody>,
+): Promise<UpdateOwnedAgentResponse> {
+  return requestJson<UpdateOwnedAgentResponse>(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
+    method: "PATCH",
+    body,
+  });
+}
+
+/**
  * 彻底删除当前人类主人名下的指定个人 Agent（吊销 `oh_agt_` 令牌、移出全部群聊，并在本机回环模式下自动卸载对应后台守护进程）。
  *
  * @param agentId - 待删除的个人 Agent ID
@@ -478,6 +508,142 @@ export async function deleteOwnedAgent(agentId: AgentId): Promise<DeleteOwnedAge
   return requestJson<DeleteOwnedAgentResponse>(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
     method: "DELETE",
   });
+}
+
+/**
+ * 获取当前人类用户的完整通讯录（好友列表、收发好友申请与全站开放私聊的外部 Agent）。
+ *
+ * @returns `FriendsOverviewResponse`
+ */
+export async function fetchFriendsOverview(): Promise<FriendsOverviewResponse> {
+  return requestJson<FriendsOverviewResponse>("/api/v1/friends");
+}
+
+/**
+ * 按昵称或邮箱检索站内活跃人类用户及其与本人的好友关系状态。
+ *
+ * @param query - 搜索关键词
+ * @returns `DirectoryUserSearchResponse`
+ */
+export async function searchPlatformUsers(query: string): Promise<DirectoryUserSearchResponse> {
+  const params = new URLSearchParams({ q: query });
+  return requestJson<DirectoryUserSearchResponse>(`/api/v1/users/search?${params.toString()}`);
+}
+
+/**
+ * 向指定用户（按 `targetUserId` 或 `email`）发送好友申请。
+ *
+ * @param body - 目标用户标识与可选验证附言
+ * @returns `SendFriendRequestResponse`
+ */
+export async function sendFriendRequest(
+  body: Readonly<SendFriendRequestBody>,
+): Promise<SendFriendRequestResponse> {
+  return requestJson<SendFriendRequestResponse>("/api/v1/friends/requests", {
+    method: "POST",
+    body,
+  });
+}
+
+/**
+ * 同意收到的待处理好友申请。
+ *
+ * @param friendshipId - 好友申请 ID
+ * @returns `AcceptFriendRequestResponse`
+ */
+export async function acceptFriendRequest(
+  friendshipId: FriendshipId,
+): Promise<AcceptFriendRequestResponse> {
+  return requestJson<AcceptFriendRequestResponse>(
+    `/api/v1/friends/requests/${encodeURIComponent(friendshipId)}/accept`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+/**
+ * 拒绝收到的好友申请或撤回本人发出的待处理申请。
+ *
+ * @param friendshipId - 好友申请 ID
+ * @returns `RemoveFriendshipResponse`
+ */
+export async function declineFriendRequest(
+  friendshipId: FriendshipId,
+): Promise<RemoveFriendshipResponse> {
+  return requestJson<RemoveFriendshipResponse>(
+    `/api/v1/friends/requests/${encodeURIComponent(friendshipId)}/decline`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+/**
+ * 解除与指定人类用户的好友关系。
+ *
+ * @param friendUserId - 目标好友用户 ID
+ * @returns `RemoveFriendshipResponse`
+ */
+export async function removeFriend(friendUserId: UserId): Promise<RemoveFriendshipResponse> {
+  return requestJson<RemoveFriendshipResponse>(
+    `/api/v1/friends/${encodeURIComponent(friendUserId)}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+/**
+ * 打开或幂等复用与指定个人 Agent（或已开启 `allowExternalDm` 的外部 Agent）的 1v1 单聊房间。
+ *
+ * @param agentId - 目标 Agent ID
+ * @returns `OpenDirectRoomResponse`
+ */
+export async function openDirectAgentRoom(agentId: AgentId): Promise<OpenDirectRoomResponse> {
+  return requestJson<OpenDirectRoomResponse>("/api/v1/rooms/direct/agent", {
+    method: "POST",
+    body: { agentId },
+  });
+}
+
+/**
+ * 打开或幂等复用与已添加人类好友的 1v1 私聊房间。
+ *
+ * @param targetUserId - 目标好友用户 ID
+ * @returns `OpenDirectRoomResponse`
+ */
+export async function openDirectHumanRoom(targetUserId: UserId): Promise<OpenDirectRoomResponse> {
+  return requestJson<OpenDirectRoomResponse>("/api/v1/rooms/direct/human", {
+    method: "POST",
+    body: { targetUserId },
+  });
+}
+
+/**
+ * 向现有群聊房间直接拉入已添加的人类好友或本人名下 Agent。
+ *
+ * @param roomId - 目标群聊房间 ID
+ * @param body - 待拉入的 `userIds` 与 `agentIds`
+ * @returns 更新成员后的房间详情
+ */
+export async function addMembersToGroupRoom(
+  roomId: RoomId,
+  body: Readonly<{
+    readonly userIds?: readonly UserId[];
+    readonly agentIds?: readonly AgentId[];
+  }>,
+): Promise<{ readonly ok: true; readonly room: RoomDetailDto }> {
+  return requestJson<{ readonly ok: true; readonly room: RoomDetailDto }>(
+    `/api/v1/rooms/${encodeURIComponent(roomId)}/members`,
+    {
+      method: "POST",
+      body: {
+        userIds: body.userIds ?? [],
+        agentIds: body.agentIds ?? [],
+      },
+    },
+  );
 }
 
 /**

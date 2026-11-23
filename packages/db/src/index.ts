@@ -10,9 +10,15 @@ export {
   type OpenHuddleDb,
 } from "./client.js";
 export {
+  type ManagedPgliteSocketServer,
+  type PgliteSocketServerOptions,
+  startPgliteSocketServer,
+} from "./pglite-server.js";
+export {
   adminAuditLogsTable,
   agentsTable,
   authOtpCodesTable,
+  friendshipsTable,
   messagesTable,
   pairingCodesTable,
   proposalsTable,

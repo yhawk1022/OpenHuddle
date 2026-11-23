@@ -7,9 +7,11 @@
  * 2. 乐观消息发送不丢字：人类点击发送立即以 `OperationKey` 插入乐观气泡，若网络或治理拦截报错则精准回滚缓存并由输入框保留草稿；成功后与 SSE 流幂等合流。
  */
 import {
+  type AgentId,
   type AttentionPayload,
   type CastProposalVoteBody,
   type DecideProposalBody,
+  type FriendshipId,
   type HumanUserDto,
   type JoinRoomBody,
   type MessageMention,
@@ -21,19 +23,25 @@ import {
   type RoomDetailDto,
   type RoomId,
   type RoomSummaryDto,
+  type SendFriendRequestBody,
   type UpdateGovernanceBody,
+  type UserId,
   asMessageSeq,
   asReadCursorSeq,
 } from "@openhuddle/protocol";
-import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   type CreateRoomInput,
   type SynthesizeProposalInput,
+  acceptFriendRequest,
+  addMembersToGroupRoom,
   castProposalVote,
   createHuddleRoom,
   createRoomProposal,
   decideProposal,
+  declineFriendRequest,
   deleteHuddleRoom,
+  fetchFriendsOverview,
   fetchJoinedRooms,
   fetchRoomDetail,
   fetchRoomMessages,
@@ -41,7 +49,12 @@ import {
   fetchSystemHealth,
   joinRoomByInvite,
   leaveHuddleRoom,
+  openDirectAgentRoom,
+  openDirectHumanRoom,
   recallRoomMessage,
+  removeFriend,
+  searchPlatformUsers,
+  sendFriendRequest,
   sendRoomMessage,
   synthesizeRoomProposal,
   updateRoomGovernance,
@@ -127,6 +140,161 @@ export function roomProposalsQueryOptions(roomId: RoomId) {
   return queryOptions({
     queryKey: huddleQueryKeys.roomProposals(roomId),
     queryFn: () => fetchRoomProposals(roomId),
+  });
+}
+
+/**
+ * 构造当前人类用户通讯录总览（好友列表、收发申请与站内开放私聊外部 Agent）的 `queryOptions`。
+ *
+ * @returns `/api/v1/friends` 查询配置
+ */
+export function friendsOverviewQueryOptions() {
+  return queryOptions({
+    queryKey: huddleQueryKeys.friends(),
+    queryFn: () => fetchFriendsOverview(),
+    refetchInterval: 20_000,
+  });
+}
+
+/**
+ * 构造站内活跃用户检索（按昵称或邮箱）的 `queryOptions`。
+ *
+ * @param query - 搜索关键词
+ * @returns `/api/v1/users/search` 查询配置
+ */
+export function userSearchQueryOptions(query: string) {
+  const trimmed = query.trim();
+  return queryOptions({
+    queryKey: huddleQueryKeys.userSearch(trimmed),
+    queryFn: () => searchPlatformUsers(trimmed),
+    enabled: trimmed.length > 0,
+    staleTime: 5_000,
+  });
+}
+
+/**
+ * 发送好友申请并刷新通讯录与用户搜索缓存的 Mutation Hook。
+ *
+ * @returns 发送好友申请 `useMutation` 实例
+ */
+export function useSendFriendRequestMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Readonly<SendFriendRequestBody>) => sendFriendRequest(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
+      void queryClient.invalidateQueries({ queryKey: ["users", "search"] });
+    },
+  });
+}
+
+/**
+ * 同意收到的好友申请并同步刷新通讯录与搜索状态的 Mutation Hook。
+ *
+ * @returns 同意好友申请 `useMutation` 实例
+ */
+export function useAcceptFriendRequestMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (friendshipId: FriendshipId) => acceptFriendRequest(friendshipId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
+      void queryClient.invalidateQueries({ queryKey: ["users", "search"] });
+    },
+  });
+}
+
+/**
+ * 拒绝或撤回待处理好友申请的 Mutation Hook。
+ *
+ * @returns 拒绝/撤回好友申请 `useMutation` 实例
+ */
+export function useDeclineFriendRequestMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (friendshipId: FriendshipId) => declineFriendRequest(friendshipId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
+      void queryClient.invalidateQueries({ queryKey: ["users", "search"] });
+    },
+  });
+}
+
+/**
+ * 解除已建立的好友关系并同步刷新通讯录缓存的 Mutation Hook。
+ *
+ * @returns 解除好友 `useMutation` 实例
+ */
+export function useRemoveFriendMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (friendUserId: UserId) => removeFriend(friendUserId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
+      void queryClient.invalidateQueries({ queryKey: ["users", "search"] });
+    },
+  });
+}
+
+/** 导航会用已加入会话列表校验 URL，因此切换之前必须让列表包含服务端确认的单聊。 */
+async function cacheOpenedDirectRoom(queryClient: QueryClient, room: RoomDetailDto): Promise<void> {
+  const listKey = joinedRoomsQueryOptions().queryKey;
+  await queryClient.cancelQueries({ queryKey: listKey, exact: true });
+  queryClient.setQueryData(listKey, (previous) =>
+    previous?.rooms.some((item) => item.id === room.id)
+      ? previous
+      : { ok: true as const, rooms: [room, ...(previous?.rooms ?? [])] },
+  );
+  queryClient.setQueryData(huddleQueryKeys.roomDetail(room.id), { ok: true as const, room });
+  void queryClient.invalidateQueries({ queryKey: listKey, exact: true });
+}
+
+/**
+ * 打开或幂等复用与指定 Agent 的 1v1 单聊会话并刷新会话列表的 Mutation Hook。
+ *
+ * @returns 打开 Agent 单聊 `useMutation` 实例
+ */
+export function useOpenDirectAgentRoomMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (agentId: AgentId) => openDirectAgentRoom(agentId),
+    onSuccess: (res) => cacheOpenedDirectRoom(queryClient, res.room),
+  });
+}
+
+/**
+ * 打开或幂等复用与已添加人类好友的 1v1 私聊会话并刷新会话列表的 Mutation Hook。
+ *
+ * @returns 打开好友私聊 `useMutation` 实例
+ */
+export function useOpenDirectHumanRoomMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (targetUserId: UserId) => openDirectHumanRoom(targetUserId),
+    onSuccess: async (res) => {
+      await cacheOpenedDirectRoom(queryClient, res.room);
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
+    },
+  });
+}
+
+/**
+ * 向现有群聊房间直接拉入好友或本人名下 Agent 的 Mutation Hook。
+ *
+ * @param roomId - 当前群聊房间品牌 ID
+ * @returns 拉人入群 `useMutation` 实例
+ */
+export function useAddRoomMembersMutation(roomId: RoomId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      readonly userIds?: readonly UserId[];
+      readonly agentIds?: readonly AgentId[];
+    }) => addMembersToGroupRoom(roomId, body),
+    onSuccess: (res) => {
+      queryClient.setQueryData(huddleQueryKeys.roomDetail(roomId), res);
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+    },
   });
 }
 

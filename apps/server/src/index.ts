@@ -51,10 +51,12 @@ export async function startServer(): Promise<void> {
     {
       fetch: app.fetch,
       port: env.PORT,
+      hostname: env.HOST,
     },
     (info) => {
       logger.info(
         {
+          host: env.HOST,
           port: info.port,
           databaseDriver: database.driver,
           realtimeBusDriver: env.REALTIME_BUS_DRIVER,

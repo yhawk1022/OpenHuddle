@@ -6,7 +6,8 @@
  * 1. 服务端能力自发现：挂载时查询 `/api/v1/auth/config`（零密钥），自动适配 `allowPublicSignup` 开关、`allowedEmailDomains` 提示、邮件投递模式与重发冷却秒数。
  * 2. 纯邮箱+密码主流程：注册必须通过邮箱 6 位验证码核验后方可创建账号；日常登录仅需邮箱+密码；忘记密码通过邮箱 6 位验证码安全重设（同时兼容早期无密码老用户首次设密）。
  * 3. 开发零摩擦闭环：当服务端未配置 SMTP 且处于开发/测试回退态返回 `devOtpCode` 时，渲染鼠尾草绿快捷填入卡片，支持一键填入验证码。
- * 4. Tauri v2 + Electron 双栖窗口壳：`html/body` 已被全局锁定 `overflow: hidden`，本屏自身使用 `h-dvh` + 内部滚动容器；顶部栏声明 `data-tauri-drag-region` 与 `.app-drag-region`。
+ * 4. 全屏星点背景在表单和预览卡下方绘制，支持系统减少动态效果设置，且不会拦截交互。
+ * 5. Tauri v2 + Electron 双栖窗口壳：`html/body` 已被全局锁定 `overflow: hidden`，本屏自身使用 `h-dvh` + 内部滚动容器；顶部栏声明 `data-tauri-drag-region` 与 `.app-drag-region`。
  */
 import { type AuthCodeSentResponse, PASSWORD_MIN_LENGTH } from "@openhuddle/protocol";
 import { useQuery } from "@tanstack/react-query";
@@ -36,6 +37,7 @@ import {
   motion,
   toast,
 } from "../../../components/primitives/index.js";
+import { HuddleConstellationBackground } from "../../../components/ui/huddle-constellation-background.js";
 import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
 import { ApiClientError } from "../../../lib/api-client.js";
 import {
@@ -232,16 +234,16 @@ function LiveHuddlePreview() {
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 360, damping: 32, delay: 0.05 }}
-      className="relative liquid-glass-modal select-none overflow-hidden rounded-[28px]"
+      className="relative liquid-glass-modal select-none overflow-hidden rounded-[28px] bg-white/[0.72] dark:bg-[#16171C]/[0.74]"
     >
       {/* 卡片顶部群聊头：圆角方标 + 群标题 + 实时在线圆点 */}
       <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-5 py-3.5 dark:border-white/[0.07]">
         <div className="flex min-w-0 items-center gap-3">
           <div
             aria-hidden="true"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[#E8EEF9] text-[12px] font-semibold text-[#234075] shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] ring-1 ring-inset ring-black/[0.06] dark:bg-[#222938] dark:text-[#B8D0FA] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.10)] dark:ring-white/[0.09]"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[#DCE8FC] text-[14px] font-semibold text-[#1D3E78] shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] ring-1 ring-inset ring-white/80 dark:bg-[#222938] dark:text-[#B8D0FA] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.10)] dark:ring-white/[0.08]"
           >
-            实时
+            实
           </div>
           <div className="min-w-0">
             <p className="truncate text-[14px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
@@ -660,27 +662,28 @@ export function AuthScreen() {
   const activeDevOtpMeta = mode === "register" ? registerCodeMeta : resetCodeMeta;
 
   return (
-    // 全局 body 已锁定滚动，因此本屏自身承担 h-dvh 视口与内部滚动
-    <div className="flex h-dvh flex-col overflow-hidden text-[#111318] dark:text-[#F2F2F4]">
-      {/* 顶部 Apple Liquid Glass 标题栏：支持 Tauri v2 与 Electron 无边框拖拽 */}
+    // 全局 body 已锁定滚动，背景和内部滚动区域都由本屏管理。
+    <div className="relative isolate flex h-dvh flex-col overflow-hidden bg-[#FCFDFE] text-[#111318] dark:bg-[#0E0F13] dark:text-[#F2F2F4]">
+      <HuddleConstellationBackground />
+
       <header
         data-tauri-drag-region=""
-        className="app-drag-region pt-safe relative liquid-glass-bar z-20 shrink-0 select-none"
+        className="app-drag-region pt-safe relative z-20 shrink-0 select-none"
       >
-        <div className="mx-auto flex w-full max-w-[1140px] items-center justify-between px-6 py-3 sm:px-10">
+        <div className="mx-auto flex w-full max-w-[1140px] items-center justify-between px-6 py-4 sm:px-10">
           <div className="pointer-events-none flex items-center gap-2.5">
             <BrandMark className="h-6 w-6 shrink-0" />
             <span className="text-[17.5px] font-bold tracking-[-0.025em] text-[#111318] dark:text-white">
               OpenHuddle
             </span>
           </div>
-          <div className="app-no-drag">
+          <div className="app-no-drag rounded-full bg-white/70 backdrop-blur-md dark:bg-white/[0.06]">
             <ThemeToggle showLabel={true} />
           </div>
         </div>
       </header>
 
-      <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <main className="relative z-10 min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="mx-auto grid min-h-full w-full max-w-[1140px] items-center gap-10 px-6 py-8 sm:px-10 lg:grid-cols-12 lg:gap-14 lg:py-10">
           {/* 左栏：社论大标题 + 液态玻璃群聊实况预览卡片 */}
           <section className="lg:col-span-7">
@@ -690,12 +693,12 @@ export function AuthScreen() {
               transition={{ type: "spring", stiffness: 380, damping: 32 }}
               className="select-none"
             >
-              <h1 className="text-4xl font-semibold leading-[1.12] tracking-[-0.03em] text-[#111318] sm:text-5xl dark:text-[#F2F2F4]">
-                把你的 AI 聚到一个群里聊。
+              <h1 className="text-balance text-4xl font-semibold leading-[1.12] tracking-[-0.03em] text-[#111318] sm:text-5xl dark:text-[#F2F2F4]">
+                有事，<span className="inline-block">和你的 AI</span>{" "}
+                <span className="inline-block">一起聊。</span>
               </h1>
-              <p className="mt-4 max-w-xl text-[15px] leading-[1.62] text-[#687082] sm:text-[16px] dark:text-[#9B9BA3]">
-                让 Claude Code、Codex 与同伴的个人 Agent
-                在同一个聊天室里核对事实、讨论方案，把拍板留给你。
+              <p className="mt-4 max-w-xl text-pretty text-[15px] leading-[1.62] text-[#525A6B] sm:text-[16px] dark:text-[#A5A7B2]">
+                让 Claude Code、Codex 和同伴的 Agent 一起查资料、聊方案，最后由你决定。
               </p>
             </motion.div>
 
@@ -710,7 +713,7 @@ export function AuthScreen() {
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 400, damping: 32, delay: 0.06 }}
-              className="relative liquid-glass-modal overflow-hidden rounded-[28px] p-6 sm:p-8"
+              className="relative liquid-glass-modal overflow-hidden rounded-[28px] bg-white/[0.76] p-6 sm:p-8 dark:bg-[#16171C]/[0.78]"
             >
               {/* 登录 / 注册顶部分段切换器（仅非重置密码态且开放注册时展示） */}
               {mode !== "reset" && allowPublicSignup ? (

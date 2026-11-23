@@ -22,6 +22,8 @@ const emptyToUndefined = (val: unknown): unknown =>
 export const ServerEnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+  /** 监听网卡地址；反向代理后部署时设为 `127.0.0.1`，避免应用端口直接暴露公网 */
+  HOST: z.preprocess(emptyToUndefined, z.string().trim().min(1).default("0.0.0.0")),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   PUBLIC_BASE_URL: z.string().url().default("http://localhost:3000"),
   DATABASE_URL: z.string().min(1).default("file://./.data/pglite"),

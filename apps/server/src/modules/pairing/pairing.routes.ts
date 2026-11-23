@@ -17,9 +17,13 @@ import {
   LocalAgentsStatusResponseSchema,
   PairAgentRequestSchema,
   PairAgentResponseSchema,
+  UpdateOwnedAgentBodySchema,
+  UpdateOwnedAgentResponseSchema,
 } from "@openhuddle/protocol";
 import { createRequireAuthMiddleware } from "../../infra/auth-middleware.js";
+import type { ServerEnv } from "../../infra/env.js";
 import { createOpenApiRouter } from "../../infra/openapi-router.js";
+import { resolveEffectivePublicBaseUrl } from "../../infra/public-url.js";
 import type { AuthService } from "../auth/auth.service.js";
 import type { LocalConnectService } from "./local-connect.service.js";
 import type { PairingService } from "./pairing.service.js";
@@ -196,6 +200,49 @@ const connectLocalAgentRoute = createRoute({
   },
 });
 
+const updateOwnedAgentRoute = createRoute({
+  method: "patch",
+  path: "/agents/{agentId}",
+  tags: ["Pairing"],
+  summary:
+    "Update an owned personal AI agent's profile or cross-owner external DM toggle (Human owner only)",
+  request: {
+    params: z.object({
+      agentId: AgentIdSchema,
+    }),
+    body: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: UpdateOwnedAgentBodySchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Agent settings updated",
+      content: {
+        "application/json": {
+          schema: UpdateOwnedAgentResponseSchema,
+        },
+      },
+    },
+    401: {
+      description: "Unauthenticated",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    403: {
+      description: "Caller is not the human owner of this agent",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    404: {
+      description: "Target agent not found",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+  },
+});
+
 const deleteOwnedAgentRoute = createRoute({
   method: "delete",
   path: "/agents/{agentId}",
@@ -252,6 +299,7 @@ const deleteOwnedAgentRoute = createRoute({
 export function createPairingRouter(deps: {
   readonly authService: AuthService;
   readonly pairingService: PairingService;
+  readonly env: ServerEnv;
   readonly localConnectService?: LocalConnectService;
 }): OpenAPIHono {
   const router = createOpenApiRouter();
@@ -264,7 +312,8 @@ export function createPairingRouter(deps: {
   router.openapi(createPairingCodeRoute, async (c) => {
     const caller = c.get("caller");
     const body = c.req.valid("json");
-    const result = await deps.pairingService.createPairingCode(caller, body);
+    const effectiveBaseUrl = resolveEffectivePublicBaseUrl(deps.env.PUBLIC_BASE_URL, c.req.raw);
+    const result = await deps.pairingService.createPairingCode(caller, body, effectiveBaseUrl);
     return c.json(result, 201);
   });
 
@@ -272,6 +321,14 @@ export function createPairingRouter(deps: {
     const body = c.req.valid("json");
     const result = await deps.pairingService.pairAgent(body);
     return c.json(result, 201);
+  });
+
+  router.openapi(updateOwnedAgentRoute, async (c) => {
+    const caller = c.get("caller");
+    const { agentId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const agent = await deps.pairingService.updateOwnedAgent(caller, agentId, body);
+    return c.json({ ok: true as const, agent }, 200);
   });
 
   router.openapi(deleteOwnedAgentRoute, async (c) => {
@@ -296,13 +353,15 @@ export function createPairingRouter(deps: {
     const localService = deps.localConnectService;
     router.openapi(localAgentsStatusRoute, (c) => {
       const caller = c.get("caller");
-      return c.json(localService.getStatus(caller), 200);
+      const effectiveBaseUrl = resolveEffectivePublicBaseUrl(deps.env.PUBLIC_BASE_URL, c.req.raw);
+      return c.json(localService.getStatus(caller, effectiveBaseUrl), 200);
     });
 
     router.openapi(connectLocalAgentRoute, async (c) => {
       const caller = c.get("caller");
       const body = c.req.valid("json");
-      const result = await localService.connectLocalAgent(caller, body);
+      const effectiveBaseUrl = resolveEffectivePublicBaseUrl(deps.env.PUBLIC_BASE_URL, c.req.raw);
+      const result = await localService.connectLocalAgent(caller, body, effectiveBaseUrl);
       return c.json(result, 201);
     });
   }

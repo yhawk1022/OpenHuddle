@@ -38,6 +38,9 @@ importers:
       '@openhuddle/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@openhuddle/mcp':
+        specifier: workspace:*
+        version: link:../../packages/mcp
       '@openhuddle/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

@@ -15,6 +15,8 @@ import {
   RoomIdSchema,
   type SseEvent,
   SseEventSchema,
+  type UserId,
+  UserIdSchema,
 } from "@openhuddle/protocol";
 import type pg from "pg";
 import type { Logger } from "pino";
@@ -40,6 +42,12 @@ const PgNotifyEnvelopeSchema = z.discriminatedUnion("scope", [
     originInstanceId: z.string(),
     scope: z.literal("agent"),
     agentId: AgentIdSchema,
+    event: SseEventSchema,
+  }),
+  z.object({
+    originInstanceId: z.string(),
+    scope: z.literal("user"),
+    userId: UserIdSchema,
     event: SseEventSchema,
   }),
 ]);
@@ -137,6 +145,17 @@ export class PostgresListenNotifyBus implements RealtimeBus {
     });
   }
 
+  /** {@inheritDoc RealtimeBus.publishToUser} */
+  public async publishToUser(userId: UserId, event: SseEvent): Promise<void> {
+    await this.localBus.publishToUser(userId, event);
+    await this.sendPgNotify({
+      originInstanceId: this.instanceId,
+      scope: "user",
+      userId,
+      event,
+    });
+  }
+
   /** {@inheritDoc RealtimeBus.subscribeRoom} */
   public subscribeRoom(roomId: RoomId, listener: (event: SseEvent) => void): UnsubscribeFn {
     return this.localBus.subscribeRoom(roomId, listener);
@@ -147,6 +166,11 @@ export class PostgresListenNotifyBus implements RealtimeBus {
     return this.localBus.subscribeAgent(agentId, listener);
   }
 
+  /** {@inheritDoc RealtimeBus.subscribeUser} */
+  public subscribeUser(userId: UserId, listener: (event: SseEvent) => void): UnsubscribeFn {
+    return this.localBus.subscribeUser(userId, listener);
+  }
+
   /** {@inheritDoc RealtimeBus.getActiveAgentConnectionCount} */
   public getActiveAgentConnectionCount(agentId: AgentId): number {
     return this.localBus.getActiveAgentConnectionCount(agentId);
@@ -155,6 +179,11 @@ export class PostgresListenNotifyBus implements RealtimeBus {
   /** {@inheritDoc RealtimeBus.evictAgentSubscribers} */
   public evictAgentSubscribers(agentId: AgentId): void {
     this.localBus.evictAgentSubscribers(agentId);
+  }
+
+  /** {@inheritDoc RealtimeBus.evictUserSubscribers} */
+  public evictUserSubscribers(userId: UserId): void {
+    this.localBus.evictUserSubscribers(userId);
   }
 
   /** {@inheritDoc RealtimeBus.evictRoomSubscribers} */
@@ -214,8 +243,10 @@ export class PostgresListenNotifyBus implements RealtimeBus {
         if (envelope.event.type === "room.deleted") {
           this.localBus.evictRoomSubscribers(envelope.roomId);
         }
-      } else {
+      } else if (envelope.scope === "agent") {
         void this.localBus.publishToAgent(envelope.agentId, envelope.event);
+      } else {
+        void this.localBus.publishToUser(envelope.userId, envelope.event);
       }
     } catch (err) {
       this.logger.warn({ err }, "Discarded malformed PostgreSQL NOTIFY event frame");

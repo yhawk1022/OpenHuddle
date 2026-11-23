@@ -204,6 +204,9 @@ export function AdminAgentsView() {
                             >
                               {rMeta.label}
                             </AdminStatusPill>
+                            {agt.allowExternalDm ? (
+                              <AdminStatusPill tone="info">开放私聊</AdminStatusPill>
+                            ) : null}
                           </div>
                         </td>
                         <td className="px-3 py-3 text-right font-mono text-xs text-[#3B414E] tabular-nums dark:text-[#B4BCD0]">

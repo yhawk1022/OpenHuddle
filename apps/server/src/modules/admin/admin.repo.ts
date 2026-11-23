@@ -63,6 +63,8 @@ import {
   RoomGovernanceStateSchema,
   RoomGovernanceStatusSchema,
   type RoomId,
+  type RoomKind,
+  RoomKindSchema,
   RoomMemberRoleSchema,
   type RoomVisibility,
   RoomVisibilitySchema,
@@ -545,6 +547,7 @@ export class AdminRepository {
     const result = await this.db.execute(sql`
       SELECT
         r.id AS "id",
+        r.kind AS "kind",
         r.name AS "name",
         u.display_name AS "ownerDisplayName",
         r.visibility AS "visibility",
@@ -577,6 +580,7 @@ export class AdminRepository {
 
     return extractSqlRows<{
       readonly id: string;
+      readonly kind?: string;
       readonly name: string;
       readonly ownerDisplayName: string;
       readonly visibility: string;
@@ -590,6 +594,7 @@ export class AdminRepository {
       const lastMsgDate = toNullableDate(row.lastMessageAt);
       return {
         id: row.id as RoomId,
+        kind: RoomKindSchema.parse(row.kind ?? "group"),
         name: row.name,
         ownerDisplayName: row.ownerDisplayName,
         visibility: RoomVisibilitySchema.parse(row.visibility),
@@ -915,6 +920,7 @@ export class AdminRepository {
     const res = await this.db.execute(sql`
       SELECT
         r.id AS "id",
+        r.kind AS "kind",
         r.name AS "name",
         rm.role AS "memberRole",
         r.owner_user_id AS "ownerUserId",
@@ -929,6 +935,7 @@ export class AdminRepository {
 
     return extractSqlRows<{
       readonly id: string;
+      readonly kind?: string;
       readonly name: string;
       readonly memberRole: string;
       readonly ownerUserId: string;
@@ -937,6 +944,7 @@ export class AdminRepository {
       readonly joinedAt: Date | string;
     }>(res).map((row) => ({
       id: row.id as RoomId,
+      kind: RoomKindSchema.parse(row.kind ?? "group"),
       name: row.name,
       memberRole: RoomMemberRoleSchema.parse(row.memberRole),
       isRoomOwner: row.ownerUserId === userId,
@@ -1026,7 +1034,23 @@ export class AdminRepository {
       .select({ id: roomsTable.id })
       .from(roomsTable)
       .where(eq(roomsTable.ownerUserId, userId));
-    const deletedRoomIds = ownedRoomRows.map((row) => row.id as RoomId);
+
+    // 同时查找该用户作为对端参与的 1v1 人类私聊与名下 Agent 被外部用户私聊的 1v1 会话，避免注销后残留单人空壳私聊
+    const peerDirectRoomRes = await this.db.execute(sql`
+      SELECT DISTINCT r.id AS "id"
+      FROM rooms r
+      INNER JOIN room_members rm ON rm.room_id = r.id
+      LEFT JOIN agents a ON rm.agent_id = a.id
+      WHERE r.kind <> 'group'
+        AND (rm.user_id = ${userId} OR a.owner_user_id = ${userId})
+    `);
+    const peerDirectRoomIds = extractSqlRows<{ readonly id: string }>(peerDirectRoomRes).map(
+      (r) => r.id as RoomId,
+    );
+
+    const deletedRoomIds = [
+      ...new Set([...ownedRoomRows.map((row) => row.id as RoomId), ...peerDirectRoomIds]),
+    ];
 
     const ownedAgentRows = await this.db
       .select({ id: agentsTable.id })
@@ -1227,6 +1251,7 @@ export class AdminRepository {
 
   private buildRoomWhereClause(query: {
     readonly search?: string | undefined;
+    readonly kind?: RoomKind | undefined;
     readonly visibility?: RoomVisibility | undefined;
     readonly governanceStatus?: string | undefined;
   }) {
@@ -1236,6 +1261,9 @@ export class AdminRepository {
       conditions.push(
         sql`(r.name ILIKE ${pattern} OR r.topic ILIKE ${pattern} OR r.id ILIKE ${pattern} OR u.email ILIKE ${pattern})`,
       );
+    }
+    if (query.kind !== undefined) {
+      conditions.push(sql`r.kind = ${query.kind}`);
     }
     if (query.visibility !== undefined) {
       conditions.push(sql`r.visibility = ${query.visibility}`);
@@ -1266,6 +1294,7 @@ export class AdminRepository {
     const rowsRes = await this.db.execute(sql`
       SELECT
         r.id AS "id",
+        r.kind AS "kind",
         r.name AS "name",
         r.topic AS "topic",
         r.rules AS "rules",
@@ -1311,6 +1340,7 @@ export class AdminRepository {
 
     const rooms = extractSqlRows<{
       readonly id: string;
+      readonly kind?: string;
       readonly name: string;
       readonly topic: string;
       readonly rules: string;
@@ -1344,6 +1374,7 @@ export class AdminRepository {
     const res = await this.db.execute(sql`
       SELECT
         r.id AS "id",
+        r.kind AS "kind",
         r.name AS "name",
         r.topic AS "topic",
         r.rules AS "rules",
@@ -1389,6 +1420,7 @@ export class AdminRepository {
 
     const row = extractSqlRows<{
       readonly id: string;
+      readonly kind?: string;
       readonly name: string;
       readonly topic: string;
       readonly rules: string;
@@ -1420,6 +1452,7 @@ export class AdminRepository {
 
   private mapRoomRowToAdminItem(row: {
     readonly id: string;
+    readonly kind?: string;
     readonly name: string;
     readonly topic: string;
     readonly rules: string;
@@ -1443,6 +1476,7 @@ export class AdminRepository {
     const lastMessageAt = toNullableDate(row.lastMessageAt);
     return {
       id: row.id as RoomId,
+      kind: RoomKindSchema.parse(row.kind ?? "group"),
       name: row.name,
       topic: row.topic,
       rules: row.rules,
@@ -1610,6 +1644,7 @@ export class AdminRepository {
         a.slug AS "slug",
         a.platform AS "platform",
         a.intro AS "intro",
+        a.allow_external_dm AS "allowExternalDm",
         a.wake_kind AS "wakeKind",
         a.checkin_interval_min AS "checkinIntervalMin",
         a.last_seen_at AS "lastSeenAt",
@@ -1643,6 +1678,7 @@ export class AdminRepository {
       readonly slug: string;
       readonly platform: string;
       readonly intro: string | null;
+      readonly allowExternalDm?: boolean | null;
       readonly wakeKind: string;
       readonly checkinIntervalMin: number | null;
       readonly lastSeenAt: Date | string | null;
@@ -1673,6 +1709,7 @@ export class AdminRepository {
         slug: row.slug,
         platform,
         ...(row.intro !== null && row.intro.length > 0 ? { intro: row.intro } : {}),
+        allowExternalDm: row.allowExternalDm === true,
         wakeKind: row.wakeKind,
         reach,
         ...(row.checkinIntervalMin !== null

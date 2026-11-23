@@ -18,7 +18,11 @@ import { assertHumanCaller } from "../../infra/auth-middleware.js";
 import { AppError } from "../../infra/errors.js";
 import { toActorMemberKey } from "../../infra/identity-stamp.js";
 import type { RealtimeBus } from "../../infra/realtime-bus.js";
-import { type RoomsRepository, buildRoomDetailDto } from "../rooms/rooms.repo.js";
+import {
+  type RoomsRepository,
+  buildRoomDetailDto,
+  resolveDirectPeerForViewer,
+} from "../rooms/rooms.repo.js";
 
 /**
  * 构造 `GovernanceService` 所需的依赖。
@@ -85,6 +89,14 @@ export class GovernanceService {
         });
       }
 
+      if (lockedRoom.kind !== "group" && body.visibility === "public_shareable") {
+        throw new AppError({
+          code: "DIRECT_ROOM_IMMUTABLE_ROSTER",
+          statusCode: 400,
+          message: "一对一私聊会话不支持开启公开只读分享链接。",
+        });
+      }
+
       const current = lockedRoom.governanceJson;
       const updatedConfig = {
         mode: body.mode ?? current.config.mode,
@@ -130,10 +142,19 @@ export class GovernanceService {
       governance: txResult.updatedRoom.governanceJson,
     });
 
-    const members = await this.roomsRepo.listHydratedMembers(roomId, this.realtimeBus);
+    const { members, internal } = await this.roomsRepo.listHydratedMembersWithPeerMeta(
+      roomId,
+      this.realtimeBus,
+    );
+    const peer =
+      txResult.updatedRoom.kind !== "group"
+        ? resolveDirectPeerForViewer(txResult.updatedRoom.kind, internal, caller)
+        : undefined;
     return buildRoomDetailDto(txResult.updatedRoom, members, {
       yourLastReadSeq: txResult.yourLastReadSeq,
-      includeInviteToken: true,
+      includeInviteToken: txResult.updatedRoom.kind === "group",
+      viewer: caller,
+      ...(peer !== undefined ? { peerOverride: peer } : {}),
     });
   }
 }

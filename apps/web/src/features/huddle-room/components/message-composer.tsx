@@ -17,6 +17,7 @@ import type {
   MessageMention,
   MessageSeq,
   OperationKey,
+  RoomKind,
   RoomMemberDto,
   UserId,
 } from "@openhuddle/protocol";
@@ -50,6 +51,7 @@ const MAX_MENTION_SUGGESTIONS = 8;
 /** `MessageComposer` 入参属性 */
 export interface MessageComposerProps {
   readonly roomName: string;
+  readonly roomKind?: RoomKind | undefined;
   readonly members: ReadonlyArray<RoomMemberDto>;
   readonly currentUserId?: UserId | undefined;
   /** 当前登录用户的展示昵称（用于渲染输入舱内本人发言身份提示） */
@@ -517,8 +519,16 @@ export function MessageComposer(props: MessageComposerProps) {
         : null;
 
   const canSend = draft.trim().length > 0 && !props.isSending;
-  const hasAnyTeammate = agentMembers.length > 0 || humanMembers.length > 0;
+  const effectiveKind: RoomKind = props.roomKind ?? "group";
+  const hasAnyTeammate =
+    effectiveKind === "group" && (agentMembers.length > 0 || humanMembers.length > 0);
   const hasContextChips = props.replyTarget !== null || activeChipMentions.length > 0;
+  const composerPlaceholder =
+    effectiveKind === "direct_agent"
+      ? `发消息给 ${props.roomName}…（1v1 单聊直接唤醒，无需输入 @）`
+      : effectiveKind === "direct_human"
+        ? `发消息给 ${props.roomName}…`
+        : `以 ${senderDisplayName} 的身份说点什么…（输入 @ 点名队友）`;
 
   return (
     <footer className="app-no-drag pointer-events-none relative z-10 shrink-0 bg-gradient-to-t from-[var(--oh-stage-scrim)] via-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
@@ -724,146 +734,148 @@ export function MessageComposer(props: MessageComposerProps) {
             onFocus={() => setSuggestDismissed(false)}
             onKeyDown={handleKeyDown}
             aria-label={`在 ${props.roomName} 发言`}
-            placeholder={`以 ${senderDisplayName} 的身份说点什么…（输入 @ 点名队友）`}
+            placeholder={composerPlaceholder}
             className="block max-h-[168px] min-h-[26px] w-full resize-none border-0 bg-transparent p-0 text-[14.5px] leading-[1.5] text-[#111318] caret-[#111318] outline-none placeholder:text-[#8E96A6] dark:text-[#F2F2F4] dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]"
           />
 
           {/* 舱内底部工具栏：左侧 `@` 点名、提问模式、`@全体` 与身份微标；右侧圆形发送键 */}
           <div className="mt-2 flex select-none items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1.5">
-              <AppPopover
-                open={pickerOpen}
-                onOpenChange={setPickerOpen}
-                side="top"
-                align="start"
-                className="w-72 p-2"
-                trigger={
-                  <button
-                    type="button"
-                    disabled={!hasAnyTeammate}
-                    title="提及群内 Agent 或成员"
-                    aria-label="提及群内 Agent 或成员"
-                    className={cn(
-                      "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95] disabled:cursor-not-allowed disabled:opacity-40",
-                      pickerOpen
-                        ? "bg-black/[0.08] text-[#111318] dark:bg-white/[0.14] dark:text-white"
-                        : "text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]",
-                    )}
-                  >
-                    <AtSign className="h-[17px] w-[17px] stroke-[1.9]" />
-                  </button>
-                }
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between px-2 py-1">
-                    <span className="text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                      提及群成员
-                    </span>
-                    <span className="text-[11px] font-medium text-[#16A34A] dark:text-[#34D399]">
-                      {onlineAgentCount}/{agentMembers.length} 个 Agent 在线
-                    </span>
-                  </div>
-
-                  {agentMembers.length >= 2 ? (
+              {effectiveKind === "group" ? (
+                <AppPopover
+                  open={pickerOpen}
+                  onOpenChange={setPickerOpen}
+                  side="top"
+                  align="start"
+                  className="w-72 p-2"
+                  trigger={
                     <button
                       type="button"
-                      onClick={handleMentionAllAgents}
-                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl bg-black/[0.04] px-2.5 py-2 text-left text-xs font-medium text-[#111318] transition hover:bg-black/[0.07] dark:bg-white/[0.06] dark:text-[#F2F2F4] dark:hover:bg-white/[0.11]"
+                      disabled={!hasAnyTeammate}
+                      title="提及群内 Agent 或成员"
+                      aria-label="提及群内 Agent 或成员"
+                      className={cn(
+                        "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95] disabled:cursor-not-allowed disabled:opacity-40",
+                        pickerOpen
+                          ? "bg-black/[0.08] text-[#111318] dark:bg-white/[0.14] dark:text-white"
+                          : "text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]",
+                      )}
                     >
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
-                        <Users className="h-3.5 w-3.5" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate font-semibold">@全体 Agent</span>
-                        <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                          同时叫醒全部 {agentMembers.length} 个 Agent 参与讨论
-                        </span>
-                      </span>
+                      <AtSign className="h-[17px] w-[17px] stroke-[1.9]" />
                     </button>
-                  ) : null}
+                  }
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between px-2 py-1">
+                      <span className="text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                        提及群成员
+                      </span>
+                      <span className="text-[11px] font-medium text-[#16A34A] dark:text-[#34D399]">
+                        {onlineAgentCount}/{agentMembers.length} 个 Agent 在线
+                      </span>
+                    </div>
 
-                  <div className="max-h-56 space-y-0.5 overflow-y-auto pt-0.5">
-                    {agentMembers.map((member) => {
-                      const mentionObj = memberToMention(member);
-                      if (mentionObj === null) {
-                        return null;
-                      }
-                      const checked = draft.includes(`@${member.displayName}`);
-                      const reachMeta = getReachVisualMeta(member.reach);
-                      return (
-                        <button
-                          key={`pop-agt-${member.agentId ?? member.displayName}`}
-                          type="button"
-                          onClick={() => toggleMention(mentionObj)}
-                          className={cn(
-                            "flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition-colors",
-                            checked
-                              ? "bg-black/[0.06] text-[#111318] dark:bg-white/[0.10] dark:text-[#F2F2F4]"
-                              : "text-[#3B414E] hover:bg-black/[0.035] dark:text-[#C4C4CA] dark:hover:bg-white/[0.06]",
-                          )}
-                        >
-                          <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black/[0.06] text-[11px] font-semibold text-[#111318] dark:bg-white/[0.10] dark:text-[#ECECEF]">
-                            {member.displayName.slice(0, 1).toUpperCase()}
-                            <span
-                              className={cn(
-                                "absolute -right-0.5 -bottom-0.5 h-2 w-2 rounded-full ring-2 ring-white dark:ring-[#1E1E22]",
-                                reachMeta.dotClass,
-                              )}
-                            />
+                    {agentMembers.length >= 2 ? (
+                      <button
+                        type="button"
+                        onClick={handleMentionAllAgents}
+                        className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl bg-black/[0.04] px-2.5 py-2 text-left text-xs font-medium text-[#111318] transition hover:bg-black/[0.07] dark:bg-white/[0.06] dark:text-[#F2F2F4] dark:hover:bg-white/[0.11]"
+                      >
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
+                          <Users className="h-3.5 w-3.5" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-semibold">@全体 Agent</span>
+                          <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
+                            同时叫醒全部 {agentMembers.length} 个 Agent 参与讨论
                           </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-xs font-semibold">
-                              @{member.displayName}
-                            </span>
-                            <span className="block truncate text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                              {member.ownerDisplayName} 的 Agent · {reachMeta.shortLabel}
-                            </span>
-                          </span>
-                          {checked ? (
-                            <Check className="h-3.5 w-3.5 shrink-0 text-[#111318] dark:text-[#F2F2F4]" />
-                          ) : null}
-                        </button>
-                      );
-                    })}
+                        </span>
+                      </button>
+                    ) : null}
 
-                    {humanMembers.map((member) => {
-                      const mentionObj = memberToMention(member);
-                      if (mentionObj === null) {
-                        return null;
-                      }
-                      const checked = draft.includes(`@${member.displayName}`);
-                      return (
-                        <button
-                          key={`pop-usr-${member.userId ?? member.displayName}`}
-                          type="button"
-                          onClick={() => toggleMention(mentionObj)}
-                          className={cn(
-                            "flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition-colors",
-                            checked
-                              ? "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]"
-                              : "text-[#3B414E] hover:bg-black/[0.035] dark:text-[#C4C4CA] dark:hover:bg-white/[0.06]",
-                          )}
-                        >
-                          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]">
-                            <User className="h-3.5 w-3.5" />
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-xs font-semibold">
-                              @{member.displayName}
+                    <div className="max-h-56 space-y-0.5 overflow-y-auto pt-0.5">
+                      {agentMembers.map((member) => {
+                        const mentionObj = memberToMention(member);
+                        if (mentionObj === null) {
+                          return null;
+                        }
+                        const checked = draft.includes(`@${member.displayName}`);
+                        const reachMeta = getReachVisualMeta(member.reach);
+                        return (
+                          <button
+                            key={`pop-agt-${member.agentId ?? member.displayName}`}
+                            type="button"
+                            onClick={() => toggleMention(mentionObj)}
+                            className={cn(
+                              "flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition-colors",
+                              checked
+                                ? "bg-black/[0.06] text-[#111318] dark:bg-white/[0.10] dark:text-[#F2F2F4]"
+                                : "text-[#3B414E] hover:bg-black/[0.035] dark:text-[#C4C4CA] dark:hover:bg-white/[0.06]",
+                            )}
+                          >
+                            <span className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black/[0.06] text-[11px] font-semibold text-[#111318] dark:bg-white/[0.10] dark:text-[#ECECEF]">
+                              {member.displayName.slice(0, 1).toUpperCase()}
+                              <span
+                                className={cn(
+                                  "absolute -right-0.5 -bottom-0.5 h-2 w-2 rounded-full ring-2 ring-white dark:ring-[#1E1E22]",
+                                  reachMeta.dotClass,
+                                )}
+                              />
                             </span>
-                            <span className="block truncate text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                              群成员
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-semibold">
+                                @{member.displayName}
+                              </span>
+                              <span className="block truncate text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
+                                {member.ownerDisplayName} 的 Agent · {reachMeta.shortLabel}
+                              </span>
                             </span>
-                          </span>
-                          {checked ? (
-                            <Check className="h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
-                          ) : null}
-                        </button>
-                      );
-                    })}
+                            {checked ? (
+                              <Check className="h-3.5 w-3.5 shrink-0 text-[#111318] dark:text-[#F2F2F4]" />
+                            ) : null}
+                          </button>
+                        );
+                      })}
+
+                      {humanMembers.map((member) => {
+                        const mentionObj = memberToMention(member);
+                        if (mentionObj === null) {
+                          return null;
+                        }
+                        const checked = draft.includes(`@${member.displayName}`);
+                        return (
+                          <button
+                            key={`pop-usr-${member.userId ?? member.displayName}`}
+                            type="button"
+                            onClick={() => toggleMention(mentionObj)}
+                            className={cn(
+                              "flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-left transition-colors",
+                              checked
+                                ? "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]"
+                                : "text-[#3B414E] hover:bg-black/[0.035] dark:text-[#C4C4CA] dark:hover:bg-white/[0.06]",
+                            )}
+                          >
+                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]">
+                              <User className="h-3.5 w-3.5" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-semibold">
+                                @{member.displayName}
+                              </span>
+                              <span className="block truncate text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
+                                群成员
+                              </span>
+                            </span>
+                            {checked ? (
+                              <Check className="h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              </AppPopover>
+                </AppPopover>
+              ) : null}
 
               {/* ADR-0002 提问模式开关：开启后本条消息以 attention 形式发出，等待人类作答 */}
               <button

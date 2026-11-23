@@ -19,6 +19,7 @@ import {
   type RoomId,
   type SendMessageRequest,
   type UnreadConflictDetails,
+  type UserId,
   type WakeReason,
   asMessageSeq,
   asReadCursorSeq,
@@ -275,6 +276,41 @@ export class MessagesService {
 
       const activeRoomAgents = await txRepo.listRoomAgentTargets(roomId);
       const activeRoomAgentIds = activeRoomAgents.map((agent) => agent.agentId);
+      const agentOwnerByAgentId = new Map<AgentId, UserId>(
+        activeRoomAgents.map((agent) => [agent.agentId, agent.ownerUserId]),
+      );
+
+      // ADR-0005 安全护栏（1）：跨主人 1v1 Agent 单聊实时开关核验——主人一旦关闭 allowExternalDm，外部用户立即被阻断发言
+      if (room.kind === "direct_agent" && caller.kind === "human") {
+        const targetAgent = activeRoomAgents[0];
+        if (
+          targetAgent !== undefined &&
+          targetAgent.ownerUserId !== caller.userId &&
+          !targetAgent.allowExternalDm
+        ) {
+          throw new AppError({
+            code: "FORBIDDEN_EXTERNAL_AGENT_DM_DISABLED",
+            statusCode: 403,
+            message: "该 Agent 的主人已关闭外部私聊权限，无法继续发送消息。",
+          });
+        }
+      }
+
+      // ADR-0005 安全护栏（2）：人类 1v1 好友私聊实时关系核验——解除好友后保留历史只读，阻断单方继续刷屏骚扰
+      if (room.kind === "direct_human" && caller.kind === "human") {
+        const humanIds = await txRepo.listRoomHumanUserIds(roomId);
+        const peerUserId = humanIds.find((uid) => uid !== caller.userId);
+        if (peerUserId !== undefined) {
+          const stillFriends = await txRepo.areUsersAcceptedFriends(caller.userId, peerUserId);
+          if (!stillFriends) {
+            throw new AppError({
+              code: "FORBIDDEN_NOT_FRIENDS",
+              statusCode: 403,
+              message: "你们当前不是好友关系，请先添加好友后再发送私聊消息。",
+            });
+          }
+        }
+      }
 
       // 3. 优先校验客户端 opKey 幂等键：重试请求直接返回原消息，不消耗新序号或轮次预算
       if (body.opKey !== undefined) {
@@ -286,6 +322,7 @@ export class MessagesService {
             previousGovernance: room.governanceJson,
             nextGovernance: room.governanceJson,
             permittedWakeAgentIds: [] as readonly AgentId[],
+            agentOwnerByAgentId,
           };
         }
       }
@@ -386,6 +423,7 @@ export class MessagesService {
         previousGovernance: room.governanceJson,
         nextGovernance: transition.nextState,
         permittedWakeAgentIds: transition.permittedWakeAgentIds,
+        agentOwnerByAgentId,
       };
     });
 
@@ -407,8 +445,13 @@ export class MessagesService {
         });
       }
 
-      const wakeReason: WakeReason = caller.kind === "human" ? "owner_command" : "direct_mention";
       for (const targetAgentId of txOutcome.permittedWakeAgentIds) {
+        const targetOwnerUserId = txOutcome.agentOwnerByAgentId.get(targetAgentId);
+        // Owner-First 安全铁律：仅当人类发言者确系目标 Agent 的绑定主人时，唤醒原因才可标为 owner_command
+        const wakeReason: WakeReason =
+          caller.kind === "human" && targetOwnerUserId === caller.userId
+            ? "owner_command"
+            : "direct_mention";
         await this.realtimeBus.publishToAgent(targetAgentId, {
           type: "wake",
           roomId,

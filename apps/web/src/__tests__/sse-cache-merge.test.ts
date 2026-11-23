@@ -78,6 +78,7 @@ describe("@openhuddle/web — SSE & optimistic QueryClient cache merge invariant
     const otherRoomId = "rom_test_web_02" as RoomId;
     const makeRoomSummary = (id: RoomId, name: string): RoomSummaryDto => ({
       id,
+      kind: "group",
       ownerUserId: USER_ID,
       name,
       topic: "Topic",

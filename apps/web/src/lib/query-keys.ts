@@ -52,6 +52,10 @@ export const huddleQueryKeys = {
   authConfig: () => ["auth", "config"] as const,
   /** 当前认证人类身份与名下 Agent 列表缓存键 */
   me: () => ["me"] as const,
+  /** 人类用户好友列表、收发申请与跨主人开放私聊 Agent 缓存键 */
+  friends: () => ["friends"] as const,
+  /** 站内活跃用户搜索缓存键 */
+  userSearch: (query: string) => ["users", "search", query] as const,
   /** 本机已安装的预设 Agent CLI 可用性探测缓存键 */
   localAgentsStatus: () => ["localAgents", "status"] as const,
   /** 当前用户已加入的所有 Huddle 房间概览列表缓存键 */

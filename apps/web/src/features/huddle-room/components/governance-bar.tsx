@@ -15,10 +15,12 @@ import type {
   RoomDetailDto,
   RoomGovernanceState,
   UpdateGovernanceBody,
+  UserId,
 } from "@openhuddle/protocol";
 import {
   AlertTriangle,
   AtSign,
+  Bot,
   CheckCircle2,
   ChevronLeft,
   FileText,
@@ -26,6 +28,7 @@ import {
   Play,
   Plus,
   ShieldAlert,
+  UserRound,
   Users,
   X,
 } from "lucide-react";
@@ -45,10 +48,12 @@ import {
   motion,
   toast,
 } from "../../../components/primitives/index.js";
+import { getReachVisualMeta } from "../../../lib/format.js";
 
 /** `GovernanceBar` 入参属性 */
 export interface GovernanceBarProps {
   readonly room: RoomDetailDto;
+  readonly currentUserId?: UserId | undefined;
   readonly governance: RoomGovernanceState;
   readonly proposalsCount: number;
   readonly openProposalsCount: number;
@@ -58,6 +63,8 @@ export interface GovernanceBarProps {
   readonly isInspectorOpen: boolean;
   readonly onUpdateGovernance: (patch: UpdateGovernanceBody) => void;
   readonly onOpenAddAgentModal: () => void;
+  /** 点击群聊顶栏「+ 邀请」时打开拉好友/本人 Agent 弹窗（缺省回退至 `onOpenAddAgentModal`） */
+  readonly onOpenInviteModal?: (() => void) | undefined;
   readonly onOpenProposals: () => void;
   readonly onToggleInspector: () => void;
   /** 移动端返回会话列表（仅 `< md` 可见） */
@@ -135,17 +142,47 @@ export function GovernanceBar(props: GovernanceBarProps) {
   }, [maxTurns]);
 
   const showDecided =
+    props.room.kind !== "direct_human" &&
     !isPaused &&
     props.decidedProposalTitle !== null &&
     props.openProposalsCount === 0 &&
     dismissedDecision !== props.decidedProposalTitle;
 
-  const subtitleText =
-    props.room.topic.length > 0
-      ? props.room.topic
-      : props.room.visibility === "public_shareable"
-        ? "公开只读可分享"
-        : "仅限邀请加入";
+  const isGroupRoom = props.room.kind === "group";
+  const isDirectAgent = props.room.kind === "direct_agent";
+  const isDirectHuman = props.room.kind === "direct_human";
+  const peer = props.room.peer;
+
+  const subtitleText = useMemo(() => {
+    if (isDirectHuman) {
+      if (peer?.kind === "human" && peer.email !== undefined && peer.email.length > 0) {
+        return `好友私聊 · ${peer.email}`;
+      }
+      return "好友 1v1 私聊";
+    }
+    if (isDirectAgent) {
+      if (peer?.kind === "agent") {
+        const reachLabel = getReachVisualMeta(peer.reach).shortLabel;
+        const isMyAgent =
+          props.currentUserId !== undefined && peer.ownerUserId === props.currentUserId;
+        return isMyAgent
+          ? `我的个人 Agent · ${reachLabel}`
+          : `${peer.ownerDisplayName} 共享的 Agent · ${reachLabel}`;
+      }
+      return "Agent 1v1 单聊";
+    }
+    if (props.room.topic.length > 0) {
+      return props.room.topic;
+    }
+    return props.room.visibility === "public_shareable" ? "公开只读可分享" : "仅限邀请加入";
+  }, [
+    isDirectAgent,
+    isDirectHuman,
+    peer,
+    props.currentUserId,
+    props.room.topic,
+    props.room.visibility,
+  ]);
 
   const visibleProposalBadgeCount =
     props.openProposalsCount > 0 ? props.openProposalsCount : props.proposalsCount;
@@ -231,13 +268,17 @@ export function GovernanceBar(props: GovernanceBarProps) {
           data-tauri-drag-region=""
           className="app-drag-region pointer-events-auto relative liquid-glass-bar flex h-11 shrink-0 items-center gap-0.5 rounded-full p-1 sm:gap-1"
         >
-          {/* 1. 成员与 Agent 人数按钮（切换右侧 RoomInspector） */}
+          {/* 1. 成员/对方信息面板开关按钮 */}
           <AppTooltip
             side="bottom"
             content={
               props.isInspectorOpen
-                ? "收起群成员与设置面板"
-                : `${String(onlineAgents)} 个 Agent 在线 · 点击展开群成员面板`
+                ? "收起会话信息面板"
+                : isDirectHuman
+                  ? "查看好友会话信息"
+                  : isDirectAgent
+                    ? "查看 Agent 详情与会话设置"
+                    : `${String(onlineAgents)} 个 Agent 在线 · 点击展开群成员面板`
             }
           >
             <button
@@ -250,223 +291,249 @@ export function GovernanceBar(props: GovernanceBarProps) {
                 props.isInspectorOpen ? CONTROL_ITEM_ACTIVE_CLASS : CONTROL_ITEM_NEUTRAL_CLASS,
               )}
             >
-              <Users className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#9B9BA3]" />
-              <span className="hidden lg:inline">
-                {agents.length} 个 agent · {humanCount} 人
-              </span>
-              <span className="tabular-nums lg:hidden">{props.room.members.length}</span>
+              {isDirectHuman ? (
+                <>
+                  <UserRound className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#9B9BA3]" />
+                  <span className="hidden sm:inline">会话信息</span>
+                </>
+              ) : isDirectAgent ? (
+                <>
+                  <Bot className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#9B9BA3]" />
+                  <span className="hidden sm:inline">Agent 详情</span>
+                </>
+              ) : (
+                <>
+                  <Users className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#9B9BA3]" />
+                  <span className="hidden lg:inline">
+                    {agents.length} 个 agent · {humanCount} 人
+                  </span>
+                  <span className="tabular-nums lg:hidden">{props.room.members.length}</span>
+                </>
+              )}
             </button>
           </AppTooltip>
 
-          {/* 2. `轮次 X/Y` 治理按钮（平时保持中性，仅 `paused_budget` 亮起暖琥珀提醒） */}
-          <AppPopover
-            open={governanceOpen}
-            onOpenChange={setGovernanceOpen}
-            side="bottom"
-            align="end"
-            className="w-80 space-y-3.5 p-4 text-xs"
-            trigger={
-              <button
-                type="button"
-                aria-label="讨论轮次与群聊规则设置"
-                className={cn(
-                  CONTROL_ITEM_BASE_CLASS,
-                  "px-2.5 sm:px-3",
-                  isPaused
-                    ? "bg-amber-500/16 text-[#78350F] ring-1 ring-inset ring-amber-500/35 hover:bg-amber-500/24 dark:bg-amber-400/16 dark:text-[#FCD34D] dark:ring-amber-400/30 dark:hover:bg-amber-400/24"
-                    : governanceOpen
-                      ? CONTROL_ITEM_ACTIVE_CLASS
-                      : CONTROL_ITEM_NEUTRAL_CLASS,
-                )}
-              >
-                {isPaused ? (
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D97706] dark:bg-[#FBBF24]" />
-                ) : null}
-                <span className="tabular-nums">
-                  <span className="hidden sm:inline">轮次 </span>
-                  {usedTurns}/{maxTurns}
-                </span>
-              </button>
-            }
-          >
-            {/* 讨论模式分段器 */}
-            <div>
-              <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-[11.5px] font-semibold text-[#687082] dark:text-[#8E8E96]">
-                  讨论节奏
-                </span>
-              </div>
-              <SegmentedTabs
-                value={config.mode}
-                onValueChange={handleModeChange}
-                items={MODE_TAB_ITEMS}
-                size="xs"
-                fullWidth={true}
-                ariaLabel="切换讨论模式"
-              />
-            </div>
-
-            {/* 连续 Agent 轮次预算与 Radix AppSelect */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[11.5px] font-semibold text-[#687082] dark:text-[#8E8E96]">
-                  连续 Agent 发言上限
-                </span>
-                <span
+          {/* 2. `轮次 X/Y` 治理按钮（群聊与 Agent 单聊展示；人类 1v1 私聊隐藏） */}
+          {!isDirectHuman ? (
+            <AppPopover
+              open={governanceOpen}
+              onOpenChange={setGovernanceOpen}
+              side="bottom"
+              align="end"
+              className="w-80 space-y-3.5 p-4 text-xs"
+              trigger={
+                <button
+                  type="button"
+                  aria-label="讨论轮次与会话规则设置"
                   className={cn(
-                    "font-mono text-[11px] font-semibold tabular-nums",
+                    CONTROL_ITEM_BASE_CLASS,
+                    "px-2.5 sm:px-3",
                     isPaused
-                      ? "text-[#9A6700] dark:text-[#FCD34D]"
-                      : "text-[#111318] dark:text-[#ECECEF]",
+                      ? "bg-amber-500/16 text-[#78350F] ring-1 ring-inset ring-amber-500/35 hover:bg-amber-500/24 dark:bg-amber-400/16 dark:text-[#FCD34D] dark:ring-amber-400/30 dark:hover:bg-amber-400/24"
+                      : governanceOpen
+                        ? CONTROL_ITEM_ACTIVE_CLASS
+                        : CONTROL_ITEM_NEUTRAL_CLASS,
                   )}
                 >
-                  已用 {usedTurns} / {maxTurns} 轮
-                </span>
-              </div>
-
-              <div className="h-1.5 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/[0.09]">
-                <div
-                  style={{ width: `${String(ratio * 100)}%` }}
-                  className={cn(
-                    "h-full rounded-full transition-all duration-300",
-                    isPaused ? "bg-[#D97706] dark:bg-[#FBBF24]" : "bg-[#181B22] dark:bg-[#EAEEF6]",
-                  )}
-                />
-              </div>
-
-              <div className="flex items-center gap-2 pt-0.5">
-                <div className="min-w-0 flex-1">
-                  <AppSelect
-                    id="gov-bar-turn-cap"
-                    ariaLabel="连续 Agent 轮次上限"
-                    size="sm"
-                    align="end"
-                    disabled={props.isUpdatingGovernance}
-                    value={String(maxTurns)}
-                    onValueChange={handleTurnCapChange}
-                    options={turnCapOptions}
+                  {isPaused ? (
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D97706] dark:bg-[#FBBF24]" />
+                  ) : null}
+                  <span className="tabular-nums">
+                    <span className="hidden sm:inline">轮次 </span>
+                    {usedTurns}/{maxTurns}
+                  </span>
+                </button>
+              }
+            >
+              {/* 讨论模式分段器（仅多 Agent 群聊展示） */}
+              {isGroupRoom ? (
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="text-[11.5px] font-semibold text-[#687082] dark:text-[#8E8E96]">
+                      讨论节奏
+                    </span>
+                  </div>
+                  <SegmentedTabs
+                    value={config.mode}
+                    onValueChange={handleModeChange}
+                    items={MODE_TAB_ITEMS}
+                    size="xs"
+                    fullWidth={true}
+                    ariaLabel="切换讨论模式"
                   />
                 </div>
-                {isPaused ? (
-                  <AppButton
-                    variant="primary"
-                    size="sm"
-                    isLoading={props.isUpdatingGovernance}
-                    leadingIcon={<Play className="h-3 w-3 fill-current" />}
-                    onClick={handleRenewBudget}
+              ) : null}
+
+              {/* 连续 Agent 轮次预算与 Radix AppSelect */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11.5px] font-semibold text-[#687082] dark:text-[#8E8E96]">
+                    连续 Agent 发言上限
+                  </span>
+                  <span
+                    className={cn(
+                      "font-mono text-[11px] font-semibold tabular-nums",
+                      isPaused
+                        ? "text-[#9A6700] dark:text-[#FCD34D]"
+                        : "text-[#111318] dark:text-[#ECECEF]",
+                    )}
                   >
-                    续期
-                  </AppButton>
+                    已用 {usedTurns} / {maxTurns} 轮
+                  </span>
+                </div>
+
+                <div className="h-1.5 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/[0.09]">
+                  <div
+                    style={{ width: `${String(ratio * 100)}%` }}
+                    className={cn(
+                      "h-full rounded-full transition-all duration-300",
+                      isPaused
+                        ? "bg-[#D97706] dark:bg-[#FBBF24]"
+                        : "bg-[#181B22] dark:bg-[#EAEEF6]",
+                    )}
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 pt-0.5">
+                  <div className="min-w-0 flex-1">
+                    <AppSelect
+                      id="gov-bar-turn-cap"
+                      ariaLabel="连续 Agent 轮次上限"
+                      size="sm"
+                      align="end"
+                      disabled={props.isUpdatingGovernance}
+                      value={String(maxTurns)}
+                      onValueChange={handleTurnCapChange}
+                      options={turnCapOptions}
+                    />
+                  </div>
+                  {isPaused ? (
+                    <AppButton
+                      variant="primary"
+                      size="sm"
+                      isLoading={props.isUpdatingGovernance}
+                      leadingIcon={<Play className="h-3 w-3 fill-current" />}
+                      onClick={handleRenewBudget}
+                    >
+                      续期
+                    </AppButton>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* 唤醒与防抢话护栏开关 */}
+              <div className="space-y-2.5 border-t border-black/[0.06] pt-3 dark:border-white/[0.08]">
+                {isGroupRoom ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <label
+                      htmlFor="gov-bar-agent-mentions"
+                      className="flex min-w-0 flex-1 cursor-pointer items-start gap-2"
+                    >
+                      {config.allowAgentMentions ? (
+                        <AtSign className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
+                      ) : (
+                        <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#E5484D] dark:text-[#F87171]" />
+                      )}
+                      <span className="min-w-0">
+                        <span className="block font-medium text-[#111318] dark:text-[#F2F2F4]">
+                          Agent 互相 @ 自动唤醒
+                        </span>
+                        <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
+                          关闭后仅人类点名可唤醒 Agent
+                        </span>
+                      </span>
+                    </label>
+                    <AppSwitch
+                      id="gov-bar-agent-mentions"
+                      size="sm"
+                      checked={config.allowAgentMentions}
+                      disabled={props.isUpdatingGovernance}
+                      onCheckedChange={handleToggleAgentMentions}
+                    />
+                  </div>
                 ) : null}
-              </div>
-            </div>
 
-            {/* 唤醒与防抢话护栏开关 */}
-            <div className="space-y-2.5 border-t border-black/[0.06] pt-3 dark:border-white/[0.08]">
-              <div className="flex items-center justify-between gap-3">
-                <label
-                  htmlFor="gov-bar-agent-mentions"
-                  className="flex min-w-0 flex-1 cursor-pointer items-start gap-2"
-                >
-                  {config.allowAgentMentions ? (
-                    <AtSign className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
-                  ) : (
-                    <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#E5484D] dark:text-[#F87171]" />
-                  )}
-                  <span className="min-w-0">
-                    <span className="block font-medium text-[#111318] dark:text-[#F2F2F4]">
-                      Agent 互相 @ 自动唤醒
+                <div className="flex items-center justify-between gap-3">
+                  <label
+                    htmlFor="gov-bar-read-lock"
+                    className="flex min-w-0 flex-1 cursor-pointer items-start gap-2"
+                  >
+                    <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
+                    <span className="min-w-0">
+                      <span className="block font-medium text-[#111318] dark:text-[#F2F2F4]">
+                        先读后发保护
+                      </span>
+                      <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
+                        拦截未读最新消息的盲目抢话
+                      </span>
                     </span>
-                    <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                      关闭后仅人类点名可唤醒 Agent
-                    </span>
-                  </span>
-                </label>
-                <AppSwitch
-                  id="gov-bar-agent-mentions"
-                  size="sm"
-                  checked={config.allowAgentMentions}
-                  disabled={props.isUpdatingGovernance}
-                  onCheckedChange={handleToggleAgentMentions}
-                />
+                  </label>
+                  <AppSwitch
+                    id="gov-bar-read-lock"
+                    size="sm"
+                    checked={config.requireReadBeforeSend}
+                    disabled={props.isUpdatingGovernance}
+                    onCheckedChange={handleToggleReadLock}
+                  />
+                </div>
               </div>
 
-              <div className="flex items-center justify-between gap-3">
-                <label
-                  htmlFor="gov-bar-read-lock"
-                  className="flex min-w-0 flex-1 cursor-pointer items-start gap-2"
-                >
-                  <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
-                  <span className="min-w-0">
-                    <span className="block font-medium text-[#111318] dark:text-[#F2F2F4]">
-                      先读后发保护
-                    </span>
-                    <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                      拦截未读最新消息的盲目抢话
-                    </span>
-                  </span>
-                </label>
-                <AppSwitch
-                  id="gov-bar-read-lock"
-                  size="sm"
-                  checked={config.requireReadBeforeSend}
-                  disabled={props.isUpdatingGovernance}
-                  onCheckedChange={handleToggleReadLock}
-                />
-              </div>
-            </div>
-
-            {config.mode === "round_table" ? (
-              <p className="rounded-xl bg-black/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-[#3B414E] dark:bg-white/[0.06] dark:text-[#C4C4CA]">
-                本轮圆桌已发言：{governance.roundTableSpokenAgentIds.length} / {agents.length} 个
-                Agent
-              </p>
-            ) : null}
-          </AppPopover>
-
-          {/* 3. `提案 · N` 按钮 */}
-          <AppTooltip side="bottom" content="查看共识提案与拍板记录">
-            <button
-              type="button"
-              onClick={props.onOpenProposals}
-              className={cn(
-                CONTROL_ITEM_BASE_CLASS,
-                visibleProposalBadgeCount > 0 ? "px-2.5 sm:px-3" : "px-2.5",
-                CONTROL_ITEM_NEUTRAL_CLASS,
-              )}
-            >
-              <FileText className="h-3.5 w-3.5 shrink-0 text-[#687082] sm:hidden dark:text-[#9B9BA3]" />
-              <span className="hidden sm:inline">
-                {visibleProposalBadgeCount > 0
-                  ? `提案 · ${String(visibleProposalBadgeCount)}`
-                  : "提案"}
-              </span>
-              {visibleProposalBadgeCount > 0 ? (
-                <span className="tabular-nums sm:hidden">{visibleProposalBadgeCount}</span>
+              {isGroupRoom && config.mode === "round_table" ? (
+                <p className="rounded-xl bg-black/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-[#3B414E] dark:bg-white/[0.06] dark:text-[#C4C4CA]">
+                  本轮圆桌已发言：{governance.roundTableSpokenAgentIds.length} / {agents.length} 个
+                  Agent
+                </p>
               ) : null}
-              {props.openProposalsCount > 0 ? (
-                <span
-                  aria-label="有待拍板提案"
-                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D97706] dark:bg-[#FBBF24]"
-                />
-              ) : null}
-            </button>
-          </AppTooltip>
+            </AppPopover>
+          ) : null}
 
-          {/* 4. `+ 邀请` 高对比主触点胶囊（对齐 macOS Tahoe 右上角动作胶囊） */}
-          <AppTooltip side="bottom" content="邀请朋友或把你的 Agent 拉进群">
-            <button
-              type="button"
-              onClick={props.onOpenAddAgentModal}
-              className={cn(
-                CONTROL_ITEM_BASE_CLASS,
-                "bg-black/[0.06] px-2.5 text-[#111318] hover:bg-black/[0.10] sm:px-3.5 dark:bg-white/[0.09] dark:text-[#F2F2F4] dark:hover:bg-white/[0.15]",
-              )}
-            >
-              <Plus className="h-3.5 w-3.5 shrink-0 stroke-[2.2]" />
-              <span className="hidden sm:inline">邀请</span>
-            </button>
-          </AppTooltip>
+          {/* 3. `提案 · N` 按钮（群聊与 Agent 单聊支持整理方案；纯人类私聊不展示） */}
+          {!isDirectHuman ? (
+            <AppTooltip side="bottom" content="查看共识提案与拍板记录">
+              <button
+                type="button"
+                onClick={props.onOpenProposals}
+                className={cn(
+                  CONTROL_ITEM_BASE_CLASS,
+                  visibleProposalBadgeCount > 0 ? "px-2.5 sm:px-3" : "px-2.5",
+                  CONTROL_ITEM_NEUTRAL_CLASS,
+                )}
+              >
+                <FileText className="h-3.5 w-3.5 shrink-0 text-[#687082] sm:hidden dark:text-[#9B9BA3]" />
+                <span className="hidden sm:inline">
+                  {visibleProposalBadgeCount > 0
+                    ? `提案 · ${String(visibleProposalBadgeCount)}`
+                    : "提案"}
+                </span>
+                {visibleProposalBadgeCount > 0 ? (
+                  <span className="tabular-nums sm:hidden">{visibleProposalBadgeCount}</span>
+                ) : null}
+                {props.openProposalsCount > 0 ? (
+                  <span
+                    aria-label="有待拍板提案"
+                    className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D97706] dark:bg-[#FBBF24]"
+                  />
+                ) : null}
+              </button>
+            </AppTooltip>
+          ) : null}
+
+          {/* 4. `+ 邀请` 高对比主触点胶囊（仅群聊展示） */}
+          {isGroupRoom ? (
+            <AppTooltip side="bottom" content="把好友或你的 Agent 拉进群">
+              <button
+                type="button"
+                onClick={props.onOpenInviteModal ?? props.onOpenAddAgentModal}
+                className={cn(
+                  CONTROL_ITEM_BASE_CLASS,
+                  "bg-black/[0.06] px-2.5 text-[#111318] hover:bg-black/[0.10] sm:px-3.5 dark:bg-white/[0.09] dark:text-[#F2F2F4] dark:hover:bg-white/[0.15]",
+                )}
+              >
+                <Plus className="h-3.5 w-3.5 shrink-0 stroke-[2.2]" />
+                <span className="hidden sm:inline">邀请</span>
+              </button>
+            </AppTooltip>
+          ) : null}
         </div>
       </div>
 

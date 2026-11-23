@@ -380,13 +380,21 @@ export class LocalConnectService {
    * 探测当前服务端是否处于本机回环模式，并返回已安装的本地编程 Agent CLI 清单。
    *
    * @param caller - 当前调用者（必须为已登录人类）
+   * @param requestPublicBaseUrl - 可选从当前入站请求推导的访问根地址（用于阻断公网反向代理透传但未改 `PUBLIC_BASE_URL` 的误开启）
    * @returns 本机可用状态与各平台 CLI 安装情况
    */
-  public getStatus(caller: Readonly<AuthenticatedCaller>): LocalAgentsStatusResponse {
+  public getStatus(
+    caller: Readonly<AuthenticatedCaller>,
+    requestPublicBaseUrl?: string,
+  ): LocalAgentsStatusResponse {
     assertHumanCaller(caller);
 
+    const isRequestLoopback =
+      requestPublicBaseUrl === undefined || isLoopbackServerUrl(requestPublicBaseUrl);
     const available =
-      isLoopbackServerUrl(this.env.PUBLIC_BASE_URL) && existsSync(this.cliBundlePath);
+      isLoopbackServerUrl(this.env.PUBLIC_BASE_URL) &&
+      isRequestLoopback &&
+      existsSync(this.cliBundlePath);
     if (!available) {
       return {
         ok: true,
@@ -420,11 +428,13 @@ export class LocalConnectService {
    *
    * @param caller - 当前已认证人类主人
    * @param body - 目标本地 CLI 平台、Agent 展示名称、可选自动入群房间与重连目标
+   * @param requestPublicBaseUrl - 可选从当前入站请求推导的访问根地址
    * @returns 秒级接入完成后的 Agent 摘要与守护服务标识
    */
   public async connectLocalAgent(
     caller: Readonly<AuthenticatedCaller>,
     body: Readonly<ConnectLocalAgentBody>,
+    requestPublicBaseUrl?: string,
   ): Promise<ConnectLocalAgentResponse> {
     const human = assertHumanCaller(caller);
     const lockKey = `${human.userId}:${body.platform}`;
@@ -433,7 +443,7 @@ export class LocalConnectService {
     // 同主人同平台串行化：防止前端连续快速点击产生并发配对竞争与双份守护进程
     const task = prevChain
       .catch(() => undefined)
-      .then(() => this.executeConnectLocalAgent(caller, human.userId, body));
+      .then(() => this.executeConnectLocalAgent(caller, human.userId, body, requestPublicBaseUrl));
 
     this.connectChainByKey.set(lockKey, task);
     try {
@@ -449,8 +459,11 @@ export class LocalConnectService {
     caller: Readonly<AuthenticatedCaller>,
     ownerUserId: UserId,
     body: Readonly<ConnectLocalAgentBody>,
+    requestPublicBaseUrl?: string,
   ): Promise<ConnectLocalAgentResponse> {
-    if (!isLoopbackServerUrl(this.env.PUBLIC_BASE_URL)) {
+    const isRequestLoopback =
+      requestPublicBaseUrl === undefined || isLoopbackServerUrl(requestPublicBaseUrl);
+    if (!isLoopbackServerUrl(this.env.PUBLIC_BASE_URL) || !isRequestLoopback) {
       throw new AppError({
         code: "FORBIDDEN_NOT_OWNER",
         statusCode: 403,

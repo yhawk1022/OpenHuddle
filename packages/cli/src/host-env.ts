@@ -10,9 +10,9 @@
  * 3. 多版本 Node / 包管理器全覆盖：自动按语义版本降序扫描 `~/.nvm/versions/node/<ver>/bin` 及 `~/.local/bin`、`~/.claude/local`、`~/Library/pnpm` 等目录，消除守护进程与服务端因 Node 版本差异找不到全局 CLI 的盲区。
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { constants, accessSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * 允许从用户 Shell 包装函数或托管代理配置中安全提取的环境变量白名单。
@@ -409,4 +409,77 @@ export function resolveShellWrapperEnvForBinary(
   }
 
   return extracted;
+}
+
+/**
+ * 将唤醒预设枚举映射为宿主可执行二进制名称。
+ */
+function presetToBinaryName(
+  preset: "antigravity" | "codex" | "claude_code" | "gemini",
+): "agy" | "codex" | "claude" | "gemini" {
+  switch (preset) {
+    case "antigravity":
+      return "agy";
+    case "codex":
+      return "codex";
+    case "claude_code":
+      return "claude";
+    case "gemini":
+      return "gemini";
+  }
+}
+
+/**
+ * 零子进程探测当前环境（本机终端 / 云端容器 / 远程服务器）是否已安装指定预设的无头 Agent CLI 二进制。
+ *
+ * @remarks
+ * 云端沙箱关键防呆（Why）：
+ * 在 Codex Cloud、Claude Web Sandbox、Cursor Cloud 或轻量 Docker 容器中，AI Agent 本身作为宿主会话在容器内执行命令，
+ * 容器内部通常并未嵌套安装 `codex` / `claude` / `agy` 可执行文件。配对前先做纯文件系统存在性探测，
+ * 可避免启动一个注定报 `ENOENT` 的空壳守护进程向群聊发送报错气泡。
+ *
+ * @param preset - 待探测的预设平台标识
+ * @param customHomeDir - 可选覆盖的用户主目录
+ * @param customPathEnv - 可选覆盖的 `PATH` 字符串（供沙箱单测精确隔离）
+ * @returns 若在搜索路径上找到可执行文件则返回 `true`
+ */
+export function isPresetCliBinaryAvailable(
+  preset: "antigravity" | "codex" | "claude_code" | "gemini",
+  customHomeDir?: string,
+  customPathEnv?: string,
+): boolean {
+  const binaryName = presetToBinaryName(preset);
+  const pathSep = process.platform === "win32" ? ";" : ":";
+  const rawDirs =
+    customPathEnv !== undefined
+      ? customPathEnv.split(pathSep)
+      : [
+          dirname(process.execPath),
+          ...(process.env.PATH ?? "").split(pathSep),
+          ...discoverUserCliBinDirs(customHomeDir),
+          ...(process.platform === "win32"
+            ? []
+            : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]),
+        ];
+
+  const suffixes = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
+  const accessMode = process.platform === "win32" ? constants.F_OK : constants.X_OK;
+  const visited = new Set<string>();
+
+  for (const rawDir of rawDirs) {
+    const dir = rawDir.trim();
+    if (dir.length === 0 || visited.has(dir)) {
+      continue;
+    }
+    visited.add(dir);
+    for (const suffix of suffixes) {
+      try {
+        accessSync(join(dir, `${binaryName}${suffix}`), accessMode);
+        return true;
+      } catch {
+        // 继续检查下一候选路径
+      }
+    }
+  }
+  return false;
 }

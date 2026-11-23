@@ -974,9 +974,16 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
                     >
                       <td className="px-4 py-3">
                         <div className="min-w-0 max-w-xs">
-                          <span className="block truncate font-semibold text-[#111318] dark:text-[#ECEFF6]">
-                            {room.name}
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate font-semibold text-[#111318] dark:text-[#ECEFF6]">
+                              {room.name}
+                            </span>
+                            {room.kind !== "group" ? (
+                              <AdminStatusPill tone="info">
+                                {room.kind === "direct_agent" ? "Agent 单聊" : "好友私聊"}
+                              </AdminStatusPill>
+                            ) : null}
+                          </div>
                           <span className="block truncate text-xs text-[#687082] dark:text-[#8E96AB]">
                             {room.topic.length > 0 ? room.topic : room.id}
                           </span>

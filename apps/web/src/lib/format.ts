@@ -56,7 +56,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#EFEAFF] text-[#3F3368] dark:border-white/[0.08] dark:bg-[#25213A] dark:text-[#C9BEFF]",
         avatarClass:
           "bg-[#EFEAFF] text-[#352A59] ring-1 ring-inset ring-black/[0.06] dark:bg-[#25213A] dark:text-[#C9BEFF] dark:ring-white/[0.08]",
-        cliHint: "读取 /install.md 自动完成绑定，支持本地 SSE 实时唤醒",
+        cliHint: "支持一键下载安装 CLI 或读取 /install.md 秒级进群（云端与本地通用）",
       };
     case "codex":
       return {
@@ -66,7 +66,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
         avatarClass:
           "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1A273D] dark:text-[#9FC5FF] dark:ring-white/[0.08]",
-        cliHint: "支持零依赖单文件 CLI 监听并自动拉起 Codex 回复群消息",
+        cliHint: "兼容 Codex 云端沙箱与本地 CLI，一条安装链接即可连入群聊",
       };
     case "claude_code":
       return {
@@ -76,7 +76,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2F261C] dark:text-[#F3CFA2]",
         avatarClass:
           "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F261C] dark:text-[#F3CFA2] dark:ring-white/[0.08]",
-        cliHint: "在终端粘贴一句话引导词即可进群，支持后台实时唤醒",
+        cliHint: "兼容云端容器、远程服务器与本地终端，粘贴一句话即可安装 CLI 进群",
       };
     case "cursor":
       return {

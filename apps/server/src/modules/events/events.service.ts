@@ -10,6 +10,7 @@ import {
   type AuthenticatedCaller,
   type InboxResponse,
   type InboxRoomSummary,
+  type RoomId,
   type SseEvent,
   computeAuthorStamp,
 } from "@openhuddle/protocol";
@@ -64,7 +65,7 @@ export class EventsService {
   }
 
   /**
-   * 为指定已认证连接挂载其全部已加入房间的广播监听（若为 Agent 同时挂载专属 `wake` 通道）。
+   * 为指定已认证连接挂载其全部已加入房间的广播监听，并挂载主体级通道（`user` / `agent`）以支持新单聊与拉群的在线动态订阅。
    *
    * @param caller - 当前 SSE 连接的身份
    * @param onEvent - 接收重盖章后 `SseEvent` 的回调函数
@@ -74,29 +75,55 @@ export class EventsService {
     caller: Readonly<AuthenticatedCaller>,
     onEvent: (event: SseEvent) => void,
   ): Promise<UnsubscribeFn> {
-    const joinedRooms = await this.roomsRepo.listJoinedRooms(toActorMemberKey(caller));
+    const joinedRooms = await this.roomsRepo.listJoinedRooms(toActorMemberKey(caller), caller);
     const unsubscribers: UnsubscribeFn[] = [];
+    const subscribedRoomIds = new Set<RoomId>();
+    let cleanedUp = false;
 
-    for (const room of joinedRooms) {
-      const unsubRoom = this.realtimeBus.subscribeRoom(room.id, (rawEvent) => {
+    // 关键实时性不变量（ADR-0005）：当在线主体通过 user/agent 专属通道收到 `room.upserted` 时，
+    // 立即在既有 SSE 长连接上原地挂载该新房间的广播订阅，确保首条单聊或新群消息零漏推。
+    const attachRoomSubscription = (roomId: RoomId): void => {
+      if (cleanedUp || subscribedRoomIds.has(roomId)) {
+        return;
+      }
+      subscribedRoomIds.add(roomId);
+      const unsubRoom = this.realtimeBus.subscribeRoom(roomId, (rawEvent) => {
+        if (rawEvent.type === "room.deleted") {
+          subscribedRoomIds.delete(roomId);
+        }
         onEvent(reStampSseEventForViewer(rawEvent, caller));
       });
       unsubscribers.push(unsubRoom);
+    };
+
+    for (const room of joinedRooms) {
+      attachRoomSubscription(room.id);
     }
 
     if (caller.kind === "agent") {
       const unsubAgent = this.realtimeBus.subscribeAgent(caller.agentId, (agentEvent) => {
+        if (agentEvent.type === "room.upserted") {
+          attachRoomSubscription(agentEvent.roomId);
+        }
         onEvent(reStampSseEventForViewer(agentEvent, caller));
       });
       unsubscribers.push(unsubAgent);
+    } else {
+      const unsubUser = this.realtimeBus.subscribeUser(caller.userId, (userEvent) => {
+        if (userEvent.type === "room.upserted") {
+          attachRoomSubscription(userEvent.roomId);
+        }
+        onEvent(reStampSseEventForViewer(userEvent, caller));
+      });
+      unsubscribers.push(unsubUser);
     }
 
-    let cleanedUp = false;
     return () => {
       if (cleanedUp) {
         return;
       }
       cleanedUp = true;
+      subscribedRoomIds.clear();
       for (const unsub of unsubscribers) {
         unsub();
       }
@@ -158,7 +185,7 @@ export class EventsService {
   private async computeInboxSnapshot(
     caller: Readonly<AuthenticatedCaller>,
   ): Promise<InboxResponse> {
-    const joinedRooms = await this.roomsRepo.listJoinedRooms(toActorMemberKey(caller));
+    const joinedRooms = await this.roomsRepo.listJoinedRooms(toActorMemberKey(caller), caller);
     const summaries: InboxRoomSummary[] = [];
     let totalUnreadMessages = 0;
 

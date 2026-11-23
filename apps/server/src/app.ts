@@ -32,8 +32,12 @@ import { createAuthRouter } from "./modules/auth/auth.routes.js";
 import { AuthService } from "./modules/auth/auth.service.js";
 import { createEventsRouter } from "./modules/events/events.routes.js";
 import { EventsService } from "./modules/events/events.service.js";
+import { FriendsRepository } from "./modules/friends/friends.repo.js";
+import { createFriendsRouter } from "./modules/friends/friends.routes.js";
+import { FriendsService } from "./modules/friends/friends.service.js";
 import { createGovernanceRouter } from "./modules/governance/governance.routes.js";
 import { GovernanceService } from "./modules/governance/governance.service.js";
+import { createMcpRouter } from "./modules/mcp/mcp.routes.js";
 import { MessagesRepository } from "./modules/messages/messages.repo.js";
 import { createMessagesRouter } from "./modules/messages/messages.routes.js";
 import { MessagesService } from "./modules/messages/messages.service.js";
@@ -130,6 +134,7 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
   // 1. 初始化仓储层（Repositories）
   const authRepo = new AuthRepository(deps.database.db);
   const pairingRepo = new PairingRepository(deps.database.db);
+  const friendsRepo = new FriendsRepository(deps.database.db);
   const roomsRepo = new RoomsRepository(deps.database.db);
   const messagesRepo = new MessagesRepository(deps.database.db);
   const proposalsRepo = new ProposalsRepository(deps.database.db);
@@ -162,12 +167,18 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
     env: deps.env,
     realtimeBus: deps.realtimeBus,
   });
+  const friendsService = new FriendsService({
+    repo: friendsRepo,
+    realtimeBus: deps.realtimeBus,
+  });
   const roomsService = new RoomsService({
     roomsRepo,
     messagesRepo,
     proposalsRepo,
     realtimeBus: deps.realtimeBus,
     findAgentById: (agentId) => pairingRepo.findAgentById(agentId),
+    findActiveUserById: (userId) => friendsService.findActiveUserById(userId),
+    areAcceptedFriends: (userA, userB) => friendsService.areAcceptedFriends(userA, userB),
   });
   const governanceService = new GovernanceService({
     roomsRepo,
@@ -227,13 +238,25 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
     }),
   );
   apiV1.route("/", createAuthRouter({ authService, env: deps.env }));
-  apiV1.route("/", createPairingRouter({ authService, pairingService, localConnectService }));
+  apiV1.route(
+    "/",
+    createPairingRouter({ authService, pairingService, env: deps.env, localConnectService }),
+  );
+  apiV1.route("/", createFriendsRouter({ authService, friendsService }));
   apiV1.route("/", createRoomsRouter({ authService, roomsService }));
   apiV1.route("/", createGovernanceRouter({ authService, governanceService }));
   apiV1.route("/", createMessagesRouter({ authService, messagesService }));
   apiV1.route("/", createEventsRouter({ authService, eventsService }));
   apiV1.route("/", createProposalsRouter({ authService, proposalsService }));
   apiV1.route("/", createAdminRouter({ authService, adminService }));
+  apiV1.route(
+    "/",
+    createMcpRouter({
+      authService,
+      env: deps.env,
+      internalFetch: async (input, init) => app.request(input, init),
+    }),
+  );
 
   app.route("/api/v1", apiV1);
 

@@ -457,6 +457,23 @@ export function useRealtimeSseSync(
 
         case "room.deleted": {
           evictDeletedRoomFromQueryClient(queryClient, event.roomId);
+          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
+          return;
+        }
+
+        case "room.upserted": {
+          // 收到新建 1v1 单聊或被好友拉入新群通知时，立即刷新会话列表、房间详情与通讯录私聊关联
+          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
+          void queryClient.invalidateQueries({
+            queryKey: huddleQueryKeys.roomDetail(event.roomId),
+          });
+          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
+          return;
+        }
+
+        case "friendship.updated": {
+          // 收到新好友申请、对方同意申请或解除好友事件时，即时刷新通讯录与待办红点
+          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
           return;
         }
 
@@ -478,6 +495,8 @@ export function useRealtimeSseSync(
       "governance.updated",
       "proposal.updated",
       "room.deleted",
+      "room.upserted",
+      "friendship.updated",
     ] as const;
 
     source.addEventListener("message", onMessage);

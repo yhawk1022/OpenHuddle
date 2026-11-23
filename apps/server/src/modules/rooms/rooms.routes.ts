@@ -10,11 +10,15 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { type OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import {
+  AddRoomMembersBodySchema,
   ApiErrorEnvelopeSchema,
   CreateRoomBodySchema,
   DeleteRoomResponseSchema,
   JoinRoomBodySchema,
   MessageDtoSchema,
+  OpenDirectAgentRoomBodySchema,
+  OpenDirectHumanRoomBodySchema,
+  OpenDirectRoomResponseSchema,
   ProposalCardDtoSchema,
   RoomDetailDtoSchema,
   RoomIdSchema,
@@ -89,6 +93,105 @@ const createRoomRoute = createRoute({
     201: {
       description: "Created room details",
       content: { "application/json": { schema: SingleRoomResponseSchema } },
+    },
+  },
+});
+
+const openDirectAgentRoomRoute = createRoute({
+  method: "post",
+  path: "/rooms/direct/agent",
+  tags: ["Rooms"],
+  summary:
+    "Open or reuse a 1-on-1 direct chat with an owned agent or an external DM-enabled agent (Human only)",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: OpenDirectAgentRoomBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Existing 1-on-1 direct agent room returned",
+      content: { "application/json": { schema: OpenDirectRoomResponseSchema } },
+    },
+    201: {
+      description: "New 1-on-1 direct agent room created",
+      content: { "application/json": { schema: OpenDirectRoomResponseSchema } },
+    },
+    403: {
+      description: "External agent has not enabled allowExternalDm",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    404: {
+      description: "Agent not found",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+  },
+});
+
+const openDirectHumanRoomRoute = createRoute({
+  method: "post",
+  path: "/rooms/direct/human",
+  tags: ["Rooms"],
+  summary: "Open or reuse a 1-on-1 direct chat with an accepted human friend (Human only)",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: OpenDirectHumanRoomBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Existing 1-on-1 direct human room returned",
+      content: { "application/json": { schema: OpenDirectRoomResponseSchema } },
+    },
+    201: {
+      description: "New 1-on-1 direct human room created",
+      content: { "application/json": { schema: OpenDirectRoomResponseSchema } },
+    },
+    400: {
+      description: "Cannot open direct human chat with self",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    403: {
+      description: "Target user is not an accepted friend",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    404: {
+      description: "Target user not found",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+  },
+});
+
+const addRoomMembersRoute = createRoute({
+  method: "post",
+  path: "/rooms/{roomId}/members",
+  tags: ["Rooms"],
+  summary: "Directly pull accepted human friends or owned agents into an existing group room",
+  request: {
+    params: RoomIdParamsSchema,
+    body: {
+      required: true,
+      content: { "application/json": { schema: AddRoomMembersBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Updated room details with newly added members",
+      content: { "application/json": { schema: SingleRoomResponseSchema } },
+    },
+    400: {
+      description: "Direct chat roster is immutable",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    403: {
+      description: "Not a member, not friends with user, or not owner of agent",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+    },
+    404: {
+      description: "Room, user, or agent not found",
+      content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
     },
   },
 });
@@ -331,6 +434,21 @@ export function createRoomsRouter(deps: {
     return c.json({ ok: true as const, room }, 201);
   });
 
+  // 注意路由注册顺序：/rooms/direct/* 静态子路径必须先于动态参数 /rooms/{roomId} 注册，防止被误匹配为 roomId="direct"
+  router.openapi(openDirectAgentRoomRoute, async (c) => {
+    const caller = c.get("caller");
+    const body = c.req.valid("json");
+    const result = await deps.roomsService.openDirectAgentRoom(caller, body);
+    return c.json(result, result.created ? 201 : 200);
+  });
+
+  router.openapi(openDirectHumanRoomRoute, async (c) => {
+    const caller = c.get("caller");
+    const body = c.req.valid("json");
+    const result = await deps.roomsService.openDirectHumanRoom(caller, body);
+    return c.json(result, result.created ? 201 : 200);
+  });
+
   router.openapi(getRoomDetailRoute, async (c) => {
     const caller = c.get("caller");
     const { roomId } = c.req.valid("param");
@@ -364,6 +482,14 @@ export function createRoomsRouter(deps: {
     const { roomId } = c.req.valid("param");
     const members = await deps.roomsService.listMembers(caller, roomId);
     return c.json({ ok: true as const, members: [...members] }, 200);
+  });
+
+  router.openapi(addRoomMembersRoute, async (c) => {
+    const caller = c.get("caller");
+    const { roomId } = c.req.valid("param");
+    const body = c.req.valid("json");
+    const room = await deps.roomsService.addMembersToGroupRoom(caller, roomId, body);
+    return c.json({ ok: true as const, room }, 200);
   });
 
   router.openapi(getPublicShareRoute, async (c) => {

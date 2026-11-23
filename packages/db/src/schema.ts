@@ -14,6 +14,7 @@ import type {
   RoomGovernanceState,
 } from "@openhuddle/protocol";
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -106,6 +107,7 @@ export const agentsTable = pgTable(
     slug: text("slug").notNull(),
     platform: text("platform").notNull(),
     intro: text("intro"),
+    allowExternalDm: boolean("allow_external_dm").notNull().default(false),
     tokenHash: text("token_hash").notNull(),
     wakeKind: text("wake_kind").notNull().default("none"),
     wakeConfigJson: jsonb("wake_config_json").$type<Record<string, unknown>>(),
@@ -137,12 +139,48 @@ export const pairingCodesTable = pgTable("pairing_codes", {
 });
 
 /**
- * 多方群聊与决策房间表（`rooms`）。
+ * 人类用户间好友关系与待处理申请表（`friendships`，ADR-0005）。
+ * 使用规范化无序对键 `pair_key`（`<lowUserId>:<highUserId>`）强制任意两人之间最多只有一条关系记录。
+ */
+export const friendshipsTable = pgTable(
+  "friendships",
+  {
+    id: text("id").primaryKey(),
+    pairKey: text("pair_key").notNull(),
+    userLowId: text("user_low_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    userHighId: text("user_high_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    requesterUserId: text("requester_user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    addresseeUserId: text("addressee_user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending"),
+    note: text("note"),
+    respondedAt: timestamp("responded_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("friendships_pair_key_unique_idx").on(table.pairKey),
+    index("friendships_low_status_idx").on(table.userLowId, table.status),
+    index("friendships_high_status_idx").on(table.userHighId, table.status),
+    index("friendships_addressee_status_idx").on(table.addresseeUserId, table.status),
+  ],
+);
+
+/**
+ * 多模态会话房间表（`rooms`：同时承载多方群聊 `group`、单聊 Agent `direct_agent` 与人类好友私聊 `direct_human`）。
  */
 export const roomsTable = pgTable(
   "rooms",
   {
     id: text("id").primaryKey(),
+    kind: text("kind").notNull().default("group"),
+    directPairKey: text("direct_pair_key"),
     ownerUserId: text("owner_user_id")
       .notNull()
       .references(() => usersTable.id, { onDelete: "restrict" }),
@@ -155,7 +193,10 @@ export const roomsTable = pgTable(
     lastSeq: integer("last_seq").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex("rooms_invite_token_unique_idx").on(table.inviteToken)],
+  (table) => [
+    uniqueIndex("rooms_invite_token_unique_idx").on(table.inviteToken),
+    uniqueIndex("rooms_direct_pair_key_unique_idx").on(table.directPairKey),
+  ],
 );
 
 /**

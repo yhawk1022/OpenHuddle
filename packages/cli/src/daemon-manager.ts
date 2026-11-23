@@ -8,7 +8,16 @@
  * 3. Windows 零黑框常驻体验：通过 `schtasks /SC ONLOGON` 保障开机自启，并结合 `{ detached: true, stdio: "ignore", windowsHide: true }` + `child.unref()` + `~/.openhuddle/run/<slug>.pid` 实现无终端窗口的毫秒级后台唤醒。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, posix, resolve } from "node:path";
 import {
@@ -50,6 +59,15 @@ export interface CommandExecResult {
 }
 
 /**
+ * 脱离父进程拉起后台常驻守护子进程时的日志重定向与环境变量选项。
+ */
+export interface DetachedSpawnOptions {
+  readonly stdoutPath?: string;
+  readonly stderrPath?: string;
+  readonly env?: Readonly<NodeJS.ProcessEnv>;
+}
+
+/**
  * 可注入的操作系统交互依赖，默认绑定真实 Node.js `spawnSync` / `spawn` / `process.kill`。
  */
 export interface DaemonSystemDeps {
@@ -58,6 +76,7 @@ export interface DaemonSystemDeps {
   readonly spawnDetachedProcess: (
     nodeBinaryPath: string,
     args: readonly string[],
+    options?: Readonly<DetachedSpawnOptions>,
   ) => number | undefined;
   readonly isPidAlive: (pid: number) => boolean;
   readonly terminatePid: (pid: number) => boolean;
@@ -69,6 +88,7 @@ export interface DaemonSystemDeps {
 export interface DaemonControlReport {
   readonly action: "install" | "status" | "stop";
   readonly platform: SupportedDaemonPlatform;
+  readonly mode?: "launchd" | "systemd" | "schtasks" | "detached";
   readonly slug: string;
   readonly running: boolean;
   readonly serviceId: string;
@@ -686,17 +706,48 @@ export function createDefaultDaemonSystemDeps(): DaemonSystemDeps {
         stderr: res.error !== undefined ? res.error.message : (res.stderr ?? "").trim(),
       };
     },
-    spawnDetachedProcess(nodeBinaryPath: string, args: readonly string[]): number | undefined {
-      // Windows 零黑框核心机制：detached: true 脱离父进程控制台组，stdio: "ignore" 断开管道引用，
-      // windowsHide: true 通知 CreateProcess 附加 CREATE_NO_WINDOW 标志，最后 child.unref() 允许当前 CLI 秒退。
-      const child = spawn(nodeBinaryPath, [...args], {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-        env: { ...process.env },
-      });
-      child.unref();
-      return child.pid;
+    spawnDetachedProcess(
+      nodeBinaryPath: string,
+      args: readonly string[],
+      options?: Readonly<DetachedSpawnOptions>,
+    ): number | undefined {
+      let outFd: number | undefined;
+      let errFd: number | undefined;
+      try {
+        if (options?.stdoutPath !== undefined && options?.stderrPath !== undefined) {
+          mkdirSync(dirname(options.stdoutPath), { recursive: true, mode: 0o700 });
+          outFd = openSync(options.stdoutPath, "a", 0o600);
+          errFd = openSync(options.stderrPath, "a", 0o600);
+        }
+        // 零黑框与云端容器脱离核心机制：detached: true 脱离父 Shell 会话组，日志直写磁盘文件避免持有父进程管道句柄，
+        // windowsHide: true 通知 Windows CreateProcess 附加 CREATE_NO_WINDOW，最后 child.unref() 允许当前 CLI 秒退。
+        const child = spawn(nodeBinaryPath, [...args], {
+          detached: true,
+          stdio: outFd !== undefined && errFd !== undefined ? ["ignore", outFd, errFd] : "ignore",
+          windowsHide: true,
+          env: {
+            ...process.env,
+            ...(options?.env ?? {}),
+          },
+        });
+        child.unref();
+        return child.pid;
+      } finally {
+        if (outFd !== undefined) {
+          try {
+            closeSync(outFd);
+          } catch {
+            // 忽略关闭异常
+          }
+        }
+        if (errFd !== undefined) {
+          try {
+            closeSync(errFd);
+          } catch {
+            // 忽略关闭异常
+          }
+        }
+      }
     },
     isPidAlive: isProcessAlive,
     terminatePid(pid: number): boolean {
@@ -711,23 +762,20 @@ export function createDefaultDaemonSystemDeps(): DaemonSystemDeps {
 }
 
 /**
- * 将 `NodeJS.Platform` 收窄为受支持的三端守护平台。
+ * 将 `NodeJS.Platform` 规范化为三端守护平台标识（其余类 Unix 容器/BSD 环境统一按 `linux` 走脱离后台进程兜底）。
  *
  * @param platform - 运行时平台标识
- * @returns 收窄后的平台名
- * @throws {Error} 遇到极罕见非桌面/服务器平台时抛出明确提示
+ * @returns 规范化后的平台名
  */
-function assertSupportedPlatform(platform: NodeJS.Platform): SupportedDaemonPlatform {
+function normalizeDaemonPlatform(platform: NodeJS.Platform): SupportedDaemonPlatform {
   if (platform === "darwin" || platform === "linux" || platform === "win32") {
     return platform;
   }
-  throw new Error(
-    `Unsupported OS platform "${platform}" for background service installation. Run "listen run" in foreground instead.`,
-  );
+  return "linux";
 }
 
 /**
- * 在 Windows（或按需）静默拉起无窗口后台守护子进程并刷新 PID 锁文件。
+ * 静默拉起无窗口脱离后台守护子进程（支持云端容器无 `systemd` 场景与 Windows）并刷新 PID 锁文件。
  *
  * @param spec - 守护服务规格
  * @param deps - 可选注入的系统调用依赖
@@ -739,7 +787,7 @@ export function spawnDetachedDaemonWorker(
 ): { readonly pid: number; readonly pidFilePath: string } {
   const safeSlug = sanitizeTokenSlug(spec.slug);
   const pidFilePath = getDaemonPidFilePath(spec.homeDir, safeSlug);
-  const { stdoutPath } = getDaemonLogPaths(spec.homeDir, safeSlug);
+  const { stdoutPath, stderrPath } = getDaemonLogPaths(spec.homeDir, safeSlug);
   mkdirSync(dirname(stdoutPath), { recursive: true, mode: 0o700 });
 
   const existingPid = readDaemonPidFile(pidFilePath);
@@ -747,9 +795,19 @@ export function spawnDetachedDaemonWorker(
     deps.terminatePid(existingPid);
   }
 
+  const mergedEnv: NodeJS.ProcessEnv = {
+    ...(spec.envVars ?? {}),
+    ...(spec.envPath !== undefined ? { PATH: spec.envPath } : {}),
+  };
+
   const spawnedPid = deps.spawnDetachedProcess(
     spec.nodeBinaryPath,
     buildDaemonListenNodeArgs(spec),
+    {
+      stdoutPath,
+      stderrPath,
+      env: mergedEnv,
+    },
   );
   if (spawnedPid === undefined || spawnedPid <= 0) {
     throw new Error("Failed to spawn detached OpenHuddle SSE listener daemon process.");
@@ -760,7 +818,13 @@ export function spawnDetachedDaemonWorker(
 }
 
 /**
- * 安装并立即启动当前操作系统对应的常驻 SSE 唤醒守护服务。
+ * 安装并立即启动当前运行环境对应的常驻 SSE 唤醒守护服务。
+ *
+ * @remarks
+ * 云端与异构环境自适应降级（Cloud / Container Resilience）：
+ * - 在标准桌面/服务器上优先注册原生系统守护（macOS `launchd`、Linux `systemd --user`、Windows `schtasks`）；
+ * - 在 Docker 容器、Kubernetes Pod、云端沙箱（无 PID 1 `systemd` 或无 DBus 用户会话）、无 GUI SSH 会话或组策略受限 Windows 中，
+ *   自动无感降级为脱离父进程的后台常驻 Worker（`~/.openhuddle/run/<slug>.pid` + 独立日志文件），彻底消除云端 `systemctl` 报错中断配对的问题。
  *
  * @param spec - 守护服务规格
  * @param deps - 可选注入的系统调用依赖
@@ -770,7 +834,7 @@ export function installDaemonService(
   spec: Readonly<DaemonServiceSpec>,
   deps: Readonly<DaemonSystemDeps> = createDefaultDaemonSystemDeps(),
 ): DaemonControlReport {
-  const platform = assertSupportedPlatform(deps.platform);
+  const platform = normalizeDaemonPlatform(deps.platform);
   const safeSlug = sanitizeTokenSlug(spec.slug);
   const resolvedHomeDir = resolve(spec.homeDir || homedir());
   const hostEnvPath =
@@ -827,84 +891,124 @@ export function installDaemonService(
     // 幂等重装：先尝试卸载旧实例（忽略未加载错误），再加载最新 plist 配置
     deps.execSyncCommand("launchctl", ["unload", plistPath]);
     const loadRes = deps.execSyncCommand("launchctl", ["load", "-w", plistPath]);
-    if (loadRes.exitCode !== 0) {
-      throw new Error(`launchctl load failed: ${loadRes.stderr || loadRes.stdout}`);
+    if (loadRes.exitCode === 0) {
+      removeDaemonPidFile(getDaemonPidFilePath(normalizedSpec.homeDir, safeSlug));
+      return {
+        action: "install",
+        platform,
+        mode: "launchd",
+        slug: safeSlug,
+        running: true,
+        serviceId: label,
+        configFilePath: plistPath,
+        logOutPath: stdoutPath,
+        logErrPath: stderrPath,
+        detail: `Installed and loaded macOS LaunchAgent ${label}`,
+      };
     }
 
+    // 无 GUI Aqua 会话（如远程 SSH / CI 云端构建机）时自动降级为后台脱离进程
+    const { pid, pidFilePath } = spawnDetachedDaemonWorker(normalizedSpec, deps);
     return {
       action: "install",
       platform,
+      mode: "detached",
       slug: safeSlug,
       running: true,
-      serviceId: label,
+      serviceId: `detached:${safeSlug}`,
       configFilePath: plistPath,
+      pidFilePath,
+      pid,
       logOutPath: stdoutPath,
       logErrPath: stderrPath,
-      detail: `Installed and loaded macOS LaunchAgent ${label}`,
+      detail: `Started detached background SSE listener "${safeSlug}" (PID ${pid}; launchctl unavailable in headless session)`,
     };
   }
 
   if (platform === "linux") {
     const unitName = getLinuxSystemdUnitName(safeSlug);
     const unitPath = getLinuxSystemdUnitPath(normalizedSpec.homeDir, safeSlug);
-    mkdirSync(dirname(unitPath), { recursive: true, mode: 0o755 });
-    writeFileSync(unitPath, buildLinuxSystemdUnit(normalizedSpec), {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    try {
-      chmodSync(unitPath, 0o600);
-    } catch {
-      // 忽略文件系统权限调整异常
+    if (deps.platform === "linux") {
+      try {
+        mkdirSync(dirname(unitPath), { recursive: true, mode: 0o755 });
+        writeFileSync(unitPath, buildLinuxSystemdUnit(normalizedSpec), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        chmodSync(unitPath, 0o600);
+      } catch {
+        // 容器只读目录或权限受限时忽略单元文件落盘异常，直接进入下方脱离守护兜底
+      }
+
+      const reloadRes = deps.execSyncCommand("systemctl", ["--user", "daemon-reload"]);
+      if (reloadRes.exitCode === 0) {
+        const enableRes = deps.execSyncCommand("systemctl", [
+          "--user",
+          "enable",
+          "--now",
+          unitName,
+        ]);
+        if (enableRes.exitCode === 0) {
+          removeDaemonPidFile(getDaemonPidFilePath(normalizedSpec.homeDir, safeSlug));
+          return {
+            action: "install",
+            platform,
+            mode: "systemd",
+            slug: safeSlug,
+            running: true,
+            serviceId: unitName,
+            configFilePath: unitPath,
+            logOutPath: stdoutPath,
+            logErrPath: stderrPath,
+            detail: `Installed and started systemd user service ${unitName}`,
+          };
+        }
+      }
     }
 
-    const reloadRes = deps.execSyncCommand("systemctl", ["--user", "daemon-reload"]);
-    if (reloadRes.exitCode !== 0) {
-      throw new Error(`systemctl --user daemon-reload failed: ${reloadRes.stderr}`);
-    }
-    const enableRes = deps.execSyncCommand("systemctl", ["--user", "enable", "--now", unitName]);
-    if (enableRes.exitCode !== 0) {
-      throw new Error(`systemctl --user enable --now failed: ${enableRes.stderr}`);
-    }
-
+    // 云端容器 / Docker / Codespaces / 无 systemd 用户总线环境：自动拉起脱离父进程的常驻后台监听进程
+    const { pid, pidFilePath } = spawnDetachedDaemonWorker(normalizedSpec, deps);
     return {
       action: "install",
       platform,
+      mode: "detached",
       slug: safeSlug,
       running: true,
-      serviceId: unitName,
-      configFilePath: unitPath,
+      serviceId: `detached:${safeSlug}`,
+      pidFilePath,
+      pid,
       logOutPath: stdoutPath,
       logErrPath: stderrPath,
-      detail: `Installed and started systemd user service ${unitName}`,
+      detail: `Started cloud/container detached SSE listener "${safeSlug}" (PID ${pid}; systemd --user unavailable)`,
     };
   }
 
-  // win32 分支：注册 ONLOGON 计划任务 + 立即拉起无黑框后台守护进程 + 写入 PID 锁
+  // win32 分支：尝试注册 ONLOGON 计划任务（若组策略限制则跳过开机自启但仍确保当前后台守护立即运行）
   const taskName = getWindowsScheduledTaskName(safeSlug);
   const schtasksArgs = buildWindowsSchtasksArgs(normalizedSpec);
   const schtasksRes = deps.execSyncCommand("schtasks", schtasksArgs);
-  if (schtasksRes.exitCode !== 0) {
-    throw new Error(`schtasks /Create failed: ${schtasksRes.stderr || schtasksRes.stdout}`);
-  }
-
   const { pid, pidFilePath } = spawnDetachedDaemonWorker(normalizedSpec, deps);
+
   return {
     action: "install",
     platform,
+    mode: schtasksRes.exitCode === 0 ? "schtasks" : "detached",
     slug: safeSlug,
     running: true,
-    serviceId: taskName,
+    serviceId: schtasksRes.exitCode === 0 ? taskName : `detached:${safeSlug}`,
     pidFilePath,
     pid,
     logOutPath: stdoutPath,
     logErrPath: stderrPath,
-    detail: `Registered Windows ONLOGON task "${taskName}" and started hidden daemon (PID ${pid})`,
+    detail:
+      schtasksRes.exitCode === 0
+        ? `Registered Windows ONLOGON task "${taskName}" and started hidden daemon (PID ${pid})`
+        : `Started hidden Windows SSE daemon (PID ${pid}; ONLOGON task skipped due to policy)`,
   };
 }
 
 /**
- * 查询指定 `<slug>` 守护服务在当前操作系统上的运行与注册状态。
+ * 查询指定 `<slug>` 守护服务在当前操作系统或云端容器上的运行状态（同时兼容系统级服务与脱离进程 PID 锁）。
  *
  * @param params - 包含 `slug` 与 `homeDir` 的查询参数
  * @param deps - 可选注入的系统调用依赖
@@ -914,26 +1018,45 @@ export function getDaemonServiceStatus(
   params: { readonly slug: string; readonly homeDir?: string },
   deps: Readonly<DaemonSystemDeps> = createDefaultDaemonSystemDeps(),
 ): DaemonControlReport {
-  const platform = assertSupportedPlatform(deps.platform);
+  const platform = normalizeDaemonPlatform(deps.platform);
   const safeSlug = sanitizeTokenSlug(params.slug);
   const baseHome = resolve(params.homeDir ?? homedir());
   const { stdoutPath, stderrPath } = getDaemonLogPaths(baseHome, safeSlug);
+  const pidFilePath = getDaemonPidFilePath(baseHome, safeSlug);
+  const recordedPid = readDaemonPidFile(pidFilePath);
+  const pidAlive = recordedPid !== undefined && deps.isPidAlive(recordedPid);
 
   if (platform === "darwin") {
     const label = getMacLaunchdLabel(safeSlug);
     const plistPath = getMacPlistPath(baseHome, safeSlug);
     const listRes = deps.execSyncCommand("launchctl", ["list", label]);
-    const running = listRes.exitCode === 0;
+    const launchdRunning = listRes.exitCode === 0;
+    if (!launchdRunning && pidAlive && recordedPid !== undefined) {
+      return {
+        action: "status",
+        platform,
+        mode: "detached",
+        slug: safeSlug,
+        running: true,
+        serviceId: `detached:${safeSlug}`,
+        pidFilePath,
+        pid: recordedPid,
+        logOutPath: stdoutPath,
+        logErrPath: stderrPath,
+        detail: `Detached SSE listener "${safeSlug}" is running (PID ${recordedPid}).`,
+      };
+    }
     return {
       action: "status",
       platform,
+      mode: "launchd",
       slug: safeSlug,
-      running,
+      running: launchdRunning,
       serviceId: label,
       configFilePath: plistPath,
       logOutPath: stdoutPath,
       logErrPath: stderrPath,
-      detail: running
+      detail: launchdRunning
         ? `macOS LaunchAgent ${label} is loaded.`
         : existsSync(plistPath)
           ? `Plist exists at ${plistPath}, but LaunchAgent is not currently loaded.`
@@ -944,32 +1067,49 @@ export function getDaemonServiceStatus(
   if (platform === "linux") {
     const unitName = getLinuxSystemdUnitName(safeSlug);
     const unitPath = getLinuxSystemdUnitPath(baseHome, safeSlug);
-    const activeRes = deps.execSyncCommand("systemctl", ["--user", "is-active", unitName]);
-    const running = activeRes.exitCode === 0 && activeRes.stdout === "active";
+    const activeRes =
+      deps.platform === "linux"
+        ? deps.execSyncCommand("systemctl", ["--user", "is-active", unitName])
+        : { exitCode: 1, stdout: "unavailable", stderr: "" };
+    const systemdRunning = activeRes.exitCode === 0 && activeRes.stdout === "active";
+    if (!systemdRunning && pidAlive && recordedPid !== undefined) {
+      return {
+        action: "status",
+        platform,
+        mode: "detached",
+        slug: safeSlug,
+        running: true,
+        serviceId: `detached:${safeSlug}`,
+        pidFilePath,
+        pid: recordedPid,
+        logOutPath: stdoutPath,
+        logErrPath: stderrPath,
+        detail: `Detached cloud/container SSE listener "${safeSlug}" is running (PID ${recordedPid}).`,
+      };
+    }
     return {
       action: "status",
       platform,
+      mode: "systemd",
       slug: safeSlug,
-      running,
+      running: systemdRunning,
       serviceId: unitName,
       configFilePath: unitPath,
       logOutPath: stdoutPath,
       logErrPath: stderrPath,
-      detail: running
+      detail: systemdRunning
         ? `systemd user unit ${unitName} is active.`
         : `systemd user unit ${unitName} state: ${activeRes.stdout || "inactive"}`,
     };
   }
 
   const taskName = getWindowsScheduledTaskName(safeSlug);
-  const pidFilePath = getDaemonPidFilePath(baseHome, safeSlug);
-  const recordedPid = readDaemonPidFile(pidFilePath);
-  const pidAlive = recordedPid !== undefined && deps.isPidAlive(recordedPid);
   const taskQuery = deps.execSyncCommand("schtasks", ["/Query", "/TN", taskName]);
 
   return {
     action: "status",
     platform,
+    mode: taskQuery.exitCode === 0 ? "schtasks" : "detached",
     slug: safeSlug,
     running: pidAlive,
     serviceId: taskName,
@@ -984,7 +1124,7 @@ export function getDaemonServiceStatus(
 }
 
 /**
- * 停止并卸载指定 `<slug>` 的常驻后台守护服务，同时清理孤儿锁文件。
+ * 停止并卸载指定 `<slug>` 的常驻后台守护服务，同时终止并清理脱离进程 PID 锁文件。
  *
  * @param params - 包含 `slug` 与 `homeDir` 的停止参数
  * @param deps - 可选注入的系统调用依赖
@@ -994,10 +1134,16 @@ export function stopDaemonService(
   params: { readonly slug: string; readonly homeDir?: string },
   deps: Readonly<DaemonSystemDeps> = createDefaultDaemonSystemDeps(),
 ): DaemonControlReport {
-  const platform = assertSupportedPlatform(deps.platform);
+  const platform = normalizeDaemonPlatform(deps.platform);
   const safeSlug = sanitizeTokenSlug(params.slug);
   const baseHome = resolve(params.homeDir ?? homedir());
   const { stdoutPath, stderrPath } = getDaemonLogPaths(baseHome, safeSlug);
+  const pidFilePath = getDaemonPidFilePath(baseHome, safeSlug);
+  const existingPid = readDaemonPidFile(pidFilePath);
+  if (existingPid !== undefined && deps.isPidAlive(existingPid)) {
+    deps.terminatePid(existingPid);
+  }
+  removeDaemonPidFile(pidFilePath);
 
   if (platform === "darwin") {
     const label = getMacLaunchdLabel(safeSlug);
@@ -1022,11 +1168,13 @@ export function stopDaemonService(
   if (platform === "linux") {
     const unitName = getLinuxSystemdUnitName(safeSlug);
     const unitPath = getLinuxSystemdUnitPath(baseHome, safeSlug);
-    deps.execSyncCommand("systemctl", ["--user", "disable", "--now", unitName]);
-    if (existsSync(unitPath)) {
-      rmSync(unitPath, { force: true });
+    if (deps.platform === "linux") {
+      deps.execSyncCommand("systemctl", ["--user", "disable", "--now", unitName]);
+      if (existsSync(unitPath)) {
+        rmSync(unitPath, { force: true });
+      }
+      deps.execSyncCommand("systemctl", ["--user", "daemon-reload"]);
     }
-    deps.execSyncCommand("systemctl", ["--user", "daemon-reload"]);
     return {
       action: "stop",
       platform,
@@ -1036,17 +1184,11 @@ export function stopDaemonService(
       configFilePath: unitPath,
       logOutPath: stdoutPath,
       logErrPath: stderrPath,
-      detail: `Stopped and removed systemd user service ${unitName}.`,
+      detail: `Stopped and removed listener service ${unitName}.`,
     };
   }
 
   const taskName = getWindowsScheduledTaskName(safeSlug);
-  const pidFilePath = getDaemonPidFilePath(baseHome, safeSlug);
-  const existingPid = readDaemonPidFile(pidFilePath);
-  if (existingPid !== undefined && deps.isPidAlive(existingPid)) {
-    deps.terminatePid(existingPid);
-  }
-  removeDaemonPidFile(pidFilePath);
   deps.execSyncCommand("schtasks", ["/Delete", "/TN", taskName, "/F"]);
 
   return {

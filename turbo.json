@@ -10,7 +10,21 @@
     },
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "passThroughEnv": [
+        "DATABASE_URL",
+        "PORT",
+        "LOG_LEVEL",
+        "PUBLIC_BASE_URL",
+        "REALTIME_BUS_DRIVER",
+        "AUTH_SECRET",
+        "ALLOW_DEV_OTP_ECHO",
+        "ALLOW_PUBLIC_SIGNUP",
+        "ALLOWED_EMAIL_DOMAINS",
+        "ADMIN_EMAILS",
+        "SMTP_*",
+        "AI_*"
+      ]
     }
   }
 }

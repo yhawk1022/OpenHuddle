@@ -27,6 +27,25 @@ export interface StoredAgentMetadata {
   readonly slug: string;
   readonly displayName: string;
   readonly platform: AgentPlatform;
+  readonly defaultRoomId?: RoomId;
+  readonly updatedAtIso: string;
+}
+
+/**
+ * 当前宿主或云端沙箱最近一次 `connect` / `pair` 激活的默认 CLI 身份上下文（`~/.openhuddle/active-profile.json`）。
+ *
+ * @remarks
+ * 让云端/容器 Agent 在执行 `openhuddle connect` 后可直接运行 `openhuddle read`、`openhuddle reply "..."`、`openhuddle wait`，
+ * 无需每次重复拼写 `--server`、`--token-file` 与 `<roomId>`；当显式传入 `--token-file` 时始终以显式参数为准。
+ */
+export interface ActiveCliProfile {
+  readonly tokenFilePath: string;
+  readonly serverUrl: string;
+  readonly agentId: AgentId;
+  readonly slug: string;
+  readonly displayName: string;
+  readonly platform: AgentPlatform;
+  readonly defaultRoomId?: RoomId;
   readonly updatedAtIso: string;
 }
 
@@ -407,4 +426,116 @@ export function updateRoomLastReadSeq(
 
   writeProtectedFile(cursorPath, `${JSON.stringify(nextPayload, null, 2)}\n`);
   return mergedSeq;
+}
+
+/**
+ * 获取当前活跃 CLI 身份上下文文件路径（`~/.openhuddle/active-profile.json`）。
+ *
+ * @param customHomeDir - 可选的主目录覆盖路径
+ * @returns 绝对文件路径
+ */
+export function getActiveCliProfilePath(customHomeDir?: string): string {
+  const baseHome = customHomeDir ?? homedir();
+  return join(baseHome, ".openhuddle", "active-profile.json");
+}
+
+/**
+ * 读取当前活跃 CLI 身份上下文（若文件不存在、损坏或引用的 `.token` 文件已被清理则返回 `undefined`）。
+ *
+ * @param customHomeDir - 可选的主目录覆盖路径
+ * @returns 校验通过的 `ActiveCliProfile` 或 `undefined`
+ */
+export function readActiveCliProfile(customHomeDir?: string): ActiveCliProfile | undefined {
+  const profilePath = getActiveCliProfilePath(customHomeDir);
+  if (!existsSync(profilePath)) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(profilePath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null) {
+      return undefined;
+    }
+    const rec = parsed as Record<string, unknown>;
+    if (
+      typeof rec.tokenFilePath !== "string" ||
+      rec.tokenFilePath.trim().length === 0 ||
+      typeof rec.serverUrl !== "string" ||
+      rec.serverUrl.trim().length === 0 ||
+      typeof rec.agentId !== "string" ||
+      typeof rec.slug !== "string" ||
+      typeof rec.displayName !== "string" ||
+      typeof rec.platform !== "string" ||
+      typeof rec.updatedAtIso !== "string"
+    ) {
+      return undefined;
+    }
+    if (!existsSync(resolve(rec.tokenFilePath))) {
+      return undefined;
+    }
+    return {
+      tokenFilePath: resolve(rec.tokenFilePath),
+      serverUrl: normalizeServerUrl(rec.serverUrl),
+      agentId: rec.agentId as AgentId,
+      slug: rec.slug,
+      displayName: rec.displayName,
+      platform: rec.platform as AgentPlatform,
+      ...(typeof rec.defaultRoomId === "string" && rec.defaultRoomId.trim().length > 0
+        ? { defaultRoomId: rec.defaultRoomId.trim() as RoomId }
+        : {}),
+      updatedAtIso: rec.updatedAtIso,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 以 `0o600` 权限写入最新活跃 CLI 身份上下文。
+ *
+ * @param profile - 待激活的 CLI 身份上下文
+ * @param customHomeDir - 可选的主目录覆盖路径
+ */
+export function writeActiveCliProfile(
+  profile: Readonly<ActiveCliProfile>,
+  customHomeDir?: string,
+): void {
+  const profilePath = getActiveCliProfilePath(customHomeDir);
+  writeProtectedFile(profilePath, `${JSON.stringify(profile, null, 2)}\n`);
+}
+
+/**
+ * 同步更新伴随元数据与活跃上下文中的默认房间 `defaultRoomId`（如执行 `join` 或 `create` 后）。
+ *
+ * @param tokenFilePath - 当前使用的 Token 文件路径
+ * @param roomId - 最新进入或选中的房间 ID
+ * @param customHomeDir - 可选的主目录覆盖路径
+ */
+export function rememberDefaultRoomId(
+  tokenFilePath: string,
+  roomId: RoomId,
+  customHomeDir?: string,
+): void {
+  const existing = readStoredCredentials(tokenFilePath);
+  if (existing?.metadata !== undefined) {
+    const nextMeta: StoredAgentMetadata = {
+      ...existing.metadata,
+      defaultRoomId: roomId,
+      updatedAtIso: new Date().toISOString(),
+    };
+    writeProtectedFile(
+      getMetadataFilePath(existing.tokenFilePath),
+      `${JSON.stringify(nextMeta, null, 2)}\n`,
+    );
+  }
+  const active = readActiveCliProfile(customHomeDir);
+  if (active !== undefined && resolve(active.tokenFilePath) === resolve(tokenFilePath)) {
+    writeActiveCliProfile(
+      {
+        ...active,
+        defaultRoomId: roomId,
+        updatedAtIso: new Date().toISOString(),
+      },
+      customHomeDir,
+    );
+  }
 }

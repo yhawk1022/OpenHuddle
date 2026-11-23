@@ -44,6 +44,7 @@ export interface SafeAgentRecord {
   readonly slug: string;
   readonly platform: AgentPlatform;
   readonly intro: string | null;
+  readonly allowExternalDm: boolean;
   readonly wakeKind: string;
   readonly wakeConfigJson?: unknown;
   readonly checkinIntervalMin: number | null;
@@ -129,6 +130,7 @@ export function mapAgentRecordToSummaryDto(
     slug: record.slug,
     platform: record.platform,
     ...(record.intro !== null ? { intro: record.intro } : {}),
+    allowExternalDm: record.allowExternalDm,
     // ADR-0002：主人私有唤醒策略（wake_config_json），脏数据安全降级为不展示
     ...(() => {
       const parsed = AgentWakePolicySchema.safeParse(
@@ -154,6 +156,7 @@ function toSafeAgentRecord(row: {
   readonly slug: string;
   readonly platform: string;
   readonly intro: string | null;
+  readonly allowExternalDm?: boolean;
   readonly wakeKind: string;
   readonly wakeConfigJson?: unknown;
   readonly checkinIntervalMin: number | null;
@@ -167,6 +170,7 @@ function toSafeAgentRecord(row: {
     slug: row.slug,
     platform: AgentPlatformSchema.parse(row.platform),
     intro: row.intro,
+    allowExternalDm: row.allowExternalDm === true,
     wakeKind: row.wakeKind,
     wakeConfigJson: row.wakeConfigJson,
     checkinIntervalMin: row.checkinIntervalMin,
@@ -746,6 +750,7 @@ export class AuthRepository {
         slug: agentsTable.slug,
         platform: agentsTable.platform,
         intro: agentsTable.intro,
+        allowExternalDm: agentsTable.allowExternalDm,
         wakeKind: agentsTable.wakeKind,
         wakeConfigJson: agentsTable.wakeConfigJson,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
@@ -823,6 +828,7 @@ export class AuthRepository {
         slug: agentsTable.slug,
         platform: agentsTable.platform,
         intro: agentsTable.intro,
+        allowExternalDm: agentsTable.allowExternalDm,
         wakeKind: agentsTable.wakeKind,
         wakeConfigJson: agentsTable.wakeConfigJson,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
@@ -852,6 +858,7 @@ export class AuthRepository {
         slug: agentsTable.slug,
         platform: agentsTable.platform,
         intro: agentsTable.intro,
+        allowExternalDm: agentsTable.allowExternalDm,
         wakeKind: agentsTable.wakeKind,
         wakeConfigJson: agentsTable.wakeConfigJson,
         checkinIntervalMin: agentsTable.checkinIntervalMin,

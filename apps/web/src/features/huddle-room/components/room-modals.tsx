@@ -10,11 +10,14 @@
 import {
   type AgentId,
   DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS,
+  type FriendContactDto,
   type GovernanceMode,
   type OwnedAgentSummaryDto,
   type RoomDetailDto,
   type RoomId,
+  type RoomKind,
   type RoomVisibility,
+  type UserId,
 } from "@openhuddle/protocol";
 import {
   AlertTriangle,
@@ -109,12 +112,14 @@ export interface CreateRoomModalProps {
   readonly onRoomCreated: (room: RoomDetailDto) => void;
   /** 当前用户已接入的个人 Agent（建群时可勾选直拉入群，免发提示词） */
   readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
+  /** 当前用户已添加的好友列表（建群时可直接勾选拉入群聊） */
+  readonly friends?: ReadonlyArray<FriendContactDto> | undefined;
 }
 
 /**
  * 新建多 Agent 群聊配置模态框。
  *
- * @param props - 打开状态、创建成功跳转回调与已接入 Agent 列表
+ * @param props - 打开状态、创建成功跳转回调、已接入 Agent 列表与好友列表
  * @returns 新建群聊弹窗
  */
 export function CreateRoomModal(props: CreateRoomModalProps) {
@@ -127,8 +132,10 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
     String(DEFAULT_MAX_CONSECUTIVE_AGENT_TURNS) as TurnBudgetValue,
   );
   const [selectedAgentIds, setSelectedAgentIds] = useState<ReadonlySet<AgentId>>(new Set());
+  const [selectedUserIds, setSelectedUserIds] = useState<ReadonlySet<UserId>>(new Set());
 
   const createMutation = useCreateRoomMutation();
+  const availableFriends = props.friends ?? [];
 
   const toggleAgent = (agentId: AgentId): void => {
     setSelectedAgentIds((prev) => {
@@ -137,6 +144,18 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
         next.delete(agentId);
       } else {
         next.add(agentId);
+      }
+      return next;
+    });
+  };
+
+  const toggleFriend = (userId: UserId): void => {
+    setSelectedUserIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) {
+        next.delete(userId);
+      } else {
+        next.add(userId);
       }
       return next;
     });
@@ -162,19 +181,28 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
           requireReadBeforeSend: true,
         },
         initialAgentIds: [...selectedAgentIds],
+        initialUserIds: [...selectedUserIds],
       },
       {
         onSuccess: (res) => {
+          const pulledParts: string[] = [];
+          if (selectedUserIds.size > 0) {
+            pulledParts.push(`${String(selectedUserIds.size)} 位好友`);
+          }
+          if (selectedAgentIds.size > 0) {
+            pulledParts.push(`${String(selectedAgentIds.size)} 个个人 Agent`);
+          }
           toast.success(`群聊「${res.room.name}」已建好`, {
             description:
-              selectedAgentIds.size > 0
-                ? `已直拉 ${String(selectedAgentIds.size)} 个个人 Agent 入群`
+              pulledParts.length > 0
+                ? `已直拉 ${pulledParts.join("、")} 入群`
                 : "现在可以把自己的 Agent 拉进来，或发邀请码给同伴",
           });
           setName("");
           setTopic("");
           setRules("");
           setSelectedAgentIds(new Set());
+          setSelectedUserIds(new Set());
           props.onRoomCreated(res.room);
           props.onClose();
         },
@@ -242,6 +270,42 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
             containerClassName="mt-1.5"
           />
         </div>
+
+        {/* 建群直拉好友：已添加的好友可直接勾选入群，免发邀请码 */}
+        {availableFriends.length > 0 ? (
+          <div>
+            <span className={LABEL_CLASS}>
+              直接拉入我的好友{" "}
+              <span className="font-normal text-[#8E96A6] dark:text-[#63636B]">
+                （建群即入群，可选）
+              </span>
+            </span>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {availableFriends.map((friend) => {
+                const isSelected = selectedUserIds.has(friend.user.userId);
+                return (
+                  <button
+                    key={friend.user.userId}
+                    type="button"
+                    aria-pressed={isSelected}
+                    onClick={() => toggleFriend(friend.user.userId)}
+                    className={cn(
+                      "app-no-drag flex cursor-pointer items-center gap-2 rounded-full px-3 py-1.5 text-left text-xs font-medium transition-all duration-150 active:scale-[0.98]",
+                      isSelected
+                        ? "bg-[#181B22]/8 text-[#111318] ring-[1.5px] ring-[#181B22] dark:bg-white/[0.11] dark:text-[#F2F2F4] dark:ring-[#EAEEF6]"
+                        : "bg-white/80 text-[#3B414E] ring-1 ring-inset ring-black/[0.08] hover:bg-white dark:bg-white/[0.04] dark:text-[#C4C4CA] dark:ring-white/[0.09] dark:hover:bg-white/[0.08]",
+                    )}
+                  >
+                    <span className="max-w-[10rem] truncate">{friend.user.displayName}</span>
+                    {isSelected ? (
+                      <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
 
         {/* 建群直拉本人 Agent：服务端按归属校验后直接写入成员，免发提示词 */}
         {props.ownedAgents.length > 0 ? (
@@ -560,9 +624,10 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
   );
 }
 
-/** 待删除群聊弹窗所需的最小房间投影 */
+/** 待删除会话弹窗所需的最小房间投影 */
 export interface DeleteRoomTarget {
   readonly id: RoomId;
+  readonly kind?: RoomKind | undefined;
   readonly name: string;
   readonly topic: string;
 }
@@ -585,12 +650,14 @@ export interface DeleteRoomConfirmModalProps {
 export function DeleteRoomConfirmModal(props: DeleteRoomConfirmModalProps) {
   const targetRoom = props.room;
   const errMsg = resolveMutationErrorMessage(props.error);
+  const isDirect =
+    targetRoom !== null && targetRoom.kind !== undefined && targetRoom.kind !== "group";
 
   return (
     <ModalDialog
       open={targetRoom !== null}
       onClose={props.isDeleting ? () => undefined : props.onClose}
-      title="删除群聊"
+      title={isDirect ? "删除单聊会话" : "删除群聊"}
       subtitle="此操作不可撤销，请确认后继续"
       maxWidthClass="max-w-md"
       icon={<Trash2 aria-hidden="true" className="h-4 w-4 text-[#C81E1E] dark:text-[#FCA5A5]" />}

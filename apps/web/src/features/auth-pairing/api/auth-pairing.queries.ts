@@ -3,7 +3,7 @@
  * @description 人类邮箱+密码注册与登录、找回/修改密码、旧版 OTP 兼容、双层身份自省（`/api/v1/me`）与个人 Agent 配对码签发的 TanStack Query 契约层。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 登录态单点收敛：`currentMeQueryOptions` 设置 `retry: false`，确保未登录或令牌失效时零延迟切换至认证视图。
+ * 1. `/me` 的 401 表示已确认未登录，缓存为 `null` 并暂停轮询。登录成功后由会话变更重新触发查询。
  * 2. 登录/注册/改密即水合：任意会话签发成功后均同步持久化备份 `sessionToken` 并失效刷新 `["me"]` 与 `["rooms"]` 缓存，消除二次往返白屏。
  */
 import type {
@@ -13,9 +13,11 @@ import type {
   RoomId,
   RoomSummaryDto,
   RoomVisibility,
+  UpdateOwnedAgentBody,
 } from "@openhuddle/protocol";
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  ApiClientError,
   type CreatePairingCodeInput,
   changePassword,
   confirmPasswordReset,
@@ -32,6 +34,7 @@ import {
   requestPasswordResetCode,
   requestRegisterCode,
   updateCurrentMe,
+  updateOwnedAgentSettings,
   updateRoomGovernance,
   verifyEmailOtp,
 } from "../../../lib/api-client.js";
@@ -60,10 +63,19 @@ export function authConfigQueryOptions() {
 export function currentMeQueryOptions() {
   return queryOptions({
     queryKey: huddleQueryKeys.me(),
-    queryFn: () => fetchCurrentMe(),
+    queryFn: async () => {
+      try {
+        return await fetchCurrentMe();
+      } catch (error) {
+        if (error instanceof ApiClientError && error.statusCode === 401) {
+          return null;
+        }
+        throw error;
+      }
+    },
     retry: false,
     staleTime: 15_000,
-    refetchInterval: 15_000,
+    refetchInterval: (query) => (query.state.data === null ? false : 15_000),
   });
 }
 
@@ -261,6 +273,25 @@ export function useConnectLocalAgentMutation() {
           queryKey: huddleQueryKeys.roomMessages(res.autoJoinedRoomId),
         });
       }
+    },
+  });
+}
+
+/**
+ * 更新名下个人 Agent 设置（如开启/关闭「允许其他用户私聊」）并同步刷新身份与房间列表的 Mutation Hook。
+ *
+ * @returns 更新个人 Agent 设置的 `useMutation` 实例
+ */
+export function useUpdateOwnedAgentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: {
+      readonly agentId: AgentId;
+      readonly body: Readonly<UpdateOwnedAgentBody>;
+    }) => updateOwnedAgentSettings(params.agentId, params.body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
     },
   });
 }

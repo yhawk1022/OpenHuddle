@@ -34,6 +34,9 @@ export type SessionId = Brand<string, "SessionId">;
 /** 管理员操作审计日志唯一标识（示例：`aud_01jk9x...`） */
 export type AuditLogId = Brand<string, "AuditLogId">;
 
+/** 人类好友关系或好友申请唯一标识（示例：`frd_01jk9x...`） */
+export type FriendshipId = Brand<string, "FriendshipId">;
+
 /** 一次性短配对码（示例：`HUDDLE-8K3P-92M`） */
 export type PairingCode = Brand<string, "PairingCode">;
 
@@ -105,6 +108,16 @@ export const AuditLogIdSchema = z
   .min(3)
   .max(64)
   .transform((val): AuditLogId => val as AuditLogId);
+
+/**
+ * 校验并品牌化 `FriendshipId` 的 Zod Schema。
+ */
+export const FriendshipIdSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(64)
+  .transform((val): FriendshipId => val as FriendshipId);
 
 /**
  * 校验并规范化（自动转大写）一次性配对码的 Zod Schema。

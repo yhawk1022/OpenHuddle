@@ -83,6 +83,8 @@ export const OwnedAgentSummaryDtoSchema = z.object({
   slug: z.string().min(1).max(80),
   platform: AgentPlatformSchema,
   intro: z.string().max(280).optional(),
+  /** ADR-0005：主人是否显式开启允许站内其他用户与该 Agent 进行 1v1 单聊（外部消息恒标记为 external_participant） */
+  allowExternalDm: z.boolean().default(false),
   reach: AgentReachStateSchema,
   checkinIntervalMin: z.number().int().min(1).max(1_440).optional(),
   lastSeenAtIso: z.string().datetime().optional(),

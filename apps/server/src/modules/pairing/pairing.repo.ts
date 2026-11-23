@@ -21,6 +21,8 @@ import {
   type HumanUserDto,
   type PairingCode,
   type RoomId,
+  type RoomKind,
+  RoomKindSchema,
   type UserId,
 } from "@openhuddle/protocol";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -46,6 +48,7 @@ function mapAgentRowToSafe(row: {
   readonly slug: string;
   readonly platform: string;
   readonly intro: string | null;
+  readonly allowExternalDm?: boolean;
   readonly wakeKind: string;
   readonly checkinIntervalMin: number | null;
   readonly lastSeenAt: Date | null;
@@ -58,6 +61,7 @@ function mapAgentRowToSafe(row: {
     slug: row.slug,
     platform: AgentPlatformSchema.parse(row.platform),
     intro: row.intro,
+    allowExternalDm: row.allowExternalDm === true,
     wakeKind: row.wakeKind,
     checkinIntervalMin: row.checkinIntervalMin,
     lastSeenAt: row.lastSeenAt,
@@ -92,18 +96,30 @@ export class PairingRepository {
   }
 
   /**
+   * 检查房间是否存在并返回其模态类型（`group` | `direct_agent` | `direct_human`）。
+   *
+   * @param roomId - 目标房间主键
+   * @returns 存在时返回 `RoomKind`，不存在返回 `undefined`
+   */
+  public async findRoomKind(roomId: RoomId): Promise<RoomKind | undefined> {
+    const rows = await this.db
+      .select({ kind: roomsTable.kind })
+      .from(roomsTable)
+      .where(eq(roomsTable.id, roomId))
+      .limit(1);
+    const row = rows[0];
+    return row ? RoomKindSchema.parse(row.kind) : undefined;
+  }
+
+  /**
    * 检查房间是否存在。
    *
    * @param roomId - 目标房间主键
    * @returns 存在返回 `true`
    */
   public async roomExists(roomId: RoomId): Promise<boolean> {
-    const rows = await this.db
-      .select({ id: roomsTable.id })
-      .from(roomsTable)
-      .where(eq(roomsTable.id, roomId))
-      .limit(1);
-    return rows.length > 0;
+    const kind = await this.findRoomKind(roomId);
+    return kind !== undefined;
   }
 
   /**
@@ -139,6 +155,7 @@ export class PairingRepository {
         slug: agentsTable.slug,
         platform: agentsTable.platform,
         intro: agentsTable.intro,
+        allowExternalDm: agentsTable.allowExternalDm,
         wakeKind: agentsTable.wakeKind,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
         lastSeenAt: agentsTable.lastSeenAt,
@@ -263,6 +280,7 @@ export class PairingRepository {
         slug: agentsTable.slug,
         platform: agentsTable.platform,
         intro: agentsTable.intro,
+        allowExternalDm: agentsTable.allowExternalDm,
         wakeKind: agentsTable.wakeKind,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
         lastSeenAt: agentsTable.lastSeenAt,
@@ -299,6 +317,7 @@ export class PairingRepository {
         slug: agentsTable.slug,
         platform: agentsTable.platform,
         intro: agentsTable.intro,
+        allowExternalDm: agentsTable.allowExternalDm,
         wakeKind: agentsTable.wakeKind,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
         lastSeenAt: agentsTable.lastSeenAt,
@@ -346,6 +365,7 @@ export class PairingRepository {
         slug: agentsTable.slug,
         platform: agentsTable.platform,
         intro: agentsTable.intro,
+        allowExternalDm: agentsTable.allowExternalDm,
         wakeKind: agentsTable.wakeKind,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
         lastSeenAt: agentsTable.lastSeenAt,
@@ -390,6 +410,7 @@ export class PairingRepository {
         slug: agentsTable.slug,
         platform: agentsTable.platform,
         intro: agentsTable.intro,
+        allowExternalDm: agentsTable.allowExternalDm,
         wakeKind: agentsTable.wakeKind,
         checkinIntervalMin: agentsTable.checkinIntervalMin,
         lastSeenAt: agentsTable.lastSeenAt,
@@ -432,6 +453,50 @@ export class PairingRepository {
         lastReadSeq: 0,
       })
       .onConflictDoNothing();
+  }
+
+  /**
+   * 由归属人类主人更新指定 Agent 的展示名称、简介或外部私聊开关（ADR-0005）。
+   *
+   * @param agentId - 目标 Agent 主键
+   * @param patch - 可选更新字段
+   * @returns 更新后的 `SafeAgentRecord`
+   */
+  public async updateAgentByOwner(
+    agentId: AgentId,
+    patch: {
+      readonly displayName?: string;
+      readonly intro?: string;
+      readonly allowExternalDm?: boolean;
+    },
+  ): Promise<SafeAgentRecord> {
+    const updated = await this.db
+      .update(agentsTable)
+      .set({
+        ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),
+        ...(patch.intro !== undefined ? { intro: patch.intro } : {}),
+        ...(patch.allowExternalDm !== undefined ? { allowExternalDm: patch.allowExternalDm } : {}),
+      })
+      .where(eq(agentsTable.id, agentId))
+      .returning({
+        id: agentsTable.id,
+        ownerUserId: agentsTable.ownerUserId,
+        displayName: agentsTable.displayName,
+        slug: agentsTable.slug,
+        platform: agentsTable.platform,
+        intro: agentsTable.intro,
+        allowExternalDm: agentsTable.allowExternalDm,
+        wakeKind: agentsTable.wakeKind,
+        checkinIntervalMin: agentsTable.checkinIntervalMin,
+        lastSeenAt: agentsTable.lastSeenAt,
+        createdAt: agentsTable.createdAt,
+      });
+
+    const row = updated[0];
+    if (!row) {
+      throw new Error(`Failed to update owned agent ${agentId}.`);
+    }
+    return mapAgentRowToSafe(row);
   }
 
   /**

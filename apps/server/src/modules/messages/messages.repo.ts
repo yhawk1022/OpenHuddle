@@ -27,6 +27,8 @@ import {
   type RoomGovernanceState,
   RoomGovernanceStateSchema,
   type RoomId,
+  type RoomKind,
+  RoomKindSchema,
   type RoomMemberRole,
   RoomMemberRoleSchema,
   type UserId,
@@ -60,6 +62,7 @@ export interface HydratedRawMessageRecord {
  */
 export interface LockedRoomForMessageRecord {
   readonly id: RoomId;
+  readonly kind: RoomKind;
   readonly ownerUserId: UserId;
   readonly name: string;
   readonly topic: string;
@@ -68,10 +71,12 @@ export interface LockedRoomForMessageRecord {
 }
 
 /**
- * 房间在席 Agent 的唤醒匹配标识（支持通过正文 `@昵称` 或 `@slug` 自动补全结构化提及）。
+ * 房间在席 Agent 的唤醒匹配标识与归属权限快照（支持通过正文 `@昵称` / `@slug` 自动补全提及及跨主人私聊鉴权）。
  */
 export interface RoomAgentMentionTarget {
   readonly agentId: AgentId;
+  readonly ownerUserId: UserId;
+  readonly allowExternalDm: boolean;
   readonly displayName: string;
   readonly slug: string;
 }
@@ -221,6 +226,7 @@ export class MessagesRepository {
     const result = await this.db.execute(sql`
       SELECT
         id,
+        kind,
         owner_user_id AS "ownerUserId",
         name,
         topic,
@@ -233,6 +239,7 @@ export class MessagesRepository {
 
     const row = extractSqlRows<{
       readonly id: string;
+      readonly kind?: string;
       readonly ownerUserId: string;
       readonly name: string;
       readonly topic: string;
@@ -246,6 +253,7 @@ export class MessagesRepository {
 
     return {
       id: row.id as RoomId,
+      kind: RoomKindSchema.parse(row.kind ?? "group"),
       ownerUserId: row.ownerUserId as UserId,
       name: row.name,
       topic: row.topic,
@@ -264,6 +272,7 @@ export class MessagesRepository {
     const rows = await this.db
       .select({
         id: roomsTable.id,
+        kind: roomsTable.kind,
         ownerUserId: roomsTable.ownerUserId,
         name: roomsTable.name,
         topic: roomsTable.topic,
@@ -281,6 +290,7 @@ export class MessagesRepository {
 
     return {
       id: row.id as RoomId,
+      kind: RoomKindSchema.parse(row.kind),
       ownerUserId: row.ownerUserId as UserId,
       name: row.name,
       topic: row.topic,
@@ -330,6 +340,8 @@ export class MessagesRepository {
     const result = await this.db.execute(sql`
       SELECT
         a.id AS "agentId",
+        a.owner_user_id AS "ownerUserId",
+        a.allow_external_dm AS "allowExternalDm",
         a.display_name AS "displayName",
         a.slug AS "slug"
       FROM room_members rm
@@ -339,13 +351,63 @@ export class MessagesRepository {
 
     return extractSqlRows<{
       readonly agentId: string;
+      readonly ownerUserId: string;
+      readonly allowExternalDm: boolean | null;
       readonly displayName: string;
       readonly slug: string;
     }>(result).map((row) => ({
       agentId: row.agentId as AgentId,
+      ownerUserId: row.ownerUserId as UserId,
+      allowExternalDm: row.allowExternalDm === true,
       displayName: row.displayName,
       slug: row.slug,
     }));
+  }
+
+  /**
+   * 列出当前房间内所有人类成员的主键列表（供 1v1 好友私聊在事务内校验好友关系）。
+   *
+   * @param roomId - 房间主键
+   * @returns 在席人类 `UserId` 数组
+   */
+  public async listRoomHumanUserIds(roomId: RoomId): Promise<readonly UserId[]> {
+    const rows = await this.db
+      .select({ userId: roomMembersTable.userId })
+      .from(roomMembersTable)
+      .where(and(eq(roomMembersTable.roomId, roomId), eq(roomMembersTable.memberKind, "human")));
+    const ids: UserId[] = [];
+    for (const row of rows) {
+      if (row.userId !== null) {
+        ids.push(row.userId as UserId);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * 在当前事务连接内直接校验两名人类用户是否保持有效 `accepted` 好友关系（避免 PGlite 单连接嵌套查库死锁）。
+   *
+   * @param userA - 用户 A 主键
+   * @param userB - 用户 B 主键
+   * @returns 互为有效好友返回 `true`
+   */
+  public async areUsersAcceptedFriends(userA: UserId, userB: UserId): Promise<boolean> {
+    if (userA === userB) {
+      return false;
+    }
+    const pairKey = userA <= userB ? `${userA}:${userB}` : `${userB}:${userA}`;
+    const result = await this.db.execute(sql`
+      SELECT f.id
+      FROM friendships f
+      INNER JOIN users u_low ON f.user_low_id = u_low.id
+      INNER JOIN users u_high ON f.user_high_id = u_high.id
+      WHERE f.pair_key = ${pairKey}
+        AND f.status = 'accepted'
+        AND u_low.status = 'active'
+        AND u_high.status = 'active'
+      LIMIT 1
+    `);
+    return extractSqlRows<{ readonly id: string }>(result).length > 0;
   }
 
   /**

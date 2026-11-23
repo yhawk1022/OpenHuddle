@@ -19,6 +19,8 @@
  */
 import type {
   AgentId,
+  FriendContactDto,
+  FriendshipId,
   HumanUserDto,
   MessageDto,
   MessageMention,
@@ -28,7 +30,9 @@ import type {
   ProposalId,
   RoomId,
   RoomMemberDto,
+  SharedExternalAgentDto,
   UpdateGovernanceBody,
+  UserId,
 } from "@openhuddle/protocol";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -49,7 +53,9 @@ import {
   Shield,
   Sun,
   Trash2,
+  UserPlus,
   UserRound,
+  Users,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -93,24 +99,33 @@ import {
   currentMeQueryOptions,
   useDeleteOwnedAgentMutation,
   useLogoutMutation,
+  useUpdateOwnedAgentMutation,
 } from "../../auth-pairing/index.js";
 import {
+  friendsOverviewQueryOptions,
   joinedRoomsQueryOptions,
   roomDetailQueryOptions,
   roomMessagesQueryOptions,
   roomProposalsQueryOptions,
   systemHealthQueryOptions,
+  useAcceptFriendRequestMutation,
   useCastProposalVoteMutation,
   useCreateProposalMutation,
   useDecideProposalMutation,
+  useDeclineFriendRequestMutation,
   useDeleteRoomMutation,
   useLeaveRoomMutation,
+  useOpenDirectAgentRoomMutation,
+  useOpenDirectHumanRoomMutation,
   useRecallMessageMutation,
+  useRemoveFriendMutation,
+  useSendFriendRequestMutation,
   useSendMessageMutation,
   useSynthesizeProposalMutation,
   useUpdateAnyRoomGovernanceMutation,
   useUpdateGovernanceMutation,
 } from "../api/huddle-room.queries.js";
+import { AddFriendModal, InviteMembersModal } from "./friend-modals.js";
 import { GovernanceBar } from "./governance-bar.js";
 import { MessageComposer } from "./message-composer.js";
 import { type InspectorTab, RoomInspector } from "./room-inspector.js";
@@ -205,8 +220,13 @@ function pickLatestProposal(
 interface ActiveRoomStageProps {
   readonly roomId: RoomId;
   readonly currentUser: HumanUserDto;
+  readonly friends: ReadonlyArray<FriendContactDto>;
   readonly synthesizeSignal: number;
   readonly onOpenAddAgentModal: (tab?: OnboardingModalTab, reclaimAgentId?: AgentId) => void;
+  readonly onOpenInviteMembersModal: () => void;
+  readonly onStartDirectHumanChat: (userId: UserId) => void;
+  readonly onSendFriendRequest: (userId: UserId, displayName: string) => void;
+  readonly onStartDirectAgentChat: (agentId: AgentId) => void;
   readonly onBackToList: () => void;
   readonly onInspectAgent: (profile: InspectedAgentProfile) => void;
   readonly onRequestDeleteRoom: (room: DeleteRoomTarget) => void;
@@ -543,6 +563,20 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
       }
       onUpdateGovernance={(patch) => governanceMutation.mutate(patch)}
       onInspectAgent={props.onInspectAgent}
+      friends={props.friends}
+      onOpenInviteMembersModal={() => {
+        setMobileInspectorOpen(false);
+        props.onOpenInviteMembersModal();
+      }}
+      onStartDirectHumanChat={(uid) => {
+        setMobileInspectorOpen(false);
+        props.onStartDirectHumanChat(uid);
+      }}
+      onSendFriendRequest={props.onSendFriendRequest}
+      onStartDirectAgentChat={(aid) => {
+        setMobileInspectorOpen(false);
+        props.onStartDirectAgentChat(aid);
+      }}
       onQuickMention={(mention) => {
         setPendingQuickMention(mention);
         // 窄屏抽屉遮罩会挡住输入框，点名后自动收起；宽屏侧栏保持展开
@@ -570,6 +604,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-3 sm:px-4">
           <GovernanceBar
             room={room}
+            currentUserId={props.currentUser.id}
             governance={liveGovernance}
             proposalsCount={proposals.length}
             openProposalsCount={openProposals.length}
@@ -578,6 +613,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
             isInspectorOpen={isInspectorOpen}
             onUpdateGovernance={(patch) => governanceMutation.mutate(patch)}
             onOpenAddAgentModal={() => props.onOpenAddAgentModal("pair_agent")}
+            onOpenInviteModal={props.onOpenInviteMembersModal}
             onOpenProposals={() => openInspectorAt("proposals")}
             onToggleInspector={handleToggleMembersInspector}
             onBackToList={props.onBackToList}
@@ -649,29 +685,69 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
               </div>
             ) : messages.length === 0 ? (
               <div className="mx-auto my-14 max-w-md select-none px-4 text-center">
-                <BrandMark className="mx-auto mb-3.5 h-11 w-11 rounded-[12px] shadow-xs" />
+                {room.kind === "direct_agent" ? (
+                  <PlatformAvatar
+                    kind="agent"
+                    displayName={room.peer?.displayName ?? room.name}
+                    platform={room.peer?.kind === "agent" ? room.peer.platform : undefined}
+                    reach={room.peer?.kind === "agent" ? room.peer.reach : undefined}
+                    size="lg"
+                    className="mx-auto mb-3.5 [&>div]:h-12 [&>div]:w-12 [&>div]:rounded-full [&>div]:text-[16px]"
+                  />
+                ) : room.kind === "direct_human" ? (
+                  <PlatformAvatar
+                    kind="human"
+                    displayName={room.peer?.displayName ?? room.name}
+                    size="lg"
+                    className="mx-auto mb-3.5 [&>div]:h-12 [&>div]:w-12 [&>div]:rounded-full [&>div]:text-[16px]"
+                  />
+                ) : (
+                  <BrandMark className="mx-auto mb-3.5 h-11 w-11 rounded-[12px] shadow-xs" />
+                )}
                 <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-[#111318] dark:text-[#F2F2F4]">
-                  {room.name}
+                  {room.kind === "direct_agent"
+                    ? `与 ${room.name} 的 1v1 单聊`
+                    : room.kind === "direct_human"
+                      ? `与 ${room.name} 的好友私聊`
+                      : room.name}
                 </h2>
                 <p className="mx-auto mt-2 text-[13.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                  把你的 Agent 或朋友邀请进群，直接在下方输入舱说话，或输入 `@` 点名一起讨论。
+                  {room.kind === "direct_agent"
+                    ? room.peer?.kind === "agent" && room.peer.ownerUserId !== props.currentUser.id
+                      ? `对方是由 ${room.peer.ownerDisplayName} 开放私聊的个人 Agent。直接在下方发送消息即可交流（你的发言将以参考信息身份送达）。`
+                      : "这是你与个人 Agent 的专属一对一对话，在下方直接输入消息即可自动唤醒，无需加 @。"
+                    : room.kind === "direct_human"
+                      ? "你们已成为站内好友，在下方输入消息即可开始一对一实时沟通。"
+                      : "把你的 Agent 或好友拉进群，直接在下方输入舱说话，或输入 `@` 点名一起讨论。"}
                 </p>
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
-                  <AppButton
-                    variant="primary"
-                    size="md"
-                    leadingIcon={<Plus className="h-4 w-4" />}
-                    onClick={() => props.onOpenAddAgentModal("pair_agent")}
-                  >
-                    邀请 / 接入 agent
-                  </AppButton>
-                  <AppButton
-                    variant="secondary"
-                    size="md"
-                    onClick={() => openInspectorAt("members")}
-                  >
-                    查看群成员
-                  </AppButton>
+                  {room.kind === "group" ? (
+                    <>
+                      <AppButton
+                        variant="primary"
+                        size="md"
+                        leadingIcon={<Users className="h-4 w-4" />}
+                        onClick={props.onOpenInviteMembersModal}
+                      >
+                        拉好友 / Agent 进群
+                      </AppButton>
+                      <AppButton
+                        variant="secondary"
+                        size="md"
+                        onClick={() => openInspectorAt("members")}
+                      >
+                        查看群成员
+                      </AppButton>
+                    </>
+                  ) : (
+                    <AppButton
+                      variant="secondary"
+                      size="md"
+                      onClick={() => openInspectorAt("members")}
+                    >
+                      查看会话信息
+                    </AppButton>
+                  )}
                 </div>
               </div>
             ) : (
@@ -755,6 +831,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
 
           <MessageComposer
             roomName={room.name}
+            roomKind={room.kind}
             members={room.members}
             currentUserId={props.currentUser.id}
             currentUserDisplayName={props.currentUser.displayName}
@@ -823,6 +900,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
 interface PersonalAgentRailProps {
   readonly currentUser: HumanUserDto;
   readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
+  readonly onStartDirectAgentChat: (agentId: AgentId) => void;
   readonly onInspectAgent: (agent: OwnedAgentSummaryDto) => void;
   readonly onReclaimAgent: (agentId: AgentId) => void;
   readonly onRequestDeleteAgent: (agent: OwnedAgentSummaryDto) => void;
@@ -906,6 +984,12 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
           const platformMeta = getPlatformVisualMeta(agent.platform);
           const reachMeta = getReachVisualMeta(agent.reach);
           const railAgentMenuItems: ReadonlyArray<AppContextMenuEntry> = [
+            {
+              id: `ctx-rail-dm-${agent.id}`,
+              label: "发消息（1v1 单聊）",
+              icon: <MessageCircle className="h-3.5 w-3.5" />,
+              onSelect: () => props.onStartDirectAgentChat(agent.id),
+            },
             {
               id: `ctx-rail-inspect-${agent.id}`,
               label: "查看 Agent 名片",
@@ -1056,16 +1140,26 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const sessionToken = useSessionToken();
   const themeMode = useThemeMode();
   const roomsQuery = useQuery(joinedRoomsQueryOptions());
+  const friendsQuery = useQuery(friendsOverviewQueryOptions());
   const logoutMutation = useLogoutMutation();
   const deleteOwnedAgentMutation = useDeleteOwnedAgentMutation();
+  const updateOwnedAgentMutation = useUpdateOwnedAgentMutation();
   const deleteRoomMutation = useDeleteRoomMutation();
   const leaveRoomMutation = useLeaveRoomMutation();
   const updateAnyRoomGovernanceMutation = useUpdateAnyRoomGovernanceMutation();
+  const openDirectAgentMutation = useOpenDirectAgentRoomMutation();
+  const openDirectHumanMutation = useOpenDirectHumanRoomMutation();
+  const acceptFriendMutation = useAcceptFriendRequestMutation();
+  const declineFriendMutation = useDeclineFriendRequestMutation();
+  const removeFriendMutation = useRemoveFriendMutation();
+  const sendFriendRequestMutation = useSendFriendRequestMutation();
 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
   const [accountSecurityOpen, setAccountSecurityOpen] = useState<boolean>(false);
   const [createRoomOpen, setCreateRoomOpen] = useState<boolean>(false);
   const [joinRoomOpen, setJoinRoomOpen] = useState<boolean>(false);
+  const [addFriendOpen, setAddFriendOpen] = useState<boolean>(false);
+  const [inviteMembersOpen, setInviteMembersOpen] = useState<boolean>(false);
   const [pendingDeleteRoom, setPendingDeleteRoom] = useState<DeleteRoomTarget | null>(null);
   const [pendingLeaveRoom, setPendingLeaveRoom] = useState<DeleteRoomTarget | null>(null);
   const [onboardingModalOpen, setOnboardingModalOpen] = useState<boolean>(false);
@@ -1078,6 +1172,10 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const [synthesizeSignal, setSynthesizeSignal] = useState<number>(0);
 
   const rooms = roomsQuery.data?.rooms ?? [];
+  const friends = friendsQuery.data?.friends ?? [];
+  const incomingRequests = friendsQuery.data?.incomingRequests ?? [];
+  const outgoingRequests = friendsQuery.data?.outgoingRequests ?? [];
+  const discoverableAgents = friendsQuery.data?.discoverableAgents ?? [];
   const urlRoomId = parseSelectedRoomIdFromSearch(location.search);
 
   // 移动端（< md）当前页：深链携带 ?room= 时直接进入聊天，否则停留在会话列表首页
@@ -1178,6 +1276,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         platform: agent.platform,
         ownerUserId: props.currentUser.id,
         ownerDisplayName: props.currentUser.displayName,
+        allowExternalDm: agent.allowExternalDm,
         ...(agent.intro !== undefined ? { intro: agent.intro } : {}),
         reach: agent.reach,
         ...(agent.checkinIntervalMin !== undefined
@@ -1187,6 +1286,140 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       });
     },
     [props.currentUser.displayName, props.currentUser.id],
+  );
+
+  const inspectSharedAgent = useCallback((agent: SharedExternalAgentDto): void => {
+    setInspectConfirmDelete(false);
+    setInspectedAgent({
+      agentId: agent.id,
+      displayName: agent.displayName,
+      slug: agent.slug,
+      platform: agent.platform,
+      ownerUserId: agent.ownerUserId,
+      ownerDisplayName: agent.ownerDisplayName,
+      allowExternalDm: agent.allowExternalDm,
+      ...(agent.intro !== undefined ? { intro: agent.intro } : {}),
+      reach: agent.reach,
+    });
+  }, []);
+
+  const handleStartDirectAgentChat = useCallback(
+    (agentId: AgentId): void => {
+      openDirectAgentMutation.mutate(agentId, {
+        onSuccess: (res) => {
+          setInspectedAgent(null);
+          setInspectConfirmDelete(false);
+          handleSelectRoom(res.room.id);
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "无法打开与该 Agent 的单聊");
+        },
+      });
+    },
+    [handleSelectRoom, openDirectAgentMutation],
+  );
+
+  const handleStartDirectHumanChat = useCallback(
+    (userId: UserId): void => {
+      openDirectHumanMutation.mutate(userId, {
+        onSuccess: (res) => {
+          handleSelectRoom(res.room.id);
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "无法打开好友私聊");
+        },
+      });
+    },
+    [handleSelectRoom, openDirectHumanMutation],
+  );
+
+  const handleSendQuickFriendRequest = useCallback(
+    (userId: UserId, displayName: string): void => {
+      sendFriendRequestMutation.mutate(
+        { targetUserId: userId },
+        {
+          onSuccess: (res) => {
+            if (res.autoAccepted || res.status === "accepted") {
+              toast.success(`已与「${displayName}」成为好友，现在可以直接私聊`);
+            } else {
+              toast.success(`已向「${displayName}」发送好友申请`);
+            }
+          },
+          onError: (err) => {
+            toast.error(err instanceof Error ? err.message : "发送好友申请失败");
+          },
+        },
+      );
+    },
+    [sendFriendRequestMutation],
+  );
+
+  const handleAcceptFriendRequest = useCallback(
+    (friendshipId: FriendshipId, displayName: string): void => {
+      acceptFriendMutation.mutate(friendshipId, {
+        onSuccess: () => {
+          toast.success(`已添加「${displayName}」为好友`);
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "同意申请失败");
+        },
+      });
+    },
+    [acceptFriendMutation],
+  );
+
+  const handleDeclineFriendRequest = useCallback(
+    (friendshipId: FriendshipId, displayName: string): void => {
+      declineFriendMutation.mutate(friendshipId, {
+        onSuccess: () => {
+          toast.success(`已忽略「${displayName}」的好友申请`);
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "操作失败");
+        },
+      });
+    },
+    [declineFriendMutation],
+  );
+
+  const handleRemoveFriend = useCallback(
+    (userId: UserId, displayName: string): void => {
+      removeFriendMutation.mutate(userId, {
+        onSuccess: () => {
+          toast.success(`已解除与「${displayName}」的好友关系`);
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "解除好友失败");
+        },
+      });
+    },
+    [removeFriendMutation],
+  );
+
+  const handleToggleAllowExternalDm = useCallback(
+    (agentId: AgentId, allowExternalDm: boolean): void => {
+      updateOwnedAgentMutation.mutate(
+        { agentId, body: { allowExternalDm } },
+        {
+          onSuccess: (res) => {
+            setInspectedAgent((prev) =>
+              prev && prev.agentId === agentId
+                ? { ...prev, allowExternalDm: res.agent.allowExternalDm }
+                : prev,
+            );
+            toast.success(
+              res.agent.allowExternalDm
+                ? "已开放站内其他用户私聊此 Agent"
+                : "已关闭外部用户私聊此 Agent",
+            );
+          },
+          onError: (err) => {
+            toast.error(err instanceof Error ? err.message : "更新 Agent 设置失败");
+          },
+        },
+      );
+    },
+    [updateOwnedAgentMutation],
   );
 
   const handleDeleteOwnedAgent = useCallback(
@@ -1223,15 +1456,21 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
   const handleConfirmDeleteRoom = useCallback(
     (target: DeleteRoomTarget): void => {
+      const isDirect = target.kind !== undefined && target.kind !== "group";
       deleteRoomMutation.mutate(target.id, {
         onSuccess: () => {
           setPendingDeleteRoom((prev) => (prev?.id === target.id ? null : prev));
-          toast.success(`已删除群聊「${target.name}」`, {
-            description: "群内消息与提案已清理，你的个人 Agent 不受影响",
-          });
+          toast.success(
+            isDirect ? `已删除单聊会话「${target.name}」` : `已删除群聊「${target.name}」`,
+            {
+              description: isDirect
+                ? "会话消息已清理，个人 Agent 与好友关系不受影响"
+                : "群内消息与提案已清理，你的个人 Agent 不受影响",
+            },
+          );
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "删除群聊失败，请稍后重试");
+          toast.error(err instanceof Error ? err.message : "删除会话失败，请稍后重试");
         },
       });
     },
@@ -1305,17 +1544,20 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     const activeRoomName = activeRoomDetailQuery.data?.room.name ?? activeRoomSummary?.name;
     const isActiveRoomOwner =
       activeRoomSummary !== null && activeRoomSummary.ownerUserId === props.currentUser.id;
+    const canDeleteActiveRoom =
+      activeRoomSummary !== null &&
+      (activeRoomSummary.kind === "direct_human" || isActiveRoomOwner);
     const isDark = themeMode === "dark";
 
     const quickActions: CommandPaletteGroup = {
       id: "quick-actions",
       heading: "快捷操作",
       items: [
-        ...(activeRoomId !== null
+        ...(activeRoomId !== null && activeRoomSummary?.kind !== "direct_human"
           ? [
               {
                 id: "act-synthesize-proposal",
-                label: "整理当前群近期讨论为提案卡",
+                label: "整理当前会话近期讨论为提案卡",
                 subtitle: activeRoomName ?? "对比多方案优劣与风险",
                 icon: <FileText className="h-4 w-4" />,
                 keywords: ["synthesize", "proposal", "提案", "总结", "整理"],
@@ -1326,18 +1568,29 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
               },
             ]
           : []),
-        ...(activeRoomId !== null && isActiveRoomOwner && activeRoomSummary !== null
+        ...(activeRoomId !== null && canDeleteActiveRoom && activeRoomSummary !== null
           ? [
               {
                 id: "act-delete-current-room",
-                label: "删除当前群聊",
+                label: activeRoomSummary.kind === "group" ? "删除当前群聊" : "删除当前单聊会话",
                 subtitle: activeRoomSummary.name,
                 icon: <Trash2 className="h-4 w-4 text-[#C81E1E] dark:text-[#FCA5A5]" />,
-                keywords: ["delete", "remove", "room", "删除", "解散", "群聊"],
+                keywords: ["delete", "remove", "room", "删除", "解散", "群聊", "单聊"],
                 onSelect: () => handleRequestDeleteRoom(activeRoomSummary),
               },
             ]
           : []),
+        {
+          id: "act-add-friend",
+          label: "添加好友 / 处理好友申请",
+          subtitle:
+            incomingRequests.length > 0
+              ? `收到 ${String(incomingRequests.length)} 条新的好友申请`
+              : "按昵称或邮箱搜索站内用户并发起 1v1 私聊",
+          icon: <UserPlus className="h-4 w-4" />,
+          keywords: ["friend", "dm", "user", "search", "好友", "私聊", "单聊", "添加"],
+          onSelect: () => setAddFriendOpen(true),
+        },
         {
           id: "act-connect-agent",
           label: "接入我的个人 Agent",
@@ -1349,7 +1602,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         {
           id: "act-create-room",
           label: "建群",
-          subtitle: "创建一个新的群聊并拉入你的 Agent",
+          subtitle: "创建群聊并直接拉入好友或你的 Agent",
           icon: <MessageCircle className="h-4 w-4" />,
           keywords: ["create", "new", "room", "新建", "建群", "群聊"],
           onSelect: () => setCreateRoomOpen(true),
@@ -1398,13 +1651,21 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
     const roomItemsGroup: CommandPaletteGroup = {
       id: "switch-rooms",
-      heading: "群聊",
+      heading: "聊天会话",
       items: rooms.map((room) => {
         const unread = Math.max(0, room.lastSeq - room.yourLastReadSeq);
+        const kindLabel =
+          room.kind === "direct_agent"
+            ? "Agent 单聊"
+            : room.kind === "direct_human"
+              ? "好友私聊"
+              : room.topic.length > 0
+                ? room.topic
+                : "群聊";
         return {
           id: `cmd-room-${room.id}`,
           label: room.name,
-          subtitle: room.topic.length > 0 ? room.topic : undefined,
+          subtitle: kindLabel,
           icon: <MessageCircle className="h-4 w-4" />,
           ...(unread > 0
             ? {
@@ -1415,37 +1676,58 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                 ),
               }
             : {}),
-          keywords: [room.name, room.topic, "room", "群聊"],
+          keywords: [room.name, room.topic, kindLabel, "room", "群聊", "单聊"],
           onSelect: () => handleSelectRoom(room.id),
         };
       }),
     };
 
+    const friendsGroup: CommandPaletteGroup = {
+      id: "friends-dm",
+      heading: "我的好友（点击发起私聊）",
+      items: friends.map((f) => ({
+        id: `cmd-friend-${f.user.userId}`,
+        label: f.user.displayName,
+        subtitle: f.user.email,
+        icon: <UserRound className="h-4 w-4" />,
+        keywords: [f.user.displayName, f.user.email, "friend", "dm", "好友", "私聊"],
+        onSelect: () => handleStartDirectHumanChat(f.user.userId),
+      })),
+    };
+
     const agentItemsGroup: CommandPaletteGroup = {
       id: "owned-agents",
-      heading: "我的 agent",
+      heading: "我的 agent（点击发起 1v1 单聊）",
       items: props.ownedAgents.map((agt) => {
         const reachMeta = getReachVisualMeta(agt.reach);
         return {
           id: `cmd-agt-${agt.id}`,
-          label: agt.displayName,
+          label: `单聊 ${agt.displayName}`,
           subtitle: `${agt.platform} · ${reachMeta.shortLabel}`,
           icon: (
             <span className={cn("inline-block h-2.5 w-2.5 rounded-full", reachMeta.dotClass)} />
           ),
-          keywords: [agt.displayName, agt.platform, "agent"],
-          onSelect: () => inspectOwnedAgent(agt),
+          keywords: [agt.displayName, agt.platform, "agent", "单聊", "dm"],
+          onSelect: () => handleStartDirectAgentChat(agt.id),
         };
       }),
     };
 
-    return [quickActions, roomItemsGroup, agentItemsGroup];
+    return [
+      quickActions,
+      roomItemsGroup,
+      ...(friends.length > 0 ? [friendsGroup] : []),
+      agentItemsGroup,
+    ];
   }, [
     activeRoomDetailQuery.data?.room.name,
     activeRoomId,
+    friends,
     handleRequestDeleteRoom,
     handleSelectRoom,
-    inspectOwnedAgent,
+    handleStartDirectAgentChat,
+    handleStartDirectHumanChat,
+    incomingRequests.length,
     openOnboarding,
     props.currentUser.email,
     props.currentUser.id,
@@ -1456,6 +1738,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   ]);
 
   const isChatVisibleOnMobile = mobileShowChat && activeRoomId !== null;
+  const activeRoomDetail = activeRoomDetailQuery.data?.room ?? null;
 
   return (
     <div className="flex h-dvh w-screen overflow-hidden text-[#111318] md:gap-2.5 md:p-2.5 dark:text-[#F2F2F4]">
@@ -1463,6 +1746,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       <PersonalAgentRail
         currentUser={props.currentUser}
         ownedAgents={props.ownedAgents}
+        onStartDirectAgentChat={handleStartDirectAgentChat}
         onInspectAgent={(agent) => inspectOwnedAgent(agent, false)}
         onReclaimAgent={(agentId) => openOnboarding("pair_agent", agentId)}
         onRequestDeleteAgent={(agent) => inspectOwnedAgent(agent, true)}
@@ -1483,6 +1767,9 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         <RoomSidebar
           currentUser={props.currentUser}
           ownedAgents={props.ownedAgents}
+          friends={friends}
+          incomingRequests={incomingRequests}
+          discoverableAgents={discoverableAgents}
           rooms={rooms}
           isLoadingRooms={roomsQuery.isPending}
           isRoomsError={roomsQuery.isError}
@@ -1493,6 +1780,13 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           onOpenCreateRoom={() => setCreateRoomOpen(true)}
           onOpenJoinRoom={() => setJoinRoomOpen(true)}
           onOpenMyAgents={() => openOnboarding("pair_agent")}
+          onOpenAddFriend={() => setAddFriendOpen(true)}
+          onStartDirectAgentChat={handleStartDirectAgentChat}
+          onStartDirectHumanChat={handleStartDirectHumanChat}
+          onAcceptFriendRequest={handleAcceptFriendRequest}
+          onDeclineFriendRequest={handleDeclineFriendRequest}
+          onRemoveFriend={handleRemoveFriend}
+          onInspectSharedAgent={inspectSharedAgent}
           onInspectOwnedAgent={(agent) => inspectOwnedAgent(agent, false)}
           onReclaimOwnedAgent={(agentId) => openOnboarding("pair_agent", agentId)}
           onRequestDeleteOwnedAgent={(agent) => inspectOwnedAgent(agent, true)}
@@ -1508,7 +1802,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         />
       </div>
 
-      {/* 第 3 栏：通透聊天主舞台 vs 无群聊极简空态 */}
+      {/* 第 3 栏：通透聊天主舞台 vs 无会话极简空态 */}
       {activeRoomId !== null ? (
         <div
           className={cn(
@@ -1520,8 +1814,13 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
             key={activeRoomId}
             roomId={activeRoomId}
             currentUser={props.currentUser}
+            friends={friends}
             synthesizeSignal={synthesizeSignal}
             onOpenAddAgentModal={(tab, reclaimId) => openOnboarding(tab ?? "pair_agent", reclaimId)}
+            onOpenInviteMembersModal={() => setInviteMembersOpen(true)}
+            onStartDirectHumanChat={handleStartDirectHumanChat}
+            onSendFriendRequest={handleSendQuickFriendRequest}
+            onStartDirectAgentChat={handleStartDirectAgentChat}
             onBackToList={() => setMobileShowChat(false)}
             onInspectAgent={(profile) => {
               setInspectConfirmDelete(false);
@@ -1536,10 +1835,10 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           <div className="max-w-md select-none text-center">
             <BrandMark className="mx-auto mb-4 h-12 w-12 rounded-[14px] shadow-xs" />
             <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[#111318] dark:text-[#F2F2F4]">
-              还没有群聊
+              还没有聊天会话
             </h1>
             <p className="mt-2.5 text-[14px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-              建一个群，把你的 Claude Code、Codex 或朋友的 Agent 拉进来一起讨论。
+              支持与你的 Claude Code、Codex 开启 1v1 单聊，添加站内好友私聊，或建群拉大家一起讨论。
             </p>
 
             <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
@@ -1550,6 +1849,14 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                 onClick={() => setCreateRoomOpen(true)}
               >
                 建群
+              </AppButton>
+              <AppButton
+                variant="secondary"
+                size="lg"
+                leadingIcon={<UserPlus className="h-4 w-4" />}
+                onClick={() => setAddFriendOpen(true)}
+              >
+                添加好友
               </AppButton>
               <AppButton variant="secondary" size="lg" onClick={() => openOnboarding("pair_agent")}>
                 接入 agent
@@ -1564,7 +1871,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}
         groups={commandGroups}
-        footerHint={`${props.currentUser.displayName} · ${String(onlineAgentCount)} 个个人 Agent 在线`}
+        footerHint={`${props.currentUser.displayName} · ${String(onlineAgentCount)} 个个人 Agent 在线 · ${String(friends.length)} 位好友`}
       />
 
       {/* 全局业务模态弹窗组 */}
@@ -1573,7 +1880,30 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         onClose={() => setCreateRoomOpen(false)}
         onRoomCreated={(room) => handleSelectRoom(room.id)}
         ownedAgents={props.ownedAgents}
+        friends={friends}
       />
+
+      <AddFriendModal
+        open={addFriendOpen}
+        onClose={() => setAddFriendOpen(false)}
+        incomingRequests={incomingRequests}
+        outgoingRequests={outgoingRequests}
+        onOpenDirectHumanChat={handleStartDirectHumanChat}
+      />
+
+      {activeRoomDetail !== null && activeRoomDetail.kind === "group" ? (
+        <InviteMembersModal
+          open={inviteMembersOpen}
+          onClose={() => setInviteMembersOpen(false)}
+          roomId={activeRoomDetail.id}
+          roomName={activeRoomDetail.name}
+          existingMembers={activeRoomDetail.members}
+          friends={friends}
+          ownedAgents={props.ownedAgents}
+          onOpenAddFriend={() => setAddFriendOpen(true)}
+          onOpenPairAgent={() => openOnboarding("pair_agent")}
+        />
+      ) : null}
 
       <JoinRoomModal
         open={joinRoomOpen}
@@ -1609,7 +1939,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         initialReclaimAgentId={reclaimAgentId}
         currentUser={props.currentUser}
         ownedAgents={props.ownedAgents}
-        activeRoom={activeRoomDetailQuery.data?.room ?? null}
+        activeRoom={activeRoomDetail?.kind === "group" ? activeRoomDetail : null}
         onClose={() => setOnboardingModalOpen(false)}
       />
 
@@ -1618,10 +1948,14 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         currentUserId={props.currentUser.id}
         initialConfirmDelete={inspectConfirmDelete}
         isDeletingAgent={inspectedAgent !== null && deletingAgentId === inspectedAgent.agentId}
+        isOpeningDirectChat={openDirectAgentMutation.isPending}
+        isUpdatingAgent={updateOwnedAgentMutation.isPending}
         onClose={() => {
           setInspectedAgent(null);
           setInspectConfirmDelete(false);
         }}
+        onStartDirectChat={handleStartDirectAgentChat}
+        onToggleAllowExternalDm={handleToggleAllowExternalDm}
         onReclaimAgent={(agentId) => openOnboarding("pair_agent", agentId)}
         onDeleteAgent={handleDeleteOwnedAgent}
       />
@@ -1643,9 +1977,10 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 export function WorkspaceShell() {
   const meQuery = useQuery(currentMeQueryOptions());
 
-  if (meQuery.isPending) {
+  // 首次鉴权用连接页。网络异常后的重试应保留已打开的认证表单。
+  if (meQuery.isPending && !meQuery.isFetched) {
     return (
-      <main className="flex h-dvh flex-col items-center justify-center gap-3 text-[#111318] dark:text-[#F2F2F4]">
+      <main className="flex h-dvh flex-col items-center justify-center gap-3 bg-[#FFFFFF] text-[#111318] dark:bg-[#0F1014] dark:text-[#F2F2F4]">
         <BrandMark className="h-10 w-10 rounded-[12px] shadow-xs" />
         <span className="text-[16px] font-semibold tracking-[-0.02em]">OpenHuddle</span>
         <span className="text-xs text-[#687082] dark:text-[#8E8E96]">正在连接…</span>
