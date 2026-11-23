@@ -68,7 +68,7 @@ export const MAX_MESSAGE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 /** 字节上限对应的标准 Base64 字符数，包含补位。 */
 export const MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH = Math.ceil(MAX_MESSAGE_ATTACHMENT_BYTES / 3) * 4;
 
-/** 可作为消息附件传输的被动图片与音频类型。 */
+/** 可用于内联展示的图片、音频类型，以及仅供下载的通用文件类型。 */
 export const MessageAttachmentMimeTypeSchema = z.enum([
   "image/jpeg",
   "image/png",
@@ -79,6 +79,7 @@ export const MessageAttachmentMimeTypeSchema = z.enum([
   "audio/mp4",
   "audio/mpeg",
   "audio/wav",
+  "application/octet-stream",
 ]);
 
 /** 房间附件使用的媒体类型。 */
@@ -87,11 +88,24 @@ export type MessageAttachmentMimeType = z.infer<typeof MessageAttachmentMimeType
 /** 图片作为表情发送时，用于草稿、消息预览和无障碍描述的简短名称。 */
 export const MessageStickerNameSchema = z.string().trim().min(1).max(80);
 
+/** 普通附件的显示文件名，排除路径分隔符、控制字符及无效 Unicode。 */
+export const MessageAttachmentFileNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .refine(
+    (name) =>
+      name !== "." && name !== ".." && !/[/\\\p{Cc}\p{Cs}\u202a-\u202e\u2066-\u2069]/u.test(name),
+    "Expected a plain filename",
+  );
+
 /** 消息列表中的附件元数据。二进制由独立的鉴权接口返回。 */
 export const MessageAttachmentSchema = z.object({
   mimeType: MessageAttachmentMimeTypeSchema,
   byteLength: z.number().int().min(1).max(MAX_MESSAGE_ATTACHMENT_BYTES),
   stickerName: MessageStickerNameSchema.optional(),
+  fileName: MessageAttachmentFileNameSchema.optional(),
 });
 
 /** 房间消息中可用于展示和读取附件的元数据。 */
@@ -102,6 +116,7 @@ export const MessageAttachmentUploadSchema = z
   .object({
     mimeType: MessageAttachmentMimeTypeSchema,
     stickerName: MessageStickerNameSchema.optional(),
+    fileName: MessageAttachmentFileNameSchema.optional(),
     data: z
       .string()
       .min(4)
@@ -115,6 +130,11 @@ export const MessageAttachmentUploadSchema = z
       path: ["stickerName"],
       message: "Only image attachments can be sent as stickers",
     },
+  )
+  .refine(
+    ({ mimeType, fileName }) =>
+      (mimeType === "application/octet-stream") === (fileName !== undefined),
+    { path: ["fileName"], message: "File attachments require a filename" },
   );
 
 /** 随消息提交的 Base64 编码附件。 */

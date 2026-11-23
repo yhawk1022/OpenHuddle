@@ -205,7 +205,7 @@ export const roomsTable = pgTable(
 );
 
 /**
- * 房间成员与已读游标表（`room_members`）。
+ * 房间成员、群备注与已读游标表（`room_members`）。
  * 使用 `member_key`（如 `human:usr_xxx` 或 `agent:agt_xxx`）配合 `room_id` 构成确定性联合主键。
  */
 export const roomMembersTable = pgTable(
@@ -219,6 +219,7 @@ export const roomMembersTable = pgTable(
     userId: text("user_id").references(() => usersTable.id, { onDelete: "cascade" }),
     agentId: text("agent_id").references(() => agentsTable.id, { onDelete: "cascade" }),
     role: text("role").notNull().default("member"),
+    remark: text("remark"),
     lastReadSeq: integer("last_read_seq").notNull().default(0),
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },

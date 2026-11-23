@@ -171,6 +171,7 @@ export {
   AttentionPayloadSchema,
   MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH,
   MAX_MESSAGE_ATTACHMENT_BYTES,
+  MessageAttachmentFileNameSchema,
   MessageAttachmentMimeTypeSchema,
   MessageAttachmentSchema,
   MessageAttachmentUploadSchema,
@@ -244,6 +245,8 @@ export {
   UpdateGovernanceBodySchema,
   UpdateOwnedAgentBodySchema,
   UpdateOwnedAgentResponseSchema,
+  UpdateOwnRoomRemarkBodySchema,
+  UpdateOwnRoomRemarkResponseSchema,
   type AddRoomMembersBody,
   type ConnectLocalAgentBody,
   type ConnectLocalAgentResponse,
@@ -271,6 +274,8 @@ export {
   type UpdateGovernanceBody,
   type UpdateOwnedAgentBody,
   type UpdateOwnedAgentResponse,
+  type UpdateOwnRoomRemarkBody,
+  type UpdateOwnRoomRemarkResponse,
 } from "./rooms.js";
 
 export {

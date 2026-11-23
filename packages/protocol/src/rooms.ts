@@ -87,8 +87,19 @@ export const RoomSummaryDtoSchema = z.object({
 });
 export type RoomSummaryDto = z.infer<typeof RoomSummaryDtoSchema>;
 
+/** 群备注为单行文本。清空备注时使用空字符串，读接口省略未设置的备注。 */
+const RoomMemberRemarkSchema = z
+  .string()
+  .trim()
+  .max(80)
+  .refine(
+    (value) => !value.includes("\0") && !/[\r\n\u2028\u2029]/u.test(value),
+    "Room remark must be single-line text",
+  );
+
 /**
  * 房间成员详情 DTO Schema。
+ * @remarks `remark` 是群内显示名，`displayName` 是账号昵称。
  */
 export const RoomMemberDtoSchema = z.object({
   memberKind: ActorKindSchema,
@@ -97,6 +108,7 @@ export const RoomMemberDtoSchema = z.object({
   ownerUserId: UserIdSchema,
   ownerDisplayName: z.string().min(1).max(80),
   displayName: z.string().min(1).max(80),
+  remark: RoomMemberRemarkSchema.optional(),
   slug: z.string().min(1).max(80).optional(),
   intro: z.string().max(280).optional(),
   allowExternalDm: z.boolean().optional(),
@@ -152,6 +164,19 @@ export const AddRoomMembersBodySchema = z
     "At least one userId or agentId must be provided",
   );
 export type AddRoomMembersBody = z.infer<typeof AddRoomMembersBodySchema>;
+
+/** 修改本人群备注的请求。空白字符串清除备注，成员身份由会话确定。 */
+export const UpdateOwnRoomRemarkBodySchema = z.object({ remark: RoomMemberRemarkSchema }).strict();
+/** 修改本人群备注的请求类型。 */
+export type UpdateOwnRoomRemarkBody = z.infer<typeof UpdateOwnRoomRemarkBodySchema>;
+
+/** 已保存的群备注，清除时返回 `null`。 */
+export const UpdateOwnRoomRemarkResponseSchema = z.object({
+  ok: z.literal(true),
+  remark: RoomMemberRemarkSchema.nullable(),
+});
+/** 修改本人群备注的成功响应类型。 */
+export type UpdateOwnRoomRemarkResponse = z.infer<typeof UpdateOwnRoomRemarkResponseSchema>;
 
 /**
  * 打开或幂等复用与指定 Agent 的 1v1 单聊会话请求体 Schema（ADR-0005）。

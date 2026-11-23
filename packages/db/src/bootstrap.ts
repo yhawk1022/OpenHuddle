@@ -129,10 +129,12 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
     role TEXT NOT NULL DEFAULT 'member',
+    remark TEXT,
     last_read_seq INTEGER NOT NULL DEFAULT 0,
     joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (room_id, member_key)
   )`,
+  "ALTER TABLE room_members ADD COLUMN IF NOT EXISTS remark TEXT",
   `CREATE TABLE IF NOT EXISTS messages (
     room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL,
