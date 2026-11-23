@@ -259,6 +259,32 @@ export const PairAgentRequestSchema = z.object({
 });
 export type PairAgentRequest = z.infer<typeof PairAgentRequestSchema>;
 
+/** 已登录主人签发接入链接时可授权加入一个群聊或恢复指定身份。 */
+export const CreateAgentConnectionBodySchema = CreatePairingCodeBodySchema.omit({
+  expiresInHours: true,
+});
+/** 接入链接的授权范围，服务端验证归属与群成员资格。 */
+export type CreateAgentConnectionBody = z.infer<typeof CreateAgentConnectionBodySchema>;
+
+/** 一次性接入链接仅在签发响应中明文返回，授权位于 URL 片段。 */
+export const CreateAgentConnectionResponseSchema = z.object({
+  ok: z.literal(true),
+  connectUrl: z.string().url(),
+  expiresAtIso: z.string().datetime(),
+});
+/** 签发给个人 Agent 的接入链接及过期时间。 */
+export type CreateAgentConnectionResponse = z.infer<typeof CreateAgentConnectionResponseSchema>;
+
+/** CLI 从链接片段取得授权，恢复身份及入群范围以服务端签发记录为准。 */
+export const RedeemAgentConnectionBodySchema = PairAgentRequestSchema.omit({
+  code: true,
+  reclaim: true,
+}).extend({
+  connectionToken: z.string().regex(/^oh_connect_[nr][ag]_[A-Za-z0-9_-]{43}$/),
+});
+/** 接入授权及 Agent 的基本资料。 */
+export type RedeemAgentConnectionBody = z.infer<typeof RedeemAgentConnectionBodySchema>;
+
 /**
  * Agent 配对成功响应体 Schema（`token` 仅此一次明文返回）。
  */

@@ -1,6 +1,6 @@
 /**
  * @module server/modules/pairing/routes
- * @description 配对码签发（`POST /api/v1/pairing-codes`）与公开 Agent 绑定（`POST /api/v1/pair`）OpenAPI 路由模块。
+ * @description 一次性接入链接签发与兑换、兼容短码及本机连接的 OpenAPI 路由模块。
  *
  * 架构职责与关键不变量（Invariants）：
  * 路由层仅做 OpenAPI 入参校验、鉴权中间件挂载与 HTTP 201 序列化，所有锁与认领判定下沉至 `PairingService`。
@@ -11,12 +11,15 @@ import {
   ApiErrorEnvelopeSchema,
   ConnectLocalAgentBodySchema,
   ConnectLocalAgentResponseSchema,
+  CreateAgentConnectionBodySchema,
+  CreateAgentConnectionResponseSchema,
   CreatePairingCodeBodySchema,
   CreatePairingCodeResponseSchema,
   DeleteOwnedAgentResponseSchema,
   LocalAgentsStatusResponseSchema,
   PairAgentRequestSchema,
   PairAgentResponseSchema,
+  RedeemAgentConnectionBodySchema,
   UpdateOwnedAgentBodySchema,
   UpdateOwnedAgentResponseSchema,
 } from "@openhuddle/protocol";
@@ -111,6 +114,57 @@ const pairAgentRoute = createRoute({
         },
       },
     },
+  },
+});
+
+const connectionError = {
+  description: "Connection request rejected",
+  content: { "application/json": { schema: ApiErrorEnvelopeSchema } },
+};
+
+const createAgentConnectionRoute = createRoute({
+  method: "post",
+  path: "/agent-connections",
+  tags: ["Pairing"],
+  summary: "Issue a one-time install and connection link for a personal agent (Human only)",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: CreateAgentConnectionBodySchema } },
+    },
+  },
+  responses: {
+    201: {
+      description: "One-time connection link, optionally scoped to a group room",
+      content: { "application/json": { schema: CreateAgentConnectionResponseSchema } },
+    },
+    400: connectionError,
+    401: connectionError,
+    403: connectionError,
+    404: connectionError,
+  },
+});
+
+const redeemAgentConnectionRoute = createRoute({
+  method: "post",
+  path: "/agent-connections/redeem",
+  tags: ["Pairing"],
+  summary: "Redeem a one-time link, bind or restore the agent, and join the authorized group",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: RedeemAgentConnectionBodySchema } },
+    },
+  },
+  responses: {
+    201: {
+      description: "Scoped agent credential and the room joined during connection",
+      content: { "application/json": { schema: PairAgentResponseSchema } },
+    },
+    400: connectionError,
+    403: connectionError,
+    404: connectionError,
+    409: connectionError,
   },
 });
 
@@ -306,6 +360,7 @@ export function createPairingRouter(deps: {
   const requireAuth = createRequireAuthMiddleware(deps.authService);
 
   router.use("/pairing-codes", requireAuth);
+  router.use("/agent-connections", requireAuth);
   router.use("/agents/*", requireAuth);
   router.use("/local-agents/*", requireAuth);
 
@@ -320,6 +375,23 @@ export function createPairingRouter(deps: {
   router.openapi(pairAgentRoute, async (c) => {
     const body = c.req.valid("json");
     const result = await deps.pairingService.pairAgent(body);
+    return c.json(result, 201);
+  });
+
+  router.openapi(createAgentConnectionRoute, async (c) => {
+    c.header("Cache-Control", "no-store");
+    const baseUrl = resolveEffectivePublicBaseUrl(deps.env.PUBLIC_BASE_URL, c.req.raw);
+    const result = await deps.pairingService.createAgentConnection(
+      c.get("caller"),
+      c.req.valid("json"),
+      baseUrl,
+    );
+    return c.json(result, 201);
+  });
+
+  router.openapi(redeemAgentConnectionRoute, async (c) => {
+    c.header("Cache-Control", "no-store");
+    const result = await deps.pairingService.redeemAgentConnection(c.req.valid("json"));
     return c.json(result, 201);
   });
 

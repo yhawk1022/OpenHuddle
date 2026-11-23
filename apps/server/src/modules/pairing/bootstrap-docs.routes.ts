@@ -67,15 +67,19 @@ function extractInstallerPresetFromUrl(rawUrl: string): InstallerPresetParams {
   }
 }
 
-/**
- * 无 Node.js 云端容器（如纯 Python / Alpine 容器）的纯 POSIX `sh + curl` 兜底 `openhuddle` CLI 模板。
- * 使用单引号数组拼接，确保零 TypeScript 模板转义歧义。
- */
+/** 安装目录与服务器地址写入 shell 文件时复用相同的单引号转义。 */
+const SHELL_QUOTE_LINES = [
+  "shell_quote() {",
+  `  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\\\\\''/g")"`,
+  "}",
+] as const;
+
+/** 无 Node.js 环境使用的 POSIX `sh + curl` CLI。 */
 const POSIX_FALLBACK_CLI_LINES: readonly string[] = [
-  "#!/bin/sh",
   "set -eu",
-  'OH_HOME="${OPENHUDDLE_HOME:-__DEFAULT_OH_HOME__}"',
-  'SERVER_URL="${OPENHUDDLE_URL:-__DEFAULT_BASE_URL__}"',
+  "umask 077",
+  'OH_HOME="${OPENHUDDLE_HOME:-$INSTALLED_OH_HOME}"',
+  'SERVER_URL="${OPENHUDDLE_URL:-$INSTALLED_OH_SERVER}"',
   'TOKEN_FILE="${OPENHUDDLE_TOKEN_FILE:-$OH_HOME/tokens/default.token}"',
   'PROFILE_FILE="$OH_HOME/active-profile.env"',
   'mkdir -p "$OH_HOME/tokens"',
@@ -113,6 +117,8 @@ const POSIX_FALLBACK_CLI_LINES: readonly string[] = [
   "  fi",
   "}",
   "",
+  ...SHELL_QUOTE_LINES,
+  "",
   'CMD="${1:-help}"',
   "shift 2>/dev/null || true",
   "",
@@ -123,13 +129,14 @@ const POSIX_FALLBACK_CLI_LINES: readonly string[] = [
   '    PLATFORM="custom"',
   '    RECLAIM="false"',
   '    GREET="true"',
+  '    TARGET_TOKEN_FILE="${OPENHUDDLE_TOKEN_FILE:-}"',
   '    while [ "$#" -gt 0 ]; do',
   '      case "$1" in',
   '        --code) CODE="$2"; shift 2 ;;',
   '        --name) NAME="$2"; shift 2 ;;',
   '        --platform) PLATFORM="$2"; shift 2 ;;',
   '        --server) SERVER_URL="${2%/}"; shift 2 ;;',
-  '        --token-file) TOKEN_FILE="$2"; shift 2 ;;',
+  '        --token-file) TARGET_TOKEN_FILE="$2"; shift 2 ;;',
   '        --reclaim) RECLAIM="true"; shift ;;',
   '        --no-greet) GREET="false"; shift ;;',
   "        --listen|--no-listen|--greet|--json) shift ;;",
@@ -137,23 +144,51 @@ const POSIX_FALLBACK_CLI_LINES: readonly string[] = [
   '        *) [ -z "$CODE" ] && CODE="$1"; shift ;;',
   "      esac",
   "    done",
-  '    [ -z "$CODE" ] && { echo "Usage: openhuddle connect <code> [--name <n>] [--platform <p>]" >&2; exit 1; }',
-  '    [ -z "$NAME" ] && NAME="CloudAgent-${CODE#HUDDLE-}"',
+  '    [ -z "$CODE" ] && { echo "Copy the connection instruction from OpenHuddle and run it here." >&2; exit 1; }',
+  '    LINK_TOKEN=""',
+  '    case "$CMD:$CODE" in',
+  "      connect:http://*/connect#oh_connect_*|connect:https://*/connect#oh_connect_*)",
+  '        SERVER_URL="${CODE%/connect#*}"',
+  '        LINK_TOKEN="${CODE##*#}"',
+  "        ;;",
+  "    esac",
+  '    if [ -z "$NAME" ]; then',
+  '      if [ -n "$LINK_TOKEN" ]; then NAME="CloudAgent-$(date +%s)-$$"; else NAME="CloudAgent-${CODE#HUDDLE-}"; fi',
+  "    fi",
   "    SLUG=\"$(printf '%s' \"$NAME\" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\\+/-/g; s/^-//; s/-$//')\"",
   '    [ -z "$SLUG" ] && SLUG="cloud-agent"',
   '    TOKEN_FILE="$OH_HOME/tokens/$SLUG.token"',
-  '    BODY="{\\"code\\":$(json_escape "$CODE"),\\"name\\":$(json_escape "$NAME"),\\"platform\\":$(json_escape "$PLATFORM"),\\"reclaim\\":$RECLAIM}"',
-  '    RESP="$(curl -fsSL __CURL_NOPROXY__ -X POST "$SERVER_URL/api/v1/pair" -H "Content-Type: application/json" -d "$BODY")"',
+  '    if [ -n "$LINK_TOKEN" ]; then',
+  '      if [ -n "$TARGET_TOKEN_FILE" ]; then',
+  '        TOKEN_FILE="$TARGET_TOKEN_FILE"',
+  '        (set -C; : > "$TOKEN_FILE") 2>/dev/null || { echo "Specify an unused --token-file." >&2; exit 1; }',
+  "      else",
+  "        SUFFIX=1",
+  '        while ! (set -C; : > "$TOKEN_FILE") 2>/dev/null; do',
+  '          [ -e "$TOKEN_FILE" ] || { echo "Cannot reserve credential file." >&2; exit 1; }',
+  "          SUFFIX=$((SUFFIX + 1))",
+  '          TOKEN_FILE="$OH_HOME/tokens/$SLUG-$SUFFIX.token"',
+  "        done",
+  "      fi",
+  '      trap \'[ -s "$TOKEN_FILE" ] || rm -f "$TOKEN_FILE"\' 0',
+  '      BODY="{\\"connectionToken\\":$(json_escape "$LINK_TOKEN"),\\"name\\":$(json_escape "$NAME"),\\"platform\\":$(json_escape "$PLATFORM")}"',
+  '      RESP="$(printf \'%s\' "$BODY" | curl -fsS __CURL_NOPROXY__ -X POST "$SERVER_URL/api/v1/agent-connections/redeem" -H "Content-Type: application/json" --data-binary @-)" || { echo "Connection failed. Check the server response or copy a fresh instruction from OpenHuddle." >&2; exit 1; }',
+  "    else",
+  '      BODY="{\\"code\\":$(json_escape "$CODE"),\\"name\\":$(json_escape "$NAME"),\\"platform\\":$(json_escape "$PLATFORM"),\\"reclaim\\":$RECLAIM}"',
+  '      RESP="$(curl -fsSL __CURL_NOPROXY__ -X POST "$SERVER_URL/api/v1/pair" -H "Content-Type: application/json" -d "$BODY")"',
+  "    fi",
   '    TOK="$(printf \'%s\' "$RESP" | json_get token)"',
+  '    case "$TOK" in oh_agt_*) ;; *) echo "OpenHuddle returned no Agent credential." >&2; exit 1 ;; esac',
   '    ROOM_ID="$(printf \'%s\' "$RESP" | json_get autoJoinedRoomId)"',
   '    printf \'%s\\n\' "$TOK" > "$TOKEN_FILE"',
   '    chmod 600 "$TOKEN_FILE" 2>/dev/null || true',
-  '    cat > "$PROFILE_FILE" <<EOF_P',
-  "SAVED_SERVER_URL='$SERVER_URL'",
-  "SAVED_TOKEN_FILE='$TOKEN_FILE'",
-  "SAVED_ROOM_ID='$ROOM_ID'",
-  "EOF_P",
-  '    chmod 600 "$PROFILE_FILE" 2>/dev/null || true',
+  '    PROFILE_TMP="$(mktemp "$OH_HOME/profile.XXXXXX")"',
+  "    {",
+  '      printf \'SAVED_SERVER_URL=%s\\n\' "$(shell_quote "$SERVER_URL")"',
+  '      printf \'SAVED_TOKEN_FILE=%s\\n\' "$(shell_quote "$TOKEN_FILE")"',
+  '      printf \'SAVED_ROOM_ID=%s\\n\' "$(shell_quote "$ROOM_ID")"',
+  '    } > "$PROFILE_TMP"',
+  '    mv "$PROFILE_TMP" "$PROFILE_FILE"',
   '    if [ "$GREET" = "true" ] && [ -n "$ROOM_ID" ]; then',
   '      GREET_BODY="{\\"content\\":$(json_escape "大家好，我是 $NAME，已从云端环境连入群聊就绪！"),\\"ignoreUnread\\":true,\\"opKey\\":\\"op_sh_$(date +%s)_$$\\"}"',
   '      curl -fsSL __CURL_NOPROXY__ -X POST "$SERVER_URL/api/v1/rooms/$ROOM_ID/messages" -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" -d "$GREET_BODY" >/dev/null 2>&1 || true',
@@ -258,6 +293,8 @@ export function renderInstallShellScript(
     "",
     `BASE_URL=${safeBaseUrl}`,
     "",
+    ...SHELL_QUOTE_LINES,
+    "",
     "# 兼容只读根文件系统或未设置 HOME 的云端无根容器，自动回退至 /tmp/.openhuddle",
     "resolve_oh_home() {",
     '  if [ -n "${OPENHUDDLE_HOME:-}" ]; then',
@@ -287,6 +324,7 @@ export function renderInstallShellScript(
     '    "$(command -v node 2>/dev/null || true)" \\',
     '    "${HOME:-}/.volta/bin/node" \\',
     '    "${HOME:-}/.asdf/shims/node" \\',
+    '    "${HOME:-}/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node" \\',
     '    "/opt/homebrew/bin/node" \\',
     '    "/usr/local/bin/node" \\',
     '    "/usr/bin/node"; do',
@@ -316,32 +354,28 @@ export function renderInstallShellScript(
     "",
     'if [ -n "$NODE_BIN" ]; then',
     `  curl -fsSL ${curlNoProxyFlag}"$BASE_URL/openhuddle.mjs" -o "$OH_HOME/openhuddle.mjs"`,
-    '  cat > "$OH_BIN" <<EOF',
-    "#!/bin/sh",
-    'export OPENHUDDLE_HOME="\\${OPENHUDDLE_HOME:-$OH_HOME}"',
-    'export OPENHUDDLE_URL="\\${OPENHUDDLE_URL:-$BASE_URL}"',
-    'exec "$NODE_BIN" "$OH_HOME/openhuddle.mjs" "\\$@"',
-    "EOF",
-    '  chmod 755 "$OH_BIN"',
-    "else",
-    "  cat > \"$OH_BIN\" <<'SH_CLI_EOF'",
-    ...POSIX_FALLBACK_CLI_LINES,
-    "SH_CLI_EOF",
-    "  if command -v python3 >/dev/null 2>&1; then",
-    "    python3 -c '",
-    "import pathlib,sys",
-    "p=pathlib.Path(sys.argv[1])",
-    "s=p.read_text()",
-    's=s.replace("__DEFAULT_OH_HOME__", sys.argv[2]).replace("__DEFAULT_BASE_URL__", sys.argv[3]).replace("__CURL_NOPROXY__", sys.argv[4])',
-    "p.write_text(s)",
-    `' "$OH_BIN" "$OH_HOME" "$BASE_URL" ${quotePosixSingle(curlNoProxyFlag.trim())}`,
-    "  else",
-    '    TMP_BIN="$OH_BIN.tmp"',
-    `    sed "s|__DEFAULT_OH_HOME__|$OH_HOME|g; s|__DEFAULT_BASE_URL__|$BASE_URL|g; s|__CURL_NOPROXY__|${curlNoProxyFlag.trim()}|g" "$OH_BIN" > "$TMP_BIN"`,
-    '    mv "$TMP_BIN" "$OH_BIN"',
-    "  fi",
-    '  chmod 755 "$OH_BIN"',
     "fi",
+    "",
+    "{",
+    "  printf '#!/bin/sh\\n'",
+    '  printf \'INSTALLED_OH_HOME=%s\\n\' "$(shell_quote "$OH_HOME")"',
+    '  printf \'INSTALLED_OH_SERVER=%s\\n\' "$(shell_quote "$BASE_URL")"',
+    '  if [ -n "$NODE_BIN" ]; then',
+    '    printf \'NODE_BIN=%s\\n\' "$(shell_quote "$NODE_BIN")"',
+    "    cat <<'NODE_CLI_EOF'",
+    'export OPENHUDDLE_HOME="${OPENHUDDLE_HOME:-$INSTALLED_OH_HOME}"',
+    'export OPENHUDDLE_URL="${OPENHUDDLE_URL:-$INSTALLED_OH_SERVER}"',
+    'exec "$NODE_BIN" "$INSTALLED_OH_HOME/openhuddle.mjs" "$@"',
+    "NODE_CLI_EOF",
+    "  else",
+    "    cat <<'SH_CLI_EOF'",
+    ...POSIX_FALLBACK_CLI_LINES.map((line) =>
+      line.replaceAll("__CURL_NOPROXY__", curlNoProxyFlag.trim()),
+    ),
+    "SH_CLI_EOF",
+    "  fi",
+    '} > "$OH_BIN"',
+    'chmod 755 "$OH_BIN"',
     "",
     "# 尽力软链至当前容器或宿主机已在 PATH 中的标准 bin 目录，实现全局直接输入 openhuddle",
     'if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then',
@@ -397,6 +431,7 @@ export function renderInstallPowerShellScript(
     "# OpenHuddle Windows PowerShell CLI Installer",
     "param(",
     `  [string]$Code = ${defaultCode},`,
+    "  [string]$ConnectUrl = '',",
     `  [string]$Name = ${defaultName},`,
     `  [string]$Platform = ${defaultPlatform},`,
     `  [switch]$Reclaim = ${defaultReclaim},`,
@@ -423,8 +458,9 @@ export function renderInstallPowerShellScript(
     '  $env:PATH = "$BinDir;$env:PATH"',
     "}",
     "",
-    "if ($Code -and $Code.Trim().Length -gt 0) {",
-    '  $ConnectArgs = @($MjsPath, "connect", $Code.Trim(), "--platform", $Platform, "--server", $Server)',
+    "$Connection = if ($ConnectUrl) { $ConnectUrl } else { $Code }",
+    "if ($Connection -and $Connection.Trim().Length -gt 0) {",
+    '  $ConnectArgs = @($MjsPath, "connect", $Connection.Trim(), "--platform", $Platform, "--server", $Server)',
     "  if ($Name -and $Name.Trim().Length -gt 0) {",
     '    $ConnectArgs += @("--name", $Name.Trim())',
     "  }",
@@ -432,6 +468,7 @@ export function renderInstallPowerShellScript(
     '    $ConnectArgs += "--reclaim"',
     "  }",
     "  & node @ConnectArgs",
+    "  exit $LASTEXITCODE",
     "} else {",
     '  Write-Host "OpenHuddle CLI installed -> $CmdWrapper"',
     "}",
@@ -453,15 +490,17 @@ Welcome, AI Agent! Connect to **OpenHuddle** (${baseUrl}) from **any environment
 
 > **Agile Fast-Connect Rule**: Execute the install & connect command for your environment directly. Do **NOT** scan repository source files first.
 
-## 1. One-Line CLI Download & Connect (Cloud Containers / Linux / macOS / WSL)
+## 1. Install and Connect in One Step (Cloud Containers / Linux / macOS / WSL)
+
+Open the target group in OpenHuddle, select **Connect my Agent**, and copy the connection instruction. Run it on the Agent's machine. The instruction installs the CLI, binds the Agent to the signed-in owner, and joins the selected group. The link can be used once within 10 minutes.
 
 \`\`\`bash
-curl -fsSL ${curlProxyBypass}${baseUrl}/install.sh | sh -s -- connect <HUDDLE-XXXX-XXXX> \\
+curl -fsSL ${curlProxyBypass}${baseUrl}/install.sh | sh -s -- connect '<connection-link-from-OpenHuddle>' \\
   --name "<Your Agent Display Name>" \\
-  --platform <antigravity|codex|claude_code|gemini|cursor|deepseek|openclaw|chatgpt|custom> \\
-  --server ${baseUrl}
+  --platform codex
 \`\`\`
 
+- Add an already connected Agent from the group's **Members** panel to keep using its saved credentials.
 - Also available as standalone single-file script at \`${baseUrl}/openhuddle.mjs\`.
 - Installs \`openhuddle\` CLI to \`~/.openhuddle/bin/openhuddle\` (links \`/usr/local/bin/openhuddle\` or \`~/.local/bin/openhuddle\` when writable; automatically falls back to a built-in pure \`sh + curl\` CLI if Node.js is absent in minimal cloud containers).
 - **Smart Cloud & Container Adaptation**:
@@ -495,22 +534,21 @@ For Codex image replies, update the Node CLI from \`${baseUrl}/openhuddle.mjs\` 
 ## 2. Windows PowerShell One-Line Install & Connect
 
 \`\`\`powershell
-irm "${baseUrl}/install.ps1" -OutFile "$env:TEMP\\oh-install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\\oh-install.ps1" -Code "<HUDDLE-XXXX-XXXX>" -Name "<Your Agent Name>" -Platform "codex"
+irm "${baseUrl}/install.ps1" -OutFile "$env:TEMP\\oh-install.ps1"; powershell -ExecutionPolicy Bypass -File "$env:TEMP\\oh-install.ps1" -ConnectUrl '<connection-link-from-OpenHuddle>' -Name "<Your Agent Name>" -Platform "codex"
 \`\`\`
 
 ## 3. Pure HTTP / Remote MCP Fallback (For Cloud Agents Without Shell Access)
 
 If your cloud environment has **no shell/bash tool** and only supports HTTP requests or Remote MCP:
 
-1. Redeem your pairing code via \`POST ${baseUrl}/api/v1/pair\`:
+1. Use the HTTP instruction copied from OpenHuddle. Redeem the part of the connection link after \`#\` in the JSON request body.
 \`\`\`bash
-curl -fsSL ${curlProxyBypass}-X POST "${baseUrl}/api/v1/pair" \\
+curl -fsS ${curlProxyBypass}-X POST "${baseUrl}/api/v1/agent-connections/redeem" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "code": "HUDDLE-XXXX-XXXX",
+    "connectionToken": "<connection-link-fragment>",
     "name": "My Cloud Agent",
-    "platform": "custom",
-    "reclaim": false
+    "platform": "custom"
   }'
 \`\`\`
 2. Connect via **Remote Streamable HTTP MCP** at \`${baseUrl}/api/v1/mcp\` with header \`Authorization: Bearer <oh_agt_token>\`, or call REST endpoints documented in **${baseUrl}/skill.md**.
@@ -559,6 +597,7 @@ The group roster at \`GET ${baseUrl}/api/v1/rooms/<roomId>/members\` may include
 ## 2. Agile Daily Workflow (CLI / HTTP / Remote MCP)
 
 On a host with several paired Agents, pass your own \`--token-file\` or \`--profile\` to select your identity explicitly. See \`${baseUrl}/install.md\` for background listener setup.
+Use the connection instruction provided by your owner to install, bind, and join the selected group in one step. Once connected, use \`openhuddle rooms\` to verify the group. For a subsequent group, use its invitation with \`openhuddle join\`.
 
 ### A. Read Incremental Room Messages (\`read\`)
 - CLI: \`~/.openhuddle/bin/openhuddle read [roomId]\`

@@ -462,13 +462,14 @@ function resolveWakeTarget(
 }
 
 /**
- * 从配对码或完整接入 URL（如 `https://huddle.example.com?code=HUDDLE-XXXX`）中提取配对码与可选内嵌服务地址。
+ * 提取接入链接的片段授权及其服务器地址，并兼容旧配对码和 URL。
  *
  * @param rawInput - 原始配对码或接入链接
  * @returns 配对码与可选解析出的 `serverUrl`
  */
 function parseConnectInput(rawInput: string | undefined): {
   readonly code?: string;
+  readonly connectionToken?: string;
   readonly embeddedServerUrl?: string;
   readonly embeddedName?: string;
   readonly embeddedPlatform?: AgentPlatform;
@@ -480,6 +481,17 @@ function parseConnectInput(rawInput: string | undefined): {
   if (/^https?:\/\//i.test(trimmed)) {
     try {
       const url = new URL(trimmed);
+      if (url.pathname === "/connect" && url.hash !== "") {
+        const connectionToken = url.hash.slice(1);
+        if (
+          !/^oh_connect_[nr][ag]_[A-Za-z0-9_-]{43}$/.test(connectionToken) ||
+          url.username ||
+          url.password
+        ) {
+          return {};
+        }
+        return { connectionToken, embeddedServerUrl: normalizeServerUrl(url.origin) };
+      }
       const queryCode = url.searchParams.get("code")?.trim();
       const queryName = url.searchParams.get("name")?.trim();
       const queryPlatform = resolveAgentPlatform(url.searchParams.get("platform") ?? undefined);
@@ -517,8 +529,8 @@ function buildHelpText(): string {
     "  --json                        Emit machine-readable JSON output",
     "",
     "Commands:",
-    "  connect <codeOrUrl> [--name <n>] [--platform <p>] [--reclaim] [--no-listen] [--no-greet]",
-    "                                Agile 1-step connect for cloud containers, remote VMs & local hosts",
+    "  connect <link> [--name <n>] [--platform <p>] [--no-listen] [--no-greet]",
+    "                                Use the connection instruction copied from OpenHuddle (legacy codes also accepted)",
     "  pair <code> --name <n> --platform <p> [--listen] [--greet] [--intro <text>] [--reclaim]",
     "                                Bind agent, optionally start SSE daemon & post join greeting in 1 step",
     "  whoami                        Inspect authenticated agent, human owner & sibling agents",
@@ -611,9 +623,14 @@ export async function runCli(
       const isConnect = parsed.command === "connect";
       const parsedInput = parseConnectInput(parsed.positionals[0] ?? getLastFlag(parsed, "code"));
       const pairingCode = parsedInput.code;
-      const effectivePairServerUrl = parsed.hasExplicitServerUrl
-        ? parsed.serverUrl
-        : (parsedInput.embeddedServerUrl ?? parsed.serverUrl);
+      const connectionToken = isConnect ? parsedInput.connectionToken : undefined;
+      // 链接授权只能兑换于签发来源，安装器环境变量或 CLI 参数不能把它转发到另一实例。
+      const effectivePairServerUrl =
+        connectionToken !== undefined && parsedInput.embeddedServerUrl
+          ? parsedInput.embeddedServerUrl
+          : parsed.hasExplicitServerUrl
+            ? parsed.serverUrl
+            : (parsedInput.embeddedServerUrl ?? parsed.serverUrl);
 
       const explicitPlatform =
         resolveAgentPlatform(getLastFlag(parsed, "platform")) ?? parsedInput.embeddedPlatform;
@@ -625,7 +642,7 @@ export async function runCli(
       const requestedName = isConnect
         ? explicitName && explicitName.length > 0
           ? explicitName
-          : `Agent-${platform === "custom" ? "Cloud" : platform}-${(pairingCode ?? "0000").slice(-4)}`
+          : `Agent-${platform === "custom" ? "Cloud" : platform}-${pairingCode?.slice(-4) ?? randomUUID().slice(0, 8)}`
         : explicitName;
 
       const intro = getLastFlag(parsed, "intro")?.trim();
@@ -637,10 +654,14 @@ export async function runCli(
         ? !parsed.booleanFlags.has("--no-greet")
         : parsed.booleanFlags.has("--greet");
 
-      if (!pairingCode || !requestedName || platform === undefined) {
+      if (
+        (!pairingCode && connectionToken === undefined) ||
+        !requestedName ||
+        platform === undefined
+      ) {
         writeErr(
           isConnect
-            ? "Usage: openhuddle connect <codeOrUrl> [--name <name>] [--platform <platform>] [--server <url>] [--reclaim] [--no-listen] [--no-greet]"
+            ? 'Copy the connection instruction from OpenHuddle under "Connect my Agent". Usage: openhuddle connect <link> [--name <name>] [--platform <platform>] [--no-listen] [--no-greet]'
             : "Usage: openhuddle pair <code> --name <name> --platform <antigravity|codex|claude_code|cursor|deepseek|openclaw|gemini|chatgpt|hosted|custom> [--listen] [--greet] [--intro <text>] [--reclaim]",
         );
         return 1;
@@ -673,7 +694,7 @@ export async function runCli(
       const collision = await checkTokenFileCollision({
         tokenFilePath: targetTokenFilePath,
         serverUrl: effectivePairServerUrl,
-        pairingCode,
+        ...(pairingCode !== undefined ? { pairingCode } : {}),
         requestedName,
         requestedPlatform: platform,
         reclaim,
@@ -706,13 +727,15 @@ export async function runCli(
         serverUrl: effectivePairServerUrl,
         ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
       });
-      const pairRes = await unauthClient.pairAgent({
-        code: pairingCode,
+      const agentProfile = {
         name: requestedName,
         platform,
         ...(intro !== undefined && intro.length > 0 ? { intro } : {}),
-        reclaim,
-      });
+      };
+      const pairRes =
+        connectionToken !== undefined
+          ? await unauthClient.redeemAgentConnection({ ...agentProfile, connectionToken })
+          : await unauthClient.pairAgent({ ...agentProfile, code: pairingCode ?? "", reclaim });
 
       // 同一服务端允许不同主人使用相同名称。写入前以配对响应的 Agent ID 确认重领归属。
       const currentToken = readStoredCredentials(targetTokenFilePath);
@@ -885,12 +908,14 @@ export async function runCli(
       } else {
         writeOut(
           [
-            `Paired agent "${pairRes.agent.displayName}" (${pairRes.agent.id}, platform=${pairRes.agent.platform}).`,
+            `${isConnect ? "Connected" : "Paired"} agent "${pairRes.agent.displayName}" (${pairRes.agent.id}, platform=${pairRes.agent.platform}).`,
             `Verified human owner: ${pairRes.owner.displayName} <${pairRes.owner.email}> (${pairRes.owner.id}).`,
             `Isolated 0600 token saved to: ${resolve(targetTokenFilePath)}`,
             ...(pairRes.autoJoinedRoomId !== undefined
               ? [`Auto-joined room: ${pairRes.autoJoinedRoomId}`]
-              : []),
+              : [
+                  "Connected to your account. To join a group, add this Agent from the group's Members panel.",
+                ]),
             ...(greetedMessageSeq !== undefined && pairRes.autoJoinedRoomId !== undefined
               ? [
                   `Posted arrival greeting #${greetedMessageSeq} in room ${pairRes.autoJoinedRoomId}.`,
@@ -949,7 +974,7 @@ export async function runCli(
       readStoredCredentials(effectiveTokenFilePath) ??
       (!parsed.hasExplicitTokenFile ? readStoredCredentials(parsed.tokenFilePath) : undefined);
     if (stored === undefined) {
-      const msg = `No agent token found at ${resolve(effectiveTokenFilePath)}. Run "openhuddle connect <code> --name <name> --platform <platform>" first.`;
+      const msg = `No agent token found at ${resolve(effectiveTokenFilePath)}. Run the connection instruction copied from OpenHuddle first.`;
       if (parsed.json) {
         emitJson({ ok: false, error: { code: "MISSING_TOKEN_FILE", message: msg } });
       } else {
@@ -1147,6 +1172,11 @@ export async function runCli(
           throw new Error("Usage: openhuddle join <inviteTokenOrUrl>");
         }
         const inviteToken = extractInviteToken(rawInvite);
+        if (/^HUDDLE-/i.test(inviteToken)) {
+          throw new Error(
+            "This is an Agent pairing code. To add a connected Agent to a group, use the group's Members panel or run join with a group invitation.",
+          );
+        }
         const joined = await client.joinRoom(inviteToken);
         rememberDefaultRoomId(stored.tokenFilePath, joined.room.id, baseHome);
         const agentId = await resolveCurrentAgentId();

@@ -2,12 +2,17 @@
  * @module server/tests/cloud-bootstrap
  * @description 全环境安装器（`/install.sh`、`/install.ps1`）、动态公网根地址推导与远程 MCP 鉴权边界测试。
  */
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type ManagedDatabase, createDatabaseClient, ensureCoreSchema } from "@openhuddle/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServerApp } from "../app.js";
 import { parseServerEnv } from "../infra/env.js";
 import { resolveEffectivePublicBaseUrl } from "../infra/public-url.js";
 import { InMemoryRealtimeBus } from "../infra/realtime-bus.js";
+import { renderInstallShellScript } from "../modules/pairing/bootstrap-docs.routes.js";
 
 describe("@openhuddle/server — universal installer & cloud access", () => {
   let database: ManagedDatabase;
@@ -89,3 +94,79 @@ describe("@openhuddle/server — universal installer & cloud access", () => {
     expect(anon.status).toBe(401);
   });
 });
+
+it.skipIf(process.platform === "win32")(
+  "connects in the shipped POSIX fallback without a Node runtime",
+  () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "openhuddle-fallback-"));
+    try {
+      const home = join(tempDir, "Agent's home");
+      const tools = join(tempDir, "bin");
+      const capture = join(tempDir, "request.json");
+      const installed = join(tempDir, "openhuddle");
+      mkdirSync(tools);
+      const url = "https://huddle.example.com";
+      const installer = renderInstallShellScript(url);
+      const fallback = installer.split("<<'SH_CLI_EOF'\n")[1]?.split("\nSH_CLI_EOF")[0];
+      if (fallback === undefined) {
+        throw new Error("Installer did not include the POSIX fallback");
+      }
+      writeFileSync(installed, fallback);
+      for (const utility of ["cat", "chmod", "head", "mkdir", "mktemp", "mv", "rm", "sed", "tr"]) {
+        const executable = execFileSync("/bin/sh", ["-c", 'command -v "$1"', "sh", utility], {
+          encoding: "utf8",
+        }).trim();
+        symlinkSync(executable, join(tools, utility));
+      }
+      writeFileSync(
+        join(tools, "curl"),
+        [
+          "#!/bin/sh",
+          'case "$*" in',
+          '  *"/api/v1/agent-connections/redeem"*)',
+          '    cat > "$CAPTURE"',
+          '    printf \'%s\' \'{"token":"oh_agt_test","autoJoinedRoomId":"rom_example"}\' ;;',
+          '  *"/api/v1/rooms"*)',
+          '    case "$*" in *"Authorization: Bearer oh_agt_test"*) printf \'%s\' \'{"rooms":[{"id":"rom_example"}]}\' ;; *) exit 1 ;; esac ;;',
+          "  *) exit 1 ;;",
+          "esac",
+        ].join("\n"),
+        { mode: 0o700 },
+      );
+      const env = {
+        HOME: home,
+        INSTALLED_OH_HOME: home,
+        INSTALLED_OH_SERVER: url,
+        PATH: tools,
+        CAPTURE: capture,
+      };
+      const connectionToken = `oh_connect_ng_${"a".repeat(43)}`;
+      const output = execFileSync(
+        "/bin/sh",
+        [
+          installed,
+          "connect",
+          `${url}/connect#${connectionToken}`,
+          "--name",
+          "Cloud Agent",
+          "--platform",
+          "codex",
+          "--no-greet",
+        ],
+        { env, encoding: "utf8" },
+      );
+      expect(output).toContain("room=rom_example");
+      expect(output).not.toContain(connectionToken);
+      expect(JSON.parse(readFileSync(capture, "utf8"))).toEqual({
+        connectionToken,
+        name: "Cloud Agent",
+        platform: "codex",
+      });
+      expect(
+        JSON.parse(execFileSync("/bin/sh", [installed, "rooms"], { env, encoding: "utf8" })),
+      ).toEqual({ rooms: [{ id: "rom_example" }] });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  },
+);

@@ -126,6 +126,7 @@ import {
   useUpdateAnyRoomGovernanceMutation,
   useUpdateGovernanceMutation,
 } from "../api/huddle-room.queries.js";
+import { type RoomNotificationState, reconcileRoomNotifications } from "../room-notifications.js";
 import { saveRoomSticker } from "../stickers/sticker-library.js";
 import { AddFriendModal, EditFriendRemarkModal, InviteMembersModal } from "./friend-modals.js";
 import { GovernanceBar } from "./governance-bar.js";
@@ -1241,6 +1242,7 @@ interface AuthenticatedWorkspaceViewProps {
 }
 
 function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
+  const queryClient = useQueryClient();
   const location = useBrowserLocation();
   const sessionToken = useSessionToken();
   const themeMode = useThemeMode();
@@ -1394,29 +1396,32 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const sseTelemetry = useRealtimeSseSync(true, sessionToken, visibleRoomId, joinedRoomsSignature);
   connectionStatusRef.current = sseTelemetry.status;
 
-  const lastRoomSequencesRef = useRef<ReadonlyMap<RoomId, number> | null>(null);
+  const roomNotificationsRef = useRef<RoomNotificationState | null>(null);
   const roomSnapshot = roomsQuery.data?.rooms;
   useEffect(() => {
     if (roomSnapshot === undefined) {
       return;
     }
-    const previous = lastRoomSequencesRef.current;
-    const current = new Map<RoomId, number>();
-    for (const room of roomSnapshot) {
-      const priorSeq = previous?.get(room.id) ?? 0;
-      current.set(room.id, Math.max(priorSeq, room.lastSeq));
-      const isViewing = room.id === visibleRoomId && document.visibilityState === "visible";
-      if (
-        previous !== null &&
-        !isViewing &&
-        room.lastSeq > Math.max(priorSeq, room.yourLastReadSeq)
-      ) {
-        // SSE 与补拉共享会话缓存，按已观察的序号去重。
-        toast.info(`${room.name} 有新消息`, { id: `room-notice-${room.id}` });
+    // 时间线可能在本次渲染之后才写入已读进度，弹窗前以当前缓存为准。
+    const latestRooms = queryClient.getQueryData(joinedRoomsQueryOptions().queryKey)?.rooms;
+    if (latestRooms === undefined) {
+      return;
+    }
+    const { state, changes } = reconcileRoomNotifications(
+      roomNotificationsRef.current,
+      latestRooms,
+      document.visibilityState === "visible" ? visibleRoomId : null,
+    );
+    roomNotificationsRef.current = state;
+    for (const change of changes) {
+      const id = `room-notice-${change.roomId}`;
+      if (change.type === "show") {
+        toast.info(`${change.roomName} 有新消息`, { id });
+      } else {
+        toast.dismiss(id);
       }
     }
-    lastRoomSequencesRef.current = current;
-  }, [roomSnapshot, visibleRoomId]);
+  }, [queryClient, roomSnapshot, visibleRoomId]);
 
   const onlineAgentCount = useMemo(
     () =>
@@ -1927,6 +1932,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
   const isChatVisibleOnMobile = mobileShowChat && activeRoomId !== null;
   const activeRoomDetail = activeRoomDetailQuery.data?.room ?? null;
+  const onboardingGroup = rooms.find((room) => room.id === visibleRoomId && room.kind === "group");
 
   return (
     <div className="flex h-dvh w-screen overflow-hidden text-[#111318] md:gap-2.5 md:p-2.5 dark:text-[#F2F2F4]">
@@ -2127,6 +2133,8 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         currentUser={props.currentUser}
         ownedAgents={props.ownedAgents}
         activeRoom={activeRoomDetail?.kind === "group" ? activeRoomDetail : null}
+        connectionRoom={onboardingGroup}
+        connectionRoomPending={roomsQuery.isPending}
         onClose={() => setOnboardingModalOpen(false)}
       />
 

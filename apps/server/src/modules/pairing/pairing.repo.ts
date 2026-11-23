@@ -99,14 +99,19 @@ export class PairingRepository {
    * 检查房间是否存在并返回其模态类型（`group` | `direct_agent` | `direct_human`）。
    *
    * @param roomId - 目标房间主键
+   * @param lockForMembership - 兑换时锁住房间键，避免进群前被删除
    * @returns 存在时返回 `RoomKind`，不存在返回 `undefined`
    */
-  public async findRoomKind(roomId: RoomId): Promise<RoomKind | undefined> {
-    const rows = await this.db
+  public async findRoomKind(
+    roomId: RoomId,
+    lockForMembership = false,
+  ): Promise<RoomKind | undefined> {
+    const query = this.db
       .select({ kind: roomsTable.kind })
       .from(roomsTable)
       .where(eq(roomsTable.id, roomId))
       .limit(1);
+    const rows = await (lockForMembership ? query.for("key share") : query);
     const row = rows[0];
     return row ? RoomKindSchema.parse(row.kind) : undefined;
   }
@@ -127,16 +132,22 @@ export class PairingRepository {
    *
    * @param roomId - 房间主键
    * @param userId - 人类用户主键
+   * @param lockForMembership - 兑换时保留授权成员行直到入群提交
    * @returns 在群内返回 `true`
    */
-  public async isHumanRoomMember(roomId: RoomId, userId: UserId): Promise<boolean> {
-    const rows = await this.db
+  public async isHumanRoomMember(
+    roomId: RoomId,
+    userId: UserId,
+    lockForMembership = false,
+  ): Promise<boolean> {
+    const query = this.db
       .select({ memberKey: roomMembersTable.memberKey })
       .from(roomMembersTable)
       .where(
         and(eq(roomMembersTable.roomId, roomId), eq(roomMembersTable.memberKey, `human:${userId}`)),
       )
       .limit(1);
+    const rows = await (lockForMembership ? query.for("key share") : query);
     return rows.length > 0;
   }
 
@@ -188,6 +199,21 @@ export class PairingRepository {
       reclaimAgentId: input.reclaimAgentId ?? null,
       expiresAt: input.expiresAt,
     });
+  }
+
+  /**
+   * 读取授权关联的房间，以便按删群流程的顺序锁住房间和授权。
+   *
+   * @param code - 已计算的接入授权摘要
+   * @returns 授权仍关联的群聊 ID
+   */
+  public async findAutoJoinRoomId(code: PairingCode): Promise<RoomId | undefined> {
+    const [row] = await this.db
+      .select({ roomId: pairingCodesTable.autoJoinRoomId })
+      .from(pairingCodesTable)
+      .where(eq(pairingCodesTable.code, code))
+      .limit(1);
+    return row?.roomId ? (row.roomId as RoomId) : undefined;
   }
 
   /**

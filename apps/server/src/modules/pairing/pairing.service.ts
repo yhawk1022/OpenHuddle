@@ -1,21 +1,27 @@
 /**
  * @module server/modules/pairing/service
- * @description 人类主人签发一次性配对码与外部 AI Agent 自举绑定/认领（`--reclaim`）核心服务。
+ * @description 人类主人签发一次性接入授权与外部 AI Agent 自举绑定/认领核心服务。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 防误覆盖保护：同一人类主人名下已存在相同 `slug` 的活跃 Agent 时，未显式声明 `reclaim: true` 且配对码未绑定 `reclaimAgentId` 的请求一律拦截并返回 `409 AGENT_ALREADY_ACTIVE`。
- * 2. 单次可见明文令牌：配对成功后签发的 `oh_agt_...` 明文令牌仅在本次响应返回一次，服务端仅存 SHA-256 哈希。
+ * 2. 单次可见明文令牌：接入授权与 Agent 令牌均只返回一次明文，服务端保存摘要。
  */
+import { randomBytes } from "node:crypto";
 import type {
   AgentId,
   AgentPlatform,
   AuthenticatedCaller,
+  CreateAgentConnectionBody,
+  CreateAgentConnectionResponse,
   CreatePairingCodeBody,
   CreatePairingCodeResponse,
   HumanUserDto,
   OwnedAgentSummaryDto,
   PairAgentRequest,
   PairAgentResponse,
+  PairingCode,
+  RedeemAgentConnectionBody,
+  RoomId,
   UpdateOwnedAgentBody,
   UserId,
 } from "@openhuddle/protocol";
@@ -32,6 +38,19 @@ import { AppError } from "../../infra/errors.js";
 import type { RealtimeBus } from "../../infra/realtime-bus.js";
 import { type SafeAgentRecord, mapAgentRecordToSummaryDto } from "../auth/auth.repo.js";
 import type { PairingRepository } from "./pairing.repo.js";
+
+const CONNECTION_KEY_PREFIX = "LNK-";
+const CONNECTION_TTL_MS = 10 * 60_000;
+
+function connectionKey(token: string): PairingCode {
+  // 摘要适配既有配对记录与后台清理接口的 32 字符约束。
+  return `${CONNECTION_KEY_PREFIX}${sha256Hex(token).slice(0, 28).toUpperCase()}` as PairingCode;
+}
+
+interface ConnectionScope {
+  readonly restoreAgent: boolean;
+  readonly joinGroup: boolean;
+}
 
 /**
  * 构造 `PairingService` 所需的依赖。
@@ -98,50 +117,7 @@ export class PairingService {
     requestPublicBaseUrl?: string,
   ): Promise<CreatePairingCodeResponse> {
     const human = assertHumanCaller(caller);
-
-    if (body.autoJoinRoomId !== undefined) {
-      const roomKind = await this.repo.findRoomKind(body.autoJoinRoomId);
-      if (roomKind === undefined) {
-        throw new AppError({
-          code: "NOT_FOUND",
-          statusCode: 404,
-          message: `Target auto-join room "${body.autoJoinRoomId}" was not found.`,
-        });
-      }
-      if (roomKind !== "group") {
-        throw new AppError({
-          code: "DIRECT_ROOM_IMMUTABLE_ROSTER",
-          statusCode: 400,
-          message: "一对一单聊房间不支持签发自动入群配对码。",
-        });
-      }
-      const isMember = await this.repo.isHumanRoomMember(body.autoJoinRoomId, human.userId);
-      if (!isMember) {
-        throw new AppError({
-          code: "FORBIDDEN_NOT_ROOM_MEMBER",
-          statusCode: 403,
-          message: "You must be a member of the room to create an auto-join pairing code for it.",
-        });
-      }
-    }
-
-    if (body.reclaimAgentId !== undefined) {
-      const targetAgent = await this.repo.findAgentById(body.reclaimAgentId);
-      if (!targetAgent) {
-        throw new AppError({
-          code: "NOT_FOUND",
-          statusCode: 404,
-          message: `Target reclaim agent "${body.reclaimAgentId}" was not found.`,
-        });
-      }
-      if (targetAgent.ownerUserId !== human.userId) {
-        throw new AppError({
-          code: "FORBIDDEN_NOT_OWNER",
-          statusCode: 403,
-          message: "You can only issue a reclaim pairing code for an agent you own.",
-        });
-      }
-    }
+    await this.assertConnectionScope(human.userId, body);
 
     const code = generatePairingCode();
     const expiresAt = new Date(Date.now() + body.expiresInHours * 3_600_000);
@@ -175,6 +151,41 @@ export class PairingService {
   }
 
   /**
+   * 为已登录主人签发十分钟内可安装、绑定并自动进群的一次性链接。
+   *
+   * @param caller - 签发链接的登录用户
+   * @param body - 可选群聊与待恢复 Agent
+   * @param publicBaseUrl - 安装端可达的 OpenHuddle 根地址
+   * @returns 授权位于片段中的接入链接
+   * @throws {AppError} 签发人没有目标群聊或 Agent 权限时抛出
+   */
+  public async createAgentConnection(
+    caller: Readonly<AuthenticatedCaller>,
+    body: Readonly<CreateAgentConnectionBody>,
+    publicBaseUrl: string,
+  ): Promise<CreateAgentConnectionResponse> {
+    const human = assertHumanCaller(caller);
+    await this.assertConnectionScope(human.userId, body);
+
+    const operation = body.reclaimAgentId !== undefined ? "r" : "n";
+    const target = body.autoJoinRoomId !== undefined ? "g" : "a";
+    // 作用域随授权一起哈希，房间/Agent 被删除导致关联置空时仍可区分原始意图。
+    const token = `oh_connect_${operation}${target}_${randomBytes(32).toString("base64url")}`;
+    const expiresAt = new Date(Date.now() + CONNECTION_TTL_MS);
+    await this.repo.insertPairingCode({
+      code: connectionKey(token),
+      ownerUserId: human.userId,
+      ...(body.autoJoinRoomId !== undefined ? { autoJoinRoomId: body.autoJoinRoomId } : {}),
+      ...(body.reclaimAgentId !== undefined ? { reclaimAgentId: body.reclaimAgentId } : {}),
+      expiresAt,
+    });
+
+    const connectUrl = new URL("/connect", publicBaseUrl);
+    connectUrl.hash = token;
+    return { ok: true, connectUrl: connectUrl.href, expiresAtIso: expiresAt.toISOString() };
+  }
+
+  /**
    * 消费一次性配对码绑定新 Agent（或通过 `--reclaim` 轮换找回已有 Agent 令牌）并可选自动入群。
    *
    * @param body - 配对码、Agent 名称、宿主平台标识及 `reclaim` 标志
@@ -182,13 +193,109 @@ export class PairingService {
    * @throws {AppError} 配对码无效/过期抛 `400 PAIRING_CODE_INVALID_OR_EXPIRED`；同名冲突抛 `409 AGENT_ALREADY_ACTIVE`
    */
   public async pairAgent(body: Readonly<PairAgentRequest>): Promise<PairAgentResponse> {
+    // 后台可管理摘要记录，旧短码入口不能把摘要当作授权兑换。
+    if (body.code.startsWith(CONNECTION_KEY_PREFIX)) {
+      throw new AppError({
+        code: "PAIRING_CODE_INVALID_OR_EXPIRED",
+        statusCode: 400,
+        message: "Pairing code is invalid, has already been used, or has expired.",
+      });
+    }
+    return this.bindAgent(body);
+  }
+
+  /**
+   * 兑换链接并原子完成身份绑定、可选进群与授权核销。
+   *
+   * @param body - 链接中的授权及 Agent 基本资料
+   * @returns 独立的 Agent 凭据及已加入的目标群聊
+   * @throws {AppError} 链接已用、过期或签发范围失效时抛出
+   */
+  public async redeemAgentConnection(
+    body: Readonly<RedeemAgentConnectionBody>,
+  ): Promise<PairAgentResponse> {
+    const { connectionToken, ...profile } = body;
+    const scope = connectionToken.split("_")[2];
+    return this.bindAgent(
+      { ...profile, code: connectionKey(connectionToken), reclaim: false },
+      { restoreAgent: scope?.startsWith("r") === true, joinGroup: scope?.endsWith("g") === true },
+    );
+  }
+
+  private async assertConnectionScope(
+    ownerId: UserId,
+    body: Readonly<CreateAgentConnectionBody>,
+  ): Promise<void> {
+    if (body.autoJoinRoomId !== undefined) {
+      await this.assertAutoJoinRoom(this.repo, ownerId, body.autoJoinRoomId);
+    }
+    if (body.reclaimAgentId !== undefined) {
+      const targetAgent = await this.repo.findAgentById(body.reclaimAgentId);
+      if (!targetAgent) {
+        throw new AppError({
+          code: "NOT_FOUND",
+          statusCode: 404,
+          message: "The agent selected for reconnection was not found.",
+        });
+      }
+      if (targetAgent.ownerUserId !== ownerId) {
+        throw new AppError({
+          code: "FORBIDDEN_NOT_OWNER",
+          statusCode: 403,
+          message: "You can only reconnect an agent you own.",
+        });
+      }
+    }
+  }
+
+  private async assertAutoJoinRoom(
+    repo: PairingRepository,
+    ownerId: UserId,
+    roomId: RoomId,
+    lockForMembership = false,
+  ): Promise<void> {
+    // 先锁住房间，再锁成员行，保持与删群时的级联访问顺序一致。
+    const roomKind = await repo.findRoomKind(roomId, lockForMembership);
+    if (roomKind === undefined) {
+      throw new AppError({
+        code: "NOT_FOUND",
+        statusCode: 404,
+        message: "The target room was not found.",
+      });
+    }
+    if (roomKind !== "group") {
+      throw new AppError({
+        code: "DIRECT_ROOM_IMMUTABLE_ROSTER",
+        statusCode: 400,
+        message: "一对一单聊房间不支持接入 Agent 时自动加入。",
+      });
+    }
+    if (!(await repo.isHumanRoomMember(roomId, ownerId, lockForMembership))) {
+      throw new AppError({
+        code: "FORBIDDEN_NOT_ROOM_MEMBER",
+        statusCode: 403,
+        message: "The user who issued the connection must be a member of the target room.",
+      });
+    }
+  }
+
+  private async bindAgent(
+    body: Readonly<PairAgentRequest>,
+    connectionScope?: Readonly<ConnectionScope>,
+  ): Promise<PairAgentResponse> {
     const rawToken = generateAgentToken();
     const tokenHash = sha256Hex(rawToken);
     const slug = slugifyAgentName(body.name);
-    const now = new Date();
-
     const txResult = await this.repo.runInTransaction(async (txRepo) => {
+      if (connectionScope?.joinGroup) {
+        const targetRoomId = await txRepo.findAutoJoinRoomId(body.code);
+        if (targetRoomId !== undefined) {
+          // 删群先锁房间再清理授权，因此这里也要在配对行之前锁住房间。
+          await txRepo.findRoomKind(targetRoomId, true);
+        }
+      }
       const codeRecord = await txRepo.lockPairingCodeForUpdate(body.code);
+      const now = new Date();
       if (
         !codeRecord ||
         codeRecord.usedAt !== null ||
@@ -197,10 +304,20 @@ export class PairingService {
         throw new AppError({
           code: "PAIRING_CODE_INVALID_OR_EXPIRED",
           statusCode: 400,
-          message: "Pairing code is invalid, has already been used, or has expired.",
+          message:
+            connectionScope !== undefined
+              ? "Connection link is invalid, has already been used, or has expired. Use the saved credentials or copy a new connection from OpenHuddle."
+              : "Pairing code is invalid, has already been used, or has expired.",
         });
       }
 
+      if (connectionScope?.restoreAgent && codeRecord.reclaimAgentId === null) {
+        throw new AppError({
+          code: "NOT_FOUND",
+          statusCode: 404,
+          message: "The agent selected for reconnection no longer exists.",
+        });
+      }
       const owner = await txRepo.findOwnerById(codeRecord.ownerUserId);
       if (!owner) {
         throw new AppError({
@@ -208,6 +325,25 @@ export class PairingService {
           statusCode: 404,
           message: "Owner account associated with this pairing code was not found.",
         });
+      }
+      if (connectionScope !== undefined && owner.status === "suspended") {
+        throw new AppError({
+          code: "ACCOUNT_SUSPENDED",
+          statusCode: 403,
+          message: "The owner account is suspended.",
+        });
+      }
+      let autoJoinedRoomId = codeRecord.autoJoinRoomId ?? undefined;
+      if (connectionScope?.joinGroup) {
+        if (autoJoinedRoomId === undefined) {
+          throw new AppError({
+            code: "NOT_FOUND",
+            statusCode: 404,
+            message: "The target room was deleted. Copy a new connection from the target group.",
+          });
+        }
+        // 房间或签发人资格失效时整笔回滚，保留授权未核销状态。
+        await this.assertAutoJoinRoom(txRepo, owner.id, autoJoinedRoomId, true);
       }
 
       let agentRecord: SafeAgentRecord;
@@ -237,7 +373,10 @@ export class PairingService {
             throw new AppError({
               code: "AGENT_ALREADY_ACTIVE",
               statusCode: 409,
-              message: `An agent with slug "${slug}" is already active under this owner. Pass reclaim=true or use a reclaim pairing code to rotate its token.`,
+              message:
+                connectionScope !== undefined
+                  ? `An agent with slug "${slug}" already exists. Use a different name for a new device, or choose this agent under Reconnect in OpenHuddle.`
+                  : `An agent with slug "${slug}" is already active under this owner. Pass reclaim=true or use a reclaim pairing code to rotate its token.`,
             });
           }
           agentRecord = await txRepo.rotateAgentTokenAndProfile({
@@ -262,17 +401,17 @@ export class PairingService {
         }
       }
 
-      await txRepo.markPairingCodeUsed(codeRecord.code, now);
-
-      let autoJoinedRoomId = codeRecord.autoJoinRoomId ?? undefined;
       if (autoJoinedRoomId !== undefined) {
-        const roomKind = await txRepo.findRoomKind(autoJoinedRoomId);
-        if (roomKind === "group") {
+        if (
+          connectionScope?.joinGroup ||
+          (await txRepo.findRoomKind(autoJoinedRoomId)) === "group"
+        ) {
           await txRepo.ensureAgentRoomMembership(autoJoinedRoomId, agentRecord.id);
         } else {
           autoJoinedRoomId = undefined;
         }
       }
+      await txRepo.markPairingCodeUsed(codeRecord.code, now);
 
       return { agentRecord, owner, autoJoinedRoomId };
     });

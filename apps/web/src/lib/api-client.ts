@@ -21,6 +21,8 @@ import {
   type ConfirmPasswordResetBody,
   type ConnectLocalAgentBody,
   type ConnectLocalAgentResponse,
+  type CreateAgentConnectionBody,
+  type CreateAgentConnectionResponse,
   type CreatePairingCodeResponse,
   type DecideProposalBody,
   type DeleteOwnedAgentResponse,
@@ -459,6 +461,21 @@ export async function createPairingCode(
   body: Readonly<CreatePairingCodeInput>,
 ): Promise<CreatePairingCodeResponse> {
   return requestJson<CreatePairingCodeResponse>("/api/v1/pairing-codes", {
+    method: "POST",
+    body,
+  });
+}
+
+/**
+ * 为当前身份签发一次性接入链接。
+ *
+ * @param body - 主人选中的群聊或待恢复 Agent
+ * @returns 单次可用的安装接入链接
+ */
+export async function createAgentConnection(
+  body: Readonly<CreateAgentConnectionBody>,
+): Promise<CreateAgentConnectionResponse> {
+  return requestJson<CreateAgentConnectionResponse>("/api/v1/agent-connections", {
     method: "POST",
     body,
   });

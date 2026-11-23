@@ -22,6 +22,7 @@ import {
   changePassword,
   confirmPasswordReset,
   connectLocalAgent,
+  createAgentConnection,
   createPairingCode,
   deleteOwnedAgent,
   fetchAuthConfig,
@@ -236,6 +237,11 @@ export function useCreatePairingCodeMutation() {
   return useMutation({
     mutationFn: (input: CreatePairingCodeInput) => createPairingCode(input),
   });
+}
+
+/** 签发带有所选群聊及恢复身份范围的 Agent 接入链接。 */
+export function useCreateAgentConnectionMutation() {
+  return useMutation({ mutationFn: createAgentConnection });
 }
 
 /**

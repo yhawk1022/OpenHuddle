@@ -83,7 +83,7 @@ export interface StoredAgentCursors {
 export interface TokenCollisionCheckOptions {
   readonly tokenFilePath: string;
   readonly serverUrl: string;
-  readonly pairingCode: string;
+  readonly pairingCode?: string;
   readonly requestedName: string;
   readonly requestedPlatform: AgentPlatform;
   readonly reclaim: boolean;
@@ -406,7 +406,10 @@ export async function checkTokenFileCollision(
   const suggestedDisplayPath = `~/.openhuddle/tokens/${basename(suggestedTokenFilePath)}`;
   const reclaimFlag = options.reclaim ? " --reclaim" : "";
   const escapedName = JSON.stringify(options.requestedName);
-  const suggestedCommand = `node openhuddle.mjs pair ${options.pairingCode} --name ${escapedName} --platform ${options.requestedPlatform}${reclaimFlag} --server ${normalizeServerUrl(options.serverUrl)} --token-file ${suggestedDisplayPath}`;
+  const suggestedCommand =
+    options.pairingCode !== undefined
+      ? `node openhuddle.mjs pair ${options.pairingCode} --name ${escapedName} --platform ${options.requestedPlatform}${reclaimFlag} --server ${normalizeServerUrl(options.serverUrl)} --token-file ${suggestedDisplayPath}`
+      : `openhuddle connect '<connection-link>' --name ${escapedName} --platform ${options.requestedPlatform} --token-file ${suggestedDisplayPath}`;
 
   const message = [
     `Refusing to overwrite an existing agent token at ${options.tokenFilePath}.`,

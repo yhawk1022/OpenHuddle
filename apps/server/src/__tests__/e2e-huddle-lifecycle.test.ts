@@ -27,6 +27,7 @@ import {
   createDatabaseClient,
   ensureCoreSchema,
   messageAttachmentsTable,
+  pairingCodesTable,
 } from "@openhuddle/db";
 import {
   MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH,
@@ -35,6 +36,7 @@ import {
 import type {
   ApiErrorEnvelope,
   ConnectLocalAgentResponse,
+  CreateAgentConnectionResponse,
   CreatePairingCodeResponse,
   DeleteOwnedAgentResponse,
   DeleteRoomResponse,
@@ -96,6 +98,111 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
   afterEach(async () => {
     await bus.close();
     await database.close();
+  });
+
+  it("binds and joins a new agent with a single owner-authorized connection", async () => {
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      DATABASE_URL: "memory://",
+      PUBLIC_BASE_URL: "https://huddle.example.com",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus });
+    const owner = await loginHumanViaOtp(app, "connection-owner@example.com", "Owner");
+    const outsider = await loginHumanViaOtp(app, "connection-outsider@example.com", "Outsider");
+    const post = (path: string, body: unknown, token?: string) =>
+      app.request(path, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(token !== undefined ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    const createRoom = await post("/api/v1/rooms", { name: "Remote group" }, owner.sessionToken);
+    expect(createRoom.status).toBe(201);
+    const { room } = (await createRoom.json()) as { room: RoomDetailDto };
+    const scope = { autoJoinRoomId: room.id };
+    const issuePath = "/api/v1/agent-connections";
+    const redeemPath = "/api/v1/agent-connections/redeem";
+    expect((await post(issuePath, scope)).status).toBe(401);
+    expect((await post(issuePath, scope, outsider.sessionToken)).status).toBe(403);
+
+    const issued = await post(issuePath, scope, owner.sessionToken);
+    expect(issued.status).toBe(201);
+    expect(issued.headers.get("cache-control")).toBe("no-store");
+    const { connectUrl, expiresAtIso } = (await issued.json()) as CreateAgentConnectionResponse;
+    const url = new URL(connectUrl);
+    expect(url.origin).toBe("https://huddle.example.com");
+    expect(url.pathname).toBe("/connect");
+    expect(url.search).toBe("");
+    expect(Date.parse(expiresAtIso) - Date.now()).toBeGreaterThan(0);
+    expect(Date.parse(expiresAtIso) - Date.now()).toBeLessThanOrEqual(600_000);
+
+    const connectionToken = url.hash.slice(1);
+    const [record] = await database.db.select().from(pairingCodesTable);
+    expect(record?.code).toMatch(/^LNK-[A-F0-9]{28}$/);
+    expect(record?.code).not.toBe(connectionToken);
+    expect(
+      (await post("/api/v1/pair", { code: record?.code, name: "Remote Codex", platform: "codex" }))
+        .status,
+    ).toBe(400);
+
+    const agentProfile = { name: "Remote Codex", platform: "codex" };
+    const redeemed = await post(redeemPath, { ...agentProfile, connectionToken });
+    expect(redeemed.status).toBe(201);
+    const agent = (await redeemed.json()) as PairAgentResponse;
+    expect(agent.autoJoinedRoomId).toBe(room.id);
+    expect(agent.owner.id).toBe(owner.user.id);
+    const joined = await app.request("/api/v1/rooms", {
+      headers: { authorization: `Bearer ${agent.token}` },
+    });
+    expect(await joined.json()).toMatchObject({ rooms: [{ id: room.id }] });
+    expect((await post(redeemPath, { ...agentProfile, connectionToken })).status).toBe(400);
+
+    const resume = await post(
+      issuePath,
+      { ...scope, reclaimAgentId: agent.agent.id },
+      owner.sessionToken,
+    );
+    expect(resume.status).toBe(201);
+    const resumeUrl = new URL(((await resume.json()) as CreateAgentConnectionResponse).connectUrl);
+    const restored = await post(redeemPath, {
+      ...agentProfile,
+      connectionToken: resumeUrl.hash.slice(1),
+    });
+    expect(restored.status).toBe(201);
+    expect(await restored.json()).toMatchObject({
+      agent: { id: agent.agent.id },
+      autoJoinedRoomId: room.id,
+    });
+
+    const staleIssue = await post(issuePath, scope, owner.sessionToken);
+    expect(staleIssue.status).toBe(201);
+    const staleUrl = new URL(
+      ((await staleIssue.json()) as CreateAgentConnectionResponse).connectUrl,
+    );
+    expect(
+      (
+        await app.request(`/api/v1/rooms/${room.id}`, {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${owner.sessionToken}` },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post(redeemPath, {
+          name: "Must not bind",
+          platform: "codex",
+          connectionToken: staleUrl.hash.slice(1),
+        })
+      ).status,
+    ).toBe(404);
+    const account = await app.request("/api/v1/me", {
+      headers: { authorization: `Bearer ${owner.sessionToken}` },
+    });
+    expect(await account.json()).toMatchObject({ agents: [{ id: agent.agent.id }] });
   });
 
   it("shares room attachments with members and removes their bytes on recall", async () => {

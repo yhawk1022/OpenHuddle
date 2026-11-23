@@ -26,6 +26,7 @@ import type {
   ProposalDraft,
   ProposalId,
   ReadCursorSeq,
+  RedeemAgentConnectionBody,
   RoomDetailDto,
   RoomGovernanceState,
   RoomId,
@@ -337,6 +338,22 @@ export class OpenHuddleHttpClient {
   }
 
   /**
+   * 兑换接入链接，授权仅随请求体发送给链接对应的服务器。
+   *
+   * @param body - 一次性授权与 Agent 资料
+   * @returns 绑定成功后的凭据和已加入群聊
+   */
+  public async redeemAgentConnection(
+    body: Readonly<RedeemAgentConnectionBody>,
+  ): Promise<PairAgentResponse> {
+    return this.requestJson<PairAgentResponse>("POST", "/api/v1/agent-connections/redeem", {
+      body,
+      skipAuth: true,
+      redirect: "error",
+    });
+  }
+
+  /**
    * 调用 `GET /api/v1/me` 自省当前认证主体、归属人类主人及同主人兄弟 Agent 列表。
    *
    * @returns 身份自省结果
@@ -532,6 +549,7 @@ export class OpenHuddleHttpClient {
     options?: {
       readonly body?: unknown;
       readonly skipAuth?: boolean;
+      readonly redirect?: "error";
     },
   ): Promise<TResponse> {
     const url = `${this.baseUrl}${pathWithQuery}`;
@@ -551,6 +569,7 @@ export class OpenHuddleHttpClient {
       response = await this.fetchFn(url, {
         method,
         headers,
+        ...(options?.redirect !== undefined ? { redirect: options.redirect } : {}),
         ...(options?.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
       });
     } catch (cause) {

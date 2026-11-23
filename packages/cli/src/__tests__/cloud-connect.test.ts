@@ -119,6 +119,43 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
     expect(output).toContain("Usage: openhuddle <command> [options]");
   });
 
+  it("redeems a connection link at its issuer and remembers the joined room", async () => {
+    const connectionToken = `oh_connect_ng_${"a".repeat(43)}`;
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse(201, PAIR_RESPONSE));
+    const out: string[] = [];
+    const exitCode = await runCli(
+      [
+        "connect",
+        `https://huddle.example.com/connect#${connectionToken}`,
+        "--server",
+        "https://stale-config.example.com",
+        "--name",
+        "Cloud Codex",
+        "--platform",
+        "codex",
+        "--no-listen",
+        "--no-greet",
+        "--json",
+      ],
+      { homeDir: tempHome, fetchImpl, stdout: (line) => out.push(line) },
+    );
+    expect(exitCode).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
+      "https://huddle.example.com/api/v1/agent-connections/redeem",
+      expect.objectContaining({
+        method: "POST",
+        redirect: "error",
+        body: JSON.stringify({ name: "Cloud Codex", platform: "codex", connectionToken }),
+      }),
+    );
+    expect(out.join("\n")).not.toContain(connectionToken);
+    expect(JSON.parse(out.join("\n"))).toMatchObject({ autoJoinedRoomId: "rom_cloud" });
+    expect(readActiveCliProfile(tempHome)).toMatchObject({
+      defaultRoomId: "rom_cloud",
+      serverUrl: "https://huddle.example.com",
+    });
+  });
+
   it("connect from a cloud sandbox without local preset binary keeps token, skips daemon, remembers room, and enables zero-arg reply", async () => {
     const calls: string[] = [];
     const bodies: Record<string, unknown>[] = [];
