@@ -21,7 +21,6 @@ import {
 } from "@openhuddle/protocol";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 import {
   type OptimisticMessageItem,
   type RoomMessagesCacheData,
@@ -113,7 +112,7 @@ export function mergeConfirmedMessageIntoCache(
   });
 
   return {
-    ok: true,
+    ...prev,
     messages: nextList,
     latestSeq: Math.max(prev.latestSeq, incoming.seq),
     governance: options?.nextGovernance ?? prev.governance,
@@ -311,32 +310,24 @@ export function useRealtimeSseSync(
           const isViewingRoom =
             activeRoomIdRef.current === event.roomId && document.visibilityState === "visible";
           const nextCursor = asReadCursorSeq(event.message.seq);
-          const roomSummary = queryClient
-            .getQueryData<{ readonly rooms: ReadonlyArray<RoomSummaryDto> }>(
-              huddleQueryKeys.rooms(),
-            )
-            ?.rooms.find((room) => room.id === event.roomId);
-          if (
-            !isViewingRoom &&
-            !event.message.author.isYou &&
-            event.message.seq > (roomSummary?.lastSeq ?? 0)
-          ) {
-            toast.info(roomSummary ? `${roomSummary.name} 有新消息` : "收到新消息", {
-              id: `room-notice-${event.roomId}`,
-              description: event.message.author.displayName,
-            });
-          }
-
-          // 1. 对目标房间消息流缓存做按 seq 幂等合并；若缓存尚未水合则保持未加载状态等待打开时拉取
-          queryClient.setQueryData<RoomMessagesCacheData>(
-            huddleQueryKeys.roomMessages(event.roomId),
-            (prev) => {
-              if (!prev) {
-                return undefined;
-              }
+          const messagesKey = huddleQueryKeys.roomMessages(event.roomId);
+          // 1. 首次拉取期间也保留实时帧，避免它刚好落在 HTTP 历史快照之外。
+          queryClient.setQueryData<RoomMessagesCacheData>(messagesKey, (prev) => {
+            if (prev) {
               return mergeConfirmedMessageIntoCache(prev, event.message);
-            },
-          );
+            }
+            if (queryClient.getQueryState(messagesKey)?.fetchStatus !== "fetching") {
+              return undefined;
+            }
+            const governance = queryClient
+              .getQueryData<{ readonly rooms: ReadonlyArray<RoomSummaryDto> }>(
+                huddleQueryKeys.rooms(),
+              )
+              ?.rooms.find((room) => room.id === event.roomId)?.governance;
+            return governance === undefined
+              ? undefined
+              : { ok: true, messages: [event.message], latestSeq: event.message.seq, governance };
+          });
 
           // 2. 同步更新左侧房间概览列表中的 lastSeq（若用户正停留在当前房间则同步推进已读游标避免假未读跳动）
           queryClient.setQueryData<{

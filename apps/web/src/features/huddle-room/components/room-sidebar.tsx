@@ -38,6 +38,7 @@ import {
   LogOut,
   MessageCircle,
   PauseCircle,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -71,7 +72,12 @@ import {
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
-import { getInitials, getPlatformVisualMeta, getReachVisualMeta } from "../../../lib/format.js";
+import {
+  getInitials,
+  getPlatformVisualMeta,
+  getReachVisualMeta,
+  getRoomDisplayName,
+} from "../../../lib/format.js";
 import type { SseConnectionStatus } from "../../../lib/sse-sync.js";
 
 /** 侧栏顶部分段标签枚举：`chats` = 聊天会话，`contacts` = 好友与 Agent 通讯录 */
@@ -85,6 +91,7 @@ export interface RoomSidebarProps {
   readonly currentUser: HumanUserDto;
   readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
   readonly friends?: ReadonlyArray<FriendContactDto> | undefined;
+  readonly friendRemarks: ReadonlyMap<UserId, string>;
   readonly incomingRequests?: ReadonlyArray<FriendRequestDto> | undefined;
   readonly discoverableAgents?: ReadonlyArray<SharedExternalAgentDto> | undefined;
   readonly rooms: ReadonlyArray<RoomSummaryDto>;
@@ -107,6 +114,7 @@ export interface RoomSidebarProps {
     | ((friendshipId: FriendshipId, displayName: string) => void)
     | undefined;
   readonly onRemoveFriend?: ((userId: UserId, displayName: string) => void) | undefined;
+  readonly onEditFriendRemark: (friend: FriendContactDto) => void;
   readonly onInspectSharedAgent?: ((agent: SharedExternalAgentDto) => void) | undefined;
   readonly onLogout: () => void;
   /** 点击通讯录中的个人 Agent 时打开名片详情；缺省回退至配对面板 */
@@ -255,9 +263,14 @@ export function RoomSidebar(props: RoomSidebarProps) {
             r.peer.email !== undefined &&
             r.peer.email.toLowerCase().includes(q)) ||
           (r.peer.kind === "agent" && r.peer.ownerDisplayName.toLowerCase().includes(q)));
-      return r.name.toLowerCase().includes(q) || r.topic.toLowerCase().includes(q) || peerMatch;
+      return (
+        getRoomDisplayName(r, props.friendRemarks).toLowerCase().includes(q) ||
+        r.name.toLowerCase().includes(q) ||
+        r.topic.toLowerCase().includes(q) ||
+        peerMatch
+      );
     });
-  }, [chatFilter, props.rooms, searchText]);
+  }, [chatFilter, props.friendRemarks, props.rooms, searchText]);
 
   const filteredFriends = useMemo(() => {
     const q = searchText.trim().toLowerCase();
@@ -265,7 +278,10 @@ export function RoomSidebar(props: RoomSidebarProps) {
       return friends;
     }
     return friends.filter(
-      (f) => f.user.displayName.toLowerCase().includes(q) || f.user.email.toLowerCase().includes(q),
+      (f) =>
+        f.remark?.toLowerCase().includes(q) ||
+        f.user.displayName.toLowerCase().includes(q) ||
+        f.user.email.toLowerCase().includes(q),
     );
   }, [friends, searchText]);
 
@@ -587,6 +603,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
           ) : (
             <ul className="space-y-1">
               {filteredRooms.map((room) => {
+                const displayName = getRoomDisplayName(room, props.friendRemarks);
                 const isActive = props.activeRoomId === room.id;
                 const isGroup = room.kind === "group";
                 const unreadCount = Math.max(0, room.lastSeq - room.yourLastReadSeq);
@@ -802,7 +819,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
 
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-[13.5px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
-                              {room.name}
+                              {displayName}
                             </span>
                             <span
                               className={cn(
@@ -956,6 +973,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
               <ul className="space-y-1">
                 {filteredFriends.map((friend) => {
                   const u = friend.user;
+                  const displayName = friend.remark ?? u.displayName;
                   const friendMenuItems: ReadonlyArray<AppContextMenuEntry> = [
                     ...(props.onStartDirectHumanChat !== undefined
                       ? [
@@ -967,6 +985,12 @@ export function RoomSidebar(props: RoomSidebarProps) {
                           } satisfies AppContextMenuEntry,
                         ]
                       : []),
+                    {
+                      id: `ctx-frd-remark-${u.userId}`,
+                      label: "编辑备注",
+                      icon: <Pencil className="h-3.5 w-3.5" />,
+                      onSelect: () => props.onEditFriendRemark(friend),
+                    },
                     {
                       id: `ctx-frd-copy-${u.userId}`,
                       label: "复制邮箱",
@@ -981,7 +1005,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                             label: "解除好友关系",
                             icon: <UserMinus className="h-3.5 w-3.5" />,
                             danger: true,
-                            onSelect: () => props.onRemoveFriend?.(u.userId, u.displayName),
+                            onSelect: () => props.onRemoveFriend?.(u.userId, displayName),
                           } satisfies AppContextMenuEntry,
                         ]
                       : []),
@@ -1004,7 +1028,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                             />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate text-[13.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                                {u.displayName}
+                                {displayName}
                               </span>
                               <span className="mt-0.5 block truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
                                 {u.email}
@@ -1012,19 +1036,17 @@ export function RoomSidebar(props: RoomSidebarProps) {
                             </span>
                           </button>
 
-                          {props.onStartDirectHumanChat !== undefined ? (
-                            <AppTooltip side="top" content="发起 1v1 私聊">
-                              <IconButton
-                                size="xs"
-                                variant="ghost"
-                                label={`给 ${u.displayName} 发私聊`}
-                                onClick={() => props.onStartDirectHumanChat?.(u.userId)}
-                                className="shrink-0 text-[#687082] opacity-100 transition hover:text-[#111318] md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
-                              >
-                                <MessageCircle className="h-3.5 w-3.5" />
-                              </IconButton>
-                            </AppTooltip>
-                          ) : null}
+                          <AppTooltip side="top" content="编辑备注">
+                            <IconButton
+                              size="xs"
+                              variant="ghost"
+                              label={`编辑 ${displayName} 的备注`}
+                              onClick={() => props.onEditFriendRemark(friend)}
+                              className="shrink-0 text-[#687082] dark:text-[#8E8E96]"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </IconButton>
+                          </AppTooltip>
                         </div>
                       </AppContextMenu>
                     </li>

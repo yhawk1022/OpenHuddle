@@ -143,6 +143,7 @@ export const pairingCodesTable = pgTable("pairing_codes", {
 /**
  * 人类用户间好友关系与待处理申请表（`friendships`，ADR-0005）。
  * 使用规范化无序对键 `pair_key`（`<lowUserId>:<highUserId>`）强制任意两人之间最多只有一条关系记录。
+ * 私有备注按查看者的高低位身份存储，解除关系时随关系行删除。
  */
 export const friendshipsTable = pgTable(
   "friendships",
@@ -163,6 +164,8 @@ export const friendshipsTable = pgTable(
       .references(() => usersTable.id, { onDelete: "cascade" }),
     status: text("status").notNull().default("pending"),
     note: text("note"),
+    userLowRemark: text("user_low_remark"),
+    userHighRemark: text("user_high_remark"),
     respondedAt: timestamp("responded_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -58,6 +58,8 @@ import {
   type RoomVisibility,
   type SendFriendRequestBody,
   type SendFriendRequestResponse,
+  type UpdateFriendRemarkBody,
+  type UpdateFriendRemarkResponse,
   type UpdateGovernanceBody,
   type UpdateMeBody,
   type UpdateOwnedAgentBody,
@@ -579,6 +581,23 @@ export async function declineFriendRequest(
     {
       method: "POST",
     },
+  );
+}
+
+/**
+ * 保存或清空当前登录用户为好友设置的私有备注。
+ *
+ * @param friendshipId - 当前好友关系 ID
+ * @param body - 备注文本，空字符串表示清除
+ * @returns 保存后的备注
+ */
+export async function updateFriendRemark(
+  friendshipId: FriendshipId,
+  body: Readonly<UpdateFriendRemarkBody>,
+): Promise<UpdateFriendRemarkResponse> {
+  return requestJson<UpdateFriendRemarkResponse>(
+    `/api/v1/friends/${encodeURIComponent(friendshipId)}/remark`,
+    { method: "PATCH", body },
   );
 }
 

@@ -84,9 +84,13 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     addressee_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'pending',
     note TEXT,
+    user_low_remark TEXT,
+    user_high_remark TEXT,
     responded_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  "ALTER TABLE friendships ADD COLUMN IF NOT EXISTS user_low_remark TEXT",
+  "ALTER TABLE friendships ADD COLUMN IF NOT EXISTS user_high_remark TEXT",
   "CREATE UNIQUE INDEX IF NOT EXISTS friendships_pair_key_unique_idx ON friendships (pair_key)",
   "CREATE INDEX IF NOT EXISTS friendships_low_status_idx ON friendships (user_low_id, status)",
   "CREATE INDEX IF NOT EXISTS friendships_high_status_idx ON friendships (user_high_id, status)",

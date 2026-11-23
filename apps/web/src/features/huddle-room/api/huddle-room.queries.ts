@@ -29,7 +29,13 @@ import {
   asMessageSeq,
   asReadCursorSeq,
 } from "@openhuddle/protocol";
-import { type QueryClient, queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  queryOptions,
+  replaceEqualDeep,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   type CreateRoomInput,
   type SynthesizeProposalInput,
@@ -57,6 +63,7 @@ import {
   sendFriendRequest,
   sendRoomMessage,
   synthesizeRoomProposal,
+  updateFriendRemark,
   updateRoomGovernance,
 } from "../../../lib/api-client.js";
 import {
@@ -113,6 +120,58 @@ export function roomDetailQueryOptions(roomId: RoomId) {
   });
 }
 
+const ROOM_HISTORY_PAGE_SIZE = 100;
+const historySnapshot = Symbol("roomHistorySnapshot");
+
+interface RoomHistorySnapshot extends RoomMessagesCacheData {
+  readonly historyThroughSeq: number;
+  readonly [historySnapshot]: {
+    readonly afterSeq: number;
+    readonly previousGovernance: RoomMessagesCacheData["governance"] | undefined;
+  };
+}
+
+function reconcileRoomHistory(cachedValue: unknown, incomingValue: unknown): RoomMessagesCacheData {
+  const cached = cachedValue as RoomMessagesCacheData | undefined;
+  const incoming = incomingValue as RoomMessagesCacheData | RoomHistorySnapshot;
+  if (!(historySnapshot in incoming)) {
+    return replaceEqualDeep(cached, incoming);
+  }
+
+  // 合并发生在 QueryClient 写入时，以保留请求期间到达的 SSE、发送确认和乐观气泡。
+  const { afterSeq, previousGovernance } = incoming[historySnapshot];
+  const confirmed = new Map(incoming.messages.map((message) => [message.seq, message]));
+  const pending: OptimisticMessageItem[] = [];
+  for (const message of cached?.messages ?? []) {
+    if (message._optimisticPending === true) {
+      pending.push(message);
+      continue;
+    }
+    const fetched = confirmed.get(message.seq);
+    if (
+      message.seq <= afterSeq ||
+      message.seq > incoming.historyThroughSeq ||
+      (fetched !== undefined &&
+        message.recalledAtIso !== undefined &&
+        fetched.recalledAtIso === undefined)
+    ) {
+      confirmed.set(message.seq, message);
+    }
+  }
+
+  const confirmedMessages = [...confirmed.values()].sort((a, b) => a.seq - b.seq);
+  return replaceEqualDeep(cached, {
+    ok: true,
+    messages: [...confirmedMessages, ...pending],
+    latestSeq: Math.max(cached?.latestSeq ?? 0, incoming.latestSeq),
+    historyThroughSeq: incoming.historyThroughSeq,
+    governance:
+      cached && previousGovernance !== undefined && cached.governance !== previousGovernance
+        ? cached.governance
+        : incoming.governance,
+  });
+}
+
 /**
  * 构造指定房间消息流与治理状态快照的 `queryOptions`。
  *
@@ -120,17 +179,44 @@ export function roomDetailQueryOptions(roomId: RoomId) {
  * @returns `/api/v1/rooms/:roomId/messages` 查询配置
  */
 export function roomMessagesQueryOptions(roomId: RoomId) {
+  const queryKey = huddleQueryKeys.roomMessages(roomId);
   return queryOptions({
-    queryKey: huddleQueryKeys.roomMessages(roomId),
-    queryFn: async (): Promise<RoomMessagesCacheData> => {
-      const response = await fetchRoomMessages(roomId, { afterSeq: 0, limit: 100 });
-      return {
+    queryKey,
+    queryFn: async ({ client, signal }): Promise<RoomMessagesCacheData> => {
+      const previous = client.getQueryData<RoomMessagesCacheData>(queryKey);
+      // 重连和恢复前台会失效查询，重读历史也能同步断线时发生的撤回。轮询只补增量。
+      const afterSeq = client.getQueryState(queryKey)?.isInvalidated
+        ? 0
+        : (previous?.historyThroughSeq ?? 0);
+      let page = await fetchRoomMessages(roomId, { afterSeq, limit: ROOM_HISTORY_PAGE_SIZE });
+      // 首响应记录本轮历史上界，持续有新消息的群也能结束本轮分页。
+      const snapshotSeq = page.latestSeq;
+      const messages = [...page.messages];
+      let historyThroughSeq = page.messages.at(-1)?.seq ?? afterSeq;
+      while (historyThroughSeq < snapshotSeq && page.messages.length === ROOM_HISTORY_PAGE_SIZE) {
+        signal.throwIfAborted();
+        page = await fetchRoomMessages(roomId, {
+          afterSeq: historyThroughSeq,
+          limit: ROOM_HISTORY_PAGE_SIZE,
+        });
+        messages.push(...page.messages);
+        historyThroughSeq = page.messages.at(-1)?.seq ?? historyThroughSeq;
+      }
+      if (page.messages.length < ROOM_HISTORY_PAGE_SIZE) {
+        // 账号清理可留下序号空洞，短页仍能覆盖此前的消息序号。
+        historyThroughSeq = Math.max(historyThroughSeq, page.latestSeq);
+      }
+      const snapshot: RoomHistorySnapshot = {
         ok: true,
-        messages: response.messages,
-        latestSeq: response.latestSeq,
-        governance: response.governance,
+        messages,
+        latestSeq: historyThroughSeq,
+        historyThroughSeq,
+        governance: page.governance,
+        [historySnapshot]: { afterSeq, previousGovernance: previous?.governance },
       };
+      return snapshot;
     },
+    structuralSharing: reconcileRoomHistory,
   });
 }
 
@@ -220,6 +306,36 @@ export function useDeclineFriendRequestMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.friends() });
       void queryClient.invalidateQueries({ queryKey: ["users", "search"] });
+    },
+  });
+}
+
+/**
+ * 保存备注后用服务端确认值同步通讯录缓存。
+ *
+ * @returns 好友备注更新 Mutation
+ */
+export function useUpdateFriendRemarkMutation() {
+  const queryClient = useQueryClient();
+  const { queryKey } = friendsOverviewQueryOptions();
+  return useMutation({
+    mutationFn: (input: { readonly friendshipId: FriendshipId; readonly remark: string }) =>
+      updateFriendRemark(input.friendshipId, { remark: input.remark }),
+    onSuccess: async (response, { friendshipId }) => {
+      await queryClient.cancelQueries({ queryKey, exact: true });
+      queryClient.setQueryData(
+        queryKey,
+        (previous) =>
+          previous && {
+            ...previous,
+            friends: previous.friends.map((friend) =>
+              friend.friendshipId === friendshipId
+                ? { ...friend, remark: response.remark ?? undefined }
+                : friend,
+            ),
+          },
+      );
+      void queryClient.invalidateQueries({ queryKey, exact: true });
     },
   });
 }

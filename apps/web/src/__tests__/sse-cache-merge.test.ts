@@ -12,12 +12,16 @@ import {
   asReadCursorSeq,
   createDefaultGovernanceState,
 } from "@openhuddle/protocol";
-import { describe, expect, it } from "vitest";
-import type { RoomMessagesCacheData } from "../lib/query-keys.js";
+import { QueryClient } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { roomMessagesQueryOptions } from "../features/huddle-room/api/huddle-room.queries.js";
+import { type RoomMessagesCacheData, huddleQueryKeys } from "../lib/query-keys.js";
 import { mergeConfirmedMessageIntoCache, removeRoomFromSummaryListCache } from "../lib/sse-sync.js";
 
 const ROOM_ID = "rom_test_web_01" as RoomId;
 const USER_ID = "usr_owner_01" as UserId;
+
+afterEach(() => vi.unstubAllGlobals());
 
 function makeMessage(seq: number, content: string, isYou = true): MessageDto {
   return {
@@ -38,6 +42,98 @@ function makeMessage(seq: number, content: string, isYou = true): MessageDto {
     createdAtIso: "2026-11-12T10:00:00.000Z",
   };
 }
+
+function historyPage(latestSeq: number, messages: readonly MessageDto[]): Response {
+  return Response.json({
+    ok: true,
+    latestSeq,
+    messages,
+    governance: createDefaultGovernanceState(),
+  });
+}
+
+describe("房间历史补拉", () => {
+  it("初次加载第 101 条以后的消息，常规补拉从最后一页继续", async () => {
+    const client = new QueryClient();
+    const options = roomMessagesQueryOptions(ROOM_ID);
+    const messages = Array.from({ length: 107 }, (_, index) => makeMessage(index + 1, "history"));
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    fetch.mockResolvedValueOnce(historyPage(107, messages.slice(0, 100)));
+    fetch.mockResolvedValueOnce(historyPage(107, messages.slice(100)));
+    fetch.mockResolvedValueOnce(historyPage(108, [makeMessage(108, "new message")]));
+    vi.stubGlobal("fetch", fetch);
+
+    await client.fetchQuery(options);
+    expect(client.getQueryData(options.queryKey)?.messages).toHaveLength(107);
+    await client.fetchQuery(options);
+
+    const cursors = fetch.mock.calls.map(([url]) =>
+      new URL(String(url), "http://localhost").searchParams.get("afterSeq"),
+    );
+    expect(cursors).toEqual(["0", "100", "107"]);
+    expect(client.getQueryData(options.queryKey)?.messages.map((message) => message.seq)).toEqual(
+      Array.from({ length: 108 }, (_, index) => index + 1),
+    );
+  });
+
+  it("重连补拉期间保留实时新增、撤回和待发送消息", async () => {
+    const client = new QueryClient();
+    const options = roomMessagesQueryOptions(ROOM_ID);
+    const key = huddleQueryKeys.roomMessages(ROOM_ID);
+    const first = makeMessage(1, "first", false);
+    const second = makeMessage(2, "missed during disconnect", false);
+    const third = makeMessage(3, "arrived over SSE", false);
+    const pending = {
+      ...makeMessage(4, "pending"),
+      _opKey: "op_still_pending" as OperationKey,
+      _optimisticPending: true as const,
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(historyPage(1, [first]));
+    let completeRequest: (response: Response) => void = () => {
+      throw new Error("History request did not start");
+    };
+    fetch.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          completeRequest = resolve;
+        }),
+    );
+    fetch.mockResolvedValueOnce(historyPage(3, [third]));
+    vi.stubGlobal("fetch", fetch);
+    await client.fetchQuery(options);
+
+    await client.invalidateQueries({ queryKey: key, refetchType: "none" });
+    const refresh = client.fetchQuery(options);
+    const recalled = { ...first, recalledAtIso: "2026-11-12T10:01:00.000Z" };
+    client.setQueryData<RoomMessagesCacheData>(key, (cached) => {
+      if (!cached) {
+        throw new Error("Expected hydrated cache");
+      }
+      const updated = mergeConfirmedMessageIntoCache(
+        mergeConfirmedMessageIntoCache(cached, recalled),
+        third,
+      );
+      return { ...updated, messages: [...updated.messages, pending] };
+    });
+    completeRequest(historyPage(2, [first, second]));
+    await refresh;
+
+    expect(client.getQueryData(options.queryKey)).toMatchObject({
+      latestSeq: 3,
+      historyThroughSeq: 2,
+      messages: [recalled, second, third, pending],
+    });
+    expect(String(fetch.mock.calls[1]?.[0])).toContain("afterSeq=0");
+    await client.fetchQuery(options);
+    expect(String(fetch.mock.calls[2]?.[0])).toContain("afterSeq=2");
+    expect(client.getQueryData(options.queryKey)?.messages).toEqual([
+      recalled,
+      second,
+      third,
+      pending,
+    ]);
+  });
+});
 
 describe("@openhuddle/web — SSE & optimistic QueryClient cache merge invariants", () => {
   it("deduplicates optimistic bubble when SSE frame arrives before HTTP response and preserves monotonic seq order", () => {

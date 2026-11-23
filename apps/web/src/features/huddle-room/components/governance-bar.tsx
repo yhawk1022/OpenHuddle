@@ -53,6 +53,7 @@ import { getReachVisualMeta } from "../../../lib/format.js";
 /** `GovernanceBar` 入参属性 */
 export interface GovernanceBarProps {
   readonly room: RoomDetailDto;
+  readonly roomDisplayName: string;
   readonly currentUserId?: UserId | undefined;
   readonly governance: RoomGovernanceState;
   readonly proposalsCount: number;
@@ -62,9 +63,8 @@ export interface GovernanceBarProps {
   readonly isUpdatingGovernance: boolean;
   readonly isInspectorOpen: boolean;
   readonly onUpdateGovernance: (patch: UpdateGovernanceBody) => void;
-  readonly onOpenAddAgentModal: () => void;
-  /** 点击群聊顶栏「+ 邀请」时打开拉好友/本人 Agent 弹窗（缺省回退至 `onOpenAddAgentModal`） */
-  readonly onOpenInviteModal?: (() => void) | undefined;
+  /** 点击群聊顶栏「邀请」时打开成员选择弹窗 */
+  readonly onOpenInviteModal: () => void;
   readonly onOpenProposals: () => void;
   readonly onToggleInspector: () => void;
   /** 移动端返回会话列表（仅 `< md` 可见） */
@@ -248,8 +248,8 @@ export function GovernanceBar(props: GovernanceBarProps) {
           </IconButton>
 
           <div className="flex min-w-0 flex-1 items-baseline gap-2">
-            <h1 className="shrink-0 max-w-[14rem] truncate text-[14.5px] font-semibold tracking-[-0.015em] text-[#111318] sm:max-w-[18rem] sm:text-[15px] dark:text-[#F2F2F4]">
-              {props.room.name}
+            <h1 className="max-w-[14rem] truncate text-[14.5px] font-semibold tracking-[-0.015em] text-[#111318] sm:max-w-[18rem] sm:text-[15px] dark:text-[#F2F2F4]">
+              {props.roomDisplayName}
             </h1>
             <span
               aria-hidden="true"
@@ -283,6 +283,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
           >
             <button
               type="button"
+              aria-label={isGroupRoom ? "群成员" : isDirectHuman ? "会话信息" : "Agent 详情"}
               aria-pressed={props.isInspectorOpen}
               onClick={props.onToggleInspector}
               className={cn(
@@ -523,7 +524,8 @@ export function GovernanceBar(props: GovernanceBarProps) {
             <AppTooltip side="bottom" content="把好友或你的 Agent 拉进群">
               <button
                 type="button"
-                onClick={props.onOpenInviteModal ?? props.onOpenAddAgentModal}
+                aria-label="邀请群成员"
+                onClick={props.onOpenInviteModal}
                 className={cn(
                   CONTROL_ITEM_BASE_CLASS,
                   "bg-black/[0.06] px-2.5 text-[#111318] hover:bg-black/[0.10] sm:px-3.5 dark:bg-white/[0.09] dark:text-[#F2F2F4] dark:hover:bg-white/[0.15]",

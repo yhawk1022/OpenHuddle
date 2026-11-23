@@ -20,7 +20,7 @@ import {
   type UserId,
   type UserRelationshipStatus,
 } from "@openhuddle/protocol";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { computeAgentReachState } from "../../infra/identity-stamp.js";
 import type { RealtimeBus } from "../../infra/realtime-bus.js";
 import { extractSqlRows } from "../../infra/sql-rows.js";
@@ -364,6 +364,39 @@ export class FriendsRepository {
   }
 
   /**
+   * 原子更新已接受关系中调用者自己的备注。
+   *
+   * @param friendshipId - 当前好友关系主键
+   * @param viewerUserId - 已认证的备注所有者
+   * @param remark - 规范化备注，`null` 表示清空
+   * @returns 是否命中已接受且属于调用者的关系
+   */
+  public async updateFriendRemark(
+    friendshipId: FriendshipId,
+    viewerUserId: UserId,
+    remark: string | null,
+  ): Promise<boolean> {
+    const isLowUser = eq(friendshipsTable.userLowId, viewerUserId);
+    const isHighUser = eq(friendshipsTable.userHighId, viewerUserId);
+    // 资格校验和更新使用同一条语句，并发改备注时保留对方锁定后的当前值。
+    const updated = await this.db
+      .update(friendshipsTable)
+      .set({
+        userLowRemark: sql`CASE WHEN ${isLowUser} THEN ${remark} ELSE ${friendshipsTable.userLowRemark} END`,
+        userHighRemark: sql`CASE WHEN ${isHighUser} THEN ${remark} ELSE ${friendshipsTable.userHighRemark} END`,
+      })
+      .where(
+        and(
+          eq(friendshipsTable.id, friendshipId),
+          eq(friendshipsTable.status, "accepted"),
+          or(isLowUser, isHighUser),
+        ),
+      )
+      .returning({ id: friendshipsTable.id });
+    return updated.length > 0;
+  }
+
+  /**
    * 将好友申请标记为已接受（`status = 'accepted'`）。
    *
    * @param friendshipId - 好友关系主键
@@ -517,6 +550,8 @@ export class FriendsRepository {
           f.addressee_user_id AS "addresseeUserId",
           f.status AS "status",
           f.note AS "note",
+          CASE WHEN f.user_low_id = ${viewerUserId}
+            THEN f.user_low_remark ELSE f.user_high_remark END AS "viewerRemark",
           f.responded_at AS "respondedAt",
           f.created_at AS "createdAt",
           u_peer.id AS "peerUserId",
@@ -614,6 +649,7 @@ export class FriendsRepository {
       readonly addresseeUserId: string;
       readonly status: string;
       readonly note: string | null;
+      readonly viewerRemark: string | null;
       readonly respondedAt: Date | string | null;
       readonly createdAt: Date | string;
       readonly peerUserId: string;
@@ -635,6 +671,7 @@ export class FriendsRepository {
         friends.push({
           friendshipId,
           user: peerProfile,
+          ...(row.viewerRemark !== null ? { remark: row.viewerRemark } : {}),
           friendsSinceIso: friendsSince.toISOString(),
           ...(row.directRoomId !== null ? { directRoomId: row.directRoomId as RoomId } : {}),
           sharedAgents: sharedAgentsByOwner.get(peerUserId) ?? [],

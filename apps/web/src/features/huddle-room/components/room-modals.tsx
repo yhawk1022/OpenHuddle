@@ -296,7 +296,9 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
                         : "bg-white/80 text-[#3B414E] ring-1 ring-inset ring-black/[0.08] hover:bg-white dark:bg-white/[0.04] dark:text-[#C4C4CA] dark:ring-white/[0.09] dark:hover:bg-white/[0.08]",
                     )}
                   >
-                    <span className="max-w-[10rem] truncate">{friend.user.displayName}</span>
+                    <span className="max-w-[10rem] truncate">
+                      {friend.remark ?? friend.user.displayName}
+                    </span>
                     {isSelected ? (
                       <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                     ) : null}

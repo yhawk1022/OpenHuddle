@@ -12,11 +12,29 @@ import {
   type AgentReachState,
   type MessageDto,
   type OperationKey,
+  type RoomSummaryDto,
+  type UserId,
   assertNever,
 } from "@openhuddle/protocol";
 
 /** 消息可撤回的最大时间窗口（2 分钟 = 120,000 毫秒） */
 export const MESSAGE_RECALL_WINDOW_MS = 120_000;
+
+/**
+ * 获取当前登录用户看到的会话标题，好友私聊优先使用其私有备注。
+ *
+ * @param room - 服务端返回的会话概览
+ * @param friendRemarks - 当前用户按好友 ID 索引的私有备注
+ * @returns 仅用于 Web 展示的会话名称
+ */
+export function getRoomDisplayName(
+  room: RoomSummaryDto,
+  friendRemarks: ReadonlyMap<UserId, string>,
+): string {
+  return room.kind === "direct_human" && room.peer?.kind === "human"
+    ? (friendRemarks.get(room.peer.userId) ?? room.name)
+    : room.name;
+}
 
 /**
  * 获取引用与通知中的消息摘要，纯媒体消息显示对应的媒体类别。

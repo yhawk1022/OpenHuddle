@@ -16,6 +16,8 @@ import type {
   PublicUserProfileDto,
   SendFriendRequestBody,
   SendFriendRequestResponse,
+  UpdateFriendRemarkBody,
+  UpdateFriendRemarkResponse,
   UserId,
 } from "@openhuddle/protocol";
 import { assertHumanCaller } from "../../infra/auth-middleware.js";
@@ -341,6 +343,36 @@ export class FriendsService {
         this.realtimeBus.publishToUser(peerUserId, { type: "friendship.updated" }),
       ]);
     }
+  }
+
+  /**
+   * 保存或清空已接受关系中当前人类调用者的私有备注。
+   *
+   * @param caller - 当前已认证调用者
+   * @param friendshipId - 当前好友关系主键
+   * @param body - 已通过协议校验的备注
+   * @returns 保存后的备注
+   * @throws 关系未接受、已解除或不属于调用者时返回 404
+   */
+  public async updateFriendRemark(
+    caller: Readonly<AuthenticatedCaller>,
+    friendshipId: FriendshipId,
+    body: Readonly<UpdateFriendRemarkBody>,
+  ): Promise<UpdateFriendRemarkResponse> {
+    const human = assertHumanCaller(caller);
+    const remark = body.remark === "" ? null : body.remark;
+    const updated = await this.repo.updateFriendRemark(friendshipId, human.userId, remark);
+    if (!updated) {
+      throw new AppError({
+        code: "NOT_FOUND",
+        statusCode: 404,
+        message: "该好友关系不存在或已失效。",
+      });
+    }
+
+    // 写入提交后仅通知设置者的会话，事件无需携带备注内容。
+    await this.realtimeBus.publishToUser(human.userId, { type: "friendship.updated" });
+    return { ok: true, remark };
   }
 
   /**

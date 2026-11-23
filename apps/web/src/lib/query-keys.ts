@@ -39,6 +39,8 @@ export interface RoomMessagesCacheData {
   readonly ok: true;
   readonly messages: ReadonlyArray<OptimisticMessageItem>;
   readonly latestSeq: number;
+  /** HTTP 已核对的历史上界。实时帧可能乱序到达，最新可见序号不足以证明此前已补齐。 */
+  readonly historyThroughSeq?: number;
   readonly governance: RoomGovernanceState;
 }
 

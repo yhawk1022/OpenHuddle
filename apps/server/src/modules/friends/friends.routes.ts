@@ -16,6 +16,8 @@ import {
   RemoveFriendshipResponseSchema,
   SendFriendRequestBodySchema,
   SendFriendRequestResponseSchema,
+  UpdateFriendRemarkBodySchema,
+  UpdateFriendRemarkResponseSchema,
   UserIdSchema,
 } from "@openhuddle/protocol";
 import { createRequireAuthMiddleware } from "../../infra/auth-middleware.js";
@@ -128,6 +130,30 @@ const declineFriendRequestRoute = createRoute({
   },
 });
 
+const updateFriendRemarkRoute = createRoute({
+  method: "patch",
+  path: "/friends/{friendshipId}/remark",
+  tags: ["Friends"],
+  summary: "Set or clear your private remark for an accepted friend (Human only)",
+  request: {
+    params: FriendshipIdParamsSchema,
+    body: {
+      required: true,
+      content: { "application/json": { schema: UpdateFriendRemarkBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Saved private remark, or null if cleared",
+      content: { "application/json": { schema: UpdateFriendRemarkResponseSchema } },
+    },
+    400: { description: "Invalid remark", content: errorJsonContent },
+    401: { description: "Caller is unauthenticated", content: errorJsonContent },
+    403: { description: "Caller is not a human user", content: errorJsonContent },
+    404: { description: "Accepted friendship unavailable to caller", content: errorJsonContent },
+  },
+});
+
 const removeFriendRoute = createRoute({
   method: "delete",
   path: "/friends/{friendUserId}",
@@ -194,6 +220,17 @@ export function createFriendsRouter(deps: {
     const { friendshipId } = c.req.valid("param");
     await deps.friendsService.declineOrCancelRequest(caller, friendshipId);
     return c.json({ ok: true as const }, 200);
+  });
+
+  router.openapi(updateFriendRemarkRoute, async (c) => {
+    const caller = c.get("caller");
+    const { friendshipId } = c.req.valid("param");
+    const result = await deps.friendsService.updateFriendRemark(
+      caller,
+      friendshipId,
+      c.req.valid("json"),
+    );
+    return c.json(result, 200);
   });
 
   router.openapi(removeFriendRoute, async (c) => {

@@ -7,7 +7,7 @@
  * 2. 1v1 Agent 单聊与跨主人红队隔离：主人单聊免 `@` 自动唤醒（`reason: "owner_command"`）；默认禁止外部用户单聊（`403 FORBIDDEN_EXTERNAL_AGENT_DM_DISABLED`）；开启 `allowExternalDm` 后外部用户单聊唤醒原因降级为 `"direct_mention"` 且消息强制盖章 `trustLevel: "external_participant"`，主人随时关停即刻生效。
  * 3. 单聊不可变名册守卫：单聊会话不暴露 `inviteToken`，且拒绝拉人、退群、配对码自动入群与开启 `public_shareable`（`400 DIRECT_ROOM_IMMUTABLE_ROSTER`）。
  * 4. 实时用户级 SSE 动态挂载：已连接 SSE 的好友在被拉入新私聊或新群聊时无需重连即可收到 `room.upserted` 及后续 `message.created`。
- * 5. 群聊直拉好友：建群 `initialUserIds` 与存量群 `POST /rooms/{id}/members` 仅允许拉入已通过好友与本人名下 Agent。
+ * 5. 群聊直拉成员：人类群成员可拉入已通过好友与本人名下 Agent，新增成员实时同步给已订阅的群友。
  */
 import { type ManagedDatabase, createDatabaseClient, ensureCoreSchema } from "@openhuddle/db";
 import type {
@@ -23,6 +23,7 @@ import type {
   RoomSummaryDto,
   SendFriendRequestResponse,
   SseEvent,
+  UpdateFriendRemarkResponse,
   UpdateOwnedAgentResponse,
   VerifyOtpResponse,
 } from "@openhuddle/protocol";
@@ -343,6 +344,109 @@ describe("@openhuddle/server — ADR-0005 direct chats, friendships & external a
     };
     expect(historyBody.messages).toHaveLength(1);
     expect(historyBody.messages[0]?.content).toBe("Hey Bob, direct 1-on-1 works!");
+  });
+
+  it("updates and clears private friend remarks without changing the other user's contact", async () => {
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      PUBLIC_BASE_URL: "https://huddle.example.com",
+      DATABASE_URL: "memory://",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus });
+    const alice = await loginHuman(app, "alice@example.com", "Alice");
+    const bob = await loginHuman(app, "bob@example.com", "Bob");
+    const charlie = await loginHuman(app, "charlie@example.com", "Charlie");
+    const aliceAgent = await pairOwnedAgent(app, alice.sessionToken, "AliceCodex");
+
+    const openApi = await app.request("/api/openapi.json");
+    expect(openApi.status).toBe(200);
+    expect(await openApi.json()).toHaveProperty([
+      "paths",
+      "/api/v1/friends/{friendshipId}/remark",
+      "patch",
+    ]);
+
+    const auth = (token: string) => ({ authorization: `Bearer ${token}` });
+    const jsonHeaders = (token: string) => ({ ...auth(token), "content-type": "application/json" });
+    const request = await app.request("/api/v1/friends/requests", {
+      method: "POST",
+      headers: jsonHeaders(alice.sessionToken),
+      body: JSON.stringify({ targetUserId: bob.user.id, note: "申请附言" }),
+    });
+    expect(request.status).toBe(201);
+    const { friendshipId } = (await request.json()) as SendFriendRequestResponse;
+    const remarkPath = `/api/v1/friends/${friendshipId}/remark`;
+    const updateRemark = (token: string, remark: string) =>
+      app.request(remarkPath, {
+        method: "PATCH",
+        headers: jsonHeaders(token),
+        body: JSON.stringify({ remark }),
+      });
+    const overview = async (token: string): Promise<FriendsOverviewResponse> => {
+      const res = await app.request("/api/v1/friends", { headers: auth(token) });
+      expect(res.status).toBe(200);
+      return (await res.json()) as FriendsOverviewResponse;
+    };
+
+    expect((await updateRemark(alice.sessionToken, "待审时设置")).status).toBe(404);
+    expect((await overview(bob.sessionToken)).incomingRequests[0]?.note).toBe("申请附言");
+    const accepted = await app.request(`/api/v1/friends/requests/${friendshipId}/accept`, {
+      method: "POST",
+      headers: auth(bob.sessionToken),
+    });
+    expect(accepted.status).toBe(200);
+    expect((await overview(alice.sessionToken)).friends[0]).not.toHaveProperty("remark");
+    expect((await updateRemark(charlie.sessionToken, "他人的关系")).status).toBe(404);
+    expect((await updateRemark(aliceAgent.token, "Agent 设置")).status).toBe(403);
+    expect((await updateRemark(alice.sessionToken, "a".repeat(81))).status).toBe(400);
+    expect((await updateRemark(alice.sessionToken, "两行\n文本")).status).toBe(400);
+
+    const aliceEvents: SseEvent[] = [];
+    const bobEvents: SseEvent[] = [];
+    const stopAlice = bus.subscribeUser(alice.user.id, (event) => aliceEvents.push(event));
+    const stopBob = bus.subscribeUser(bob.user.id, (event) => bobEvents.push(event));
+    const saveResult = await updateRemark(alice.sessionToken, "  项目搭档  ");
+    expect(saveResult.status).toBe(200);
+    expect((await saveResult.json()) as UpdateFriendRemarkResponse).toEqual({
+      ok: true,
+      remark: "项目搭档",
+    });
+    expect(aliceEvents).toEqual([{ type: "friendship.updated" }]);
+    expect(bobEvents).toEqual([]);
+    expect((await overview(bob.sessionToken)).friends[0]).not.toHaveProperty("remark");
+    stopAlice();
+    stopBob();
+
+    const [aliceEdit, bobEdit] = await Promise.all([
+      updateRemark(alice.sessionToken, "前端搭档"),
+      updateRemark(bob.sessionToken, "后端搭档"),
+    ]);
+    expect([aliceEdit.status, bobEdit.status]).toEqual([200, 200]);
+    expect((await overview(alice.sessionToken)).friends[0]).toMatchObject({
+      user: { displayName: "Bob" },
+      remark: "前端搭档",
+    });
+    expect((await overview(bob.sessionToken)).friends[0]).toMatchObject({
+      user: { displayName: "Alice" },
+      remark: "后端搭档",
+    });
+
+    const cleared = await updateRemark(alice.sessionToken, "   ");
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()) as UpdateFriendRemarkResponse).toEqual({
+      ok: true,
+      remark: null,
+    });
+    expect((await overview(alice.sessionToken)).friends[0]).not.toHaveProperty("remark");
+    expect((await overview(bob.sessionToken)).friends[0]?.remark).toBe("后端搭档");
+
+    const removed = await app.request(`/api/v1/friends/${bob.user.id}`, {
+      method: "DELETE",
+      headers: auth(alice.sessionToken),
+    });
+    expect(removed.status).toBe(200);
+    expect((await updateRemark(bob.sessionToken, "旧关系")).status).toBe(404);
   });
 
   it("enforces 1v1 direct_agent auto-wake, cross-owner allowExternalDm trust sandboxing, instant revocation, and immutable direct roster guards", async () => {
@@ -671,5 +775,98 @@ describe("@openhuddle/server — ADR-0005 direct chats, friendships & external a
     const addBody = (await goodAddRes.json()) as { ok: true; room: RoomDetailDto };
     // Bob 已在群内被幂等跳过，新增 Charlie 与 AliceHelper 后共 4 名成员
     expect(addBody.room.members).toHaveLength(4);
+  });
+
+  it("lets an ordinary group member add their own agent and refreshes existing room streams", async () => {
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      PUBLIC_BASE_URL: "https://huddle.example.com",
+      DATABASE_URL: "memory://",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus });
+    const alice = await loginHuman(app, "alice@example.com", "Alice");
+    const bob = await loginHuman(app, "bob@example.com", "Bob");
+    const aliceAgent = await pairOwnedAgent(app, alice.sessionToken, "AliceHelper");
+    const bobAgent = await pairOwnedAgent(app, bob.sessionToken, "BobHelper");
+
+    const post = (path: string, token: string, body: object) =>
+      app.request(`/api/v1${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+    const created = await post("/rooms", alice.sessionToken, { name: "Agent collaboration" });
+    expect(created.status).toBe(201);
+    const { room } = (await created.json()) as { ok: true; room: RoomDetailDto };
+    const addPath = `/rooms/${room.id}/members`;
+    const ownAgent = { agentIds: [bobAgent.agent.id] };
+
+    const nonMember = await post(addPath, bob.sessionToken, ownAgent);
+    expect(nonMember.status).toBe(403);
+    expect(((await nonMember.json()) as ApiErrorEnvelope).error.code).toBe(
+      "FORBIDDEN_NOT_ROOM_MEMBER",
+    );
+
+    const joined = await post("/join", bob.sessionToken, { inviteToken: room.inviteToken });
+    expect(joined.status).toBe(200);
+    const foreignAgent = await post(addPath, bob.sessionToken, { agentIds: [aliceAgent.agent.id] });
+    expect(foreignAgent.status).toBe(403);
+    expect(((await foreignAgent.json()) as ApiErrorEnvelope).error.code).toBe(
+      "FORBIDDEN_NOT_OWNER",
+    );
+
+    const abort = new AbortController();
+    const openEvents = async (token: string) => {
+      const response = await app.request("/api/v1/events", {
+        headers: { authorization: `Bearer ${token}` },
+        signal: abort.signal,
+      });
+      expect(response.status).toBe(200);
+      const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
+      if (!reader) {
+        throw new Error("Expected event stream body");
+      }
+      expect((await reader.read()).value).toContain("event: connected");
+      return reader;
+    };
+
+    try {
+      const [ownerEvents, agentEvents] = await Promise.all([
+        openEvents(alice.sessionToken),
+        openEvents(bobAgent.token),
+      ]);
+      const added = await post(addPath, bob.sessionToken, ownAgent);
+      expect(added.status).toBe(200);
+      const { room: updated } = (await added.json()) as { ok: true; room: RoomDetailDto };
+      expect(updated.members).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ userId: bob.user.id, role: "member" }),
+          expect.objectContaining({ agentId: bobAgent.agent.id, ownerUserId: bob.user.id }),
+        ]),
+      );
+      expect(updated.members).toHaveLength(3);
+
+      const upsert = JSON.stringify({ type: "room.upserted", roomId: room.id });
+      expect((await ownerEvents.read()).value).toContain(upsert);
+      expect((await agentEvents.read()).value).toContain(upsert);
+
+      const retried = await post(addPath, bob.sessionToken, ownAgent);
+      expect(retried.status).toBe(200);
+      const { room: retriedRoom } = (await retried.json()) as { ok: true; room: RoomDetailDto };
+      expect(retriedRoom.members).toHaveLength(3);
+
+      // 消息作为下一帧，验证重复添加不广播，Agent 也已在原连接上订阅群聊。
+      const message = await post(`/rooms/${room.id}/messages`, alice.sessionToken, {
+        content: "Welcome to the group",
+        opKey: "op_group_agent_welcome",
+      });
+      expect(message.status).toBe(201);
+      expect((await ownerEvents.read()).value).toContain("event: message.created");
+      expect((await agentEvents.read()).value).toContain("event: message.created");
+    } finally {
+      abort.abort();
+    }
   });
 });

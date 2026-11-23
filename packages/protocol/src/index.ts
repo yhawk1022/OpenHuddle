@@ -141,11 +141,14 @@ export {
   FriendContactDtoSchema,
   FriendRequestDtoSchema,
   FriendsOverviewResponseSchema,
+  MAX_FRIEND_REMARK_LENGTH,
   PublicUserProfileDtoSchema,
   RemoveFriendshipResponseSchema,
   SendFriendRequestBodySchema,
   SendFriendRequestResponseSchema,
   SharedExternalAgentDtoSchema,
+  UpdateFriendRemarkBodySchema,
+  UpdateFriendRemarkResponseSchema,
   UserRelationshipStatusSchema,
   type AcceptFriendRequestResponse,
   type DirectoryUserSearchItemDto,
@@ -159,6 +162,8 @@ export {
   type SendFriendRequestBody,
   type SendFriendRequestResponse,
   type SharedExternalAgentDto,
+  type UpdateFriendRemarkBody,
+  type UpdateFriendRemarkResponse,
   type UserRelationshipStatus,
 } from "./friends.js";
 

@@ -6,16 +6,16 @@
  * 1. 好友申请制闭环：支持按昵称或邮箱实时搜索站内活跃用户，区分 `friends`、`incoming_pending`、`outgoing_pending`、`none` 与 `self` 五态并内联处理收发申请。
  * 2. 群内直拉防重过滤：`InviteMembersModal` 自动剔除已在当前群内的好友与本人 Agent，一次提交原子入群并实时推送 `room.upserted`。
  */
-import type {
-  AgentId,
-  FriendContactDto,
-  FriendRequestDto,
-  FriendshipId,
-  OwnedAgentSummaryDto,
-  RoomDetailDto,
-  RoomId,
-  RoomMemberDto,
-  UserId,
+import {
+  type AgentId,
+  type FriendContactDto,
+  type FriendRequestDto,
+  type FriendshipId,
+  MAX_FRIEND_REMARK_LENGTH,
+  type OwnedAgentSummaryDto,
+  type RoomId,
+  type RoomMemberDto,
+  type UserId,
 } from "@openhuddle/protocol";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -24,6 +24,7 @@ import {
   Clock,
   Mail,
   MessageCircle,
+  Pencil,
   Search,
   UserCheck,
   UserPlus,
@@ -42,6 +43,7 @@ import {
   useAddRoomMembersMutation,
   useDeclineFriendRequestMutation,
   useSendFriendRequestMutation,
+  useUpdateFriendRemarkMutation,
   userSearchQueryOptions,
 } from "../api/huddle-room.queries.js";
 
@@ -409,9 +411,80 @@ export function AddFriendModal(props: AddFriendModalProps) {
   );
 }
 
+/**
+ * 编辑自己的好友备注。保存失败时保留输入，便于重试。
+ *
+ * @param props - 当前好友与弹窗关闭回调
+ * @returns 备注编辑弹窗
+ */
+export function EditFriendRemarkModal(props: {
+  readonly friend: FriendContactDto;
+  readonly onClose: () => void;
+}) {
+  const { friend, onClose } = props;
+  const [remark, setRemark] = useState(friend.remark ?? "");
+  const mutation = useUpdateFriendRemarkMutation();
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    if (mutation.isPending) {
+      return;
+    }
+    mutation.mutate({ friendshipId: friend.friendshipId, remark }, { onSuccess: onClose });
+  };
+
+  return (
+    <ModalDialog
+      open={true}
+      onClose={() => {
+        if (!mutation.isPending) {
+          onClose();
+        }
+      }}
+      title="编辑好友备注"
+      subtitle={`给 ${friend.user.displayName} 设置备注，仅自己可见。`}
+      maxWidthClass="max-w-sm"
+      icon={<Pencil className="h-4 w-4" />}
+    >
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <label htmlFor="friend-remark" className="text-[13px] font-medium">
+          备注名
+        </label>
+        <AppInput
+          id="friend-remark"
+          type="text"
+          value={remark}
+          onChange={(event) => setRemark(event.target.value)}
+          placeholder={friend.user.displayName}
+          maxLength={MAX_FRIEND_REMARK_LENGTH}
+          disabled={mutation.isPending}
+          aria-describedby="friend-remark-hint"
+        />
+        <p id="friend-remark-hint" className="text-xs text-[#687082] dark:text-[#8E8E96]">
+          留空并保存可恢复原昵称。
+        </p>
+        {mutation.isError ? (
+          <p role="alert" className="text-xs text-[#C81E1E] dark:text-[#FCA5A5]">
+            {formatErrorMessage(mutation.error, "保存备注失败，请重试。")}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2">
+          <AppButton variant="secondary" disabled={mutation.isPending} onClick={onClose}>
+            取消
+          </AppButton>
+          <AppButton type="submit" isLoading={mutation.isPending}>
+            保存
+          </AppButton>
+        </div>
+      </form>
+    </ModalDialog>
+  );
+}
+
 /** `InviteMembersModal` 入参属性 */
 export interface InviteMembersModalProps {
-  readonly open: boolean;
+  /** 从群成员面板进入时，可仅显示自己名下的 Agent。 */
+  readonly mode: "members" | "agents";
   readonly onClose: () => void;
   readonly roomId: RoomId;
   readonly roomName: string;
@@ -420,11 +493,13 @@ export interface InviteMembersModalProps {
   readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
   readonly onOpenAddFriend: () => void;
   readonly onOpenPairAgent: () => void;
-  readonly onMembersAdded?: ((room: RoomDetailDto) => void) | undefined;
 }
 
 /**
- * 向现有群聊房间直接勾选拉入已添加好友或本人名下个人 Agent 的弹窗。
+ * 向当前群聊邀请已添加的好友或自己名下的 Agent。
+ *
+ * @param props - 目标群聊、当前名单与登录用户可选的成员
+ * @returns 群成员选择弹窗
  */
 export function InviteMembersModal(props: InviteMembersModalProps) {
   const [selectedUserIds, setSelectedUserIds] = useState<ReadonlySet<UserId>>(new Set());
@@ -432,6 +507,8 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
   const [filterText, setFilterText] = useState<string>("");
 
   const addMembersMutation = useAddRoomMembersMutation(props.roomId);
+  const agentsOnly = props.mode === "agents";
+  const isSubmitting = addMembersMutation.isPending;
 
   const existingHumanSet = useMemo(() => {
     const s = new Set<UserId>();
@@ -461,6 +538,7 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
         (f) =>
           !existingHumanSet.has(f.user.userId) &&
           (q.length === 0 ||
+            f.remark?.toLowerCase().includes(q) ||
             f.user.displayName.toLowerCase().includes(q) ||
             f.user.email.toLowerCase().includes(q)),
       ),
@@ -507,7 +585,7 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (totalSelected === 0) {
+    if (totalSelected === 0 || isSubmitting) {
       return;
     }
 
@@ -517,16 +595,12 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
         agentIds: [...selectedAgentIds],
       },
       {
-        onSuccess: (res) => {
-          toast.success(`已将 ${String(totalSelected)} 位成员拉入「${props.roomName}」`);
-          setSelectedUserIds(new Set());
-          setSelectedAgentIds(new Set());
-          setFilterText("");
-          props.onMembersAdded?.(res.room);
+        onSuccess: () => {
+          toast.success(agentsOnly ? "已添加到群聊" : "已更新群成员");
           props.onClose();
         },
         onError: (err) => {
-          toast.error(formatErrorMessage(err, "拉人进群失败"));
+          toast.error(formatErrorMessage(err, agentsOnly ? "添加 Agent 失败" : "邀请成员失败"));
         },
       },
     );
@@ -534,10 +608,14 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
 
   return (
     <ModalDialog
-      open={props.open}
-      onClose={props.onClose}
-      title={`邀请加入「${props.roomName}」`}
-      subtitle="直接勾选你的好友或本人名下已绑定的 Agent 拉进群聊"
+      open={true}
+      onClose={() => {
+        if (!isSubmitting) {
+          props.onClose();
+        }
+      }}
+      title={agentsOnly ? "添加我的 Agent" : `邀请加入「${props.roomName}」`}
+      subtitle={agentsOnly ? `选择要加入「${props.roomName}」的 Agent。` : undefined}
       maxWidthClass="max-w-lg"
       icon={<Users className="h-4 w-4" />}
     >
@@ -548,66 +626,68 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
           leadingIcon={<Search className="h-3.5 w-3.5" />}
-          placeholder="筛选好友或我的 Agent…"
+          aria-label={agentsOnly ? "筛选我的 Agent" : "筛选好友或我的 Agent"}
+          placeholder={agentsOnly ? "筛选我的 Agent…" : "筛选好友或我的 Agent…"}
         />
 
-        {/* 1. 我的好友候选 */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between px-0.5 text-xs">
-            <span className="font-semibold text-[#3B414E] dark:text-[#C4C4CA]">
-              我的好友（未在群内 · {candidateFriends.length}）
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                props.onClose();
-                props.onOpenAddFriend();
-              }}
-              className="cursor-pointer text-[11.5px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
-            >
-              + 添加新好友
-            </button>
-          </div>
-          {candidateFriends.length === 0 ? (
-            <p className="rounded-2xl bg-black/[0.03] px-3.5 py-3 text-xs text-[#687082] dark:bg-white/[0.04] dark:text-[#8E8E96]">
-              {props.friends.length === 0
-                ? "暂未添加好友；可点击右上角「+ 添加新好友」或复制群邀请码发给同伴。"
-                : "你的全部好友均已在群内。"}
-            </p>
-          ) : (
-            <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
-              {candidateFriends.map((friend) => {
-                const isSelected = selectedUserIds.has(friend.user.userId);
-                return (
-                  <button
-                    key={friend.user.userId}
-                    type="button"
-                    aria-pressed={isSelected}
-                    onClick={() => toggleUser(friend.user.userId)}
-                    className={cn(
-                      "flex cursor-pointer items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium transition-all active:scale-[0.98]",
-                      isSelected
-                        ? "bg-[#181B22] text-white ring-1 ring-[#181B22] dark:bg-[#EAEEF6] dark:text-[#111318] dark:ring-[#EAEEF6]"
-                        : "bg-black/[0.04] text-[#3B414E] ring-1 ring-inset ring-black/[0.07] hover:bg-black/[0.07] dark:bg-white/[0.05] dark:text-[#C4C4CA] dark:ring-white/[0.09] dark:hover:bg-white/[0.10]",
-                    )}
-                  >
-                    <span>{friend.user.displayName}</span>
-                    {isSelected ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : null}
-                  </button>
-                );
-              })}
+        {agentsOnly ? null : (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between px-0.5 text-xs">
+              <span className="font-semibold text-[#3B414E] dark:text-[#C4C4CA]">
+                我的好友（未在群内 · {candidateFriends.length}）
+              </span>
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => {
+                  props.onClose();
+                  props.onOpenAddFriend();
+                }}
+                className="cursor-pointer text-[11.5px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
+              >
+                + 添加新好友
+              </button>
             </div>
-          )}
-        </div>
+            {candidateFriends.length === 0 ? (
+              <p className="rounded-2xl bg-black/[0.03] px-3.5 py-3 text-xs text-[#687082] dark:bg-white/[0.04] dark:text-[#8E8E96]">
+                {props.friends.length === 0
+                  ? "暂未添加好友；可点击右上角「+ 添加新好友」或复制群邀请码发给同伴。"
+                  : "你的全部好友均已在群内。"}
+              </p>
+            ) : (
+              <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+                {candidateFriends.map((friend) => {
+                  const isSelected = selectedUserIds.has(friend.user.userId);
+                  return (
+                    <button
+                      key={friend.user.userId}
+                      type="button"
+                      disabled={isSubmitting}
+                      aria-pressed={isSelected}
+                      onClick={() => toggleUser(friend.user.userId)}
+                      className={cn(
+                        "flex cursor-pointer items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium transition-all active:scale-[0.98]",
+                        isSelected
+                          ? "bg-[#181B22] text-white ring-1 ring-[#181B22] dark:bg-[#EAEEF6] dark:text-[#111318] dark:ring-[#EAEEF6]"
+                          : "bg-black/[0.04] text-[#3B414E] ring-1 ring-inset ring-black/[0.07] hover:bg-black/[0.07] dark:bg-white/[0.05] dark:text-[#C4C4CA] dark:ring-white/[0.09] dark:hover:bg-white/[0.10]",
+                      )}
+                    >
+                      <span className="truncate">{friend.remark ?? friend.user.displayName}</span>
+                      {isSelected ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
-        {/* 2. 我的 Agent 候选 */}
         <div className="space-y-2">
           <div className="flex items-center justify-between px-0.5 text-xs">
-            <span className="font-semibold text-[#3B414E] dark:text-[#C4C4CA]">
-              我的个人 Agent（未在群内 · {candidateAgents.length}）
-            </span>
+            <span className="font-semibold text-[#3B414E] dark:text-[#C4C4CA]">可添加的 Agent</span>
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={() => {
                 props.onClose();
                 props.onOpenPairAgent();
@@ -621,7 +701,9 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
             <p className="rounded-2xl bg-black/[0.03] px-3.5 py-3 text-xs text-[#687082] dark:bg-white/[0.04] dark:text-[#8E8E96]">
               {props.ownedAgents.length === 0
                 ? "尚未绑定个人 Agent；点击右上角「+ 配对新 Agent」一键接入。"
-                : "你名下的个人 Agent 均已在群内。"}
+                : props.ownedAgents.every((agent) => existingAgentSet.has(agent.id))
+                  ? "你的 Agent 均已在群内。"
+                  : "没有符合筛选条件的 Agent。"}
             </p>
           ) : (
             <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
@@ -632,6 +714,7 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
                   <button
                     key={agent.id}
                     type="button"
+                    disabled={isSubmitting}
                     aria-pressed={isSelected}
                     onClick={() => toggleAgent(agent.id)}
                     className={cn(
@@ -659,7 +742,7 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-black/[0.06] pt-3.5 dark:border-white/[0.08]">
-          <AppButton variant="ghost" size="md" onClick={props.onClose}>
+          <AppButton variant="ghost" size="md" disabled={isSubmitting} onClick={props.onClose}>
             取消
           </AppButton>
           <AppButton
@@ -667,7 +750,7 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
             variant="primary"
             size="md"
             disabled={totalSelected === 0}
-            isLoading={addMembersMutation.isPending}
+            isLoading={isSubmitting}
           >
             拉入群聊{totalSelected > 0 ? ` (${String(totalSelected)})` : ""}
           </AppButton>

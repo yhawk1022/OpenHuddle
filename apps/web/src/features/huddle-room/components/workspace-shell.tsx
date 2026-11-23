@@ -82,7 +82,11 @@ import {
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { MessageBubble } from "../../../components/ui/message-bubble.js";
 import { ThemeToggle } from "../../../components/ui/theme-toggle.js";
-import { getPlatformVisualMeta, getReachVisualMeta } from "../../../lib/format.js";
+import {
+  getPlatformVisualMeta,
+  getReachVisualMeta,
+  getRoomDisplayName,
+} from "../../../lib/format.js";
 import type { OptimisticMessageItem } from "../../../lib/query-keys.js";
 import {
   navigateTo,
@@ -126,7 +130,7 @@ import {
   useUpdateAnyRoomGovernanceMutation,
   useUpdateGovernanceMutation,
 } from "../api/huddle-room.queries.js";
-import { AddFriendModal, InviteMembersModal } from "./friend-modals.js";
+import { AddFriendModal, EditFriendRemarkModal, InviteMembersModal } from "./friend-modals.js";
 import { GovernanceBar } from "./governance-bar.js";
 import { MessageComposer } from "./message-composer.js";
 import { type InspectorTab, RoomInspector } from "./room-inspector.js";
@@ -236,10 +240,12 @@ interface ActiveRoomStageProps {
   readonly roomId: RoomId;
   readonly currentUser: HumanUserDto;
   readonly friends: ReadonlyArray<FriendContactDto>;
+  readonly friendRemarks: ReadonlyMap<UserId, string>;
+  readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
   readonly synthesizeSignal: number;
   readonly realtimeLive: boolean;
   readonly onOpenAddAgentModal: (tab?: OnboardingModalTab, reclaimAgentId?: AgentId) => void;
-  readonly onOpenInviteMembersModal: () => void;
+  readonly onOpenAddFriend: () => void;
   readonly onStartDirectHumanChat: (userId: UserId) => void;
   readonly onSendFriendRequest: (userId: UserId, displayName: string) => void;
   readonly onStartDirectAgentChat: (agentId: AgentId) => void;
@@ -273,6 +279,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   // 留白呼吸不变量：桌面端默认收起右侧面板，让聊天舞台保持宽敞与平静；点击顶栏人数或提案胶囊时再按需展开
   const [desktopInspectorOpen, setDesktopInspectorOpen] = useState<boolean>(false);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState<boolean>(false);
+  const [inviteMode, setInviteMode] = useState<"members" | "agents" | null>(null);
   const [focusedProposalId, setFocusedProposalId] = useState<ProposalId | null>(null);
   const [replyTarget, setReplyTarget] = useState<MessageDto | null>(null);
   const [pendingQuickMention, setPendingQuickMention] = useState<MessageMention | null>(null);
@@ -504,6 +511,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   }
 
   const room = detailQuery.data.room;
+  const roomDisplayName = getRoomDisplayName(room, props.friendRemarks);
   const liveGovernance = messagesQuery.data?.governance ?? room.governance;
   const openProposals = proposals.filter((p) => p.status === "open");
   const pinnedProposal = pickLatestProposal(
@@ -560,6 +568,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   const inspectorNode = (
     <RoomInspector
       room={room}
+      roomDisplayName={roomDisplayName}
       currentUserId={props.currentUser.id}
       governance={liveGovernance}
       isUpdatingGovernance={governanceMutation.isPending}
@@ -618,7 +627,11 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
       friends={props.friends}
       onOpenInviteMembersModal={() => {
         setMobileInspectorOpen(false);
-        props.onOpenInviteMembersModal();
+        setInviteMode("members");
+      }}
+      onOpenInviteAgentsModal={() => {
+        setMobileInspectorOpen(false);
+        setInviteMode("agents");
       }}
       onStartDirectHumanChat={(uid) => {
         setMobileInspectorOpen(false);
@@ -634,7 +647,6 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         // 窄屏抽屉遮罩会挡住输入框，点名后自动收起；宽屏侧栏保持展开
         setMobileInspectorOpen(false);
       }}
-      onOpenAddAgentModal={() => props.onOpenAddAgentModal("pair_agent")}
       onRequestDeleteRoom={(targetRoom) => {
         setMobileInspectorOpen(false);
         props.onRequestDeleteRoom(targetRoom);
@@ -656,6 +668,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-3 sm:px-4">
           <GovernanceBar
             room={room}
+            roomDisplayName={roomDisplayName}
             currentUserId={props.currentUser.id}
             governance={liveGovernance}
             proposalsCount={proposals.length}
@@ -664,8 +677,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
             isUpdatingGovernance={governanceMutation.isPending}
             isInspectorOpen={isInspectorOpen}
             onUpdateGovernance={(patch) => governanceMutation.mutate(patch)}
-            onOpenAddAgentModal={() => props.onOpenAddAgentModal("pair_agent")}
-            onOpenInviteModal={props.onOpenInviteMembersModal}
+            onOpenInviteModal={() => setInviteMode("members")}
             onOpenProposals={() => openInspectorAt("proposals")}
             onToggleInspector={handleToggleMembersInspector}
             onBackToList={props.onBackToList}
@@ -713,16 +725,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
               bottomTimelinePaddingClass,
             )}
           >
-            {messagesQuery.isPending ? (
-              <div className="space-y-4">
-                {[1, 2, 3].map((id) => (
-                  <div key={`msg-sk-${String(id)}`} className="flex items-start gap-3">
-                    <div className="h-9 w-9 animate-pulse rounded-full bg-black/[0.05] dark:bg-white/[0.06]" />
-                    <div className="h-14 w-1/2 animate-pulse rounded-2xl bg-black/[0.04] dark:bg-white/[0.05]" />
-                  </div>
-                ))}
-              </div>
-            ) : messagesQuery.isError ? (
+            {messagesQuery.isError && (
               <div className="rounded-2xl bg-[#E5484D]/10 p-4 text-xs text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
                 <div className="flex items-center justify-between gap-2">
                   <span>拉取消息失败，请检查网络连接。</span>
@@ -735,7 +738,17 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                   </AppButton>
                 </div>
               </div>
-            ) : messages.length === 0 ? (
+            )}
+            {messagesQuery.isPending ? (
+              <div className="space-y-4">
+                {[1, 2, 3].map((id) => (
+                  <div key={`msg-sk-${String(id)}`} className="flex items-start gap-3">
+                    <div className="h-9 w-9 animate-pulse rounded-full bg-black/[0.05] dark:bg-white/[0.06]" />
+                    <div className="h-14 w-1/2 animate-pulse rounded-2xl bg-black/[0.04] dark:bg-white/[0.05]" />
+                  </div>
+                ))}
+              </div>
+            ) : messagesQuery.data === undefined ? null : messages.length === 0 ? (
               <div className="mx-auto my-14 max-w-md select-none px-4 text-center">
                 {room.kind === "direct_agent" ? (
                   <PlatformAvatar
@@ -760,7 +773,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                   {room.kind === "direct_agent"
                     ? `与 ${room.name} 的 1v1 单聊`
                     : room.kind === "direct_human"
-                      ? `与 ${room.name} 的好友私聊`
+                      ? `与 ${roomDisplayName} 的好友私聊`
                       : room.name}
                 </h2>
                 <p className="mx-auto mt-2 text-[13.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
@@ -779,7 +792,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                         variant="primary"
                         size="md"
                         leadingIcon={<Users className="h-4 w-4" />}
-                        onClick={props.onOpenInviteMembersModal}
+                        onClick={() => setInviteMode("members")}
                       >
                         拉好友 / Agent 进群
                       </AppButton>
@@ -885,7 +898,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
           </AnimatePresence>
 
           <MessageComposer
-            roomName={room.name}
+            roomName={roomDisplayName}
             roomKind={room.kind}
             members={room.members}
             currentUserId={props.currentUser.id}
@@ -950,7 +963,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
           open={mobileInspectorOpen}
           onOpenChange={setMobileInspectorOpen}
           title="群信息"
-          subtitle={room.name}
+          subtitle={roomDisplayName}
           side="right"
           mobileAsBottomSheet={true}
           hideHeader={true}
@@ -958,6 +971,20 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         >
           {inspectorNode}
         </AppSheetDrawer>
+      ) : null}
+
+      {room.kind === "group" && inviteMode !== null ? (
+        <InviteMembersModal
+          mode={inviteMode}
+          onClose={() => setInviteMode(null)}
+          roomId={room.id}
+          roomName={room.name}
+          existingMembers={room.members}
+          friends={props.friends}
+          ownedAgents={props.ownedAgents}
+          onOpenAddFriend={props.onOpenAddFriend}
+          onOpenPairAgent={() => props.onOpenAddAgentModal("pair_agent")}
+        />
       ) : null}
     </div>
   );
@@ -1236,7 +1263,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const [createRoomOpen, setCreateRoomOpen] = useState<boolean>(false);
   const [joinRoomOpen, setJoinRoomOpen] = useState<boolean>(false);
   const [addFriendOpen, setAddFriendOpen] = useState<boolean>(false);
-  const [inviteMembersOpen, setInviteMembersOpen] = useState<boolean>(false);
+  const [editingFriend, setEditingFriend] = useState<FriendContactDto | null>(null);
   const [pendingDeleteRoom, setPendingDeleteRoom] = useState<DeleteRoomTarget | null>(null);
   const [pendingLeaveRoom, setPendingLeaveRoom] = useState<DeleteRoomTarget | null>(null);
   const [onboardingModalOpen, setOnboardingModalOpen] = useState<boolean>(false);
@@ -1250,6 +1277,15 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
   const rooms = roomsQuery.data?.rooms ?? [];
   const friends = friendsQuery.data?.friends ?? [];
+  const friendRemarks = useMemo(() => {
+    const remarks = new Map<UserId, string>();
+    for (const friend of friendsQuery.data?.friends ?? []) {
+      if (friend.remark !== undefined) {
+        remarks.set(friend.user.userId, friend.remark);
+      }
+    }
+    return remarks;
+  }, [friendsQuery.data?.friends]);
   const incomingRequests = friendsQuery.data?.incomingRequests ?? [];
   const outgoingRequests = friendsQuery.data?.outgoingRequests ?? [];
   const discoverableAgents = friendsQuery.data?.discoverableAgents ?? [];
@@ -1346,6 +1382,30 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const visibleRoomId = isDesktopChat || mobileShowChat ? activeRoomId : null;
   const sseTelemetry = useRealtimeSseSync(true, sessionToken, visibleRoomId, joinedRoomsSignature);
   connectionStatusRef.current = sseTelemetry.status;
+
+  const lastRoomSequencesRef = useRef<ReadonlyMap<RoomId, number> | null>(null);
+  const roomSnapshot = roomsQuery.data?.rooms;
+  useEffect(() => {
+    if (roomSnapshot === undefined) {
+      return;
+    }
+    const previous = lastRoomSequencesRef.current;
+    const current = new Map<RoomId, number>();
+    for (const room of roomSnapshot) {
+      const priorSeq = previous?.get(room.id) ?? 0;
+      current.set(room.id, Math.max(priorSeq, room.lastSeq));
+      const isViewing = room.id === visibleRoomId && document.visibilityState === "visible";
+      if (
+        previous !== null &&
+        !isViewing &&
+        room.lastSeq > Math.max(priorSeq, room.yourLastReadSeq)
+      ) {
+        // SSE 与补拉共享会话缓存，按已观察的序号去重。
+        toast.info(`${room.name} 有新消息`, { id: `room-notice-${room.id}` });
+      }
+    }
+    lastRoomSequencesRef.current = current;
+  }, [roomSnapshot, visibleRoomId]);
 
   const onlineAgentCount = useMemo(
     () =>
@@ -1644,7 +1704,9 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const commandGroups: ReadonlyArray<CommandPaletteGroup> = useMemo(() => {
     const activeRoomSummary =
       activeRoomId !== null ? (rooms.find((r) => r.id === activeRoomId) ?? null) : null;
-    const activeRoomName = activeRoomDetailQuery.data?.room.name ?? activeRoomSummary?.name;
+    const activeRoom = activeRoomDetailQuery.data?.room ?? activeRoomSummary;
+    const activeRoomName =
+      activeRoom === null ? undefined : getRoomDisplayName(activeRoom, friendRemarks);
     const isActiveRoomOwner =
       activeRoomSummary !== null && activeRoomSummary.ownerUserId === props.currentUser.id;
     const canDeleteActiveRoom =
@@ -1767,7 +1829,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                 : "群聊";
         return {
           id: `cmd-room-${room.id}`,
-          label: room.name,
+          label: getRoomDisplayName(room, friendRemarks),
           subtitle: kindLabel,
           icon: <MessageCircle className="h-4 w-4" />,
           ...(unread > 0
@@ -1790,7 +1852,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       heading: "我的好友（点击发起私聊）",
       items: friends.map((f) => ({
         id: `cmd-friend-${f.user.userId}`,
-        label: f.user.displayName,
+        label: f.remark ?? f.user.displayName,
         subtitle: f.user.email,
         icon: <UserRound className="h-4 w-4" />,
         keywords: [f.user.displayName, f.user.email, "friend", "dm", "好友", "私聊"],
@@ -1823,8 +1885,9 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       agentItemsGroup,
     ];
   }, [
-    activeRoomDetailQuery.data?.room.name,
+    activeRoomDetailQuery.data?.room,
     activeRoomId,
+    friendRemarks,
     friends,
     handleRequestDeleteRoom,
     handleSelectRoom,
@@ -1871,6 +1934,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           currentUser={props.currentUser}
           ownedAgents={props.ownedAgents}
           friends={friends}
+          friendRemarks={friendRemarks}
           incomingRequests={incomingRequests}
           discoverableAgents={discoverableAgents}
           rooms={rooms}
@@ -1888,6 +1952,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           onStartDirectHumanChat={handleStartDirectHumanChat}
           onAcceptFriendRequest={handleAcceptFriendRequest}
           onDeclineFriendRequest={handleDeclineFriendRequest}
+          onEditFriendRemark={setEditingFriend}
           onRemoveFriend={handleRemoveFriend}
           onInspectSharedAgent={inspectSharedAgent}
           onInspectOwnedAgent={(agent) => inspectOwnedAgent(agent, false)}
@@ -1918,10 +1983,12 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
             roomId={visibleRoomId}
             currentUser={props.currentUser}
             friends={friends}
+            friendRemarks={friendRemarks}
+            ownedAgents={props.ownedAgents}
             synthesizeSignal={synthesizeSignal}
             realtimeLive={sseTelemetry.status === "live"}
             onOpenAddAgentModal={(tab, reclaimId) => openOnboarding(tab ?? "pair_agent", reclaimId)}
-            onOpenInviteMembersModal={() => setInviteMembersOpen(true)}
+            onOpenAddFriend={() => setAddFriendOpen(true)}
             onStartDirectHumanChat={handleStartDirectHumanChat}
             onSendFriendRequest={handleSendQuickFriendRequest}
             onStartDirectAgentChat={handleStartDirectAgentChat}
@@ -1995,17 +2062,11 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         onOpenDirectHumanChat={handleStartDirectHumanChat}
       />
 
-      {activeRoomDetail !== null && activeRoomDetail.kind === "group" ? (
-        <InviteMembersModal
-          open={inviteMembersOpen}
-          onClose={() => setInviteMembersOpen(false)}
-          roomId={activeRoomDetail.id}
-          roomName={activeRoomDetail.name}
-          existingMembers={activeRoomDetail.members}
-          friends={friends}
-          ownedAgents={props.ownedAgents}
-          onOpenAddFriend={() => setAddFriendOpen(true)}
-          onOpenPairAgent={() => openOnboarding("pair_agent")}
+      {editingFriend !== null ? (
+        <EditFriendRemarkModal
+          key={editingFriend.friendshipId}
+          friend={editingFriend}
+          onClose={() => setEditingFriend(null)}
         />
       ) : null}
 

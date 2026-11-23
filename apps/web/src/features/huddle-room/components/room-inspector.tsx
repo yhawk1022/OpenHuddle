@@ -113,6 +113,7 @@ interface OwnerTeamGroup {
 /** `RoomInspector` 入参属性 */
 export interface RoomInspectorProps {
   readonly room: RoomDetailDto;
+  readonly roomDisplayName: string;
   readonly currentUserId: UserId;
   readonly governance: RoomGovernanceState;
   readonly isUpdatingGovernance: boolean;
@@ -136,11 +137,12 @@ export interface RoomInspectorProps {
   readonly onUpdateGovernance: (patch: UpdateGovernanceBody) => void;
   readonly onInspectAgent: (profile: InspectedAgentProfile) => void;
   readonly onQuickMention: (mention: MessageMention) => void;
-  readonly onOpenAddAgentModal: () => void;
   /** 已通过的好友列表（用于群成员行识别是否已为好友并展示「私聊 / 加好友」） */
   readonly friends?: ReadonlyArray<FriendContactDto> | undefined;
   /** 打开「向现有群聊拉入好友或本人 Agent」模态窗 */
-  readonly onOpenInviteMembersModal?: (() => void) | undefined;
+  readonly onOpenInviteMembersModal: () => void;
+  /** 打开当前群的个人 Agent 选择弹窗 */
+  readonly onOpenInviteAgentsModal: () => void;
   /** 从群成员行直接打开与好友的 1v1 私聊 */
   readonly onStartDirectHumanChat?: ((userId: UserId) => void) | undefined;
   /** 从群成员行向非好友发送好友申请 */
@@ -468,7 +470,7 @@ export function RoomInspector(props: RoomInspectorProps) {
             {isGroupRoom ? "群信息" : "会话信息"}
           </p>
           <p className="mt-0.5 truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
-            {props.room.name}
+            {props.roomDisplayName}
           </p>
         </div>
         <AppTooltip side="bottom" content="收起面板">
@@ -524,23 +526,21 @@ export function RoomInspector(props: RoomInspectorProps) {
                 </h3>
                 {isGroupRoom ? (
                   <div className="flex items-center gap-1">
-                    {props.onOpenInviteMembersModal !== undefined ? (
-                      <AppButton
-                        variant="soft"
-                        size="xs"
-                        leadingIcon={<UserPlus className="h-3 w-3" />}
-                        onClick={props.onOpenInviteMembersModal}
-                      >
-                        拉好友 / Agent
-                      </AppButton>
-                    ) : null}
                     <AppButton
                       variant="secondary"
                       size="xs"
-                      leadingIcon={<Plus className="h-3 w-3" />}
-                      onClick={props.onOpenAddAgentModal}
+                      leadingIcon={<UserPlus className="h-3 w-3" />}
+                      onClick={props.onOpenInviteMembersModal}
                     >
-                      配对新 agent
+                      邀请成员
+                    </AppButton>
+                    <AppButton
+                      variant="soft"
+                      size="xs"
+                      leadingIcon={<Plus className="h-3 w-3" />}
+                      onClick={props.onOpenInviteAgentsModal}
+                    >
+                      添加我的 Agent
                     </AppButton>
                   </div>
                 ) : null}
@@ -549,15 +549,15 @@ export function RoomInspector(props: RoomInspectorProps) {
               {isGroupRoom && agentMembers.length === 0 ? (
                 <button
                   type="button"
-                  onClick={props.onOpenInviteMembersModal ?? props.onOpenAddAgentModal}
+                  onClick={props.onOpenInviteAgentsModal}
                   className="im-press flex w-full cursor-pointer flex-col items-center gap-1 rounded-[18px] border border-dashed border-black/18 bg-white/50 p-4 text-center transition hover:border-black/35 hover:bg-white/80 dark:border-white/18 dark:bg-white/[0.035] dark:hover:border-white/35 dark:hover:bg-white/[0.07]"
                 >
                   <Plus className="h-5 w-5 text-[#111318] dark:text-[#ECECEF]" />
                   <span className="text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
-                    把你的 Agent 或好友拉进群
+                    群里还没有 Agent
                   </span>
                   <span className="text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
-                    支持直拉已添加好友与 Claude Code、Codex、Cursor、Antigravity
+                    选择自己的 Agent 加入群聊
                   </span>
                 </button>
               ) : null}

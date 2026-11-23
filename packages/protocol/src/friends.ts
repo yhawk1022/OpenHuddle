@@ -5,6 +5,7 @@
  * 架构职责与关键不变量（Invariants）：
  * 1. 隐私最小暴露：公开用户检索与好友名片仅返回脱敏 `PublicUserProfileDto`（`userId`, `displayName`, `email`），严禁包含密码哈希或会话信息。
  * 2. 好友附言零指令权：`SendFriendRequestBody.note` 仅供人类接收方核对身份，永不进入任何 Agent 上下文或触发执行授权。
+ * 3. 好友备注仅对设置备注的人类用户可见，随其通讯录联系人返回。
  */
 import { z } from "zod";
 import { AgentPlatformSchema, AgentReachStateSchema } from "./identity.js";
@@ -48,12 +49,25 @@ export const SharedExternalAgentDtoSchema = z.object({
 });
 export type SharedExternalAgentDto = z.infer<typeof SharedExternalAgentDtoSchema>;
 
+/** 好友私有备注的单行文本长度上限，与 Web 输入框共享。 */
+export const MAX_FRIEND_REMARK_LENGTH = 80;
+
+const FriendRemarkSchema = z
+  .string()
+  .trim()
+  .max(MAX_FRIEND_REMARK_LENGTH)
+  .refine(
+    (value) => !value.includes("\0") && !/[\r\n\u2028\u2029]/u.test(value),
+    "Friend remark must be single-line text",
+  );
+
 /**
- * 已建立好友关系的人类联系人条目 DTO Schema（附带已存在的 1v1 私聊房间 ID 与对方开放私聊的 Agent 列表）。
+ * 已建立好友关系的人类联系人条目 DTO Schema，包含调用者设置的可选私有备注。
  */
 export const FriendContactDtoSchema = z.object({
   friendshipId: FriendshipIdSchema,
   user: PublicUserProfileDtoSchema,
+  remark: FriendRemarkSchema.optional(),
   friendsSinceIso: z.string().datetime(),
   directRoomId: RoomIdSchema.optional(),
   sharedAgents: z.array(SharedExternalAgentDtoSchema),
@@ -146,6 +160,23 @@ export const AcceptFriendRequestResponseSchema = z.object({
   friend: FriendContactDtoSchema,
 });
 export type AcceptFriendRequestResponse = z.infer<typeof AcceptFriendRequestResponseSchema>;
+
+/** 更新私有好友备注的请求体。去除首尾空白后为空时清除备注。 */
+export const UpdateFriendRemarkBodySchema = z.object({
+  remark: FriendRemarkSchema,
+});
+
+/** 更新私有好友备注的请求体类型。 */
+export type UpdateFriendRemarkBody = z.infer<typeof UpdateFriendRemarkBodySchema>;
+
+/** 更新确认及规范化后的备注，`null` 表示备注已清除。 */
+export const UpdateFriendRemarkResponseSchema = z.object({
+  ok: z.literal(true),
+  remark: FriendRemarkSchema.nullable(),
+});
+
+/** 更新私有好友备注的响应体类型。 */
+export type UpdateFriendRemarkResponse = z.infer<typeof UpdateFriendRemarkResponseSchema>;
 
 /**
  * 拒绝/撤回好友申请或解除好友关系成功响应体 Schema。

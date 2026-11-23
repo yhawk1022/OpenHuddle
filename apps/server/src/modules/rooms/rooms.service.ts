@@ -299,7 +299,7 @@ export class RoomsService {
   }
 
   /**
-   * 向现有群聊直接拉入已添加的好友或本人名下的个人 Agent（ADR-0005）。
+   * 人类群成员可直接拉入已添加的好友或本人名下的个人 Agent（ADR-0005）。
    *
    * @param caller - 当前已认证人类成员
    * @param roomId - 目标群聊主键
@@ -413,6 +413,8 @@ export class RoomsService {
     });
 
     if (added.addedUsers.length > 0 || added.addedAgents.length > 0) {
+      // 事务提交后刷新已订阅的成员名册，再通知新成员挂载房间订阅。
+      await this.realtimeBus.publishToRoom(room.id, { type: "room.upserted", roomId: room.id });
       await this.notifyRoomUpserted(room.id, added.addedUsers, added.addedAgents);
     }
 
