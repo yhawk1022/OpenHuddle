@@ -9,11 +9,14 @@
  */
 import { createHash } from "node:crypto";
 import {
+  constants,
+  accessSync,
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -143,14 +146,52 @@ export function sanitizeTokenSlug(rawValue: string): string {
 }
 
 /**
- * 获取默认的本地 Token 文件路径（`~/.openhuddle/tokens/default.token`）。
+ * 解析 OpenHuddle 本地状态根目录，独立于宿主 CLI 的登录配置和系统服务目录。
+ *
+ * @param homeDir - 宿主用户主目录
+ * @returns `OPENHUDDLE_HOME` 指定的路径，未设置时使用 `~/.openhuddle`
+ */
+export function getOpenHuddleHome(homeDir = homedir()): string {
+  const configuredHome = process.env.OPENHUDDLE_HOME;
+  return configuredHome !== undefined && configuredHome.trim().length > 0
+    ? resolve(configuredHome)
+    : resolve(homeDir, ".openhuddle");
+}
+
+/**
+ * 在核销一次性链接前检查凭据、元数据和活跃身份的文件位置可写。
+ * @param tokenFilePath - 本次配对选择的凭据路径
+ * @param homeDir - 宿主用户主目录
+ * @throws {Error} 目标目录或已有文件不可写时抛出，链接仍可在可写目录重试
+ */
+export function assertConnectionStorageWritable(tokenFilePath: string, homeDir: string): void {
+  const files = [
+    resolve(tokenFilePath),
+    getMetadataFilePath(tokenFilePath),
+    getActiveCliProfilePath(homeDir),
+  ];
+  for (const dir of new Set(files.map((file) => dirname(file)))) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    accessSync(dir, constants.W_OK | constants.X_OK);
+  }
+  for (const file of files) {
+    if (existsSync(file)) {
+      if (!statSync(file).isFile()) {
+        throw new Error(`OpenHuddle state path is not a file: ${file}`);
+      }
+      accessSync(file, constants.W_OK);
+    }
+  }
+}
+
+/**
+ * 获取当前状态目录下的默认本地 Token 文件路径。
  *
  * @param customHomeDir - 可选的主目录覆盖路径（用于沙箱单测隔离）
  * @returns 默认 Token 文件绝对路径
  */
 export function getDefaultTokenFilePath(customHomeDir?: string): string {
-  const baseHome = customHomeDir ?? homedir();
-  return join(baseHome, ".openhuddle", "tokens", "default.token");
+  return join(getOpenHuddleHome(customHomeDir), "tokens", "default.token");
 }
 
 /**
@@ -230,7 +271,7 @@ export function findTokenFileForAgent(
   serverUrl: string,
   agentId: AgentId,
 ): string | undefined {
-  const tokensDir = join(homeDir, ".openhuddle", "tokens");
+  const tokensDir = join(getOpenHuddleHome(homeDir), "tokens");
   if (!existsSync(tokensDir)) return undefined;
   for (const entry of readdirSync(tokensDir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".token.json")) continue;
@@ -285,6 +326,8 @@ function isStoredAgentMetadata(value: unknown): value is StoredAgentMetadata {
     (record.daemonSlug === undefined || typeof record.daemonSlug === "string") &&
     typeof record.displayName === "string" &&
     typeof record.platform === "string" &&
+    (record.defaultRoomId === undefined ||
+      (typeof record.defaultRoomId === "string" && record.defaultRoomId.length > 0)) &&
     typeof record.updatedAtIso === "string"
   );
 }
@@ -400,10 +443,14 @@ export async function checkTokenFileCollision(
   }
 
   const baseHome = options.homeDir ?? homedir();
+  const stateDir = getOpenHuddleHome(baseHome);
   const suggestedTokenFilePath = findUnusedTokenFilePath(
-    join(baseHome, ".openhuddle", "tokens", `${requestedSlug}.token`),
+    join(stateDir, "tokens", `${requestedSlug}.token`),
   );
-  const suggestedDisplayPath = `~/.openhuddle/tokens/${basename(suggestedTokenFilePath)}`;
+  const suggestedDisplayPath =
+    stateDir === resolve(baseHome, ".openhuddle")
+      ? `~/.openhuddle/tokens/${basename(suggestedTokenFilePath)}`
+      : `'${suggestedTokenFilePath.replace(/'/g, "'\\''")}'`;
   const reclaimFlag = options.reclaim ? " --reclaim" : "";
   const escapedName = JSON.stringify(options.requestedName);
   const suggestedCommand =
@@ -437,9 +484,8 @@ export async function checkTokenFileCollision(
  * @returns 游标 JSON 文件绝对路径
  */
 export function getAgentCursorFilePath(agentId: AgentId, customHomeDir?: string): string {
-  const baseHome = customHomeDir ?? homedir();
   const safeFileKey = agentId.replace(/[^a-zA-Z0-9_-]+/g, "_");
-  return join(baseHome, ".openhuddle", "cursors", `${safeFileKey}.json`);
+  return join(getOpenHuddleHome(customHomeDir), "cursors", `${safeFileKey}.json`);
 }
 
 /**
@@ -540,8 +586,7 @@ export function updateRoomLastReadSeq(
  * @returns 绝对文件路径
  */
 export function getActiveCliProfilePath(customHomeDir?: string): string {
-  const baseHome = customHomeDir ?? homedir();
-  return join(baseHome, ".openhuddle", "active-profile.json");
+  return join(getOpenHuddleHome(customHomeDir), "active-profile.json");
 }
 
 /**

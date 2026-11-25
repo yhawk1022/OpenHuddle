@@ -18,7 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentId, MessageSeq, RoomId } from "@openhuddle/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_PRESET_TURN_TIMEOUT_MS,
   type DaemonServiceSpec,
@@ -105,10 +105,12 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
   let tempHome = "";
 
   beforeEach(() => {
+    vi.stubEnv("OPENHUDDLE_HOME", undefined);
     tempHome = mkdtempSync(join(tmpdir(), "openhuddle-cli-test-"));
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (tempHome.length > 0 && existsSync(tempHome)) {
       rmSync(tempHome, { recursive: true, force: true });
     }

@@ -5,7 +5,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { runCli } from "../cli.js";
 import { type DaemonSystemDeps, getMacPlistPath } from "../daemon-manager.js";
 
@@ -83,6 +83,7 @@ it("isolates listeners for same-name Agents and preserves credentials while an i
     );
 
   try {
+    vi.stubEnv("OPENHUDDLE_HOME", undefined);
     expect(await connect("localhost:3100", "agt_first_owner")).toBe(0);
     const firstPlist = getMacPlistPath(homeDir, slug);
     const firstConfig = readFileSync(firstPlist, "utf8");
@@ -113,6 +114,7 @@ it("isolates listeners for same-name Agents and preserves credentials while an i
     expect(readFileSync(firstPlist, "utf8")).toBe(firstConfig);
     expect(() => readFileSync(getMacPlistPath(homeDir, `${slug}-2`))).toThrow();
   } finally {
+    vi.unstubAllEnvs();
     rmSync(homeDir, { force: true, recursive: true });
   }
 });

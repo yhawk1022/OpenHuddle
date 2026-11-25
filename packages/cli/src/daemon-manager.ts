@@ -31,6 +31,7 @@ import type { WakeExecutionTarget } from "./sse-listener.js";
 import {
   type StoredAgentMetadata,
   deriveDaemonSlug,
+  getOpenHuddleHome,
   normalizeServerUrl,
   sanitizeTokenSlug,
 } from "./token-store.js";
@@ -51,6 +52,8 @@ export interface DaemonServiceSpec {
   readonly tokenFilePath: string;
   readonly target: WakeExecutionTarget;
   readonly homeDir: string;
+  /** OpenHuddle 状态根目录。系统服务文件和子 CLI 登录配置仍使用 `homeDir`。 */
+  readonly stateDir?: string;
   readonly envPath?: string;
   readonly envVars?: Readonly<Record<string, string>>;
 }
@@ -159,32 +162,47 @@ export function getWindowsScheduledTaskName(slug: string): string {
 }
 
 /**
- * 计算守护进程 PID 锁文件路径（`~/.openhuddle/run/<slug>.pid`）。
+ * 计算当前状态目录下的守护进程 PID 锁文件路径。
  *
  * @param homeDir - 用户主目录
  * @param slug - Agent 隔离标识符
+ * @param stateDir - 已解析的 OpenHuddle 状态目录，供后台任务复用安装时的目录
  * @returns PID 锁文件绝对路径
  */
-export function getDaemonPidFilePath(homeDir: string, slug: string): string {
-  return join(homeDir, ".openhuddle", "run", `${sanitizeTokenSlug(slug)}.pid`);
+export function getDaemonPidFilePath(
+  homeDir: string,
+  slug: string,
+  stateDir = getOpenHuddleHome(homeDir),
+): string {
+  return join(stateDir, "run", `${sanitizeTokenSlug(slug)}.pid`);
 }
 
 /**
- * 计算守护进程标准输出与错误日志路径（`~/.openhuddle/logs/`）。
+ * 计算当前状态目录下的守护进程标准输出与错误日志路径。
  *
  * @param homeDir - 用户主目录
  * @param slug - Agent 隔离标识符
+ * @param stateDir - 已解析的 OpenHuddle 状态目录，供纯配置生成器提供显式输入
  * @returns 包含 `stdoutPath` 与 `stderrPath` 的路径对
  */
 export function getDaemonLogPaths(
   homeDir: string,
   slug: string,
+  stateDir = getOpenHuddleHome(homeDir),
 ): { readonly stdoutPath: string; readonly stderrPath: string } {
   const safeSlug = sanitizeTokenSlug(slug);
-  const logsDir = join(homeDir, ".openhuddle", "logs");
+  const logsDir = join(stateDir, "logs");
   return {
     stdoutPath: join(logsDir, `listen-${safeSlug}.out.log`),
     stderrPath: join(logsDir, `listen-${safeSlug}.err.log`),
+  };
+}
+
+/** 由安装器固定状态目录，使监听进程在系统登录后重启仍读取同一份状态。 */
+function getDaemonEnvironment(spec: Readonly<DaemonServiceSpec>): Readonly<Record<string, string>> {
+  return {
+    ...spec.envVars,
+    ...(spec.stateDir !== undefined ? { OPENHUDDLE_HOME: spec.stateDir } : {}),
   };
 }
 
@@ -459,7 +477,11 @@ function extractPosixNodeBinDir(nodeBinaryPath: string): string | undefined {
 export function buildMacLaunchdPlist(spec: Readonly<DaemonServiceSpec>): string {
   const safeSlug = sanitizeTokenSlug(spec.slug);
   const label = getMacLaunchdLabel(safeSlug);
-  const { stdoutPath, stderrPath } = getDaemonLogPaths(spec.homeDir, safeSlug);
+  const { stdoutPath, stderrPath } = getDaemonLogPaths(
+    spec.homeDir,
+    safeSlug,
+    spec.stateDir ?? join(spec.homeDir, ".openhuddle"),
+  );
   const programArgs = [spec.nodeBinaryPath, ...buildDaemonListenNodeArgs(spec)];
   const mergedPath =
     spec.envPath ??
@@ -478,7 +500,7 @@ export function buildMacLaunchdPlist(spec: Readonly<DaemonServiceSpec>): string 
     .map((arg) => `      <string>${escapeXml(arg)}</string>`)
     .join("\n");
 
-  const extraEnvEntries = Object.entries(spec.envVars ?? {})
+  const extraEnvEntries = Object.entries(getDaemonEnvironment(spec))
     .filter(([key, val]) => key !== "PATH" && val.length > 0)
     .sort(([a], [b]) => a.localeCompare(b))
     .flatMap(([key, val]) => [
@@ -543,7 +565,11 @@ function escapeSystemdExecArg(arg: string): string {
  */
 export function buildLinuxSystemdUnit(spec: Readonly<DaemonServiceSpec>): string {
   const safeSlug = sanitizeTokenSlug(spec.slug);
-  const { stdoutPath, stderrPath } = getDaemonLogPaths(spec.homeDir, safeSlug);
+  const { stdoutPath, stderrPath } = getDaemonLogPaths(
+    spec.homeDir,
+    safeSlug,
+    spec.stateDir ?? join(spec.homeDir, ".openhuddle"),
+  );
   const execArgs = [spec.nodeBinaryPath, ...buildDaemonListenNodeArgs(spec)]
     .map(escapeSystemdExecArg)
     .join(" ");
@@ -557,7 +583,7 @@ export function buildLinuxSystemdUnit(spec: Readonly<DaemonServiceSpec>): string
       "/bin",
     ]);
 
-  const extraEnvLines = Object.entries(spec.envVars ?? {})
+  const extraEnvLines = Object.entries(getDaemonEnvironment(spec))
     .filter(([key, val]) => key !== "PATH" && val.length > 0)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, val]) => `Environment=${escapeSystemdExecArg(`${key}=${val}`)}`);
@@ -625,6 +651,10 @@ export function buildWindowsSchtasksArgs(spec: Readonly<DaemonServiceSpec>): rea
     "--slug",
     safeSlug,
   ];
+  // schtasks 的登录环境与安装进程独立，需把自定义目录明确传给引导子命令。
+  if (spec.stateDir !== undefined) {
+    bootstrapArgs.push("--state-dir", spec.stateDir);
+  }
   if (spec.target.kind === "preset") {
     bootstrapArgs.push("--agent", spec.target.preset);
   } else {
@@ -874,6 +904,20 @@ function normalizeDaemonPlatform(platform: NodeJS.Platform): SupportedDaemonPlat
   return "linux";
 }
 
+/** 系统服务目录不可写时保留状态目录中的凭据，并允许脱离进程继续启动。 */
+function tryWriteDaemonConfig(path: string, content: string): boolean {
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
+    if (existsSync(path)) {
+      chmodSync(path, 0o600);
+    }
+    writeFileSync(path, content, { encoding: "utf8", mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 静默拉起无窗口脱离后台守护子进程（支持云端容器无 `systemd` 场景与 Windows）并刷新 PID 锁文件。
  *
@@ -886,8 +930,9 @@ export function spawnDetachedDaemonWorker(
   deps: Readonly<DaemonSystemDeps> = createDefaultDaemonSystemDeps(),
 ): { readonly pid: number; readonly pidFilePath: string } {
   const safeSlug = sanitizeTokenSlug(spec.slug);
-  const pidFilePath = getDaemonPidFilePath(spec.homeDir, safeSlug);
-  const { stdoutPath, stderrPath } = getDaemonLogPaths(spec.homeDir, safeSlug);
+  const stateDir = spec.stateDir ?? getOpenHuddleHome(spec.homeDir);
+  const pidFilePath = getDaemonPidFilePath(spec.homeDir, safeSlug, stateDir);
+  const { stdoutPath, stderrPath } = getDaemonLogPaths(spec.homeDir, safeSlug, stateDir);
   mkdirSync(dirname(stdoutPath), { recursive: true, mode: 0o700 });
 
   const existingPid = readDaemonPidFile(pidFilePath);
@@ -896,7 +941,7 @@ export function spawnDetachedDaemonWorker(
   }
 
   const mergedEnv: NodeJS.ProcessEnv = {
-    ...(spec.envVars ?? {}),
+    ...getDaemonEnvironment({ ...spec, stateDir }),
     ...(spec.envPath !== undefined ? { PATH: spec.envPath } : {}),
   };
 
@@ -937,6 +982,8 @@ export function installDaemonService(
   const platform = normalizeDaemonPlatform(deps.platform);
   const safeSlug = sanitizeTokenSlug(spec.slug);
   const resolvedHomeDir = resolve(spec.homeDir || homedir());
+  const stateDir =
+    spec.stateDir !== undefined ? resolve(spec.stateDir) : getOpenHuddleHome(resolvedHomeDir);
   const hostEnvPath =
     spec.envPath !== undefined
       ? spec.envPath
@@ -968,46 +1015,41 @@ export function installDaemonService(
     cliScriptPath: resolve(spec.cliScriptPath),
     tokenFilePath: resolve(spec.tokenFilePath),
     homeDir: resolvedHomeDir,
+    ...(spec.stateDir !== undefined || stateDir !== join(resolvedHomeDir, ".openhuddle")
+      ? { stateDir }
+      : {}),
     ...(hostEnvPath !== undefined ? { envPath: hostEnvPath } : {}),
     ...(inheritedEnvVars !== undefined ? { envVars: inheritedEnvVars } : {}),
   };
-  const { stdoutPath, stderrPath } = getDaemonLogPaths(normalizedSpec.homeDir, safeSlug);
+  const { stdoutPath, stderrPath } = getDaemonLogPaths(resolvedHomeDir, safeSlug, stateDir);
   mkdirSync(dirname(stdoutPath), { recursive: true, mode: 0o700 });
 
   if (platform === "darwin") {
     const label = getMacLaunchdLabel(safeSlug);
     const plistPath = getMacPlistPath(normalizedSpec.homeDir, safeSlug);
-    mkdirSync(dirname(plistPath), { recursive: true, mode: 0o755 });
-    writeFileSync(plistPath, buildMacLaunchdPlist(normalizedSpec), {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    try {
-      chmodSync(plistPath, 0o600);
-    } catch {
-      // 忽略文件系统权限调整异常
+    const configWritten = tryWriteDaemonConfig(plistPath, buildMacLaunchdPlist(normalizedSpec));
+    if (configWritten) {
+      // 幂等重装：先尝试卸载旧实例（忽略未加载错误），再加载最新 plist 配置
+      deps.execSyncCommand("launchctl", ["unload", plistPath]);
+      const loadRes = deps.execSyncCommand("launchctl", ["load", "-w", plistPath]);
+      if (loadRes.exitCode === 0) {
+        removeDaemonPidFile(getDaemonPidFilePath(resolvedHomeDir, safeSlug, stateDir));
+        return {
+          action: "install",
+          platform,
+          mode: "launchd",
+          slug: safeSlug,
+          running: true,
+          serviceId: label,
+          configFilePath: plistPath,
+          logOutPath: stdoutPath,
+          logErrPath: stderrPath,
+          detail: `Installed and loaded macOS LaunchAgent ${label}`,
+        };
+      }
     }
 
-    // 幂等重装：先尝试卸载旧实例（忽略未加载错误），再加载最新 plist 配置
-    deps.execSyncCommand("launchctl", ["unload", plistPath]);
-    const loadRes = deps.execSyncCommand("launchctl", ["load", "-w", plistPath]);
-    if (loadRes.exitCode === 0) {
-      removeDaemonPidFile(getDaemonPidFilePath(normalizedSpec.homeDir, safeSlug));
-      return {
-        action: "install",
-        platform,
-        mode: "launchd",
-        slug: safeSlug,
-        running: true,
-        serviceId: label,
-        configFilePath: plistPath,
-        logOutPath: stdoutPath,
-        logErrPath: stderrPath,
-        detail: `Installed and loaded macOS LaunchAgent ${label}`,
-      };
-    }
-
-    // 无 GUI Aqua 会话（如远程 SSH / CI 云端构建机）时自动降级为后台脱离进程
+    // 沙箱可能只允许写 OpenHuddle 状态目录，也可能拒绝 launchctl 注册。
     const { pid, pidFilePath } = spawnDetachedDaemonWorker(normalizedSpec, deps);
     return {
       action: "install",
@@ -1016,30 +1058,22 @@ export function installDaemonService(
       slug: safeSlug,
       running: true,
       serviceId: `detached:${safeSlug}`,
-      configFilePath: plistPath,
+      ...(configWritten ? { configFilePath: plistPath } : {}),
       pidFilePath,
       pid,
       logOutPath: stdoutPath,
       logErrPath: stderrPath,
-      detail: `Started detached background SSE listener "${safeSlug}" (PID ${pid}; launchctl unavailable in headless session)`,
+      detail: `Started detached background SSE listener "${safeSlug}" (PID ${pid}; ${configWritten ? "launchctl registration failed" : "LaunchAgent config could not be written"})`,
     };
   }
 
   if (platform === "linux") {
     const unitName = getLinuxSystemdUnitName(safeSlug);
     const unitPath = getLinuxSystemdUnitPath(normalizedSpec.homeDir, safeSlug);
-    if (deps.platform === "linux") {
-      try {
-        mkdirSync(dirname(unitPath), { recursive: true, mode: 0o755 });
-        writeFileSync(unitPath, buildLinuxSystemdUnit(normalizedSpec), {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-        chmodSync(unitPath, 0o600);
-      } catch {
-        // 容器只读目录或权限受限时忽略单元文件落盘异常，直接进入下方脱离守护兜底
-      }
-
+    if (
+      deps.platform === "linux" &&
+      tryWriteDaemonConfig(unitPath, buildLinuxSystemdUnit(normalizedSpec))
+    ) {
       const reloadRes = deps.execSyncCommand("systemctl", ["--user", "daemon-reload"]);
       if (reloadRes.exitCode === 0) {
         const enableRes = deps.execSyncCommand("systemctl", [
@@ -1049,7 +1083,7 @@ export function installDaemonService(
           unitName,
         ]);
         if (enableRes.exitCode === 0) {
-          removeDaemonPidFile(getDaemonPidFilePath(normalizedSpec.homeDir, safeSlug));
+          removeDaemonPidFile(getDaemonPidFilePath(resolvedHomeDir, safeSlug, stateDir));
           return {
             action: "install",
             platform,

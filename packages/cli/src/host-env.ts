@@ -460,7 +460,7 @@ export function isPresetCliBinaryAvailable(
   customHomeDir?: string,
   customPathEnv?: string,
 ): boolean {
-  return findPresetCliBinary(preset, customHomeDir, customPathEnv) !== undefined;
+  return resolvePresetCliBinary(preset, customHomeDir, customPathEnv) !== undefined;
 }
 
 /**
@@ -470,7 +470,7 @@ export function isPresetCliBinaryAvailable(
  * @returns 绝对可执行路径，未安装时返回 `undefined`
  */
 export function resolveDeepSeekCliBinary(customHomeDir?: string): string | undefined {
-  return findPresetCliBinary("deepseek", customHomeDir);
+  return resolvePresetCliBinary("deepseek", customHomeDir);
 }
 
 /**
@@ -487,11 +487,42 @@ export function resolveCodexCliBinary(
   const preferred =
     preferredPath === undefined
       ? undefined
-      : findPresetCliBinary("codex", customHomeDir, preferredPath);
-  return preferred ?? findPresetCliBinary("codex", customHomeDir);
+      : resolvePresetCliBinary("codex", customHomeDir, preferredPath);
+  return preferred ?? resolvePresetCliBinary("codex", customHomeDir);
 }
 
-function findPresetCliBinary(
+/**
+ * 从 npm 或 pnpm 批处理启动器提取固定入口，由 Node 直接传参。房间正文无需经 cmd.exe 解析。
+ * @param file - 已在宿主 PATH 找到的 `.cmd` 或 `.bat` 启动器
+ * @returns 存在的 JavaScript 入口路径，未知包装脚本返回 `undefined`
+ */
+export function resolveWindowsNodeShimEntry(file: string): string | undefined {
+  if (!/\.(?:cmd|bat)$/i.test(file)) {
+    return undefined;
+  }
+  try {
+    const shim = readFileSync(file, "utf8");
+    const entry = shim.match(/"%(?:dp0%|~dp0)\\?([^"\r\n]+\.(?:cjs|mjs|js))"[ \t]+%\*/i)?.[1];
+    if (entry !== undefined) {
+      const path = resolve(dirname(file), ...entry.split(/[\\/]/));
+      if (statSync(path).isFile()) {
+        return path;
+      }
+    }
+  } catch {
+    // 缺失或无法读取的 shim 会交回调用者处理启动失败。
+  }
+  return undefined;
+}
+
+/**
+ * 定位预设 CLI 的实际路径，接入预检与运行时使用相同路径规则。
+ * @param preset - 选中的无头执行器
+ * @param customHomeDir - 可选用户目录
+ * @param customPathEnv - 可选的搜索路径覆盖
+ * @returns 本地已安装的预设路径
+ */
+export function resolvePresetCliBinary(
   preset: WakeAgentPreset,
   customHomeDir?: string,
   customPathEnv?: string,

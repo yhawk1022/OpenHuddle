@@ -53,10 +53,12 @@ import {
   startSseListener,
 } from "./sse-listener.js";
 import {
+  assertConnectionStorageWritable,
   checkTokenFileCollision,
   findTokenFileForAgent,
   findUnusedTokenFilePath,
   getDefaultTokenFilePath,
+  getOpenHuddleHome,
   getRoomLastReadSeq,
   normalizeServerUrl,
   readActiveCliProfile,
@@ -246,10 +248,8 @@ export function parseCliArgs(argv: readonly string[], customHomeDir?: string): P
           tokenFilePath = value;
           hasExplicitTokenFile = true;
         } else if (rawFlag === "--profile" && !hasExplicitTokenFile) {
-          const baseHome = customHomeDir ?? homedir();
           tokenFilePath = join(
-            baseHome,
-            ".openhuddle",
+            getOpenHuddleHome(customHomeDir),
             "tokens",
             `${sanitizeTokenSlug(value)}.token`,
           );
@@ -559,9 +559,10 @@ function buildHelpText(): string {
     "  --server <url>                OpenHuddle server URL (or OPENHUDDLE_URL)",
     "  --token-file <path>           Isolated agent token path (or --profile <slug>)",
     "  --json                        Emit machine-readable JSON output",
+    "  OPENHUDDLE_HOME               Override the local state directory (default: ~/.openhuddle)",
     "",
     "Commands:",
-    "  connect <link> [--name <n>] [--platform <p>] [--no-listen] [--no-greet]",
+    "  connect <link> [--name <n>] [--platform <p>] [--agent <preset> | --run <cmd> | --no-listen] [--no-greet]",
     "                                Use the connection instruction copied from OpenHuddle (legacy codes also accepted)",
     "  pair <code> --name <n> --platform <p> [--listen] [--greet] [--intro <text>] [--reclaim]",
     "                                Bind agent, optionally start SSE daemon & post join greeting in 1 step",
@@ -718,7 +719,7 @@ export async function runCli(
       const autoAllocateToken = isConnect && !parsed.hasExplicitTokenFile;
       const preferredSlug = sanitizeTokenSlug(getLastFlag(parsed, "slug") ?? requestedName);
       let targetTokenFilePath = autoAllocateToken
-        ? join(baseHome, ".openhuddle", "tokens", `${preferredSlug}.token`)
+        ? join(getOpenHuddleHome(baseHome), "tokens", `${preferredSlug}.token`)
         : parsed.tokenFilePath;
       const previousToken = readStoredCredentials(targetTokenFilePath);
 
@@ -755,6 +756,7 @@ export async function runCli(
         return 1;
       }
 
+      assertConnectionStorageWritable(targetTokenFilePath, baseHome);
       const unauthClient = new OpenHuddleHttpClient({
         serverUrl: effectivePairServerUrl,
         ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
@@ -787,6 +789,13 @@ export async function runCli(
       }
 
       const previousMetadata = readStoredCredentials(targetTokenFilePath)?.metadata;
+      // 原身份重连会轮换凭据，已有默认房间应随身份保留，除非本次链接另选了房间。
+      const sameIdentity =
+        previousMetadata?.agentId === pairRes.agent.id &&
+        normalizeServerUrl(previousMetadata.serverUrl) ===
+          normalizeServerUrl(effectivePairServerUrl);
+      const defaultRoomId =
+        pairRes.autoJoinedRoomId ?? (sameIdentity ? previousMetadata.defaultRoomId : undefined);
       const nowIso = new Date().toISOString();
       const metadata = {
         serverUrl: effectivePairServerUrl,
@@ -797,9 +806,7 @@ export async function runCli(
           : {}),
         displayName: pairRes.agent.displayName,
         platform: pairRes.agent.platform,
-        ...(pairRes.autoJoinedRoomId !== undefined
-          ? { defaultRoomId: pairRes.autoJoinedRoomId }
-          : {}),
+        ...(defaultRoomId !== undefined ? { defaultRoomId } : {}),
         updatedAtIso: nowIso,
       };
       writeStoredCredentials(targetTokenFilePath, pairRes.token, metadata);
@@ -811,18 +818,16 @@ export async function runCli(
           slug: pairRes.agent.slug,
           displayName: pairRes.agent.displayName,
           platform: pairRes.agent.platform,
-          ...(pairRes.autoJoinedRoomId !== undefined
-            ? { defaultRoomId: pairRes.autoJoinedRoomId }
-            : {}),
+          ...(defaultRoomId !== undefined ? { defaultRoomId } : {}),
           updatedAtIso: nowIso,
         },
         baseHome,
       );
 
-      // 先判定当前环境是否具备可常驻拉起的本地预设 CLI 或自定义 `--run` 脚本，以便生成准确的报到文案
-      const explicitRunCmd = getLastFlag(parsed, "run");
+      // 身份已落盘。仅在所选执行器可用时尝试启动监听。
+      const hasCustomRunner = (getLastFlag(parsed, "run")?.trim().length ?? 0) > 0;
       const explicitAgentPreset = getLastFlag(parsed, "agent");
-      const inferredPreset = parseWakeAgentPreset(pairRes.agent.platform);
+      const wakePreset = parseWakeAgentPreset(explicitAgentPreset ?? pairRes.agent.platform);
       const checkPresetBinary =
         context.hasPresetBinary ??
         (context.daemonDeps !== undefined
@@ -831,9 +836,7 @@ export async function runCli(
 
       const canStartBackgroundListener =
         listenRequested &&
-        (explicitRunCmd !== undefined ||
-          explicitAgentPreset !== undefined ||
-          (inferredPreset !== undefined && checkPresetBinary(inferredPreset)));
+        (hasCustomRunner || (wakePreset !== undefined && checkPresetBinary(wakePreset)));
 
       // 一键极速体验（1）：发送进群打招呼消息，推进服务端与本地 `lastReadSeq` 游标并即时通知前端群聊时间线
       let greetedMessageSeq: MessageSeq | undefined;
@@ -844,13 +847,9 @@ export async function runCli(
             token: pairRes.token,
             ...(context.fetchImpl !== undefined ? { fetchImpl: context.fetchImpl } : {}),
           });
-          const greetingContent = canStartBackgroundListener
-            ? reclaim
-              ? `${pairRes.agent.displayName} 已重新连回群聊并恢复实时监听，直接 @ 我即可继续讨论。`
-              : `大家好，我是 ${pairRes.agent.displayName}，已连入群聊并开启实时监听，直接 @ 我即可开始讨论。`
-            : reclaim
-              ? `${pairRes.agent.displayName} 已从当前环境重新连回群聊，随时可通过 CLI 参与讨论。`
-              : `大家好，我是 ${pairRes.agent.displayName}，已连入群聊就绪，随时参与讨论与提案协作。`;
+          const greetingContent = reclaim
+            ? `${pairRes.agent.displayName} 已从当前环境重新接入群聊。`
+            : `大家好，我是 ${pairRes.agent.displayName}，已加入群聊。`;
           const sentGreeting = await authedClient.sendRoomMessage(pairRes.autoJoinedRoomId, {
             content: greetingContent,
             ignoreUnread: true,
@@ -916,8 +915,10 @@ export async function runCli(
               daemonErr instanceof Error ? daemonErr.message : String(daemonErr)
             }); use "openhuddle read", "openhuddle reply", or "openhuddle wait" directly.`;
           }
-        } else if (inferredPreset !== undefined) {
-          daemonSkippedNote = `Mode: Cloud / interactive CLI ready (no local "${inferredPreset}" binary on PATH; use "openhuddle read", "openhuddle reply", or "openhuddle wait" directly).`;
+        } else if (wakePreset !== undefined) {
+          daemonSkippedNote = `Mode: Cloud / interactive CLI ready (no local "${wakePreset}" binary found; use "openhuddle read", "openhuddle reply", or "openhuddle wait" directly).`;
+        } else if (explicitAgentPreset !== undefined) {
+          daemonSkippedNote = `Mode: Interactive CLI ready (unsupported wake preset "${explicitAgentPreset}"; use a supported --agent preset or pass --run "<cmd>" to "listen install").`;
         } else {
           daemonSkippedNote = `Mode: Interactive CLI ready (use "openhuddle read", "openhuddle reply", or "openhuddle wait"; or pass --run "<cmd>" to "listen install" for custom auto-wake).`;
         }
@@ -1040,9 +1041,11 @@ export async function runCli(
       return 1;
     }
 
-    const effectiveServerUrl = parsed.hasExplicitServerUrl
-      ? parsed.serverUrl
-      : (stored.metadata?.serverUrl ?? activeProfile?.serverUrl ?? parsed.serverUrl);
+    // 安装包装器会导出默认服务地址。在使用已保存身份时优先使用该凭据的签发来源。
+    const effectiveServerUrl =
+      getLastFlag(parsed, "server") !== undefined
+        ? parsed.serverUrl
+        : (stored.metadata?.serverUrl ?? activeProfile?.serverUrl ?? parsed.serverUrl);
 
     const client = new OpenHuddleHttpClient({
       serverUrl: effectiveServerUrl,
@@ -1697,6 +1700,7 @@ export async function runCli(
         );
         if (subcommand === "spawn-detached") {
           const target = resolveWakeTarget(parsed, stored.metadata?.platform);
+          const stateDir = getLastFlag(parsed, "state-dir");
           const spawned = spawnDetachedDaemonWorker(
             {
               slug,
@@ -1706,6 +1710,7 @@ export async function runCli(
               tokenFilePath: resolve(stored.tokenFilePath),
               target,
               homeDir: baseHome,
+              ...(stateDir !== undefined ? { stateDir: resolve(stateDir) } : {}),
             },
             context.daemonDeps,
           );

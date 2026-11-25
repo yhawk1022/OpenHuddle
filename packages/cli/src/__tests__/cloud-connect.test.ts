@@ -8,22 +8,36 @@
  * 3. MCP stdio 帧流与 `@openhuddle/mcp` 工具名同构，`stdout` 仅输出 JSON-RPC 行。
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type DaemonSystemDeps,
+  buildLinuxSystemdUnit,
+  buildWindowsSchtasksArgs,
   collectInheritedDaemonEnvVars,
   getDaemonPidFilePath,
+  getDaemonServiceStatus,
   installDaemonService,
   isPresetCliBinaryAvailable,
   parseWakeAgentPreset,
   readActiveCliProfile,
   runCli,
   startSseListener,
+  stopDaemonService,
 } from "../cli.js";
+import { getMacPlistPath } from "../daemon-manager.js";
+import { resolveWindowsNodeShimEntry } from "../host-env.js";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -95,6 +109,10 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
   let tempHome = "";
 
   beforeEach(() => {
+    vi.stubEnv("OPENHUDDLE_HOME", undefined);
+    vi.stubEnv("OPENHUDDLE_ROOM_ID", undefined);
+    vi.stubEnv("OPENHUDDLE_TOKEN_FILE", undefined);
+    vi.stubEnv("OPENHUDDLE_URL", undefined);
     tempHome = mkdtempSync(join(tmpdir(), "openhuddle-cloud-test-"));
   });
 
@@ -121,7 +139,18 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
 
   it("redeems a connection link at its issuer and remembers the joined room", async () => {
     const connectionToken = `oh_connect_ng_${"a".repeat(43)}`;
-    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse(201, PAIR_RESPONSE));
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(201, PAIR_RESPONSE))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          callerKind: "agent",
+          agent: PAIR_RESPONSE.agent,
+          owner: PAIR_RESPONSE.owner,
+          siblingAgents: [],
+        }),
+      );
     const out: string[] = [];
     const exitCode = await runCli(
       [
@@ -154,9 +183,101 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       defaultRoomId: "rom_cloud",
       serverUrl: "https://huddle.example.com",
     });
+
+    vi.stubEnv("OPENHUDDLE_URL", "https://stale-config.example.com");
+    expect(
+      await runCli(["whoami", "--json"], { homeDir: tempHome, fetchImpl, stdout: () => undefined }),
+    ).toBe(0);
+    const [url, request] = fetchImpl.mock.lastCall ?? [];
+    expect(url).toBe("https://huddle.example.com/api/v1/me");
+    expect(new Headers(request?.headers).get("authorization")).toBe(
+      `Bearer ${PAIR_RESPONSE.token}`,
+    );
+  });
+
+  it("checks local state before spending a single-use connection link", async () => {
+    const stateDir = join(tempHome, "OpenHuddle state");
+    vi.stubEnv("OPENHUDDLE_HOME", stateDir);
+    mkdirSync(join(stateDir, "active-profile.json"), { recursive: true });
+    const fetchImpl = vi.fn<typeof fetch>();
+    const output: string[] = [];
+
+    const exitCode = await runCli(
+      ["connect", `https://huddle.example.com/connect#oh_connect_na_${"a".repeat(43)}`, "--json"],
+      { homeDir: tempHome, fetchImpl, stdout: (line) => output.push(line) },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(JSON.parse(output.join("\n"))).toMatchObject({
+      ok: false,
+      error: { code: "CLI_ERROR", message: expect.stringContaining("active-profile.json") },
+    });
+  });
+
+  it("reconnects the same Agent without forgetting its default room or credential path", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(201, PAIR_RESPONSE))
+      .mockResolvedValueOnce(jsonResponse(201, sentMessage(1, "Room arrival")))
+      .mockResolvedValueOnce(
+        jsonResponse(201, {
+          ...PAIR_RESPONSE,
+          autoJoinedRoomId: undefined,
+          agent: { ...PAIR_RESPONSE.agent, displayName: "Renamed Cloud Agent" },
+          token: "oh_agt_cloud_rotated",
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(201, sentMessage(2, "Still in the same room")));
+    const output: string[] = [];
+    const context = { homeDir: tempHome, fetchImpl, stdout: (line: string) => output.push(line) };
+
+    expect(
+      await runCli(
+        [
+          "connect",
+          `https://huddle.example.com/connect#oh_connect_ng_${"a".repeat(43)}`,
+          "--name",
+          "Cloud Codex",
+          "--no-listen",
+          "--json",
+        ],
+        context,
+      ),
+    ).toBe(0);
+    const original = readActiveCliProfile(tempHome);
+
+    expect(
+      await runCli(
+        [
+          "connect",
+          `https://huddle.example.com/connect#oh_connect_ra_${"b".repeat(43)}`,
+          "--name",
+          "Renamed Cloud Agent",
+          "--no-greet",
+          "--no-listen",
+          "--json",
+        ],
+        context,
+      ),
+    ).toBe(0);
+    expect(readActiveCliProfile(tempHome)).toMatchObject({
+      agentId: original?.agentId,
+      tokenFilePath: original?.tokenFilePath,
+      defaultRoomId: "rom_cloud",
+    });
+
+    expect(await runCli(["reply", "Still in the same room"], context)).toBe(0);
+    const [url, request] = fetchImpl.mock.lastCall ?? [];
+    expect(url).toBe("https://huddle.example.com/api/v1/rooms/rom_cloud/messages");
+    expect(new Headers(request?.headers).get("authorization")).toBe("Bearer oh_agt_cloud_rotated");
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
   it("connect from a cloud sandbox without local preset binary keeps token, skips daemon, remembers room, and enables zero-arg reply", async () => {
+    const stateDir = join(tempHome, "OpenHuddle state");
+    vi.stubEnv("OPENHUDDLE_HOME", stateDir);
+    const hasPresetBinary = vi.fn(() => false);
     const calls: string[] = [];
     const bodies: Record<string, unknown>[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
@@ -164,7 +285,10 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       const url = new URL(String(input));
       calls.push(`${method} ${url.origin}${url.pathname}`);
       if (url.pathname === "/api/v1/pair") {
-        return jsonResponse(201, PAIR_RESPONSE);
+        return jsonResponse(201, {
+          ...PAIR_RESPONSE,
+          agent: { ...PAIR_RESPONSE.agent, platform: "custom" },
+        });
       }
       if (url.pathname === "/api/v1/rooms/rom_cloud/messages" && method === "POST") {
         const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
@@ -180,6 +304,8 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
         "connect",
         "https://huddle.example.com/?code=HUDDLE-ABCD-1234",
         "--platform",
+        "custom",
+        "--agent",
         "codex",
         "--name",
         "Cloud Codex",
@@ -188,7 +314,7 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       {
         homeDir: tempHome,
         fetchImpl,
-        hasPresetBinary: () => false,
+        hasPresetBinary,
         stdout: (l) => out.push(l),
         stderr: () => undefined,
       },
@@ -197,15 +323,18 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
     expect(exitCode).toBe(0);
     const report = JSON.parse(out.join("\n")) as Record<string, unknown>;
     expect(report.listenerMode).toBe("on_demand_cli");
+    expect(report.note).toContain('no local "codex" binary found');
+    expect(hasPresetBinary).toHaveBeenCalledWith("codex");
     expect(report.serverUrl).toBe("https://huddle.example.com");
     expect(calls[0]).toBe("POST https://huddle.example.com/api/v1/pair");
-    expect(String(bodies[0]?.content)).toContain("已连入群聊就绪");
+    expect(String(bodies[0]?.content)).toBe("大家好，我是 Cloud Codex，已加入群聊。");
 
     const profile = readActiveCliProfile(tempHome);
     expect(profile?.defaultRoomId).toBe("rom_cloud");
-    expect(profile?.tokenFilePath).toBe(
-      join(tempHome, ".openhuddle", "tokens", "cloud-codex.token"),
-    );
+    expect(profile?.tokenFilePath).toBe(join(stateDir, "tokens", "cloud-codex.token"));
+    expect(existsSync(join(stateDir, "active-profile.json"))).toBe(true);
+    expect(existsSync(join(stateDir, "cursors", "agt_cloud.json"))).toBe(true);
+    expect(existsSync(join(tempHome, ".openhuddle"))).toBe(false);
 
     // reply 无需 --server / --token-file / roomId
     const replyOut: string[] = [];
@@ -367,6 +496,68 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
     );
   });
 
+  it("uses the configured state directory in generated services and detached lifecycle operations", () => {
+    const stateDir = join(tempHome, "sandbox state");
+    vi.stubEnv("OPENHUDDLE_HOME", stateDir);
+    const spec = {
+      slug: "sandbox-agent",
+      nodeBinaryPath: "/usr/bin/node",
+      cliScriptPath: join(stateDir, "openhuddle.mjs"),
+      serverUrl: "https://huddle.example.com",
+      tokenFilePath: join(stateDir, "tokens", "sandbox-agent.token"),
+      target: { kind: "preset", preset: "codex" } as const,
+      homeDir: tempHome,
+      envVars: {},
+      envPath: "/usr/bin:/bin",
+    };
+    const execSyncCommand = vi.fn(() => ({ exitCode: 1, stdout: "", stderr: "unavailable" }));
+    const spawnDetachedProcess = vi.fn<DaemonSystemDeps["spawnDetachedProcess"]>(() => 4242);
+    const terminatePid = vi.fn(() => true);
+    const deps: DaemonSystemDeps = {
+      platform: "darwin",
+      execSyncCommand,
+      spawnDetachedProcess,
+      isPidAlive: () => true,
+      terminatePid,
+    };
+
+    const install = installDaemonService(spec, deps);
+    const configPath = getMacPlistPath(tempHome, spec.slug);
+    const stdoutPath = join(stateDir, "logs", "listen-sandbox-agent.out.log");
+    const pidFilePath = join(stateDir, "run", "sandbox-agent.pid");
+    expect(install).toMatchObject({ mode: "detached", configFilePath: configPath, pidFilePath });
+    expect(readFileSync(configPath, "utf8")).toContain(`<string>${stdoutPath}</string>`);
+    expect(readFileSync(configPath, "utf8")).toContain(
+      `<key>OPENHUDDLE_HOME</key>\n      <string>${stateDir}</string>`,
+    );
+    expect(buildLinuxSystemdUnit({ ...spec, stateDir: "/sandbox state" })).toContain(
+      'Environment="OPENHUDDLE_HOME=/sandbox state"',
+    );
+    expect(buildWindowsSchtasksArgs({ ...spec, stateDir })[6]).toContain(
+      `--state-dir "${stateDir}"`,
+    );
+    expect(spawnDetachedProcess.mock.calls[0]?.[2]).toMatchObject({
+      stdoutPath,
+      env: { OPENHUDDLE_HOME: stateDir },
+    });
+
+    const params = { slug: spec.slug, homeDir: tempHome };
+    expect(getDaemonServiceStatus(params, deps)).toMatchObject({ running: true, pid: 4242 });
+    expect(stopDaemonService(params, deps)).toMatchObject({
+      running: false,
+      logOutPath: stdoutPath,
+    });
+    expect(terminatePid).toHaveBeenCalledWith(4242);
+    expect(existsSync(pidFilePath)).toBe(false);
+    expect(existsSync(join(tempHome, ".openhuddle"))).toBe(false);
+
+    // 沙箱看得到宿主 HOME，但不能在其中创建 LaunchAgents；已配置的状态根仍可用。
+    rmSync(join(tempHome, "Library"), { recursive: true });
+    writeFileSync(join(tempHome, "Library"), "unavailable");
+    expect(installDaemonService(spec, deps)).toMatchObject({ mode: "detached", pidFilePath });
+    expect(execSyncCommand).toHaveBeenCalledTimes(4);
+  });
+
   it("inherits DeepSeek Harness configuration only for the matching daemon", () => {
     const env = { DSH_HOME: "/tmp/dsh", DEEPSEEK_API_KEY: "test-key" };
     expect(parseWakeAgentPreset("dsh")).toBe("deepseek");
@@ -378,22 +569,77 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
     ).toEqual({});
   });
 
-  it.skipIf(process.platform === "win32")(
-    "runs a DeepSeek wake turn with the transcript on stdin and posts under its own token",
-    async () => {
-      writeFileSync(
-        join(tempHome, "dsh"),
-        [
-          "#!/bin/sh",
-          '[ "$#" -eq 2 ] && [ "$1" = --profile ] && [ "$2" = headless ] || exit 1',
-          'case "$(/bin/cat)" in *"Private transcript fragment"*) printf "%s" "DeepSeek reply";; *) exit 2;; esac',
-        ].join("\n"),
-        { mode: 0o700 },
-      );
-      vi.stubEnv("PATH", `${tempHome}:${process.env.PATH ?? ""}`);
-      expect(isPresetCliBinaryAvailable("deepseek", tempHome, tempHome)).toBe(true);
+  it.each(["%dp0%\\", "%~dp0"])(
+    "resolves the Windows Node shim form %s without a shell",
+    (prefix) => {
+      const bin = join(tempHome, "fake node package");
+      const entry = join(bin, "cli.mjs");
+      const shim = join(tempHome, "gemini.cmd");
+      mkdirSync(bin);
+      writeFileSync(entry, "// executable entry fixture\n");
+      writeFileSync(shim, `@ECHO off\r\n"%_prog%"  "${prefix}fake node package\\cli.mjs" %*\r\n`);
 
-      const agent = { ...PAIR_RESPONSE.agent, slug: "cloud-deepseek", platform: "deepseek" };
+      expect(resolveWindowsNodeShimEntry(shim)).toBe(entry);
+      expect(resolveWindowsNodeShimEntry(entry)).toBeUndefined();
+      rmSync(entry);
+      expect(resolveWindowsNodeShimEntry(shim)).toBeUndefined();
+    },
+  );
+
+  it.skipIf(process.platform === "win32").each([
+    [
+      "codex",
+      "codex",
+      [
+        '[ "$1" = exec ] || exit 1',
+        'while [ "$#" -gt 0 ] && [ "$1" != -o ]; do shift; done',
+        '[ "$#" -eq 3 ] && [ "$3" = - ] || exit 1',
+        'case "$(/bin/cat)" in *"Private transcript fragment"*) printf "%s" "Runner reply" > "$2";; *) exit 2;; esac',
+      ],
+    ],
+    [
+      "claude_code",
+      "claude",
+      [
+        '[ "$1" = -p ] && [ "$6" = none ] || exit 1',
+        '[ -z "${CLAUDECODE:-}" ] || exit 1',
+        'case "$(/bin/cat)" in *"Private transcript fragment"*) printf "%s" "Runner reply";; *) exit 2;; esac',
+      ],
+    ],
+    [
+      "antigravity",
+      "agy",
+      [
+        '[ "$1" = --output-format ] && [ "$8" = --print ] || exit 1',
+        'case "$9" in *"Private transcript fragment"*) printf "%s" "Runner reply";; *) exit 2;; esac',
+      ],
+    ],
+    [
+      "gemini",
+      "gemini",
+      [
+        '[ "$1" = -p ] && [ "$3" = -o ] && [ "$4" = text ] || exit 1',
+        'case "$(/bin/cat)" in *"Private transcript fragment"*) printf "%s" "Runner reply";; *) exit 2;; esac',
+      ],
+    ],
+    [
+      "deepseek",
+      "dsh",
+      [
+        '[ "$#" -eq 2 ] && [ "$1" = --profile ] && [ "$2" = headless ] || exit 1',
+        'case "$(/bin/cat)" in *"Private transcript fragment"*) printf "%s" "Runner reply";; *) exit 2;; esac',
+      ],
+    ],
+  ] as const)(
+    "launches the %s preset with a fixture executable and replies as the registered Agent",
+    async (preset, binary, scriptLines) => {
+      writeFileSync(join(tempHome, binary), ["#!/bin/sh", ...scriptLines].join("\n"), {
+        mode: 0o700,
+      });
+      vi.stubEnv("PATH", `${tempHome}:${process.env.PATH ?? ""}`);
+      expect(isPresetCliBinaryAvailable(preset, tempHome, tempHome)).toBe(true);
+
+      const agent = { ...PAIR_RESPONSE.agent, slug: "cloud-custom", platform: "custom" };
       const ownerMessage = {
         ...sentMessage(1, "Private transcript fragment").message,
         author: {
@@ -410,9 +656,9 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       await startSseListener({
         serverUrl: "https://huddle.example.com",
         token: PAIR_RESPONSE.token,
-        tokenFilePath: join(tempHome, "deepseek.token"),
+        tokenFilePath: join(tempHome, "custom.token"),
         homeDir: tempHome,
-        target: { kind: "preset", preset: "deepseek" },
+        target: { kind: "preset", preset },
         catchUpInboxOnConnect: false,
         maxReconnectAttempts: 0,
         onLog: () => undefined,
@@ -443,7 +689,7 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
                   authorization: new Headers(init.headers).get("authorization"),
                   body: JSON.parse(String(init.body)),
                 });
-                return jsonResponse(201, sentMessage(2, "DeepSeek reply"));
+                return jsonResponse(201, sentMessage(2, "Runner reply"));
               }
               return jsonResponse(200, {
                 ok: true,
@@ -460,9 +706,53 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       expect(posts).toEqual([
         {
           authorization: `Bearer ${PAIR_RESPONSE.token}`,
-          body: expect.objectContaining({ content: "DeepSeek reply", replyToSeq: 1 }),
+          body: expect.objectContaining({ content: "Runner reply", replyToSeq: 1 }),
         },
       ]);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "launches a custom runner with its wake context and credential path",
+    async () => {
+      const scriptPath = join(tempHome, "custom runner.sh");
+      const tokenPath = join(tempHome, "tokens", "custom.token");
+      writeFileSync(
+        scriptPath,
+        [
+          "#!/bin/sh",
+          'printf "%s\\n" "$OPENHUDDLE_ROOM_ID" "$OPENHUDDLE_LATEST_SEQ" "$OPENHUDDLE_WAKE_REASON" "$OPENHUDDLE_TOKEN_FILE" "$OPENHUDDLE_URL" > "$0.context"',
+        ].join("\n"),
+      );
+      const fetchImpl = vi.fn<typeof fetch>(
+        async () =>
+          new Response(
+            'event: wake\ndata: {"type":"wake","roomId":"rom_cloud","latestSeq":7,"reason":"direct_mention"}\n\n',
+          ),
+      );
+
+      await startSseListener({
+        serverUrl: "https://huddle.example.com",
+        token: PAIR_RESPONSE.token,
+        tokenFilePath: tokenPath,
+        target: { kind: "custom", command: `/bin/sh ${JSON.stringify(scriptPath)}` },
+        catchUpInboxOnConnect: false,
+        maxReconnectAttempts: 0,
+        fetchImpl,
+        onLog: () => undefined,
+      });
+
+      expect(readFileSync(`${scriptPath}.context`, "utf8").trim().split("\n")).toEqual([
+        "rom_cloud",
+        "7",
+        "direct_mention",
+        tokenPath,
+        "https://huddle.example.com",
+      ]);
+      expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
+        "https://huddle.example.com/api/v1/events",
+        expect.any(Object),
+      );
     },
   );
 

@@ -34,7 +34,9 @@ import {
   resolveAntigravityManagedProxyEnv,
   resolveCodexCliBinary,
   resolveDeepSeekCliBinary,
+  resolvePresetCliBinary,
   resolveShellWrapperEnvForBinary,
+  resolveWindowsNodeShimEntry,
 } from "./host-env.js";
 import { OpenHuddleApiError, OpenHuddleHttpClient } from "./http-client.js";
 import { REPLY_IMAGE_NAME, readReplyImage, requestsReplyImage } from "./reply-image.js";
@@ -1084,22 +1086,37 @@ async function runDefaultPresetPrompt(
   }
 
   const executable =
-    params.preset === "codex" && process.platform === "darwin"
-      ? (resolveCodexCliBinary(effectiveHomeDir, childEnv.PATH) ?? command)
-      : command;
+    process.platform === "win32"
+      ? (resolvePresetCliBinary(params.preset, effectiveHomeDir) ?? command)
+      : params.preset === "codex" && process.platform === "darwin"
+        ? (resolveCodexCliBinary(effectiveHomeDir, childEnv.PATH) ?? command)
+        : command;
+  const windowsBatch = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(executable);
+  const windowsNodeEntry = windowsBatch ? resolveWindowsNodeShimEntry(executable) : undefined;
   const needsWindowsDshShell =
-    params.preset === "deepseek" && process.platform === "win32" && /\.(?:cmd|bat)$/i.test(command);
+    params.preset === "deepseek" && windowsBatch && windowsNodeEntry === undefined;
   if (needsWindowsDshShell) {
     // Windows 的 npm 启动器是批处理文件；固定命令行只引用路径，房间内容仍走 stdin。
-    childEnv.OPENHUDDLE_DSH_EXECUTABLE = command;
+    childEnv.OPENHUDDLE_DSH_EXECUTABLE = executable;
   }
   try {
+    if (windowsBatch && windowsNodeEntry === undefined && !needsWindowsDshShell) {
+      throw new Error(
+        `Preset CLI "${command}" requires a native executable or npm Node shim on Windows.`,
+      );
+    }
     const stdoutText = await new Promise<string>((resolvePromise, rejectPromise) => {
       const child = spawn(
-        needsWindowsDshShell ? (process.env.ComSpec ?? "cmd.exe") : executable,
+        needsWindowsDshShell
+          ? (process.env.ComSpec ?? "cmd.exe")
+          : windowsNodeEntry !== undefined
+            ? process.execPath
+            : executable,
         needsWindowsDshShell
           ? ["/d", "/s", "/v:off", "/c", '""%OPENHUDDLE_DSH_EXECUTABLE%" --profile headless"']
-          : [...args],
+          : windowsNodeEntry !== undefined
+            ? [windowsNodeEntry, ...args]
+            : [...args],
         {
           cwd: params.replyImageDir ?? tmpdir(),
           stdio: ["pipe", "pipe", "pipe"],
