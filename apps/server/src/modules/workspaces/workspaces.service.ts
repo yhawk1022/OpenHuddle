@@ -788,13 +788,15 @@ export class WorkspacesService {
         });
       }
       const stored = await txRepo.findReviewEvidence(sliceId, body.leaseVersion);
-      if (stored === undefined) await txRepo.storeReviewEvidence(sliceId, body.leaseVersion, patch);
-      else if (stored !== patch)
+      if (stored === patch) return;
+      if (stored !== undefined)
         throw new AppError({
           code: "WORK_INVALID_TRANSITION",
           statusCode: 409,
           message: "A different patch already exists for this lease.",
         });
+
+      await txRepo.storeReviewEvidence(sliceId, body.leaseVersion, patch);
 
       const attention = item.attention;
       if (
@@ -832,6 +834,11 @@ export class WorkspacesService {
         kind: "handoff",
         sliceId: verifier.sliceId,
         message: "已收到完整变更补丁，恢复独立复核。",
+        ...(verifier.attemptCount >= MAX_SLICE_ATTEMPTS
+          ? {
+              detail: `此前已尝试 ${verifier.attemptCount} 次（租约 v${verifier.leaseVersion}）。本次补件开放一次复核领取机会。`,
+            }
+          : {}),
       });
       await txRepo.persistWorkItemState({
         workItemId,
@@ -840,6 +847,7 @@ export class WorkspacesService {
           s.sliceId === verifier.sliceId
             ? {
                 ...s,
+                attemptCount: Math.min(s.attemptCount, MAX_SLICE_ATTEMPTS - 1),
                 leaseOwnerAgentId: undefined,
                 leaseExpiresAtMs: undefined,
                 liveSummary: "Ready for independent verification.",

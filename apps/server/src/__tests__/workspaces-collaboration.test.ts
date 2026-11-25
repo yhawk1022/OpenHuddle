@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { MAX_SLICE_ATTEMPTS } from "@openhuddle/core-governance";
 import { type ManagedDatabase, createDatabaseClient, ensureCoreSchema } from "@openhuddle/db";
 import type {
   ApiErrorEnvelope,
@@ -353,16 +354,25 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
           })
         ).status,
       ).toBe(200);
-      expect((await request(`${verify}/claim`, reviewer.token, "POST", {})).status).toBe(200);
-      expect(
-        (
-          await request(`${verify}/attention`, reviewer.token, "POST", {
-            leaseVersion: 1,
-            question,
-            options: ["已处理设备或工作区问题，重试", "补充说明后继续"],
-          })
-        ).status,
-      ).toBe(200);
+      const previousAttempts = expectedStage === "verifying" ? MAX_SLICE_ATTEMPTS : 1;
+      const ask = (leaseVersion: number) =>
+        request(`${verify}/attention`, reviewer.token, "POST", {
+          leaseVersion,
+          question,
+          options: ["已处理设备或工作区问题，重试", "补充说明后继续"],
+        });
+      const answer = () =>
+        request(`${workPath}/attention/answer`, owner.sessionToken, "POST", {
+          choice: "已处理设备或工作区问题，重试",
+        });
+      for (let attempt = 1; attempt <= previousAttempts; attempt++) {
+        const claim = await request(`${verify}/claim`, reviewer.token, "POST", {});
+        expect(claim.status).toBe(200);
+        const { claimedSlice } = (await claim.json()) as ClaimWorkSliceResponse;
+        expect([claimedSlice.attemptCount, claimedSlice.leaseVersion]).toEqual([attempt, attempt]);
+        expect((await ask(attempt)).status).toBe(200);
+        if (attempt < previousAttempts) expect((await answer()).status).toBe(200);
+      }
       const readEvidenceRequests = async (token: string) => {
         const response = await request("inbox?waitSec=0", token);
         const inbox = (await response.json()) as import("@openhuddle/protocol").InboxResponse;
@@ -410,6 +420,39 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
         expectedStage === "verifying" ? 1 : 0,
       );
       if (expectedStage === "verifying") {
+        const waiting = updated.slices.find((slice) => slice.leaseRole === "verify");
+        expect([waiting?.attemptCount, waiting?.leaseVersion]).toEqual([
+          MAX_SLICE_ATTEMPTS - 1,
+          MAX_SLICE_ATTEMPTS,
+        ]);
+        expect(
+          updated.trace.filter((t) => t.kind === "lease" && t.sliceId === waiting?.sliceId),
+        ).toHaveLength(MAX_SLICE_ATTEMPTS);
+        const claimable = await request("work-items?claimableOnly=true", reviewer.token);
+        expect(
+          ((await claimable.json()) as ListWorkItemsResponse).items.map((work) => work.id),
+        ).toContain(item.id);
+        const claim = await request(`${verify}/claim`, reviewer.token, "POST", {
+          expectedLeaseVersion: MAX_SLICE_ATTEMPTS,
+        });
+        expect(claim.status).toBe(200);
+        const { claimedSlice } = (await claim.json()) as ClaimWorkSliceResponse;
+        expect([claimedSlice.attemptCount, claimedSlice.leaseVersion]).toEqual([
+          MAX_SLICE_ATTEMPTS,
+          MAX_SLICE_ATTEMPTS + 1,
+        ]);
+        expect((await ask(claimedSlice.leaseVersion)).status).toBe(200);
+        expect((await upload(writer.token, valid)).status).toBe(200);
+        const replay = (
+          (await (await request(workPath, owner.sessionToken)).json()) as SingleWorkItemResponse
+        ).item;
+        expect(replay.stage).toBe("awaiting_answer");
+        expect(replay.slices.find((s) => s.leaseRole === "verify")?.attemptCount).toBe(
+          MAX_SLICE_ATTEMPTS,
+        );
+        expect(replay.trace.filter((t) => t.message.includes("收到完整变更补丁"))).toHaveLength(1);
+      } else {
+        expect((await answer()).status).toBe(200);
         expect((await request(`${verify}/claim`, reviewer.token, "POST", {})).status).toBe(200);
         expect(
           (
