@@ -1,0 +1,212 @@
+.oh-workbench-events {
+  color: var(--oh-im-muted);
+  font-size: 12px;
+}
+
+.oh-workbench-event > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 3px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 6px;
+}
+
+.oh-workbench-event > summary::-webkit-details-marker {
+  display: none;
+}
+
+.oh-workbench-event > summary:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
+}
+
+.oh-workbench-event-icon,
+.oh-workbench-event-chevron {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+
+.oh-workbench-event[data-kind="error"] .oh-workbench-event-icon {
+  color: var(--color-red-500);
+}
+
+.oh-workbench-event-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oh-workbench-event time {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.oh-workbench-event-chevron {
+  width: 13px;
+  height: 13px;
+}
+
+.oh-workbench-event[open] .oh-workbench-event-chevron {
+  transform: rotate(90deg);
+}
+
+.oh-workbench-event[open] .oh-workbench-event-summary {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--oh-im-fg);
+}
+
+.oh-workbench-event-body {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 6px 10px;
+  border-inline-start: 1px solid var(--oh-im-border-strong);
+  padding: 3px 12px 6px;
+}
+
+.oh-workbench-event-body :is(p, pre) {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.oh-workbench-event-body pre {
+  font-size: 11px;
+}
+
+.oh-workbench-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.oh-workbench-note-text {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 5px 10px;
+  resize: none;
+  border: 1px solid var(--oh-im-border-strong);
+  border-radius: 10px;
+  background: var(--oh-lg-pill-bg);
+  color: var(--oh-im-fg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.oh-workbench-note-text:focus-visible {
+  outline: 2px solid var(--oh-im-muted);
+  outline-offset: 1px;
+}
+
+@media (max-width: 767px), (pointer: coarse) {
+  .oh-workbench-event > summary {
+    min-height: 44px;
+    font-size: 13px;
+  }
+
+  .oh-workbench-event-clock {
+    display: none;
+  }
+
+  .oh-workbench-note {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 0;
+    border: 1px solid var(--oh-im-border-strong);
+    border-radius: 25px;
+    background: var(--oh-im-surface);
+    padding: 1px 2px 1px 3px;
+    box-shadow: var(--oh-lg-inner);
+  }
+
+  .oh-workbench-note-text {
+    width: 100%;
+    height: 44px;
+    border: 0;
+    border-radius: inherit;
+    padding: 11px 0 11px 10px;
+    background: transparent;
+    font-size: 16px;
+    line-height: 22px;
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .oh-workbench-note-text:focus-visible {
+    outline: none;
+  }
+
+  .oh-workbench-note:focus-within,
+  html[data-keyboard-open="true"] .oh-workbench-note {
+    border-radius: 18px;
+    border-color: var(--oh-im-muted);
+  }
+
+  /* Keep the submit target anchored while WebKit transfers focus during a tap. */
+  .oh-workbench-note:focus-within .oh-workbench-note-text,
+  html[data-keyboard-open="true"] .oh-workbench-note-text {
+    grid-column: 1 / -1;
+    height: clamp(32px, calc(var(--oh-vvh, 100dvh) * 0.14), 76px);
+    padding: 8px 10px 2px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .oh-workbench-note-submit {
+    grid-column: 2;
+    width: 44px;
+    height: 44px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    color: white;
+  }
+
+  .oh-workbench-note .oh-workbench-note-submit:hover {
+    background: transparent;
+  }
+
+  .oh-workbench-note-submit::before {
+    content: "";
+    position: absolute;
+    inset: 6px;
+    border-radius: 50%;
+    background: #2563eb;
+  }
+
+  .oh-workbench-note-submit:disabled::before {
+    background: var(--oh-im-muted);
+  }
+
+  .oh-workbench-note-submit::after {
+    display: none;
+  }
+
+  .oh-workbench-note-submit svg {
+    position: relative;
+  }
+}
+
+@media (min-width: 568px) and (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+  /* The wider field has room for two lines beside the send button. */
+  .oh-workbench-note:focus-within .oh-workbench-note-text,
+  html[data-keyboard-open="true"] .oh-workbench-note-text {
+    grid-column: 1;
+    height: 54px;
+    padding-block: 5px;
+  }
+
+  .oh-workbench-note-submit {
+    align-self: end;
+  }
+}
