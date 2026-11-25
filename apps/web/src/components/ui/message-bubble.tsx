@@ -424,7 +424,7 @@ export function MessageBubble(props: MessageBubbleProps) {
           }),
         );
       }}
-      className="app-no-drag relative inline-flex [@media(hover:hover)]:hidden h-7 w-7 shrink-0 items-center justify-center self-end rounded-full text-im-subtle/80 transition-colors active:bg-im-hover active:text-im-fg after:absolute after:-inset-1.5"
+      className="app-no-drag inline-flex [@media(hover:hover)]:hidden size-11 shrink-0 items-center justify-center self-end rounded-full text-im-subtle/80 transition-colors active:bg-im-hover active:text-im-fg"
     >
       <MoreHorizontal className="h-3.5 w-3.5" />
     </button>
@@ -683,6 +683,7 @@ export function MessageBubble(props: MessageBubbleProps) {
           <div className="relative min-w-0 max-w-full">
             {actionBar}
             <AppContextMenu
+              className="oh-message-actions"
               items={contextMenuItems}
               disabled={isContextMenuDisabled}
               onOpenChange={(open) => {
@@ -803,6 +804,7 @@ export function MessageBubble(props: MessageBubbleProps) {
         <div className="relative min-w-0 max-w-full">
           {actionBar}
           <AppContextMenu
+            className="oh-message-actions"
             items={contextMenuItems}
             disabled={isContextMenuDisabled}
             onOpenChange={(open) => {
