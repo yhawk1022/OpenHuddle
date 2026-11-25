@@ -1,11 +1,12 @@
 /**
  * @module core-governance/state-machine
- * @description 零外部 I/O 依赖的群聊治理纯函数状态机（Functional Core）。
+ * @description 群聊治理纯函数状态机（Functional Core）。
  *
- * 架构职责与关键不变量（Invariants）：
- * 1. 纯净确定性：本模块禁止引入数据库、网络或 `Date.now()`，所有时间戳通过参数 `nowMs` 显式注入，给定相同输入必产出完全一致的状态与唤醒决策。
- * 2. 人类最高裁决权（Human Override）：任何人类成员的发言永远不受 `paused_budget`、冷却锁或圆桌顺序拦截，且人类一发言立即重置连续 Agent 轮次计数并恢复 `active`。
- * 3. 防互 `@` 死循环硬熔断：当连续 Agent 发言达到 `maxConsecutiveAgentTurns` 或 `allowAgentMentions === false` 时，必须清零自动派发的 Agent 唤醒名单，从源头斩断链式唤醒风暴。
+ * 关键不变量：
+ * 1. 确定性零 I/O：严禁读取数据库、网络或 `Date.now()`，时间戳一律通过 `nowMs` 显式注入。
+ * 2. 人类优先裁决：人类发言不受 `paused_budget`、冷却窗口或圆桌顺序拦截，且发言后立即清零连续 Agent 计数并恢复 `active`。
+ * 3. 唤醒风暴熔断：连续 Agent 发言触及 `maxConsecutiveAgentTurns` 或关闭 `allowAgentMentions` 时，立即清空自动派发的 `wake` 名单。
+ * 4. 在席成员收敛：候选唤醒目标与圆桌进度仅保留仍在当前房间内的 `activeRoomAgentIds`，防止已退群 Agent 残留幽灵状态。
  */
 import type {
   AgentId,
@@ -67,25 +68,20 @@ export interface PostTurnTransitionResult {
 }
 
 /**
- * 在消息写入数据库前，纯函数校验当前调用者是否满足房间治理策略与乐观并发读锁。
+ * 在消息写入数据库前，校验调用者是否满足房间治理策略与乐观并发读锁。
  *
  * @remarks
- * 校验优先级顺序：
- * 1. 人类豁免直接放行；
- * 2. 预算挂起锁（`paused_budget`）；
- * 3. 乐观并发未读锁（`requireReadBeforeSend` -> `409 CONFLICT_UNREAD_MESSAGES`）；
- * 4. 单 Agent 发言冷却窗口（`agentCooldownMs`）；
- * 5. 圆桌轮流表态约束（`round_table`）。
+ * 优先级固定为：人类豁免 -> 预算挂起锁 -> 乐观未读锁（`409`） -> 单 Agent 冷却窗口 -> 圆桌轮流约束。
  *
  * @param state - 当前房间治理状态快照
- * @param context - 本次发送请求的调用者、游标与时间上下文
- * @returns 放行或携带明确协议错误码的拦截决策
+ * @param context - 调用者身份、游标与显式时间戳
+ * @returns 放行或携带协议错误码的拦截决策
  */
 export function evaluatePreSendPolicy(
   state: Readonly<RoomGovernanceState>,
   context: Readonly<PreSendPolicyContext>,
 ): PreSendPolicyDecision {
-  // 不变量：人类始终拥有插话引导与打破僵局的最高权限，不受任何自动化节流拦截
+  // 人类拥有最高插话与破局权，不受自动化节流限制
   if (context.caller.kind === "human") {
     return { allowed: true };
   }
@@ -100,7 +96,7 @@ export function evaluatePreSendPolicy(
     };
   }
 
-  // 乐观并发防抢话锁：强制 Agent 在发言前读完房间最新消息，防止多个被同时唤醒的 Agent 重复回答同一问题
+  // 乐观并发读锁：要求 Agent 先读完最新消息再发言，避免多 Agent 被同时唤醒后重复抢答
   if (state.config.requireReadBeforeSend && !context.ignoreUnread) {
     const readSeq = context.callerLastReadSeq ?? (0 as ReadCursorSeq);
     if (readSeq < context.roomLastSeq) {
@@ -112,32 +108,38 @@ export function evaluatePreSendPolicy(
     }
   }
 
-  // 冷却限流：防止异常本地脚本在毫秒内高频连发刷屏
+  // 单 Agent 冷却窗口：抑制异常守护脚本在毫秒级高频连发
   const lastSpokenAt = state.lastSpokenAtByAgentMs[agentId];
   if (lastSpokenAt !== undefined && state.config.agentCooldownMs > 0) {
     const elapsedMs = context.nowMs - lastSpokenAt;
     if (elapsedMs < state.config.agentCooldownMs) {
+      const waitMs = state.config.agentCooldownMs - elapsedMs;
       return {
         allowed: false,
         errorCode: "GOVERNANCE_COOLDOWN_ACTIVE",
-        reason: `Agent cooldown active; wait ${state.config.agentCooldownMs - elapsedMs}ms before sending again.`,
-        retryAfterMs: state.config.agentCooldownMs - elapsedMs,
+        reason: `Agent cooldown active; wait ${waitMs}ms before sending again.`,
+        retryAfterMs: waitMs,
       };
     }
   }
 
-  // 圆桌模式：在房间内所有在席 Agent 完成本轮首次发言前，已发言 Agent 不得抢占第二轮
+  // 圆桌模式：在所有在席 Agent 完成本轮首次表态前，已表态 Agent 不得提前进入下一轮
   if (state.config.mode === "round_table" && context.activeRoomAgentIds.length > 1) {
-    const alreadySpokeInRound = state.roundTableSpokenAgentIds.includes(agentId);
-    const remainingAgents = context.activeRoomAgentIds.filter(
-      (id) => !state.roundTableSpokenAgentIds.includes(id),
-    );
-    if (alreadySpokeInRound && remainingAgents.length > 0) {
-      return {
-        allowed: false,
-        errorCode: "GOVERNANCE_ROUND_TABLE_WAIT",
-        reason: `Round-table mode active; waiting for ${remainingAgents.length} other agent(s) to finish their turn first.`,
-      };
+    const spokenSet = new Set<AgentId>(state.roundTableSpokenAgentIds);
+    if (spokenSet.has(agentId)) {
+      let remainingCount = 0;
+      for (const activeId of context.activeRoomAgentIds) {
+        if (!spokenSet.has(activeId)) {
+          remainingCount += 1;
+        }
+      }
+      if (remainingCount > 0) {
+        return {
+          allowed: false,
+          errorCode: "GOVERNANCE_ROUND_TABLE_WAIT",
+          reason: `Round-table mode active; waiting for ${remainingCount} other agent(s) to finish their turn first.`,
+        };
+      }
     }
   }
 
@@ -145,22 +147,33 @@ export function evaluatePreSendPolicy(
 }
 
 /**
- * 在消息确认写入后推进房间治理状态机，并过滤允许派发实时 `wake` 事件的目标 Agent 列表。
+ * 消息写入后推进房间治理状态机，并收敛最终允许派发 `wake` 事件的目标 Agent 列表。
  *
- * @param state - 写入前的房间治理状态快照（只读，内部不会就地修改）
- * @param turn - 本次写入消息的发送者、候选唤醒列表与显式时间戳
- * @returns 不可变的新治理状态快照及最终获准唤醒的去重 Agent ID 数组
+ * @param state - 写入前的房间治理状态快照（只读）
+ * @param turn - 发送者、候选唤醒列表、在席 Agent 列表与当前时间戳
+ * @returns 新治理状态快照及去重后的获准唤醒 Agent ID 列表
  */
 export function applyCommittedMessageTurn(
   state: Readonly<RoomGovernanceState>,
   turn: Readonly<CommittedMessageTurn>,
 ): PostTurnTransitionResult {
-  // 去重并排除发送者自身（任何情况下绝不自己唤醒自己，防止单 Agent 自激死循环）
-  const deduplicatedTargets = Array.from(new Set(turn.candidateWakeAgentIds)).filter(
-    (targetId) => !(turn.sender.kind === "agent" && turn.sender.agentId === targetId),
-  );
+  const activeSet = new Set<AgentId>(turn.activeRoomAgentIds);
+  const seenWakeTargets = new Set<AgentId>();
+  const deduplicatedTargets: AgentId[] = [];
 
-  // 人类发言：自动清零连续 Agent 计数、解除预算挂起态、开启新一轮圆桌并正常派发所有目标唤醒
+  // 仅保留当前仍在席的 Agent，且排除发送者自身以防单 Agent 自激死循环
+  for (const targetId of turn.candidateWakeAgentIds) {
+    if (!activeSet.has(targetId) || seenWakeTargets.has(targetId)) {
+      continue;
+    }
+    if (turn.sender.kind === "agent" && turn.sender.agentId === targetId) {
+      continue;
+    }
+    seenWakeTargets.add(targetId);
+    deduplicatedTargets.push(targetId);
+  }
+
+  // 人类发言：重置连续 Agent 轮次、解除预算挂起态并开启新一轮圆桌
   if (turn.sender.kind === "human") {
     return {
       nextState: {
@@ -175,24 +188,27 @@ export function applyCommittedMessageTurn(
     };
   }
 
-  // Agent 发言：累加连续轮次并更新冷却时间戳与圆桌进度
   const senderId = turn.sender.agentId;
   const nextConsecutiveTurns = state.consecutiveAgentTurns + 1;
   const budgetJustExhausted = nextConsecutiveTurns >= state.config.maxConsecutiveAgentTurns;
   const nextStatus = budgetJustExhausted ? "paused_budget" : state.status;
 
-  // 计算圆桌进度：若所有在席 Agent 均已表态完毕，则自动清空本轮记录以开启下一轮交叉评议
-  const updatedRoundSpoken = state.roundTableSpokenAgentIds.includes(senderId)
-    ? [...state.roundTableSpokenAgentIds]
-    : [...state.roundTableSpokenAgentIds, senderId];
+  // 同步剔除中途已移出房间的旧 Agent ID；若全体在席 Agent 均已发言则清空本轮记录开启下一轮
+  const updatedRoundSet = new Set<AgentId>();
+  for (const id of state.roundTableSpokenAgentIds) {
+    if (activeSet.has(id)) {
+      updatedRoundSet.add(id);
+    }
+  }
+  if (activeSet.has(senderId)) {
+    updatedRoundSet.add(senderId);
+  }
 
   const allActiveAgentsHaveSpoken =
     turn.activeRoomAgentIds.length > 0 &&
-    turn.activeRoomAgentIds.every((id) => updatedRoundSpoken.includes(id));
+    turn.activeRoomAgentIds.every((id) => updatedRoundSet.has(id));
 
-  const nextRoundTableSpoken = allActiveAgentsHaveSpoken ? [] : updatedRoundSpoken;
-
-  // 熔断判定：若关闭了 Agent 互 @ 唤醒，或本条消息正好耗尽了连续发言预算，则阻断所有后续自动唤醒
+  const nextRoundTableSpoken = allActiveAgentsHaveSpoken ? [] : Array.from(updatedRoundSet);
   const canAgentTriggerWake = state.config.allowAgentMentions && !budgetJustExhausted;
 
   return {
@@ -212,10 +228,10 @@ export function applyCommittedMessageTurn(
 }
 
 /**
- * 人类在裁判控制台点击「继续讨论（重置轮次预算）」时的纯函数状态转换。
+ * 人类在控制台重置连续发言预算时的状态转换。
  *
  * @param state - 当前房间治理状态快照
- * @returns 恢复为 `active` 且连续 Agent 发言计数归零的新状态快照
+ * @returns 恢复为 `active` 且连续 Agent 计数归零的新快照
  */
 export function renewTurnBudget(state: Readonly<RoomGovernanceState>): RoomGovernanceState {
   return {

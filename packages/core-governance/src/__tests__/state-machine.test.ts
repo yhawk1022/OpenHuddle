@@ -166,6 +166,24 @@ describe("@openhuddle/core-governance — pure deterministic state machine", () 
     expect(renewed.status).toBe("active");
     expect(renewed.consecutiveAgentTurns).toBe(0);
   });
+
+  it("filters departed agents from permittedWakeAgentIds and prunes stale round-table entries", () => {
+    const departedAgent = AgentIdSchema.parse("agt_departed");
+    const initial = {
+      ...createDefaultGovernanceState({ mode: "round_table", agentCooldownMs: 0 }),
+      roundTableSpokenAgentIds: [departedAgent],
+    };
+
+    const result = applyCommittedMessageTurn(initial, {
+      sender: callerA,
+      candidateWakeAgentIds: [agentB, departedAgent],
+      activeRoomAgentIds: [agentA, agentB],
+      nowMs: 5_000,
+    });
+
+    expect(result.permittedWakeAgentIds).toEqual([agentB]);
+    expect(result.nextState.roundTableSpokenAgentIds).toEqual([agentA]);
+  });
 });
 
 describe("@openhuddle/core-governance — ADR-0002 联邦铁律不变量（Agent 消息无授权语义）", () => {
