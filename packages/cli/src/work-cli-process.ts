@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { checkAgentWorkOutput } from "@openhuddle/core-governance";
 import type { AgentPlatform, WorkSliceRole } from "@openhuddle/protocol";
 import { runCustomWorkPrompt } from "./custom-work-runner.js";
 import {
@@ -140,7 +141,9 @@ export async function runWorkPrompt(input: WorkPromptInput): Promise<string> {
   }
   if (platform === "deepseek") {
     env.DSH_PERMISSION_MODE = mode;
-    return runPromptProcess(executable, ["--profile", "headless"], input, env);
+    return checkAgentWorkOutput(
+      await runPromptProcess(executable, ["--profile", "headless"], input, env),
+    );
   }
   const temp = await mkdtemp(join(tmpdir(), "oh-work-output-"));
   try {
@@ -284,7 +287,7 @@ export async function runWorkPrompt(input: WorkPromptInput): Promise<string> {
       input,
       env,
     );
-    return (await readFile(output, "utf8")).trim();
+    return checkAgentWorkOutput((await readFile(output, "utf8")).trim());
   } finally {
     await rm(temp, { recursive: true, force: true });
   }
