@@ -37,6 +37,15 @@ export type AuditLogId = Brand<string, "AuditLogId">;
 /** 人类好友关系或好友申请唯一标识（示例：`frd_01jk9x...`） */
 export type FriendshipId = Brand<string, "FriendshipId">;
 
+/** 工作区实体唯一标识（示例：`wsp_01jk9x...`） */
+export type WorkspaceId = Brand<string, "WorkspaceId">;
+
+/** 多 Agent 协作工单唯一标识（示例：`wrk_01jk9x...`） */
+export type WorkItemId = Brand<string, "WorkItemId">;
+
+/** 工单内并行执行或核验分片唯一标识（示例：`slc_01jk9x...`） */
+export type WorkSliceId = Brand<string, "WorkSliceId">;
+
 /** 一次性短配对码（示例：`HUDDLE-8K3P-92M`） */
 export type PairingCode = Brand<string, "PairingCode">;
 
@@ -118,6 +127,36 @@ export const FriendshipIdSchema = z
   .min(3)
   .max(64)
   .transform((val): FriendshipId => val as FriendshipId);
+
+/**
+ * 校验并品牌化 `WorkspaceId` 的 Zod Schema。
+ */
+export const WorkspaceIdSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(64)
+  .transform((val): WorkspaceId => val as WorkspaceId);
+
+/**
+ * 校验并品牌化 `WorkItemId` 的 Zod Schema。
+ */
+export const WorkItemIdSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(64)
+  .transform((val): WorkItemId => val as WorkItemId);
+
+/**
+ * 校验并品牌化 `WorkSliceId` 的 Zod Schema。
+ */
+export const WorkSliceIdSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(64)
+  .transform((val): WorkSliceId => val as WorkSliceId);
 
 /**
  * 校验并规范化（自动转大写）一次性配对码的 Zod Schema。

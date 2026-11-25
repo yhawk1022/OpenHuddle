@@ -8,9 +8,17 @@
  */
 import { z } from "zod";
 import { RoomGovernanceStateSchema, RoomGovernanceStatusSchema } from "./governance.js";
-import { MessageSeqSchema, ReadCursorSeqSchema, RoomIdSchema } from "./ids.js";
+import {
+  MessageSeqSchema,
+  ReadCursorSeqSchema,
+  RoomIdSchema,
+  WorkItemIdSchema,
+  WorkSliceIdSchema,
+  WorkspaceIdSchema,
+} from "./ids.js";
 import { MessageDtoSchema } from "./messages.js";
 import { ProposalCardDtoSchema } from "./proposals.js";
+import { WorkTraceEntrySchema } from "./workspaces.js";
 
 /**
  * 触发本地 Agent 唤醒的原因分类。
@@ -68,6 +76,30 @@ export const SseEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("friendship.updated"),
+  }),
+  z.object({
+    type: z.literal("workspace.updated"),
+    workspaceId: WorkspaceIdSchema,
+    roomId: RoomIdSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("work.updated"),
+    workItemId: WorkItemIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    roomId: RoomIdSchema.optional(),
+    stage: z.string(),
+    version: z.number().int().positive(),
+  }),
+  z.object({
+    type: z.literal("work.trace"),
+    workItemId: WorkItemIdSchema,
+    workspaceId: WorkspaceIdSchema,
+    roomId: RoomIdSchema.optional(),
+    sliceId: WorkSliceIdSchema.optional(),
+    liveSummary: z.string().max(1_000).optional(),
+    diffAdded: z.number().int().nonnegative().optional(),
+    diffRemoved: z.number().int().nonnegative().optional(),
+    entry: WorkTraceEntrySchema,
   }),
 ]);
 export type SseEvent = z.infer<typeof SseEventSchema>;

@@ -159,6 +159,13 @@ describe("@openhuddle/protocol — identity & security invariants", () => {
         ownerUserId: ownerA,
       }).ownerUserId,
     ).toBe(ownerA);
+    expect(
+      RoomSummaryDtoSchema.parse({
+        ...summaryBase,
+        ownerUserId: ownerA,
+        lastMessageAtIso: "2026-11-25T10:30:00.000Z",
+      }).lastMessageAtIso,
+    ).toBe("2026-11-25T10:30:00.000Z");
   });
 
   it("defaults HumanUserDto role/status for backward compatibility and validates admin schemas", () => {

@@ -83,6 +83,8 @@ export const RoomSummaryDtoSchema = z.object({
   yourLastReadSeq: ReadCursorSeqSchema,
   governance: RoomGovernanceStateSchema,
   peer: DirectChatPeerDtoSchema.optional(),
+  /** 房间内最新一条消息的创建时间（尚无消息时省略，客户端回退至 `createdAtIso` 参与会话列表倒序排列） */
+  lastMessageAtIso: z.string().datetime().optional(),
   createdAtIso: z.string().datetime(),
 });
 export type RoomSummaryDto = z.infer<typeof RoomSummaryDtoSchema>;
