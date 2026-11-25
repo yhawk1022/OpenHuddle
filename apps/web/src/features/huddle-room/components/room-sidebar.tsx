@@ -710,6 +710,41 @@ export function RoomSidebar(props: RoomSidebarProps) {
         />
       </div>
 
+      {activeTab === "chats" && props.rooms.length > 0 ? (
+        <fieldset className="mx-3 mb-2.5 flex min-w-0 shrink-0 flex-wrap items-center gap-1.5 px-0.5 md:mb-2 md:gap-1">
+          <legend className="sr-only">按会话类型筛选</legend>
+          {CHAT_KIND_FILTERS.map((filter) => {
+            const selected = chatFilter === filter;
+            return (
+              <button
+                key={filter}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => setChatFilter(filter)}
+                className={cn(
+                  "im-press relative z-0 inline-flex h-8 cursor-pointer items-center justify-center rounded-full px-3.5 text-[13px] font-medium md:h-7 md:px-3 md:text-[12px]",
+                  selected
+                    ? "font-semibold text-white dark:text-[#111318]"
+                    : "bg-black/[0.04] text-[#5A6274] hover:bg-black/[0.07] hover:text-[#111318] md:bg-transparent dark:bg-white/[0.055] dark:text-[#9898A2] dark:hover:bg-white/[0.09] dark:hover:text-[#F2F2F4] md:dark:bg-transparent",
+                )}
+              >
+                {selected ? (
+                  <motion.span
+                    layoutId="oh-sidebar-kind-filter"
+                    aria-hidden="true"
+                    transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_PILL_SPRING}
+                    className="pointer-events-none absolute inset-0 -z-10 rounded-full bg-[#181B22] will-change-transform dark:bg-[#EAEEF6]"
+                  />
+                ) : null}
+                <span className="relative z-10">
+                  {filter === "all" ? "全部" : CHAT_KIND_META[filter].label}
+                </span>
+              </button>
+            );
+          })}
+        </fieldset>
+      ) : null}
+
       {/* 4. 主列表滚动区（聊天 ⇄ 通讯录丝滑横向/微位移切页 + 筛选胶囊弹簧滑块） */}
       <AnimatePresence mode="wait" initial={false}>
         {activeTab === "chats" ? (
@@ -720,43 +755,8 @@ export function RoomSidebar(props: RoomSidebarProps) {
             animate={{ opacity: 1, x: 0 }}
             exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: -6 }}
             transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
-            className="min-h-0 flex-1 overflow-y-auto px-3 pb-3"
+            className="min-h-0 flex-1 overflow-y-auto overscroll-y-none px-3 pb-3"
           >
-            {props.rooms.length > 0 ? (
-              <fieldset className="mb-2.5 flex min-w-0 flex-wrap items-center gap-1.5 px-0.5 md:mb-2 md:gap-1">
-                <legend className="sr-only">按会话类型筛选</legend>
-                {CHAT_KIND_FILTERS.map((filter) => {
-                  const selected = chatFilter === filter;
-                  return (
-                    <button
-                      key={filter}
-                      type="button"
-                      aria-pressed={selected}
-                      onClick={() => setChatFilter(filter)}
-                      className={cn(
-                        "im-press relative z-0 inline-flex h-8 cursor-pointer items-center justify-center rounded-full px-3.5 text-[13px] font-medium md:h-7 md:px-3 md:text-[12px]",
-                        selected
-                          ? "font-semibold text-white dark:text-[#111318]"
-                          : "bg-black/[0.04] text-[#5A6274] hover:bg-black/[0.07] hover:text-[#111318] md:bg-transparent dark:bg-white/[0.055] dark:text-[#9898A2] dark:hover:bg-white/[0.09] dark:hover:text-[#F2F2F4] md:dark:bg-transparent",
-                      )}
-                    >
-                      {selected ? (
-                        <motion.span
-                          layoutId="oh-sidebar-kind-filter"
-                          aria-hidden="true"
-                          transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_PILL_SPRING}
-                          className="pointer-events-none absolute inset-0 -z-10 rounded-full bg-[#181B22] will-change-transform dark:bg-[#EAEEF6]"
-                        />
-                      ) : null}
-                      <span className="relative z-10">
-                        {filter === "all" ? "全部" : CHAT_KIND_META[filter].label}
-                      </span>
-                    </button>
-                  );
-                })}
-              </fieldset>
-            ) : null}
-
             {props.isLoadingRooms ? (
               <div className="space-y-1.5 px-1 py-1">
                 {[1, 2, 3].map((skeletonId) => (
@@ -1126,7 +1126,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
             animate={{ opacity: 1, x: 0 }}
             exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: 6 }}
             transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
-            className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-3"
+            className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-y-none px-3 pb-3"
           >
             {/* A. 新的朋友（收到的待处理申请） */}
             {incomingRequests.length > 0 ? (
@@ -1191,20 +1191,9 @@ export function RoomSidebar(props: RoomSidebarProps) {
 
             {/* B. 我的好友 */}
             <section className="space-y-1">
-              <div className="flex items-center justify-between px-2 pb-0.5">
-                <span className="text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                  我的好友 · {friends.length}
-                </span>
-                {props.onOpenAddFriend !== undefined ? (
-                  <button
-                    type="button"
-                    onClick={props.onOpenAddFriend}
-                    className="cursor-pointer text-[11px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
-                  >
-                    + 添加
-                  </button>
-                ) : null}
-              </div>
+              <h3 className="px-2 pb-0.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                我的好友 · {friends.length}
+              </h3>
 
               {friends.length === 0 ? (
                 <div className="mx-1 rounded-2xl bg-black/[0.03] px-3.5 py-3.5 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.035] dark:ring-white/[0.06]">
