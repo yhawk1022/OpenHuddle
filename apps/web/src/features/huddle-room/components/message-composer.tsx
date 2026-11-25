@@ -27,7 +27,9 @@ import {
   Check,
   CornerUpLeft,
   FileText,
+  FolderGit2,
   Hand,
+  ListTodo,
   Loader2,
   Mic,
   Paperclip,
@@ -50,10 +52,17 @@ import {
   AnimatePresence,
   AppPopover,
   AppTooltip,
+  type SegmentedTabItem,
+  SegmentedTabs,
   cn,
   motion,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
+import {
+  type AgentExecutionTier,
+  getExecutionTierMeta,
+  useAgentCapabilityPrefs,
+} from "../../../lib/agent-capability-prefs.js";
 import { ApiClientError } from "../../../lib/api-client.js";
 import {
   createClientOperationKey,
@@ -62,6 +71,12 @@ import {
   getReachVisualMeta,
 } from "../../../lib/format.js";
 import type { DraftMessageAttachment } from "../../../lib/message-media.js";
+import { isImeComposing } from "../../../lib/viewport-sync.js";
+import type {
+  DispatchWorkPayload,
+  RoomOrchestrationDefaults,
+  WorkTopology,
+} from "../work/work-types.js";
 import { StickerPicker } from "./sticker-picker.js";
 import { useMessageMediaDraft } from "./use-message-media-draft.js";
 
@@ -72,7 +87,19 @@ const TEXTAREA_MAX_HEIGHT_PX = 168;
 const MAX_MENTION_SUGGESTIONS = 8;
 
 const MEDIA_BUTTON_CLASS =
-  "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] disabled:cursor-not-allowed disabled:opacity-40 dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]";
+  "im-press app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] disabled:cursor-not-allowed disabled:opacity-40 dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]";
+
+const TOPOLOGY_TAB_ITEMS: ReadonlyArray<SegmentedTabItem<WorkTopology>> = [
+  { value: "direct", label: "单人" },
+  { value: "verify_loop", label: "复核" },
+  { value: "swarm", label: "并行" },
+];
+
+const TIER_CYCLE_ORDER: ReadonlyArray<AgentExecutionTier> = [
+  "chat_only",
+  "workspace_read",
+  "worktree_write",
+];
 
 /** `MessageComposer` 入参属性 */
 export interface MessageComposerProps {
@@ -82,10 +109,39 @@ export interface MessageComposerProps {
   readonly currentUserId: UserId;
   /** 当前登录用户的展示昵称（用于渲染输入舱内本人发言身份提示） */
   readonly currentUserDisplayName?: string | undefined;
+  readonly orchestrationDefaults?: RoomOrchestrationDefaults | undefined;
+  /** 从右侧任务面板、消息右键菜单或已拍板提案卡传入的快捷派活预填意图 */
+  readonly pendingDispatchSeed?:
+    | {
+        readonly nonce: number;
+        readonly text?: string | undefined;
+        readonly topology?: WorkTopology | undefined;
+      }
+    | null
+    | undefined;
+  readonly onConsumeDispatchSeed?: (() => void) | undefined;
   readonly replyTarget: MessageDto | null;
   readonly pendingQuickMention: MessageMention | null;
   readonly onConsumeQuickMention: () => void;
   readonly onClearReplyTarget: () => void;
+  /** 从聊天主舞台拖放进来的文件列表信号 */
+  readonly droppedFilesSignal?:
+    | {
+        readonly nonce: number;
+        readonly files: ReadonlyArray<File>;
+      }
+    | null
+    | undefined;
+  readonly onConsumeDroppedFiles?: (() => void) | undefined;
+  /** 全局「直接打字即聚焦输入框（Type-to-Chat）」信号 */
+  readonly focusComposerSignal?:
+    | {
+        readonly nonce: number;
+        readonly appendText?: string | undefined;
+      }
+    | null
+    | undefined;
+  readonly onConsumeFocusSignal?: (() => void) | undefined;
   readonly isSending: boolean;
   readonly sendError: Error | null;
   readonly onReconnectOfflineAgent?: ((agentId: AgentId) => void) | undefined;
@@ -96,8 +152,12 @@ export interface MessageComposerProps {
     readonly mentions: ReadonlyArray<MessageMention>;
     readonly attachment?: DraftMessageAttachment;
     readonly onConfirmed: () => void;
+    /** 网络或治理拦截报错时的回调，用于无损回填刚被瞬时清空的纯文本草稿 */
+    readonly onFailed?: (() => void) | undefined;
     /** ADR-0002：提问模式开启时以 attention 消息发出（等人类作答，默认 24h 过期） */
     readonly attention?: { readonly question: string; readonly addresseeUserIds: UserId[] };
+    /** 开启 `[⚡派活]` 模式时随消息一并创建的多 Agent 编排工单参数 */
+    readonly workDispatch?: DispatchWorkPayload | undefined;
   }) => void;
 }
 
@@ -303,9 +363,30 @@ export function MessageComposer(props: MessageComposerProps) {
   const [activeSuggestIndex, setActiveSuggestIndex] = useState<number>(0);
   // ADR-0002：提问模式——开启后本条消息以 attention（等人类作答）形式发出
   const [askMode, setAskMode] = useState<boolean>(false);
+  // 多 Agent 派活编排模式（与提问模式互斥，支持 `/task` `/verify` `/swarm` 自动点亮）
+  const [dispatchMode, setDispatchMode] = useState<boolean>(false);
+  const [dispatchTopology, setDispatchTopology] = useState<WorkTopology>("verify_loop");
+  const [dispatchTier, setDispatchTier] = useState<AgentExecutionTier>("worktree_write");
+  const [selectedExecutorId, setSelectedExecutorId] = useState<AgentId | null>(null);
   const [pickerOpen, setPickerOpen] = useState<boolean>(false);
+  const { getPref } = useAgentCapabilityPrefs();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const draftRef = useRef<string>(draft);
+  draftRef.current = draft;
+  const [failedTextSnapshot, setFailedTextSnapshot] = useState<{
+    readonly content: string;
+    readonly mentions: ReadonlyArray<MessageMention>;
+    readonly askMode: boolean;
+    readonly dispatchMode: boolean;
+    readonly dispatchTopology: WorkTopology;
+    readonly replySeq?: MessageSeq | undefined;
+    readonly opKey: OperationKey;
+    readonly attention?:
+      | { readonly question: string; readonly addresseeUserIds: UserId[] }
+      | undefined;
+    readonly workDispatch?: DispatchWorkPayload | undefined;
+  } | null>(null);
   const retryRef = useRef<{
     readonly attachment: DraftMessageAttachment | null;
     readonly fingerprint: string;
@@ -330,6 +411,97 @@ export function MessageComposer(props: MessageComposerProps) {
     () => agentMembers.filter(isReachableNow).length,
     [agentMembers],
   );
+
+  // 解析当前派活阵型下的默认主力执行 Agent、统筹 Agent 与异构审查员
+  const resolvedExecutor = useMemo(() => {
+    if (selectedExecutorId !== null) {
+      const explicit = agentMembers.find((m) => m.agentId === selectedExecutorId);
+      if (explicit !== undefined) {
+        return explicit;
+      }
+    }
+    return (
+      agentMembers.find((m) => m.ownerUserId === props.currentUserId && isReachableNow(m)) ??
+      agentMembers.find((m) => m.ownerUserId === props.currentUserId) ??
+      agentMembers[0]
+    );
+  }, [agentMembers, props.currentUserId, selectedExecutorId]);
+
+  const resolvedVerifier = useMemo(() => {
+    const preferredId = props.orchestrationDefaults?.verifierAgentId ?? null;
+    if (preferredId !== null) {
+      const explicit = agentMembers.find((m) => m.agentId === preferredId);
+      if (explicit !== undefined) {
+        return explicit;
+      }
+    }
+    return (
+      agentMembers.find((m) => m.agentId !== resolvedExecutor?.agentId && isReachableNow(m)) ??
+      agentMembers.find((m) => m.agentId !== resolvedExecutor?.agentId) ??
+      resolvedExecutor
+    );
+  }, [agentMembers, props.orchestrationDefaults?.verifierAgentId, resolvedExecutor]);
+
+  const resolvedCoordinator = useMemo(() => {
+    const preferredId = props.orchestrationDefaults?.coordinatorAgentId ?? null;
+    if (preferredId !== null) {
+      const explicit = agentMembers.find((m) => m.agentId === preferredId);
+      if (explicit !== undefined) {
+        return explicit;
+      }
+    }
+    return (
+      agentMembers.find((m) => m.platform === "antigravity") ?? agentMembers[0] ?? resolvedExecutor
+    );
+  }, [agentMembers, props.orchestrationDefaults?.coordinatorAgentId, resolvedExecutor]);
+
+  const isExecutorOwnedByMe =
+    resolvedExecutor === undefined || resolvedExecutor.ownerUserId === props.currentUserId;
+  const effectiveDispatchTier: AgentExecutionTier = isExecutorOwnedByMe
+    ? dispatchTier
+    : "chat_only";
+
+  // 响应从「去派活」「提案派发执行」或「消息转为执行任务」传来的预填意图
+  useEffect(() => {
+    const seed = props.pendingDispatchSeed;
+    if (!seed) {
+      return;
+    }
+    setAskMode(false);
+    setDispatchMode(true);
+    if (seed.topology !== undefined) {
+      setDispatchTopology(seed.topology);
+    } else if (agentMembers.length >= 3) {
+      setDispatchTopology("swarm");
+    } else if (agentMembers.length >= 2) {
+      setDispatchTopology("verify_loop");
+    } else {
+      setDispatchTopology("direct");
+    }
+    if (seed.text !== undefined && seed.text.trim().length > 0) {
+      setDraft(seed.text.trim());
+    }
+    if (resolvedExecutor?.agentId !== undefined) {
+      const pref = getPref(resolvedExecutor.agentId, resolvedExecutor.platform);
+      if (pref.tier !== "chat_only") {
+        setDispatchTier(pref.tier);
+      }
+    }
+    props.onConsumeDispatchSeed?.();
+    window.requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    });
+  }, [
+    agentMembers.length,
+    getPref,
+    props.onConsumeDispatchSeed,
+    props.pendingDispatchSeed,
+    resolvedExecutor,
+  ]);
 
   // 自适应高度：先归零再按 scrollHeight 撑开，useLayoutEffect 保证绘制前完成，杜绝输入高度闪烁
   // biome-ignore lint/correctness/useExhaustiveDependencies: draft 变化是重新测量高度的唯一触发源
@@ -380,6 +552,55 @@ export function MessageComposer(props: MessageComposerProps) {
       }
     });
   }, [props.pendingQuickMention, props.onConsumeQuickMention]);
+
+  // 点击任意气泡「回复」后立即将输入焦点移入文本框，无需用户二次鼠标点击输入区
+  const replySeqForFocus = props.replyTarget?.seq;
+  useEffect(() => {
+    if (replySeqForFocus === undefined) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    });
+  }, [replySeqForFocus]);
+
+  // 响应全舞台拖放文件信号
+  useEffect(() => {
+    const dropped = props.droppedFilesSignal;
+    if (!dropped || dropped.files.length === 0) {
+      return;
+    }
+    props.onConsumeDroppedFiles?.();
+    if (!props.isSending && !media.isPreparingImage && media.phase === "idle") {
+      void media.chooseFiles([...dropped.files]);
+    }
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [media, props.droppedFilesSignal, props.isSending, props.onConsumeDroppedFiles]);
+
+  // 响应全局「直接打字聚焦输入框（Type-to-Chat）」信号
+  useEffect(() => {
+    const sig = props.focusComposerSignal;
+    if (!sig) {
+      return;
+    }
+    const ch = sig.appendText ?? "";
+    if (ch.length > 0) {
+      setDraft((prev) => `${prev}${ch}`);
+    }
+    props.onConsumeFocusSignal?.();
+    window.requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+        setCaretIndex(el.value.length);
+      }
+    });
+  }, [props.focusComposerSignal, props.onConsumeFocusSignal]);
 
   // 与正文实时对齐微胶囊显示：若用户在输入框内手删了 `@昵称`，仅展示仍存在于正文中的被点名队友
   const activeChipMentions = useMemo(() => {
@@ -494,10 +715,10 @@ export function MessageComposer(props: MessageComposerProps) {
     const targetKey = mentionIdentityKey(target);
     const inDraft = activeChipMentions.some((m) => mentionIdentityKey(m) === targetKey);
     if (inDraft) {
-      // 移除胶囊时仅剥离非更长昵称前缀的独立 `@昵称`，避免删 `@庞彦` 时误截断 `@庞彦-OpenAICodex`
+      // 移除胶囊时按 Unicode 词字符边界剥离独立 `@昵称`，防止删 `@庞彦` 时误截断 `@庞彦助理` 或 `@庞彦-Codex`
       setSelectedMentions((prev) => prev.filter((m) => mentionIdentityKey(m) !== targetKey));
       const escaped = target.displayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const tokenRegex = new RegExp(`@${escaped}(?![-\\w])\\s?`, "iu");
+      const tokenRegex = new RegExp(`@${escaped}(?![\\p{L}\\p{N}_·—-])\\s?`, "giu");
       setDraft((prev) => prev.replace(tokenRegex, ""));
       window.requestAnimationFrame(() => textareaRef.current?.focus());
       return;
@@ -544,7 +765,11 @@ export function MessageComposer(props: MessageComposerProps) {
 
   const trimmed = draft.trim();
   const canChooseMedia = !props.isSending && !media.isPreparingImage && media.phase === "idle";
-  const canSend = canChooseMedia && (trimmed.length > 0 || (media.attachment !== null && !askMode));
+  // 原生 IM 体验不变量：纯文本发送支持 0ms 连续回车抢发（不因上一条网络请求在途而锁死输入框），仅二进制附件上传时等待当前传输完成
+  const canSend =
+    media.attachment !== null
+      ? canChooseMedia && !askMode && !dispatchMode
+      : !media.isPreparingImage && media.phase === "idle" && trimmed.length > 0;
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
     const { files, items } = event.clipboardData;
@@ -583,11 +808,26 @@ export function MessageComposer(props: MessageComposerProps) {
       .filter((m) => m.memberKind === "human" && m.userId !== undefined)
       .map((m) => m.userId as UserId);
     const attention =
-      askMode && humanMemberIds.length > 0
+      askMode && !dispatchMode && humanMemberIds.length > 0
         ? { question: trimmed, addresseeUserIds: humanMemberIds }
         : undefined;
+    const workDispatch: DispatchWorkPayload | undefined = dispatchMode
+      ? {
+          topology: dispatchTopology,
+          tier: effectiveDispatchTier,
+          ...(resolvedCoordinator?.agentId !== undefined
+            ? { coordinatorAgentId: resolvedCoordinator.agentId }
+            : {}),
+          ...(resolvedExecutor?.agentId !== undefined
+            ? { executorAgentId: resolvedExecutor.agentId }
+            : {}),
+          ...(dispatchTopology !== "direct" && resolvedVerifier?.agentId !== undefined
+            ? { verifierAgentId: resolvedVerifier.agentId }
+            : {}),
+        }
+      : undefined;
     const { attachment } = media;
-    const fingerprint = JSON.stringify([trimmed, replySeq, finalMentions, attention]);
+    const fingerprint = JSON.stringify([trimmed, replySeq, finalMentions, attention, workDispatch]);
     const previousAttempt = retryRef.current;
     // 超时可能发生在落库后，原样重试须复用幂等键以免重复发出。
     const opKey =
@@ -595,6 +835,63 @@ export function MessageComposer(props: MessageComposerProps) {
         ? previousAttempt.opKey
         : createClientOperationKey();
     retryRef.current = { attachment, fingerprint, opKey };
+    setFailedTextSnapshot(null);
+
+    // 纯文本消息采用原生客户端级 0ms 瞬时清空策略：按下回车当帧立即清空输入框并保持焦点，乐观气泡同步弹入时间线；若请求异常且输入框仍为空则自动无损回填
+    if (attachment === null) {
+      const savedDraft = draft;
+      const savedMentions = selectedMentions;
+      const savedAsk = askMode;
+      const savedDispatch = dispatchMode;
+      const savedTopology = dispatchTopology;
+
+      setDraft("");
+      setAskMode(false);
+      setDispatchMode(false);
+      setSelectedMentions([]);
+      setCaretIndex(0);
+      if (replySeq !== undefined) {
+        props.onClearReplyTarget();
+      }
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+
+      props.onSendMessage({
+        content: trimmed,
+        opKey,
+        ...(replySeq !== undefined ? { replyToSeq: replySeq } : {}),
+        mentions: finalMentions,
+        ...(attention !== undefined ? { attention } : {}),
+        ...(workDispatch !== undefined ? { workDispatch } : {}),
+        onConfirmed: () => {
+          retryRef.current = null;
+          setFailedTextSnapshot(null);
+        },
+        onFailed: () => {
+          if (draftRef.current.trim().length === 0) {
+            setDraft(savedDraft);
+            setSelectedMentions(savedMentions);
+            setAskMode(savedAsk);
+            setDispatchMode(savedDispatch);
+            setDispatchTopology(savedTopology);
+            focusAt(savedDraft.length);
+          } else {
+            // 用户已在网络请求期间继续输入下一句，绝不覆盖新草稿，而是提供一键原样重发入口
+            setFailedTextSnapshot({
+              content: trimmed,
+              mentions: finalMentions,
+              askMode: savedAsk,
+              dispatchMode: savedDispatch,
+              dispatchTopology: savedTopology,
+              ...(replySeq !== undefined ? { replySeq } : {}),
+              opKey,
+              ...(attention !== undefined ? { attention } : {}),
+              ...(workDispatch !== undefined ? { workDispatch } : {}),
+            });
+          }
+        },
+      });
+      return;
+    }
 
     props.onSendMessage({
       content: trimmed,
@@ -602,25 +899,25 @@ export function MessageComposer(props: MessageComposerProps) {
       ...(replySeq !== undefined ? { replyToSeq: replySeq } : {}),
       mentions: finalMentions,
       ...(attention !== undefined ? { attention } : {}),
-      ...(attachment !== null ? { attachment } : {}),
+      ...(workDispatch !== undefined ? { workDispatch } : {}),
+      attachment,
       onConfirmed: () => {
         retryRef.current = null;
         setDraft((current) => (current === draft ? "" : current));
         setAskMode((current) => (current === askMode ? false : current));
+        setDispatchMode((current) => (current === dispatchMode ? false : current));
         setSelectedMentions((current) => (current === selectedMentions ? [] : current));
         if (textareaRef.current?.value === draft) {
           setCaretIndex(0);
         }
-        if (attachment !== null) {
-          media.clearAttachment(attachment);
-        }
+        media.clearAttachment(attachment);
       },
     });
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
-    // 中文等输入法候选词上屏过程中按 Enter 不触发误发送或误选联想项
-    if (event.nativeEvent.isComposing) {
+    // 中文等输入法候选词上屏过程中按 Enter（含 Android keyCode 229）不触发误发送或误选联想项
+    if (isImeComposing(event)) {
       return;
     }
     if (isSuggestOpen) {
@@ -648,6 +945,29 @@ export function MessageComposer(props: MessageComposerProps) {
         return;
       }
     }
+    // 原生分层 Escape 响应链：优先依次取消引用回复、派活模式、提问模式或待发附件
+    if (event.key === "Escape") {
+      if (props.replyTarget !== null) {
+        event.preventDefault();
+        props.onClearReplyTarget();
+        return;
+      }
+      if (dispatchMode) {
+        event.preventDefault();
+        setDispatchMode(false);
+        return;
+      }
+      if (askMode) {
+        event.preventDefault();
+        setAskMode(false);
+        return;
+      }
+      if (media.attachment !== null && !props.isSending) {
+        event.preventDefault();
+        media.clearAttachment();
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submitMessage();
@@ -665,12 +985,13 @@ export function MessageComposer(props: MessageComposerProps) {
   const hasAnyTeammate =
     effectiveKind === "group" && (agentMembers.length > 0 || humanMembers.length > 0);
   const hasContextChips = props.replyTarget !== null || activeChipMentions.length > 0;
-  const composerPlaceholder =
-    effectiveKind === "direct_agent"
-      ? `发消息给 ${props.roomName}…（1v1 单聊直接唤醒，无需输入 @）`
+  const composerPlaceholder = dispatchMode
+    ? "写下要交办的任务说明…"
+    : effectiveKind === "direct_agent"
+      ? `发消息给 ${props.roomName}…`
       : effectiveKind === "direct_human"
         ? `发消息给 ${props.roomName}…`
-        : `以 ${senderDisplayName} 的身份说点什么…（输入 @ 点名队友）`;
+        : `发消息到 ${props.roomName}…`;
 
   return (
     <footer className="app-no-drag pointer-events-none relative z-10 shrink-0 bg-gradient-to-t from-[var(--oh-stage-scrim)] via-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
@@ -687,8 +1008,39 @@ export function MessageComposer(props: MessageComposerProps) {
               transition={{ duration: 0.16 }}
               className="pointer-events-auto relative liquid-glass-bar mb-2 overflow-hidden rounded-[18px]"
             >
-              <div className="bg-[#E5484D]/[0.10] px-3.5 py-2 text-xs font-medium text-[#C81E1E] dark:bg-[#F05252]/[0.14] dark:text-[#FCA5A5]">
-                发送失败（草稿已保留）：{errorText}
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-[#E5484D]/[0.10] px-3.5 py-2 text-xs font-medium text-[#C81E1E] dark:bg-[#F05252]/[0.14] dark:text-[#FCA5A5]">
+                <span>
+                  发送失败（{failedTextSnapshot !== null ? "可一键重发" : "草稿已自动回填"}）：
+                  {errorText}
+                </span>
+                {failedTextSnapshot !== null ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const snap = failedTextSnapshot;
+                      setFailedTextSnapshot(null);
+                      props.onSendMessage({
+                        content: snap.content,
+                        opKey: snap.opKey,
+                        ...(snap.replySeq !== undefined ? { replyToSeq: snap.replySeq } : {}),
+                        mentions: snap.mentions,
+                        ...(snap.attention !== undefined ? { attention: snap.attention } : {}),
+                        ...(snap.workDispatch !== undefined
+                          ? { workDispatch: snap.workDispatch }
+                          : {}),
+                        onConfirmed: () => {
+                          retryRef.current = null;
+                        },
+                        onFailed: () => {
+                          setFailedTextSnapshot(snap);
+                        },
+                      });
+                    }}
+                    className="im-press shrink-0 cursor-pointer rounded-full bg-[#C81E1E] px-2.5 py-0.5 text-[11px] font-medium text-white hover:bg-[#B91C1C] dark:bg-[#F87171] dark:text-[#111318]"
+                  >
+                    重发上一条
+                  </button>
+                ) : null}
               </div>
             </motion.div>
           ) : null}
@@ -744,12 +1096,13 @@ export function MessageComposer(props: MessageComposerProps) {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 4, scale: 0.98 }}
               transition={{ type: "spring", stiffness: 520, damping: 36 }}
-              className="pointer-events-auto absolute right-0 bottom-full left-0 z-30 mb-2 max-w-sm overflow-hidden rounded-[20px] p-1.5 liquid-glass-modal"
+              className="pointer-events-auto absolute right-0 bottom-full left-0 z-30 mb-2 flex max-h-[min(14rem,calc(var(--oh-vvh,100dvh)-8.5rem))] max-w-sm flex-col overflow-hidden rounded-[20px] p-1.5 liquid-glass-modal"
             >
-              <div className="px-2.5 pt-1 pb-1.5 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                选择要提及的对象 · ↑↓ 切换 · Enter 确认
+              <div className="shrink-0 px-2.5 pt-1 pb-1.5 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                <span>选择要提及的对象</span>
+                <span className="hidden sm:inline"> · ↑↓ 切换 · Enter 确认</span>
               </div>
-              <div className="space-y-0.5">
+              <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain">
                 {suggestions.map((candidate, idx) => {
                   const isActive = idx === safeActiveIndex;
                   return (
@@ -811,54 +1164,175 @@ export function MessageComposer(props: MessageComposerProps) {
         </AnimatePresence>
 
         {/* 3. Apple Liquid Glass 悬浮输入舱主体 */}
-        <div className="pointer-events-auto relative liquid-glass-composer rounded-[24px] px-4 pt-3 pb-2.5">
-          {/* 舱内顶部上下文微胶囊条（引用回复 & 已点名成员，无内容时完全不占高度） */}
-          {hasContextChips ? (
-            <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 border-b border-black/[0.06] pb-2 dark:border-white/[0.07]">
-              {props.replyTarget !== null ? (
-                <span className="inline-flex max-w-[18rem] items-center gap-1.5 rounded-full bg-black/[0.05] py-0.5 pr-1 pl-2.5 text-[11.5px] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]">
-                  <CornerUpLeft className="h-3 w-3 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
-                  <span className="truncate">
-                    回复 <strong>{props.replyTarget.author.displayName}</strong>：
-                    {getMessageSnippet(props.replyTarget, 42)}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label="取消引用回复"
-                    onClick={props.onClearReplyTarget}
-                    className="inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
-                  >
-                    <X className="h-2.5 w-2.5" />
-                  </button>
-                </span>
-              ) : null}
+        <div className="pointer-events-auto relative liquid-glass-composer rounded-[22px] sm:rounded-[24px] px-3.5 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5">
+          {/* 3.0 派活编排微胶囊条（仅开启交办任务时浮现，窄屏单行滑轨紧凑排布以释放软键盘消息区） */}
+          <AnimatePresence initial={false}>
+            {dispatchMode && effectiveKind !== "direct_human" ? (
+              <motion.div
+                key="composer-dispatch-bar"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.16, ease: "easeOut" }}
+                className="overflow-hidden"
+              >
+                <div className="mb-1.5 flex items-center justify-between gap-1.5 border-b border-black/[0.06] pb-1.5 text-[11.5px] sm:mb-2 sm:pb-2 dark:border-white/[0.07]">
+                  <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overscroll-x-contain sm:flex-wrap">
+                    <span className="hidden sm:inline-flex shrink-0 items-center gap-1 px-1 text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
+                      <ListTodo className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
+                      <span>交办任务</span>
+                    </span>
 
-              {activeChipMentions.map((mention) => {
-                const isAgent = mention.kind === "agent";
-                return (
-                  <span
-                    key={mentionIdentityKey(mention)}
-                    className={cn(
-                      "inline-flex items-center gap-1 rounded-full py-0.5 pr-1 pl-2 text-[11.5px] font-medium",
-                      isAgent
-                        ? "bg-black/[0.05] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]"
-                        : "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]",
-                    )}
-                  >
-                    <span className="max-w-[8.5rem] truncate">@{mention.displayName}</span>
+                    {effectiveKind === "group" ? (
+                      <div className="shrink-0">
+                        <SegmentedTabs
+                          value={dispatchTopology}
+                          onValueChange={setDispatchTopology}
+                          items={TOPOLOGY_TAB_ITEMS}
+                          size="xs"
+                          ariaLabel="选择协作方式"
+                        />
+                      </div>
+                    ) : null}
+
+                    {/* 责任人与点击轮换 */}
+                    {agentMembers.length > 0 ? (
+                      <button
+                        type="button"
+                        title="点击切换负责的 Agent"
+                        onClick={() => {
+                          if (agentMembers.length < 2) {
+                            return;
+                          }
+                          const curIdx = agentMembers.findIndex(
+                            (m) => m.agentId === resolvedExecutor?.agentId,
+                          );
+                          const next = agentMembers[(curIdx + 1) % agentMembers.length];
+                          if (next?.agentId !== undefined) {
+                            setSelectedExecutorId(next.agentId);
+                          }
+                        }}
+                        className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-full bg-black/[0.045] px-2.5 py-0.5 text-[#3B414E] transition hover:bg-black/[0.08] dark:bg-white/[0.07] dark:text-[#D4D4D8] dark:hover:bg-white/[0.12]"
+                      >
+                        {dispatchTopology === "swarm" ? (
+                          <span className="truncate">
+                            @{resolvedCoordinator?.displayName ?? "Agent"} 等{" "}
+                            {Math.max(2, agentMembers.length)} 路并行
+                          </span>
+                        ) : dispatchTopology === "verify_loop" ? (
+                          <span className="truncate">
+                            @{resolvedExecutor?.displayName ?? "Agent"} 执行 · @
+                            {resolvedVerifier?.displayName ?? "Agent"} 复核
+                          </span>
+                        ) : (
+                          <span className="truncate">
+                            @{resolvedExecutor?.displayName ?? "Agent"}
+                          </span>
+                        )}
+                      </button>
+                    ) : null}
+
                     <button
                       type="button"
-                      aria-label={`移除点名 @${mention.displayName}`}
-                      onClick={() => toggleMention(mention)}
-                      className="inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded-full transition hover:bg-black/10 dark:hover:bg-white/15"
+                      disabled={!isExecutorOwnedByMe}
+                      title={
+                        isExecutorOwnedByMe
+                          ? "点击切换本地目录权限"
+                          : "其他成员的 Agent 仅参与讨论，不读写本地目录"
+                      }
+                      onClick={() => {
+                        const idx = TIER_CYCLE_ORDER.indexOf(dispatchTier);
+                        const nextTier =
+                          TIER_CYCLE_ORDER[(idx + 1) % TIER_CYCLE_ORDER.length] ?? "chat_only";
+                        setDispatchTier(nextTier);
+                      }}
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-full bg-black/[0.045] px-2 py-0.5 text-[11px] text-[#4B5565] transition dark:bg-white/[0.07] dark:text-[#C4C4CA]",
+                        isExecutorOwnedByMe
+                          ? "cursor-pointer hover:bg-black/[0.08] dark:hover:bg-white/[0.12]"
+                          : "cursor-not-allowed opacity-70",
+                      )}
                     >
-                      <X className="h-2.5 w-2.5" />
+                      <FolderGit2 className="h-3 w-3 text-[#687082] dark:text-[#8E8E96]" />
+                      <span>
+                        {isExecutorOwnedByMe
+                          ? getExecutionTierMeta(effectiveDispatchTier).shortLabel
+                          : "仅讨论"}
+                      </span>
                     </button>
-                  </span>
-                );
-              })}
-            </div>
-          ) : null}
+                  </div>
+
+                  <button
+                    type="button"
+                    aria-label="退出派活模式"
+                    onClick={() => setDispatchMode(false)}
+                    className="relative inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] after:absolute after:-inset-1.5 dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+
+          {/* 舱内顶部上下文微胶囊条（引用回复 & 已点名成员，平滑展开收起，无内容时完全零占位） */}
+          <AnimatePresence initial={false}>
+            {hasContextChips ? (
+              <motion.div
+                key="composer-context-chips"
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
+                className="overflow-hidden"
+              >
+                <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 border-b border-black/[0.06] pb-2 dark:border-white/[0.07]">
+                  {props.replyTarget !== null ? (
+                    <span className="inline-flex max-w-[18rem] items-center gap-1.5 rounded-full bg-black/[0.05] py-0.5 pr-1 pl-2.5 text-[11.5px] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]">
+                      <CornerUpLeft className="h-3 w-3 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
+                      <span className="truncate">
+                        回复 <strong>{props.replyTarget.author.displayName}</strong>：
+                        {getMessageSnippet(props.replyTarget, 42)}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="取消引用回复"
+                        onClick={props.onClearReplyTarget}
+                        className="relative inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] after:absolute after:-inset-1.5 dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ) : null}
+
+                  {activeChipMentions.map((mention) => {
+                    const isAgent = mention.kind === "agent";
+                    return (
+                      <span
+                        key={mentionIdentityKey(mention)}
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded-full py-0.5 pr-1 pl-2 text-[11.5px] font-medium",
+                          isAgent
+                            ? "bg-black/[0.05] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]"
+                            : "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]",
+                        )}
+                      >
+                        <span className="max-w-[8.5rem] truncate">@{mention.displayName}</span>
+                        <button
+                          type="button"
+                          aria-label={`移除点名 @${mention.displayName}`}
+                          onClick={() => toggleMention(mention)}
+                          className="relative inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-full transition hover:bg-black/10 after:absolute after:-inset-1.5 dark:hover:bg-white/15"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
 
           {media.attachment !== null ? (
             <AttachmentPreview
@@ -887,7 +1361,24 @@ export function MessageComposer(props: MessageComposerProps) {
             maxLength={16_000}
             value={draft}
             onChange={(e) => {
-              setDraft(e.target.value);
+              const rawVal = e.target.value;
+              // 斜杠快捷触发：输入 `/swarm `、`/verify ` 或 `/task ` 时自动点亮派活胶囊并剥离命令前缀
+              if (effectiveKind !== "direct_human") {
+                const slashMatch = /^\/(swarm|verify|task)\s+([\s\S]*)$/iu.exec(rawVal);
+                if (slashMatch) {
+                  const cmd = (slashMatch[1] ?? "").toLowerCase();
+                  const rest = slashMatch[2] ?? "";
+                  setAskMode(false);
+                  setDispatchMode(true);
+                  setDispatchTopology(
+                    cmd === "swarm" ? "swarm" : cmd === "verify" ? "verify_loop" : "direct",
+                  );
+                  setDraft(rest);
+                  setCaretIndex(rest.length);
+                  return;
+                }
+              }
+              setDraft(rawVal);
               setCaretIndex(e.target.selectionStart);
               setSuggestDismissed(false);
               setActiveSuggestIndex(0);
@@ -897,14 +1388,18 @@ export function MessageComposer(props: MessageComposerProps) {
             onFocus={() => setSuggestDismissed(false)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
+            enterKeyHint="send"
             aria-label={`在 ${props.roomName} 发言`}
             placeholder={composerPlaceholder}
-            className="block max-h-[168px] min-h-[26px] w-full resize-none border-0 bg-transparent p-0 text-[14.5px] leading-[1.5] text-[#111318] caret-[#111318] outline-none placeholder:text-im-placeholder dark:text-[#F2F2F4] dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]"
+            className={cn(
+              "block max-h-[168px] min-h-[26px] w-full resize-none border-0 bg-transparent p-0 text-[16px] md:text-[14.5px] leading-[1.5] text-[#111318] caret-[#111318] outline-none placeholder:text-im-placeholder dark:text-[#F2F2F4] dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]",
+              draft.length === 0 && "overflow-hidden whitespace-nowrap text-ellipsis",
+            )}
           />
 
-          {/* 舱内底部工具栏：左侧 `@` 点名、提问模式、`@全体` 与身份微标；右侧圆形发送键 */}
-          <div className="mt-2 flex select-none items-center justify-between gap-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {/* 舱内底部工具栏：窄屏严格保持单行不折行（`@全体` 在窄屏合并于 `@` 菜单首项），释放聊天舞台高度 */}
+          <div className="mt-1.5 sm:mt-2 flex select-none items-center justify-between gap-1.5">
+            <div className="flex min-w-0 items-center gap-0.5 sm:gap-1.5">
               {effectiveKind === "group" ? (
                 <AppPopover
                   open={pickerOpen}
@@ -957,7 +1452,7 @@ export function MessageComposer(props: MessageComposerProps) {
                       </button>
                     ) : null}
 
-                    <div className="max-h-56 space-y-0.5 overflow-y-auto pt-0.5">
+                    <div className="max-h-[min(14rem,calc(var(--oh-vvh,100dvh)-10rem))] space-y-0.5 overflow-y-auto overscroll-contain pt-0.5">
                       {agentMembers.map((member) => {
                         const mentionObj = memberToMention(member);
                         if (mentionObj === null) {
@@ -1125,7 +1620,15 @@ export function MessageComposer(props: MessageComposerProps) {
                     : "以提问形式发送（等待人类作答）"
                 }
                 aria-pressed={askMode}
-                onClick={() => setAskMode((v) => !v)}
+                onClick={() => {
+                  setAskMode((v) => {
+                    const next = !v;
+                    if (next) {
+                      setDispatchMode(false);
+                    }
+                    return next;
+                  });
+                }}
                 className={cn(
                   "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95]",
                   askMode
@@ -1141,12 +1644,40 @@ export function MessageComposer(props: MessageComposerProps) {
                 </span>
               ) : null}
 
+              {/* 交办任务开关（与相邻工具按钮保持一致的 32px 原生圆形图标规范） */}
+              {effectiveKind !== "direct_human" ? (
+                <button
+                  type="button"
+                  title={dispatchMode ? "交办任务已开启" : "交办任务"}
+                  aria-label="交办任务"
+                  aria-pressed={dispatchMode}
+                  onClick={() => {
+                    setDispatchMode((v) => {
+                      const next = !v;
+                      if (next) {
+                        setAskMode(false);
+                      }
+                      return next;
+                    });
+                    window.requestAnimationFrame(() => textareaRef.current?.focus());
+                  }}
+                  className={cn(
+                    "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95]",
+                    dispatchMode
+                      ? "bg-black/[0.08] text-[#111318] dark:bg-white/[0.14] dark:text-white"
+                      : "text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]",
+                  )}
+                >
+                  <ListTodo className="h-[17px] w-[17px] stroke-[1.9]" />
+                </button>
+              ) : null}
+
               {agentMembers.length >= 2 ? (
                 <button
                   type="button"
                   onClick={handleMentionAllAgents}
                   title="同时点名群内所有 Agent"
-                  className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-black/[0.05] px-2.5 text-[12px] font-medium text-[#181B22] transition-colors hover:bg-black/[0.09] active:scale-[0.97] dark:bg-white/[0.07] dark:text-[#ECECEF] dark:hover:bg-white/[0.12]"
+                  className="hidden sm:inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full bg-black/[0.05] px-2.5 text-[12px] font-medium text-[#181B22] transition-colors hover:bg-black/[0.09] active:scale-[0.97] dark:bg-white/[0.07] dark:text-[#ECECEF] dark:hover:bg-white/[0.12]"
                 >
                   <span>@全体</span>
                 </button>

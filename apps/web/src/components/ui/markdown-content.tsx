@@ -1,18 +1,22 @@
 /**
  * @module web/components/ui/markdown-content
- * @description 零 XSS 纯 React AST 消息 Markdown 与多方案对比表格渲染引擎（严禁使用 `dangerouslySetInnerHTML`），适配 Daylight & Midnight 双模式高对比阅读韵律。
+ * @description 聊天与提案受限子集 Markdown 渲染组件（解析为受控 React 节点树输出，禁用原始 HTML）。
  *
- * 架构职责与关键不变量（Invariants）：
- * 1. 绝对零 XSS 攻击面：所有跨主理人 / 跨 Agent 群聊消息均视为不可信外部输入（Untrusted Input），仅构造受控 React 节点，外部超链接强制通过 `http:` / `https:` 协议白名单校验。
- * 2. 清晰阅读韵律：正文统一采用 `14.5px`（`text-[14.5px] leading-[1.58]`）舒展字号；`@提及` 使用轻盈翡翠芯片高亮；围栏代码块在暗色模式下采用深凹代码井（`#0C0F17`）与气泡形成利落层级。
- * 3. 向后兼容 `tone` 契约：默认 `tone="default"` 自动适配双主题气泡；保留 `inverted` 分支供深底特殊容器兼容调用。
+ * 关键不变量：
+ * 1. 防 XSS 边界：所有群聊消息均按不可信输入处理，外部超链接仅放行 `http:` / `https:` 协议。
+ * 2. 渲染缓存：对 `parseMarkdownBlocks` 结果按 `content` 做引用级缓存，避免父容器时钟刷新触发全时间线重复解析。
  */
 import { assertNever } from "@openhuddle/protocol";
 import { Check, Copy } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  formatCodeFenceLanguageLabel,
+  resolveCodeBlockSyntaxLanguage,
+} from "../../lib/syntax-highlight.js";
 import { AppTooltip, IconButton, cn, toast } from "../primitives/index.js";
+import { HighlightedCodeBlock } from "./syntax-code.js";
 
-/** Markdown 渲染色调：`default` = Pachat 标准纸感气泡与面板；`inverted` = 深底反白兼容色调 */
+/** Markdown 渲染色调：`default` = 标准浅/深双主题气泡；`inverted` = 深底反白兼容色调 */
 export type MarkdownTone = "default" | "inverted";
 
 /** `MarkdownContent` 组件入参属性 */
@@ -113,15 +117,20 @@ function parseMarkdownBlocks(raw: string): ReadonlyArray<MarkdownBlock> {
       continue;
     }
 
-    // 1. 围栏代码块 ```lang
-    if (trimmed.startsWith("```")) {
+    // 1. 围栏代码块 ```lang 或 ~~~lang（支持 3 个及以上反引号/波浪号，避免内嵌三反引号提前闭合）
+    const fenceMatch = /^(`{3,}|~{3,})(.*)$/.exec(trimmed);
+    if (fenceMatch !== null) {
       const startLine = cursor;
-      const language = trimmed.slice(3).trim() || "code";
+      const fenceMarker = fenceMatch[1] ?? "```";
+      const fenceChar = fenceMarker[0] ?? "`";
+      const fenceMinLen = fenceMarker.length;
+      const language = (fenceMatch[2] ?? "").trim();
+      const closeFenceRegex = new RegExp(`^\\${fenceChar}{${String(fenceMinLen)},}\\s*$`);
       cursor += 1;
       const codeLines: string[] = [];
       while (cursor < lines.length) {
         const current = lines[cursor] ?? "";
-        if (current.trim().startsWith("```")) {
+        if (closeFenceRegex.test(current.trim())) {
           cursor += 1;
           break;
         }
@@ -257,6 +266,7 @@ function parseMarkdownBlocks(raw: string): ReadonlyArray<MarkdownBlock> {
       if (
         pTrim.length === 0 ||
         pTrim.startsWith("```") ||
+        pTrim.startsWith("~~~") ||
         pTrim.startsWith(">") ||
         /^#{1,4}\s+/.test(pTrim) ||
         /^[-*]\s+/.test(pTrim) ||
@@ -380,7 +390,7 @@ function getToneStyles(tone: MarkdownTone): MarkdownToneStyles {
 }
 
 const INLINE_TOKEN_REGEX =
-  /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)]+\)|@[A-Za-z0-9_\-\u4e00-\u9fa5]+)/g;
+  /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)]+\)|(?<![A-Za-z0-9._%+-])@[A-Za-z0-9_\-\u4e00-\u9fa5]+)/g;
 
 function renderInlineMarkdown(
   text: string,
@@ -414,13 +424,13 @@ function renderInlineMarkdown(
     } else if (matchText.startsWith("**") && matchText.endsWith("**") && matchText.length >= 4) {
       nodes.push(
         <strong key={tokenKey} className={styles.strong}>
-          {matchText.slice(2, -2)}
+          {renderInlineMarkdown(matchText.slice(2, -2), `${tokenKey}-b`, styles)}
         </strong>,
       );
     } else if (matchText.startsWith("*") && matchText.endsWith("*") && matchText.length >= 2) {
       nodes.push(
         <em key={tokenKey} className={styles.em}>
-          {matchText.slice(1, -1)}
+          {renderInlineMarkdown(matchText.slice(1, -1), `${tokenKey}-i`, styles)}
         </em>,
       );
     } else if (matchText.startsWith("[")) {
@@ -437,7 +447,7 @@ function renderInlineMarkdown(
             rel="noopener noreferrer"
             className={styles.link}
           >
-            {label}
+            {renderInlineMarkdown(label, `${tokenKey}-a`, styles)}
           </a>,
         );
       } else {
@@ -468,10 +478,28 @@ interface CodeFenceBlockProps {
   readonly language: string;
   readonly code: string;
   readonly styles: MarkdownToneStyles;
+  readonly inverted: boolean;
 }
 
 function CodeFenceBlock(props: CodeFenceBlockProps) {
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<number | null>(null);
+  const resolvedSyntaxLanguage = useMemo(
+    () => resolveCodeBlockSyntaxLanguage(props.language, props.code),
+    [props.language, props.code],
+  );
+  const headerLanguageLabel = useMemo(
+    () => formatCodeFenceLanguageLabel(props.language, resolvedSyntaxLanguage),
+    [props.language, resolvedSyntaxLanguage],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = (): void => {
     if (typeof navigator === "undefined" || !navigator.clipboard) {
@@ -480,7 +508,10 @@ function CodeFenceBlock(props: CodeFenceBlockProps) {
     void navigator.clipboard.writeText(props.code).then(() => {
       setCopied(true);
       toast.success("代码已复制");
-      window.setTimeout(() => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
         setCopied(false);
       }, 1_800);
     });
@@ -495,7 +526,7 @@ function CodeFenceBlock(props: CodeFenceBlockProps) {
         )}
       >
         <span className="truncate font-mono text-[11px] font-medium lowercase tracking-wide">
-          {props.language}
+          {headerLanguageLabel}
         </span>
 
         <AppTooltip content={copied ? "已复制" : "复制代码"} side="top">
@@ -515,12 +546,17 @@ function CodeFenceBlock(props: CodeFenceBlockProps) {
         </AppTooltip>
       </div>
       <pre
+        data-vaul-no-drag=""
         className={cn(
-          "select-text overflow-x-auto px-3.5 py-2.5 font-mono text-[13px] leading-[1.55]",
+          "select-text overflow-x-auto overscroll-x-contain px-3.5 py-2.5 font-mono text-[13px] leading-[1.55]",
           props.styles.codeBody,
         )}
       >
-        <code>{props.code}</code>
+        <HighlightedCodeBlock
+          code={props.code}
+          language={resolvedSyntaxLanguage}
+          inverted={props.inverted}
+        />
       </pre>
     </div>
   );
@@ -540,23 +576,19 @@ function getAlignClass(align: TableAlign): string {
 }
 
 /**
- * 零 XSS 安全渲染聊天正文中的结构化 Markdown、克制纸面代码块与多方案对比表格。
- *
- * @remarks
- * 正文容器采用 Pachat 标准 `text-[15px] leading-[1.48]` 舒展阅读规格并显式声明 `select-text`，
- * 确保在桌面与移动端原生外壳下用户随时可划选复制。
+ * 安全渲染聊天与提案正文中的结构化 Markdown、围栏代码块与对比表格。
  *
  * @param props - 待渲染的 Markdown 文本、色调与可选外层样式类名
  * @returns 结构化排版的 React 视图
  */
 export function MarkdownContent(props: MarkdownContentProps) {
-  const blocks = parseMarkdownBlocks(props.content);
+  const blocks = useMemo(() => parseMarkdownBlocks(props.content), [props.content]);
   const styles = getToneStyles(props.tone ?? "default");
 
   return (
     <div
       className={cn(
-        "select-text space-y-2 text-[14.5px] leading-[1.58] tracking-[-0.005em] break-words [overflow-wrap:anywhere]",
+        "min-w-0 max-w-full select-text space-y-2 text-[14.5px] leading-[1.58] tracking-[-0.005em] break-words [overflow-wrap:anywhere]",
         styles.rootText,
         props.className,
       )}
@@ -570,6 +602,7 @@ export function MarkdownContent(props: MarkdownContentProps) {
                 language={block.language}
                 code={block.code}
                 styles={styles}
+                inverted={props.tone === "inverted"}
               />
             );
 
@@ -630,7 +663,11 @@ export function MarkdownContent(props: MarkdownContentProps) {
             return (
               <div
                 key={block.id}
-                className={cn("my-2 max-w-full overflow-x-auto rounded-xl", styles.tableWrap)}
+                data-vaul-no-drag=""
+                className={cn(
+                  "my-2 max-w-full overflow-x-auto overscroll-x-contain rounded-xl",
+                  styles.tableWrap,
+                )}
               >
                 <table
                   className={cn("min-w-full divide-y text-left text-[13.5px]", styles.tableDivide)}

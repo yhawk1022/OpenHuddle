@@ -75,7 +75,15 @@ export function AppTooltip(props: AppTooltipProps) {
     children,
   } = props;
 
-  if (disabled || content === null || content === undefined || content === "") {
+  if (
+    disabled ||
+    content === null ||
+    content === undefined ||
+    content === "" ||
+    (typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(hover: none) and (pointer: coarse)").matches)
+  ) {
     return children;
   }
 
@@ -164,7 +172,7 @@ export function AppPopover(props: AppPopoverProps) {
           sideOffset={sideOffset}
           collisionPadding={12}
           className={cn(
-            "relative liquid-glass-modal oh-floating-menu app-no-drag z-[90] w-80 rounded-2xl p-3.5 outline-none",
+            "relative liquid-glass-modal oh-floating-menu app-no-drag z-[90] w-80 max-w-[calc(100vw-1.5rem)] max-h-[min(calc(var(--oh-vvh,100dvh)-1.5rem),var(--radix-popover-content-available-height,80dvh))] overflow-y-auto overscroll-contain rounded-2xl p-3.5 outline-none",
             "text-[#111318]",
             "dark:text-[#ECEFF6]",
             className,
@@ -232,7 +240,7 @@ export function AppDropdownMenuItem(
   return (
     <DropdownMenu.Item
       className={cn(
-        "relative flex cursor-pointer select-none items-center gap-2 rounded-xl px-2.5 py-1.5 text-[13px] font-medium outline-none transition-colors",
+        "relative flex cursor-pointer select-none items-center gap-2 rounded-xl px-2.5 py-2 md:py-1.5 text-[13.5px] md:text-[13px] font-medium outline-none transition-colors",
         danger
           ? "text-[#C6282E] data-[highlighted]:bg-[#E5484D]/10 data-[highlighted]:text-[#B01F25] dark:text-[#F88B8B] dark:data-[highlighted]:bg-[#F05252]/15 dark:data-[highlighted]:text-[#FCA5A5]"
           : "text-[#3B414E] data-[highlighted]:bg-black/[0.04] data-[highlighted]:text-[#111318] dark:text-[#B4BCD0] dark:data-[highlighted]:bg-white/[0.07] dark:data-[highlighted]:text-[#ECEFF6]",
@@ -306,9 +314,9 @@ export function AppDropdownMenu(props: AppDropdownMenuProps) {
           side={side}
           align={align}
           sideOffset={sideOffset}
-          collisionPadding={10}
+          collisionPadding={12}
           className={cn(
-            "relative liquid-glass-modal oh-floating-menu app-no-drag z-[95] min-w-[11.5rem] overflow-hidden rounded-2xl p-1 outline-none",
+            "relative liquid-glass-modal oh-floating-menu app-no-drag z-[95] min-w-[11.5rem] max-w-[calc(100vw-1.5rem)] max-h-[min(calc(var(--oh-vvh,100dvh)-1.5rem),var(--radix-dropdown-menu-content-available-height,80dvh))] overflow-y-auto overscroll-contain rounded-2xl p-1 outline-none",
             "text-[#111318]",
             "dark:text-[#ECEFF6]",
             className,

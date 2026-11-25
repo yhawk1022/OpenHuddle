@@ -10,29 +10,39 @@
 import {
   type AcceptFriendRequestResponse,
   type AgentId,
+  type AnswerWorkAttentionBody,
   type ApiErrorEnvelope,
   ApiErrorEnvelopeSchema,
   type AttentionPayload,
   type AuthCodeSentResponse,
   type AuthPublicConfigResponse,
   type AuthSessionResponse,
+  type BindRoomWorkspaceBody,
+  type BindRoomWorkspaceResponse,
   type CastProposalVoteBody,
   type ChangePasswordBody,
   type ConfirmPasswordResetBody,
   type ConnectLocalAgentBody,
   type ConnectLocalAgentResponse,
+  type ControlWorkItemBody,
   type CreateAgentConnectionBody,
   type CreateAgentConnectionResponse,
   type CreatePairingCodeResponse,
+  type CreateWorkItemBody,
+  type CreateWorkspaceBody,
   type DecideProposalBody,
+  type DecideWorkReviewBody,
   type DeleteOwnedAgentResponse,
   type DeleteRoomResponse,
+  type DeleteWorkspaceResponse,
   type DirectoryUserSearchResponse,
   type ErrorCode,
   type FriendsOverviewResponse,
   type FriendshipId,
   type HumanUserDto,
   type JoinRoomBody,
+  type ListWorkItemsResponse,
+  type ListWorkspacesResponse,
   type LocalAgentsStatusResponse,
   type LoginWithPasswordBody,
   type MessageAttachmentUpload,
@@ -58,8 +68,12 @@ import {
   type RoomId,
   type RoomSummaryDto,
   type RoomVisibility,
+  type RoomWorkspacesResponse,
   type SendFriendRequestBody,
   type SendFriendRequestResponse,
+  type SingleWorkItemResponse,
+  type SingleWorkspaceResponse,
+  type SteerWorkItemBody,
   type ThemePreference,
   type UpdateFriendRemarkBody,
   type UpdateFriendRemarkResponse,
@@ -69,9 +83,13 @@ import {
   type UpdateOwnRoomRemarkResponse,
   type UpdateOwnedAgentBody,
   type UpdateOwnedAgentResponse,
+  type UpdateWorkspaceBody,
   type UserId,
   type VerifyOtpBody,
   type VerifyOtpResponse,
+  type WorkItemId,
+  type WorkStage,
+  type WorkspaceId,
 } from "@openhuddle/protocol";
 import { getStoredSessionToken, setStoredSessionToken } from "./session-store.js";
 
@@ -184,7 +202,7 @@ export interface PublicShareReplayDto {
 }
 
 export interface RequestOptions {
-  readonly method?: "GET" | "POST" | "PATCH" | "DELETE";
+  readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly body?: unknown;
   readonly skipAuthTokenClearOn401?: boolean;
   /** 请求超时毫秒数（默认 20s）。超时后以 TIMEOUT 错误落地，防止乐观 UI（如"发送中"气泡）永久悬挂 */
@@ -261,11 +279,14 @@ export async function requestApiJson<TResponse>(
         ...(env.error.details !== undefined ? { details: env.error.details } : {}),
       });
     }
+    const isGatewayOrBackendDown = response.status >= 500 && rawPayload === null;
     throw new ApiClientError({
       code: response.status === 401 ? "UNAUTHORIZED" : "INTERNAL_SERVER_ERROR",
-      message: `Request failed with HTTP ${response.status}`,
+      message: isGatewayOrBackendDown
+        ? `后端服务暂未就绪或正在重启（HTTP ${String(response.status)}），请稍后重试`
+        : `Request failed with HTTP ${String(response.status)}`,
       statusCode: response.status,
-      requestId: "unknown",
+      requestId: isGatewayOrBackendDown ? "gateway" : "unknown",
     });
   }
 
@@ -985,4 +1006,176 @@ export async function fetchPublicShareReplay(inviteToken: string): Promise<Publi
   return requestJson<PublicShareReplayDto>(`/api/v1/share/${encodeURIComponent(inviteToken)}`, {
     skipAuthTokenClearOn401: true,
   });
+}
+
+/**
+ * 拉取当前登录用户拥有的全部五维工作区与房间挂载关系。
+ */
+export async function fetchOwnedWorkspaces(): Promise<ListWorkspacesResponse> {
+  return requestJson<ListWorkspacesResponse>("/api/v1/workspaces");
+}
+
+/**
+ * 创建新的受控工作区。
+ */
+export async function createWorkspaceApi(
+  body: Readonly<CreateWorkspaceBody>,
+): Promise<SingleWorkspaceResponse> {
+  return requestJson<SingleWorkspaceResponse>("/api/v1/workspaces", {
+    method: "POST",
+    body,
+  });
+}
+
+/**
+ * 更新受控工作区配置。
+ */
+export async function updateWorkspaceApi(
+  workspaceId: WorkspaceId,
+  body: Readonly<UpdateWorkspaceBody>,
+): Promise<SingleWorkspaceResponse> {
+  return requestJson<SingleWorkspaceResponse>(
+    `/api/v1/workspaces/${encodeURIComponent(workspaceId)}`,
+    {
+      method: "PATCH",
+      body,
+    },
+  );
+}
+
+/**
+ * 删除受控工作区。
+ */
+export async function deleteWorkspaceApi(
+  workspaceId: WorkspaceId,
+): Promise<DeleteWorkspaceResponse> {
+  return requestJson<DeleteWorkspaceResponse>(
+    `/api/v1/workspaces/${encodeURIComponent(workspaceId)}`,
+    {
+      method: "DELETE",
+    },
+  );
+}
+
+/**
+ * 绑定或解绑房间工作区。
+ */
+export async function bindRoomWorkspaceApi(
+  roomId: RoomId,
+  body: Readonly<BindRoomWorkspaceBody>,
+): Promise<BindRoomWorkspaceResponse> {
+  return requestJson<BindRoomWorkspaceResponse>(
+    `/api/v1/rooms/${encodeURIComponent(roomId)}/workspace-binding`,
+    {
+      method: "PUT",
+      body,
+    },
+  );
+}
+
+/**
+ * 拉取房间内已挂载工作区列表（对非主人自动剥离本机路径）。
+ */
+export async function fetchRoomWorkspaces(roomId: RoomId): Promise<RoomWorkspacesResponse> {
+  return requestJson<RoomWorkspacesResponse>(
+    `/api/v1/rooms/${encodeURIComponent(roomId)}/workspaces`,
+  );
+}
+
+/**
+ * 拉取多 Agent 协作工单列表。
+ */
+export async function fetchWorkItems(query?: {
+  readonly workspaceId?: WorkspaceId;
+  readonly roomId?: RoomId;
+  readonly stage?: WorkStage;
+}): Promise<ListWorkItemsResponse> {
+  const search = new URLSearchParams();
+  if (query?.workspaceId !== undefined) {
+    search.set("workspaceId", query.workspaceId);
+  }
+  if (query?.roomId !== undefined) {
+    search.set("roomId", query.roomId);
+  }
+  if (query?.stage !== undefined) {
+    search.set("stage", query.stage);
+  }
+  const qs = search.toString();
+  return requestJson<ListWorkItemsResponse>(`/api/v1/work-items${qs.length > 0 ? `?${qs}` : ""}`);
+}
+
+/**
+ * 派发新的多 Agent 协作工单。
+ */
+export async function createWorkItemApi(
+  body: Readonly<CreateWorkItemBody>,
+): Promise<SingleWorkItemResponse> {
+  return requestJson<SingleWorkItemResponse>("/api/v1/work-items", {
+    method: "POST",
+    body,
+  });
+}
+
+/**
+ * 向运行中的工单分片注入人类纠偏指令。
+ */
+export async function steerWorkItemApi(
+  workItemId: WorkItemId,
+  body: Readonly<SteerWorkItemBody>,
+): Promise<SingleWorkItemResponse> {
+  return requestJson<SingleWorkItemResponse>(
+    `/api/v1/work-items/${encodeURIComponent(workItemId)}/steer`,
+    {
+      method: "POST",
+      body,
+    },
+  );
+}
+
+/**
+ * 回答暂停中 Worker 的澄清提问。
+ */
+export async function answerWorkAttentionApi(
+  workItemId: WorkItemId,
+  body: Readonly<AnswerWorkAttentionBody>,
+): Promise<SingleWorkItemResponse> {
+  return requestJson<SingleWorkItemResponse>(
+    `/api/v1/work-items/${encodeURIComponent(workItemId)}/attention/answer`,
+    {
+      method: "POST",
+      body,
+    },
+  );
+}
+
+/**
+ * 人类主人对工单交付物执行最终签收或打回重做。
+ */
+export async function decideWorkReviewApi(
+  workItemId: WorkItemId,
+  body: Readonly<DecideWorkReviewBody>,
+): Promise<SingleWorkItemResponse> {
+  return requestJson<SingleWorkItemResponse>(
+    `/api/v1/work-items/${encodeURIComponent(workItemId)}/review`,
+    {
+      method: "POST",
+      body,
+    },
+  );
+}
+
+/**
+ * 对工单执行急停、重试或升级挂载至群聊房间。
+ */
+export async function controlWorkItemApi(
+  workItemId: WorkItemId,
+  body: Readonly<ControlWorkItemBody>,
+): Promise<SingleWorkItemResponse> {
+  return requestJson<SingleWorkItemResponse>(
+    `/api/v1/work-items/${encodeURIComponent(workItemId)}/control`,
+    {
+      method: "POST",
+      body,
+    },
+  );
 }

@@ -82,25 +82,48 @@ export function AdminTrendChartCard(props: {
   const yTicks = [0, Math.round(maxVal / 2), maxVal];
   const labelStride = Math.max(1, Math.ceil(points.length / 6));
 
+  const updateHoverFromClientX = (svgEl: SVGSVGElement, clientX: number): void => {
+    if (points.length === 0) {
+      return;
+    }
+    const rect = svgEl.getBoundingClientRect();
+    if (rect.width <= 0) {
+      return;
+    }
+    const svgX = ((clientX - rect.left) / rect.width) * svgWidth;
+    if (points.length === 1) {
+      setHoverIdx(0);
+      return;
+    }
+    const ratio = (svgX - padLeft) / innerWidth;
+    const clampedIdx = Math.min(
+      points.length - 1,
+      Math.max(0, Math.round(ratio * (points.length - 1))),
+    );
+    setHoverIdx(clampedIdx);
+  };
+
   return (
     <section className="oh-elevated-card flex flex-col justify-between rounded-2xl p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <h3 className="text-[14.5px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#ECEFF6]">
             近 {props.windowDays} 天平台活跃与增长趋势
           </h3>
           <p className="mt-0.5 text-xs text-[#687082] dark:text-[#7D869C]">
-            按 UTC 自然日聚合，悬停任意日期列查看人机交互精确明细
+            按 UTC 自然日聚合，触控滑动或悬停任意日期列查看人机交互明细
           </p>
         </div>
 
-        <SegmentedTabs
-          value={mode}
-          onValueChange={setMode}
-          items={METRIC_MODE_TABS}
-          size="xs"
-          ariaLabel="切换趋势图统计指标"
-        />
+        <div className="no-scrollbar max-w-full overflow-x-auto">
+          <SegmentedTabs
+            value={mode}
+            onValueChange={setMode}
+            items={METRIC_MODE_TABS}
+            size="xs"
+            ariaLabel="切换趋势图统计指标"
+          />
+        </div>
       </div>
 
       {/* 当前焦点日期摘要条 */}
@@ -146,10 +169,20 @@ export function AdminTrendChartCard(props: {
       <div className="mt-3 w-full overflow-hidden">
         <svg
           viewBox={`0 0 ${String(svgWidth)} ${String(svgHeight)}`}
-          className="h-[200px] w-full select-none"
+          className="h-[200px] w-full touch-pan-y select-none"
           role="img"
           aria-label={`近 ${String(props.windowDays)} 天平台趋势图`}
           onMouseLeave={() => setHoverIdx(null)}
+          onPointerDown={(e) => {
+            if (e.pointerType === "touch") {
+              updateHoverFromClientX(e.currentTarget, e.clientX);
+            }
+          }}
+          onPointerMove={(e) => {
+            if (e.pointerType === "touch") {
+              updateHoverFromClientX(e.currentTarget, e.clientX);
+            }
+          }}
         >
           <defs>
             <linearGradient id={`area-${gradId}`} x1="0" y1="0" x2="0" y2="1">

@@ -1,21 +1,11 @@
 /**
  * @module web/features/huddle-room/workspace-shell
- * @description Apple Liquid Glass 空间多岛协作工作台外壳（macOS Tahoe / iOS 26 Spatial Floating App Shell）：
- * 桌面端以 `10px` 空间间隙自然陈列悬浮液态玻璃岛，移动端自适应为无边框全屏原生导航与底部手势抽屉：
- * 1. 第 1 栏（`72px`）：个人身份与已绑定 Agent 垂直液态玻璃导轨（`liquid-glass-panel`）；
- * 2. 第 2 栏（`276px`）：「聊天 | 通讯录」液态玻璃侧栏（`liquid-glass-panel`）；
- * 3. 第 3 栏（`flex-1`）：轻透聊天主舞台（`oh-stage-frame`），全高消息时间线在顶部悬浮双岛顶栏（`GovernanceBar`）
- *    与底部悬浮输入舱（`MessageComposer`）下方自由滑过，触发真实动态折射；
- * 4. 第 4 栏（`356px`，按需展开）：群信息与提案液态玻璃面板（宽屏独立悬浮岛 / 窄屏 Vaul 抽屉）。
+ * @description 已登录主工作台三栏外壳：左侧个人 Agent 导轨、群聊/通讯录侧栏与当前活动会话舞台（含移动端单栈抽屉适配）。
  *
- * 架构职责与关键不变量（Invariants）：
- * 1. 严格单向边界：仅通过 `../../auth-pairing/index.js` 公共门面访问兄弟特性，绝不跨特性深层私引内部实现。
- * 2. 单一状态源：服务端读取全部由 `TanStack Query` 托管，全局单一 SSE 连接（`useRealtimeSseSync`）只向 `QueryClient`
- *    做按 `seq` 幂等补丁；本壳层仅持有纯 UI 状态（抽屉开合、`⌘K` 面板、滚动位置、移动端当前页）。
- * 3. 不打断阅读与防遮挡：消息时间线按顶栏横幅数动态留出首屏安全上边距，且「回到底部」胶囊与底部输入舱同处弹性底栈，
- *    输入多行或弹出提示条时自动上移永不重叠；上翻历史时新消息累计到浮钮，自己发出的消息始终平滑滚到底。
- * 4. 连续发言分组：同一作者、均为未撤回的 `text`、间隔 ≤ 3 分钟且非引用回复的相邻消息视为一组，
- *    传 `isGroupedWithPrevious` 给 `MessageBubble` 隐藏重复头像与昵称。
+ * 关键不变量：
+ * 1. 单向特性边界：仅通过 `../../auth-pairing/index.js` 公共门面访问兄弟特性，禁止跨特性深层导入。
+ * 2. 单一状态源：服务端数据统一由 `TanStack Query` 托管，全局单一 SSE 连接（`useRealtimeSseSync`）按 `seq` 对缓存做单调补丁更新。
+ * 3. 粒度化工作台订阅：聊天模式下顶层外壳仅订阅 `useSoloWorkbenchCounts()`，避免个人工作台读秒触发全会话树重渲染。
  */
 import type {
   AgentId,
@@ -42,13 +32,17 @@ import {
   ChevronRight,
   Clock3,
   Command,
+  Compass,
   Copy,
   FileText,
+  Gauge,
   KeyRound,
+  ListTodo,
   LogIn,
   LogOut,
   MessageCircle,
   Moon,
+  Paperclip,
   Pin,
   Plus,
   RefreshCw,
@@ -60,7 +54,15 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type DragEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { BrandMark } from "../../../components/brand-mark.js";
 import {
   AnimatePresence,
@@ -71,10 +73,21 @@ import {
   AppSheetDrawer,
   AppTooltip,
   type CommandPaletteGroup,
+  INSTANT_TRANSITION,
   IconButton,
+  NATIVE_PANEL_EXIT,
+  NATIVE_PANEL_SPRING,
+  NATIVE_PILL_SPRING,
+  NATIVE_SURFACE_EXIT,
+  NATIVE_SURFACE_SPRING,
+  NATIVE_VIEW_SWAP,
+  acquireHighRefreshBurst,
   cn,
   motion,
+  setRefreshRatePreference,
   toast,
+  useDisplayRefreshState,
+  usePrefersReducedMotion,
 } from "../../../components/primitives/index.js";
 import {
   AgentProfileDialog,
@@ -82,13 +95,22 @@ import {
 } from "../../../components/ui/agent-profile-dialog.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { MessageBubble } from "../../../components/ui/message-bubble.js";
+import { resetAgentCapabilityPrefsMemory } from "../../../lib/agent-capability-prefs.js";
+import { sendRoomMessage } from "../../../lib/api-client.js";
 import {
   getPlatformVisualMeta,
   getReachVisualMeta,
   getRoomDisplayName,
+  pickLatestIso,
+  sortRoomsByLatestActivity,
 } from "../../../lib/format.js";
 import type { OptimisticMessageItem } from "../../../lib/query-keys.js";
-import { navigateTo, useBrowserLocation, useSessionToken } from "../../../lib/session-store.js";
+import {
+  navigateBackOr,
+  navigateTo,
+  useBrowserLocation,
+  useSessionToken,
+} from "../../../lib/session-store.js";
 import { type SseConnectionStatus, useRealtimeSseSync } from "../../../lib/sse-sync.js";
 import { useThemeMode } from "../../../lib/theme-store.js";
 import {
@@ -103,6 +125,7 @@ import {
   useLogoutMutation,
   useUpdateOwnedAgentMutation,
 } from "../../auth-pairing/index.js";
+import { PwaInstallGuideModal } from "../../pwa-install/index.js";
 import {
   friendsOverviewQueryOptions,
   joinedRoomsQueryOptions,
@@ -113,6 +136,7 @@ import {
   useAcceptFriendRequestMutation,
   useCastProposalVoteMutation,
   useCreateProposalMutation,
+  useCreateRoomMutation,
   useDecideProposalMutation,
   useDeclineFriendRequestMutation,
   useDeleteRoomMutation,
@@ -129,9 +153,39 @@ import {
 } from "../api/huddle-room.queries.js";
 import { type RoomNotificationState, reconcileRoomNotifications } from "../room-notifications.js";
 import { saveRoomSticker } from "../stickers/sticker-library.js";
+import {
+  bindRoomWorkItemToSoloTask,
+  clearRoomWorkItems,
+  dispatchRoomWorkItem,
+  loadRoomWorkShowcase,
+  resetAllRoomWorkBuckets,
+  useRoomWorkState,
+} from "../work/room-work-store.js";
+import {
+  type SoloWorkTaskView,
+  bindRoomToWorkspace,
+  dispatchSoloWorkTask,
+  getRoomBoundWorkspace,
+  markSoloTaskEscalated,
+  resetSoloWorkbenchMemory,
+  useSoloWorkbenchCounts,
+  useSoloWorkbenchState,
+} from "../work/solo-workbench-store.js";
+import {
+  answerWorkAttentionOnServer,
+  bindRoomWorkspaceOnServer,
+  controlWorkTaskOnServer,
+  decideWorkReviewOnServer,
+  dispatchWorkbenchTaskOnServer,
+  steerWorkTaskOnServer,
+  useWorkspaceServerSync,
+} from "../work/work-server-sync.js";
+import type { WorkTopology } from "../work/work-types.js";
+import { stripAgentOwnerPrefix } from "../work/work-utils.js";
 import { AddFriendModal, EditFriendRemarkModal, InviteMembersModal } from "./friend-modals.js";
 import { GovernanceBar } from "./governance-bar.js";
 import { MessageComposer } from "./message-composer.js";
+import { MobileMainTabBar } from "./mobile-main-tab-bar.js";
 import { type InspectorTab, RoomInspector } from "./room-inspector.js";
 import {
   CreateRoomModal,
@@ -140,10 +194,19 @@ import {
   JoinRoomModal,
   LeaveRoomConfirmModal,
 } from "./room-modals.js";
-import { RoomSidebar } from "./room-sidebar.js";
+import { RoomSidebar, type SidebarSectionTab } from "./room-sidebar.js";
+import { SoloWorkbench } from "./solo-workbench.js";
 import { savedStickerQueryKey } from "./sticker-picker.js";
+import {
+  LiveRunFloatingBar,
+  WorkTimelineMilestoneCard,
+  getWorkTopologyLabel,
+} from "./work-timeline-cards.js";
 
 export { systemHealthQueryOptions };
+
+/** 顶层空间工作模式：`chats` = 多人/1v1 聊天会话，`workbench` = 个人极速 AI 工作台 */
+type WorkspaceSurfaceMode = "chats" | "workbench";
 
 /** 连续发言分组的最大时间间隔（3 分钟） */
 const GROUPING_WINDOW_MS = 3 * 60_000;
@@ -160,6 +223,17 @@ function parseSelectedRoomIdFromSearch(search: string): RoomId | null {
   const params = new URLSearchParams(search);
   const raw = params.get("room")?.trim();
   return raw && raw.length > 0 ? (raw as RoomId) : null;
+}
+
+function parseWorkspaceSurfaceFromSearch(search: string): WorkspaceSurfaceMode {
+  const params = new URLSearchParams(search);
+  return params.get("view") === "workbench" ? "workbench" : "chats";
+}
+
+function parseSelectedWorkspaceIdFromSearch(search: string): string | null {
+  const params = new URLSearchParams(search);
+  const raw = params.get("workspace")?.trim();
+  return raw && raw.length > 0 ? raw : null;
 }
 
 function subscribeScreen(query: string, onChange: () => void): () => void {
@@ -237,6 +311,7 @@ interface ActiveRoomStageProps {
   readonly onStartDirectAgentChat: (agentId: AgentId) => void;
   readonly onBackToList: () => void;
   readonly onInspectAgent: (profile: InspectedAgentProfile) => void;
+  readonly onOpenWorkbench: (workspaceId?: string | undefined) => void;
   readonly onRequestDeleteRoom: (room: DeleteRoomTarget) => void;
   readonly onRequestLeaveRoom: (room: DeleteRoomTarget) => void;
 }
@@ -271,14 +346,36 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   const decideMutation = useDecideProposalMutation(props.roomId);
 
   const isWideScreen = useIsWideScreen();
+  const reducedMotion = usePrefersReducedMotion();
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("members");
   // 留白呼吸不变量：桌面端默认收起右侧面板，让聊天舞台保持宽敞与平静；点击顶栏人数或提案胶囊时再按需展开
   const [desktopInspectorOpen, setDesktopInspectorOpen] = useState<boolean>(false);
   const [mobileInspectorOpen, setMobileInspectorOpen] = useState<boolean>(false);
   const [inviteMode, setInviteMode] = useState<"members" | "agents" | null>(null);
+  const lastInviteModeRef = useRef<"members" | "agents">("members");
+  if (inviteMode !== null) {
+    lastInviteModeRef.current = inviteMode;
+  }
   const [focusedProposalId, setFocusedProposalId] = useState<ProposalId | null>(null);
+  const [focusedWorkItemId, setFocusedWorkItemId] = useState<string | null>(null);
+  const [pendingDispatchSeed, setPendingDispatchSeed] = useState<{
+    readonly nonce: number;
+    readonly text?: string | undefined;
+    readonly topology?: WorkTopology | undefined;
+  } | null>(null);
   const [replyTarget, setReplyTarget] = useState<MessageDto | null>(null);
+  const workState = useRoomWorkState(props.roomId);
   const [pendingQuickMention, setPendingQuickMention] = useState<MessageMention | null>(null);
+  const [droppedFilesSignal, setDroppedFilesSignal] = useState<{
+    readonly nonce: number;
+    readonly files: ReadonlyArray<File>;
+  } | null>(null);
+  const [focusComposerSignal, setFocusComposerSignal] = useState<{
+    readonly nonce: number;
+    readonly appendText?: string | undefined;
+  } | null>(null);
+  const [isDraggingFiles, setIsDraggingFiles] = useState<boolean>(false);
+  const dragDepthRef = useRef<number>(0);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [showJumpToBottom, setShowJumpToBottom] = useState<boolean>(false);
   const [unseenCount, setUnseenCount] = useState<number>(0);
@@ -287,6 +384,9 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   const nearBottomRef = useRef<boolean>(true);
   const lastRenderedCountRef = useRef<number>(0);
   const didInitialScrollRef = useRef<boolean>(false);
+  const hydratedMaxSeqRef = useRef<number | null>(null);
+  const stableKeyBySeqRef = useRef<Map<number, string>>(new Map());
+  const pendingSentOpsRef = useRef<Array<{ readonly opKey: string; readonly content: string }>>([]);
   const handledSignalRef = useRef<number>(props.synthesizeSignal);
 
   // 每 15 秒刷新一次本地相对时钟，用于准确判断 2 分钟自助撤回窗口过期态
@@ -333,6 +433,35 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
     (latest, message) => (message._optimisticPending ? latest : Math.max(latest, message.seq)),
     0,
   );
+  // 首帧数据水合完成后锁定历史消息最大序号：历史消息一律静态零动画挂载（杜绝百条弹簧阻塞主线程），仅此后的实时新消息启用弹簧入场
+  if (hydratedMaxSeqRef.current === null && messagesQuery.isFetched) {
+    hydratedMaxSeqRef.current = latestDisplayedSeq;
+  }
+  // 当 SSE 广播比 HTTP 201 响应提前数毫秒抵达时，将乐观 _opKey 继承给对应的确认消息 seq，防止 React key 突变引发二次卸载重弹跳
+  for (const msg of messages) {
+    if (
+      !msg._optimisticPending &&
+      msg.author.isYou &&
+      !stableKeyBySeqRef.current.has(msg.seq) &&
+      pendingSentOpsRef.current.length > 0
+    ) {
+      const matchIdx = pendingSentOpsRef.current.findIndex(
+        (item) => item.content === msg.content.trim(),
+      );
+      if (matchIdx >= 0) {
+        const matched = pendingSentOpsRef.current[matchIdx];
+        if (matched !== undefined) {
+          stableKeyBySeqRef.current.set(msg.seq, matched.opKey);
+          pendingSentOpsRef.current.splice(matchIdx, 1);
+        }
+      }
+    }
+  }
+  const latestDisplayedMessageAtIso = messages.reduce<string | undefined>(
+    (latestIso, message) =>
+      message._optimisticPending ? latestIso : pickLatestIso(latestIso, message.createdAtIso),
+    undefined,
+  );
   useEffect(() => {
     if (
       messagesQuery.dataUpdatedAt === 0 ||
@@ -341,24 +470,46 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
     ) {
       return;
     }
-    // 打开会话后同步销掉侧栏红点，保留比当前时间线更新的未读。
-    queryClient.setQueryData(
-      joinedRoomsQueryOptions().queryKey,
-      (previous) =>
-        previous && {
-          ...previous,
-          rooms: previous.rooms.map((room) =>
-            room.id === props.roomId && latestDisplayedSeq > room.yourLastReadSeq
-              ? {
-                  ...room,
-                  lastSeq: asReadCursorSeq(Math.max(room.lastSeq, latestDisplayedSeq)),
-                  yourLastReadSeq: asReadCursorSeq(latestDisplayedSeq),
-                }
-              : room,
-          ),
-        },
-    );
-  }, [latestDisplayedSeq, messagesQuery.dataUpdatedAt, props.roomId, queryClient]);
+    // 打开会话后同步销掉侧栏红点，并同步可能经由轮询补拉到的最新消息时间与会话排序。
+    queryClient.setQueryData(joinedRoomsQueryOptions().queryKey, (previous) => {
+      if (!previous) {
+        return previous;
+      }
+      let didUpdateLatestMessageAt = false;
+      const updatedRooms = previous.rooms.map((room) => {
+        if (room.id !== props.roomId) {
+          return room;
+        }
+        const nextLastMessageAtIso = pickLatestIso(
+          room.lastMessageAtIso,
+          latestDisplayedMessageAtIso,
+        );
+        const messageTimeAdvanced = nextLastMessageAtIso !== room.lastMessageAtIso;
+        if (latestDisplayedSeq <= room.yourLastReadSeq && !messageTimeAdvanced) {
+          return room;
+        }
+        if (messageTimeAdvanced) {
+          didUpdateLatestMessageAt = true;
+        }
+        return {
+          ...room,
+          lastSeq: asReadCursorSeq(Math.max(room.lastSeq, latestDisplayedSeq)),
+          yourLastReadSeq: asReadCursorSeq(Math.max(room.yourLastReadSeq, latestDisplayedSeq)),
+          ...(nextLastMessageAtIso !== undefined ? { lastMessageAtIso: nextLastMessageAtIso } : {}),
+        };
+      });
+      return {
+        ...previous,
+        rooms: didUpdateLatestMessageAt ? sortRoomsByLatestActivity(updatedRooms) : updatedRooms,
+      };
+    });
+  }, [
+    latestDisplayedMessageAtIso,
+    latestDisplayedSeq,
+    messagesQuery.dataUpdatedAt,
+    props.roomId,
+    queryClient,
+  ]);
   const proposals: ReadonlyArray<ProposalCardDto> = useMemo(
     () => proposalsQuery.data?.proposals ?? [],
     [proposalsQuery.data],
@@ -386,6 +537,114 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   };
 
   const isDetailReady = detailQuery.isSuccess;
+
+  // 原生桌面客户端快捷键与「直接打字聚焦输入框（Type-to-Chat）」响应链
+  useEffect(() => {
+    const handleStageKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.isComposing) {
+        return;
+      }
+      // ⌘. 或 ⌘\（Windows/Linux Ctrl+\）：一键开合右侧会话信息/任务/提案分栏
+      if ((event.metaKey || event.ctrlKey) && (event.key === "." || event.key === "\\")) {
+        event.preventDefault();
+        if (isWideScreen) {
+          setDesktopInspectorOpen((open) => !open);
+        } else {
+          setMobileInspectorOpen((open) => !open);
+        }
+        return;
+      }
+
+      const hasTopOverlay =
+        document.querySelector('[role="dialog"], [data-radix-popper-content-wrapper]') !== null;
+      if (hasTopOverlay) {
+        return;
+      }
+
+      if (event.key === "Escape") {
+        if (replyTarget !== null) {
+          event.preventDefault();
+          setReplyTarget(null);
+          return;
+        }
+        const openNow = isWideScreen ? desktopInspectorOpen : mobileInspectorOpen;
+        if (openNow) {
+          event.preventDefault();
+          if (isWideScreen) {
+            setDesktopInspectorOpen(false);
+          } else {
+            setMobileInspectorOpen(false);
+          }
+          return;
+        }
+      }
+
+      // Type-to-Chat：在聊天舞台浏览消息且焦点不在任何可编辑控件内时，按下可打印字符立即聚焦底部输入舱并填入首字符
+      if (
+        event.key.length === 1 &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        event.key !== " "
+      ) {
+        const active = document.activeElement as HTMLElement | null;
+        const isEditable =
+          active !== null &&
+          (active.tagName === "INPUT" ||
+            active.tagName === "TEXTAREA" ||
+            active.tagName === "SELECT" ||
+            active.isContentEditable);
+        if (!isEditable) {
+          event.preventDefault();
+          setFocusComposerSignal({ nonce: Date.now(), appendText: event.key });
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleStageKeyDown);
+    return () => window.removeEventListener("keydown", handleStageKeyDown);
+  }, [desktopInspectorOpen, isWideScreen, mobileInspectorOpen, replyTarget]);
+
+  const handleStageDragEnter = (event: DragEvent<HTMLDivElement>): void => {
+    if (!event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDraggingFiles(true);
+  };
+
+  const handleStageDragOver = (event: DragEvent<HTMLDivElement>): void => {
+    if (!event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleStageDragLeave = (event: DragEvent<HTMLDivElement>): void => {
+    if (!event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDraggingFiles(false);
+    }
+  };
+
+  const handleStageDrop = (event: DragEvent<HTMLDivElement>): void => {
+    if (!event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDraggingFiles(false);
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length > 0) {
+      setDroppedFilesSignal({ nonce: Date.now(), files });
+    }
+  };
 
   // 新消息滚动策略：首屏瞬时定位到底；之后仅在用户贴底或自己发送时平滑跟随，否则累计未看计数
   useEffect(() => {
@@ -523,15 +782,20 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   );
   const isInspectorOpen = isWideScreen ? desktopInspectorOpen : mobileInspectorOpen;
 
-  // 计算顶部悬浮岛与横幅条数，确保 scrollTop=0 时首条消息永不被遮挡，同时滚动时消息流自然穿过液态玻璃下方
+  // 计算顶部悬浮岛与横幅条数，计入顶部安全区以确保灵动岛/Standalone 下 scrollTop=0 首条消息永不被遮挡
   const hasGovernanceSubBanner = liveGovernance.status === "paused_budget";
   const topTimelinePaddingClass =
     hasGovernanceSubBanner && pinnedProposal !== null
-      ? "pt-[162px]"
+      ? "pt-[calc(162px+env(safe-area-inset-top,0px))]"
       : hasGovernanceSubBanner || pinnedProposal !== null
-        ? "pt-[118px]"
-        : "pt-[74px]";
-  const bottomTimelinePaddingClass = replyTarget !== null ? "pb-[184px]" : "pb-[148px]";
+        ? "pt-[calc(118px+env(safe-area-inset-top,0px))]"
+        : "pt-[calc(74px+env(safe-area-inset-top,0px))]";
+  const bottomTimelinePaddingClass =
+    workState.activeRunningItems.length > 0
+      ? "pb-[calc(228px+env(safe-area-inset-bottom,0px))]"
+      : replyTarget !== null || workState.items.length > 0 || pendingDispatchSeed !== null
+        ? "pb-[calc(196px+env(safe-area-inset-bottom,0px))]"
+        : "pb-[calc(148px+env(safe-area-inset-bottom,0px))]";
 
   // 通过消息中已盖章的用户 ID 匹配群备注，支持重名和历史消息的实时显示。
   const getAuthorRemark = (message: MessageDto | undefined | null): string | undefined => {
@@ -564,6 +828,31 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
     setInspectorOpen(true);
   };
 
+  const handleToggleTasksInspector = (): void => {
+    if (isInspectorOpen && inspectorTab === "tasks") {
+      setInspectorOpen(false);
+      return;
+    }
+    setInspectorTab("tasks");
+    setInspectorOpen(true);
+  };
+
+  const handleOpenWorkItemInInspector = (workItemId: string): void => {
+    setFocusedWorkItemId(workItemId);
+    openInspectorAt("tasks");
+  };
+
+  const triggerComposerDispatch = (
+    seedText?: string | undefined,
+    topology?: WorkTopology | undefined,
+  ): void => {
+    setPendingDispatchSeed({
+      nonce: Date.now(),
+      ...(seedText !== undefined ? { text: seedText } : {}),
+      ...(topology !== undefined ? { topology } : {}),
+    });
+  };
+
   const handleOpenProposalInInspector = (proposalId: ProposalId): void => {
     setFocusedProposalId(proposalId);
     openInspectorAt("proposals");
@@ -578,6 +867,45 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
       isUpdatingGovernance={governanceMutation.isPending}
       activeTab={inspectorTab}
       onChangeTab={setInspectorTab}
+      workItems={workState.items}
+      activeRunningWorkItems={workState.activeRunningItems}
+      needsHumanWorkItems={workState.needsHumanItems}
+      workDefaults={workState.defaults}
+      observeLogs={workState.observeLogs}
+      focusedWorkItemId={focusedWorkItemId}
+      onUpdateWorkDefaults={workState.setTopologyDefaults}
+      onSteerWorkSlice={(wid, note, sid) => {
+        void steerWorkTaskOnServer(wid, sid, note, props.roomId);
+      }}
+      onStopWorkItem={(wid) => {
+        void controlWorkTaskOnServer(wid, "stop", { roomId: props.roomId });
+      }}
+      onRetryWorkItem={(wid) => {
+        void controlWorkTaskOnServer(wid, "retry", { roomId: props.roomId });
+      }}
+      onAnswerWorkAttention={(wid, choice) => {
+        void answerWorkAttentionOnServer(wid, choice, props.roomId);
+      }}
+      onDecideWorkReview={(wid, decision) => {
+        void decideWorkReviewOnServer(
+          wid,
+          decision === "approve" ? "approve" : "request_changes",
+          undefined,
+          props.roomId,
+        );
+      }}
+      onOpenComposerDispatch={(seedText) => triggerComposerDispatch(seedText)}
+      onOpenWorkbench={props.onOpenWorkbench}
+      onLoadWorkShowcase={(preset) =>
+        loadRoomWorkShowcase({
+          roomId: props.roomId,
+          preset,
+          latestSeq: latestDisplayedSeq,
+          members: room.members,
+          currentUserId: props.currentUser.id,
+        })
+      }
+      onClearWorkShowcase={() => clearRoomWorkItems(props.roomId)}
       proposals={proposals}
       isLoadingProposals={proposalsQuery.isPending}
       isProposalsError={proposalsQuery.isError}
@@ -612,6 +940,8 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
           { proposalId, body },
           {
             onSuccess: () => toast.success("你的意见已同步到群里"),
+            onError: (err) =>
+              toast.error(err instanceof Error ? err.message : "提交投票失败，请稍后重试"),
           },
         )
       }
@@ -623,10 +953,17 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
               toast.success(
                 res.proposal.status === "approved" ? "已拍板通过该方案" : "已驳回该提案",
               ),
+            onError: (err) =>
+              toast.error(err instanceof Error ? err.message : "拍板操作失败，请检查权限后重试"),
           },
         )
       }
-      onUpdateGovernance={(patch) => governanceMutation.mutate(patch)}
+      onUpdateGovernance={(patch) =>
+        governanceMutation.mutate(patch, {
+          onError: (err) =>
+            toast.error(err instanceof Error ? err.message : "更新讨论设置失败，请稍后重试"),
+        })
+      }
       onInspectAgent={props.onInspectAgent}
       friends={props.friends}
       onOpenInviteMembersModal={() => {
@@ -667,7 +1004,44 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   return (
     <div className="relative flex min-w-0 flex-1 overflow-hidden">
       {/* 中央通透聊天主舞台：全高消息流 + 悬浮双岛液态玻璃顶栏 + 悬浮液态玻璃输入舱 */}
-      <div className="oh-stage-frame relative flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-[22px] [--oh-avatar-ring:var(--oh-im-canvas)]">
+      <div
+        onDragEnter={handleStageDragEnter}
+        onDragOver={handleStageDragOver}
+        onDragLeave={handleStageDragLeave}
+        onDrop={handleStageDrop}
+        className="oh-stage-frame relative flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-[22px] [--oh-avatar-ring:var(--oh-im-canvas)]"
+      >
+        {/* 全舞台原生文件拖放投递蒙层（零嵌套毛玻璃，仅在拖入外部文件时浮现） */}
+        <AnimatePresence>
+          {isDraggingFiles ? (
+            <motion.div
+              key="stage-file-drop-overlay"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.14 }}
+              className="pointer-events-none absolute inset-2.5 z-30 flex items-center justify-center rounded-[20px] border-2 border-dashed border-[#181B22]/25 bg-im-canvas/82 dark:border-white/25 dark:bg-[#18181B]/86"
+            >
+              <motion.div
+                initial={{ scale: 0.95, y: 6 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.97, y: 4 }}
+                transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_PANEL_SPRING}
+                className="relative liquid-glass-modal flex max-w-xs flex-col items-center gap-2 rounded-[22px] px-6 py-5 text-center"
+              >
+                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
+                  <Paperclip className="h-4 w-4" />
+                </span>
+                <p className="text-[14px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                  松开鼠标添加至「{roomDisplayName}」
+                </p>
+                <p className="text-xs text-[#687082] dark:text-[#8E8E96]">
+                  支持图片自动压缩预览、音频与文件附件
+                </p>
+              </motion.div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
         {/* 顶部悬浮液态玻璃覆盖层（空白区域 pointer-events-none 允许直接滚动下方消息流） */}
         <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-3 sm:px-4">
           <GovernanceBar
@@ -677,10 +1051,15 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
             governance={liveGovernance}
             proposalsCount={proposals.length}
             openProposalsCount={openProposals.length}
+            tasksCount={workState.items.length}
+            runningTasksCount={workState.activeRunningItems.length}
+            needsAttentionTasksCount={workState.needsHumanItems.length}
+            isTasksInspectorActive={isInspectorOpen && inspectorTab === "tasks"}
             isUpdatingGovernance={governanceMutation.isPending}
             isInspectorOpen={isInspectorOpen}
             onUpdateGovernance={(patch) => governanceMutation.mutate(patch)}
             onOpenInviteModal={() => setInviteMode("members")}
+            onOpenTasks={handleToggleTasksInspector}
             onOpenProposals={() => openInspectorAt("proposals")}
             onToggleInspector={handleToggleMembersInspector}
             onBackToList={props.onBackToList}
@@ -830,12 +1209,19 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                   message.author.agentId !== undefined
                     ? memberByAgentId.get(message.author.agentId)
                     : undefined;
-                const key = message._opKey ?? `seq-${String(message.seq)}`;
+                const key =
+                  message._opKey ??
+                  stableKeyBySeqRef.current.get(message.seq) ??
+                  `seq-${String(message.seq)}`;
+                const isLiveEntrance =
+                  message._optimisticPending === true ||
+                  (hydratedMaxSeqRef.current !== null && message.seq > hydratedMaxSeqRef.current);
 
                 return (
                   <MessageBubble
                     key={key}
                     message={message}
+                    animateEntrance={isLiveEntrance}
                     isGroupedWithPrevious={groupedFlags[index] === true}
                     repliedMessage={replied}
                     authorDisplayName={getAuthorRemark(message)}
@@ -867,15 +1253,43 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                       })
                     }
                     onOpenProposal={handleOpenProposalInInspector}
+                    onConvertToWorkTask={(text) => triggerComposerDispatch(text)}
                     onInspectAgent={props.onInspectAgent}
                   />
                 );
               })
             )}
+
+            {/* 主时间线多 Agent 执行里程碑卡（无 backdrop-blur，保持 120Hz 顺滑滚动） */}
+            {workState.items.length > 0 ? (
+              <div className="mt-1">
+                {[...workState.items].reverse().map((workItem) => (
+                  <WorkTimelineMilestoneCard
+                    key={workItem.id}
+                    item={workItem}
+                    onOpenInInspector={handleOpenWorkItemInInspector}
+                    onAnswerAttention={(wid, choice) => {
+                      void answerWorkAttentionOnServer(wid, choice, props.roomId);
+                    }}
+                    onDecideReview={(wid, decision, note) => {
+                      void decideWorkReviewOnServer(
+                        wid,
+                        decision === "approve" ? "approve" : "request_changes",
+                        note,
+                        props.roomId,
+                      );
+                    }}
+                    onRetry={(wid) => {
+                      void controlWorkTaskOnServer(wid, "retry", { roomId: props.roomId });
+                    }}
+                  />
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
 
-        {/* 底部悬浮弹性栈：「回到底部」玻璃胶囊 + 液态玻璃输入舱（输入舱增高时浮钮自动上推防碰撞） */}
+        {/* 底部悬浮弹性栈：「回到底部」玻璃胶囊 + 瞬态实时运行脉冲条 + 液态玻璃输入舱 */}
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col">
           <AnimatePresence>
             {showJumpToBottom ? (
@@ -903,12 +1317,31 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
             ) : null}
           </AnimatePresence>
 
+          <AnimatePresence initial={false}>
+            {workState.activeRunningItems.length > 0 ? (
+              <LiveRunFloatingBar
+                key="live-run-floating-bar"
+                activeItems={workState.activeRunningItems}
+                onSteer={(wid, note) =>
+                  void steerWorkTaskOnServer(wid, undefined, note, props.roomId)
+                }
+                onStop={(wid) =>
+                  void controlWorkTaskOnServer(wid, "stop", { roomId: props.roomId })
+                }
+                onOpenTasksInspector={handleOpenWorkItemInInspector}
+              />
+            ) : null}
+          </AnimatePresence>
+
           <MessageComposer
             roomName={roomDisplayName}
             roomKind={room.kind}
             members={room.members}
             currentUserId={props.currentUser.id}
             currentUserDisplayName={props.currentUser.displayName}
+            orchestrationDefaults={workState.defaults}
+            pendingDispatchSeed={pendingDispatchSeed}
+            onConsumeDispatchSeed={() => setPendingDispatchSeed(null)}
             replyTarget={
               replyTarget !== null && replyTargetRemark !== undefined
                 ? {
@@ -920,6 +1353,10 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
             pendingQuickMention={pendingQuickMention}
             onConsumeQuickMention={() => setPendingQuickMention(null)}
             onClearReplyTarget={() => setReplyTarget(null)}
+            droppedFilesSignal={droppedFilesSignal}
+            onConsumeDroppedFiles={() => setDroppedFilesSignal(null)}
+            focusComposerSignal={focusComposerSignal}
+            onConsumeFocusSignal={() => setFocusComposerSignal(null)}
             isSending={sendMessageMutation.isPending}
             sendError={sendMessageMutation.error}
             onReconnectOfflineAgent={(agentId) => props.onOpenAddAgentModal("pair_agent", agentId)}
@@ -930,8 +1367,13 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
               mentions,
               attachment,
               onConfirmed,
+              onFailed,
               attention,
+              workDispatch,
             }) => {
+              if (attachment === undefined) {
+                pendingSentOpsRef.current.push({ opKey, content: content.trim() });
+              }
               sendMessageMutation.mutate(
                 {
                   content,
@@ -951,12 +1393,76 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                     : {}),
                 },
                 {
-                  onSuccess: () => {
+                  onSuccess: (res) => {
+                    stableKeyBySeqRef.current.set(res.message.seq, opKey);
+                    pendingSentOpsRef.current = pendingSentOpsRef.current.filter(
+                      (item) => item.opKey !== opKey,
+                    );
                     onConfirmed();
+                    if (workDispatch !== undefined) {
+                      const boundWorkspace = getRoomBoundWorkspace(props.roomId);
+                      if (boundWorkspace?.id.startsWith("wsp_")) {
+                        void dispatchWorkbenchTaskOnServer({
+                          rawPrompt: content,
+                          topology: workDispatch.topology,
+                          workspace: boundWorkspace,
+                          ownedAgents: props.ownedAgents,
+                          ...(workDispatch.executorAgentId !== undefined
+                            ? { preferredWorkerId: workDispatch.executorAgentId }
+                            : {}),
+                          ...(workDispatch.verifierAgentId !== undefined
+                            ? { preferredVerifierId: workDispatch.verifierAgentId }
+                            : {}),
+                          roomId: props.roomId,
+                        }).catch((err: unknown) => {
+                          toast.error(err instanceof Error ? err.message : "派发工作区任务失败");
+                        });
+                      } else {
+                        const createdRoomWork = dispatchRoomWorkItem({
+                          roomId: props.roomId,
+                          anchorSeq: res.message.seq,
+                          content,
+                          members: room.members,
+                          currentUserId: props.currentUser.id,
+                          payload: workDispatch,
+                        });
+                        if (
+                          boundWorkspace !== null &&
+                          createdRoomWork.primaryWorker.isOwnedByViewer
+                        ) {
+                          const createdSolo = dispatchSoloWorkTask({
+                            rawPrompt: content,
+                            topology: workDispatch.topology,
+                            repoId: boundWorkspace.id,
+                            ownedAgents: props.ownedAgents,
+                            ownerDisplayName: props.currentUser.displayName,
+                            ...(workDispatch.executorAgentId !== undefined
+                              ? { preferredWorkerId: workDispatch.executorAgentId }
+                              : {}),
+                            ...(workDispatch.verifierAgentId !== undefined
+                              ? { preferredVerifierId: workDispatch.verifierAgentId }
+                              : {}),
+                            linkedRoomId: props.roomId,
+                            linkedRoomWorkId: createdRoomWork.id,
+                          });
+                          bindRoomWorkItemToSoloTask(
+                            props.roomId,
+                            createdRoomWork.id,
+                            createdSolo.id,
+                          );
+                        }
+                      }
+                    }
                     setReplyTarget((current) => (current?.seq === replyToSeq ? null : current));
                     if (attachment !== undefined) {
                       sendMessageMutation.reset();
                     }
+                  },
+                  onError: () => {
+                    pendingSentOpsRef.current = pendingSentOpsRef.current.filter(
+                      (item) => item.opKey !== opKey,
+                    );
+                    onFailed?.();
                   },
                 },
               );
@@ -965,12 +1471,37 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         </div>
       </div>
 
-      {/* 宽屏（xl+）按需展开的右侧悬浮液态玻璃群信息分栏 */}
-      {isWideScreen && desktopInspectorOpen ? (
-        <div className="flex xl:ml-2.5">{inspectorNode}</div>
-      ) : null}
+      {/* 宽屏（xl+）按需展开的右侧悬浮液态玻璃群信息分栏（GPU transform/opacity 滑入收起，固定内宽零排版重流） */}
+      <AnimatePresence initial={false}>
+        {isWideScreen && desktopInspectorOpen ? (
+          <motion.div
+            key="desktop-room-inspector"
+            initial={reducedMotion ? { opacity: 0 } : { opacity: 0, x: 16, scale: 0.99 }}
+            animate={{
+              opacity: 1,
+              x: 0,
+              scale: 1,
+              transition: reducedMotion ? INSTANT_TRANSITION : NATIVE_PANEL_SPRING,
+            }}
+            exit={
+              reducedMotion
+                ? { opacity: 0, pointerEvents: "none", transition: INSTANT_TRANSITION }
+                : {
+                    opacity: 0,
+                    x: 12,
+                    scale: 0.99,
+                    pointerEvents: "none",
+                    transition: NATIVE_PANEL_EXIT,
+                  }
+            }
+            className="flex shrink-0 will-change-[transform,opacity] xl:ml-2.5"
+          >
+            {inspectorNode}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
-      {/* 窄屏（< xl）群信息抽屉：Vaul 物理手势抽屉 */}
+      {/* 窄屏（< xl）群信息抽屉：Vaul 物理手势抽屉（由 RoomInspector 独占内部唯一滚动容器） */}
       {!isWideScreen ? (
         <AppSheetDrawer
           open={mobileInspectorOpen}
@@ -980,15 +1511,17 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
           side="right"
           mobileAsBottomSheet={true}
           hideHeader={true}
+          disableBodyScroll={true}
           className="p-0"
         >
           {inspectorNode}
         </AppSheetDrawer>
       ) : null}
 
-      {room.kind === "group" && inviteMode !== null ? (
+      {room.kind === "group" ? (
         <InviteMembersModal
-          mode={inviteMode}
+          open={inviteMode !== null}
+          mode={inviteMode ?? lastInviteModeRef.current}
           onClose={() => setInviteMode(null)}
           roomId={room.id}
           roomName={room.name}
@@ -1007,6 +1540,11 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
 interface PersonalAgentRailProps {
   readonly currentUser: HumanUserDto;
   readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
+  readonly surfaceMode: WorkspaceSurfaceMode;
+  readonly chatUnreadCount: number;
+  readonly workbenchNeedsYouCount: number;
+  readonly workbenchRunningCount: number;
+  readonly onSelectSurface: (mode: WorkspaceSurfaceMode) => void;
   readonly onStartDirectAgentChat: (agentId: AgentId) => void;
   readonly onInspectAgent: (agent: OwnedAgentSummaryDto) => void;
   readonly onReclaimAgent: (agentId: AgentId) => void;
@@ -1018,32 +1556,47 @@ interface PersonalAgentRailProps {
   readonly onLogout: () => void;
 }
 
-/**
- * 裁剪左侧「我的 Agent」导轨下的紧凑短标签：若 Agent 名称以本人昵称做前缀（如 `庞彦-OpenAICodex`），
- * 在专属个人导轨中自动省去冗余前缀，避免窄栏截断无省略号。
- */
-function formatCompactRailAgentLabel(agentDisplayName: string, ownerDisplayName: string): string {
-  const trimmedAgent = agentDisplayName.trim();
-  const trimmedOwner = ownerDisplayName.trim();
-  if (trimmedOwner.length > 0) {
-    for (const sep of ["-", "—", "_", "·", " "]) {
-      const prefix = `${trimmedOwner}${sep}`;
-      if (trimmedAgent.startsWith(prefix) && trimmedAgent.length > prefix.length) {
-        return trimmedAgent.slice(prefix.length).trim();
-      }
-    }
-  }
-  return trimmedAgent;
+interface ConnectedSoloWorkbenchProps {
+  readonly currentUser: HumanUserDto;
+  readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
+  readonly initialWorkspaceId: string | null;
+  readonly escalatingTaskId: string | null;
+  readonly onEscalateToHuddle: (task: SoloWorkTaskView) => void;
+  readonly onOpenEscalatedRoom: (roomId: RoomId) => void;
+  readonly onSwitchToChats: () => void;
+  readonly onOpenConnectAgent: () => void;
+  readonly onInspectOwnedAgent: (agent: OwnedAgentSummaryDto) => void;
 }
 
 /**
- * 空间工作台第 1 栏（`72px` 个人身份与已接入个人 Agent 垂直液态玻璃导轨）：
- * - 顶部：晶亮微浮起的 `38px` 圆形本人头像 + `我` 标签（点击打开账号与密码安全弹窗）；
- * - 中部滚动区：竖向排列当前用户已绑定的全部个人 Agent（`36px` 圆形粉彩头像 + 精致在线点 + 单行省略短名），
- *   紧随其后展示轻透虚线圆环 `+` 按钮与 `接入 agent` 标签；
- * - 底部：`⌘K` 搜索面板图标、账号外观菜单与退出按钮。
+ * 仅在 `surfaceMode === "workbench"` 激活时挂载完整工作台状态与定时器订阅。
+ */
+function ConnectedSoloWorkbench(props: ConnectedSoloWorkbenchProps) {
+  const soloState = useSoloWorkbenchState(props.ownedAgents, props.currentUser.displayName);
+  return (
+    <SoloWorkbench
+      currentUser={props.currentUser}
+      ownedAgents={props.ownedAgents}
+      repos={soloState.repos}
+      tasks={soloState.tasks}
+      counts={soloState.counts}
+      initialWorkspaceId={props.initialWorkspaceId}
+      escalatingTaskId={props.escalatingTaskId}
+      onEscalateToHuddle={props.onEscalateToHuddle}
+      onOpenEscalatedRoom={props.onOpenEscalatedRoom}
+      onSwitchToChats={props.onSwitchToChats}
+      onOpenConnectAgent={props.onOpenConnectAgent}
+      onInspectOwnedAgent={props.onInspectOwnedAgent}
+    />
+  );
+}
+
+/**
+ * 左侧 `72px` 个人身份与已绑定 Agent 垂直导航栏。
  */
 function PersonalAgentRail(props: PersonalAgentRailProps) {
+  const reducedMotion = usePrefersReducedMotion();
+
   return (
     <nav
       aria-label="我与我的 Agent"
@@ -1059,7 +1612,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
           type="button"
           onClick={props.onOpenAccountSecurity}
           aria-label="打开账号与密码安全设置"
-          className="app-no-drag group relative flex w-full cursor-pointer flex-col items-center transition active:scale-[0.96]"
+          className="im-press app-no-drag group relative flex w-full shrink-0 cursor-pointer flex-col items-center"
         >
           <div className="rounded-full shadow-[0_2px_8px_rgba(15,23,42,0.08)] ring-[1.5px] ring-white/95 transition-transform duration-150 group-hover:scale-[1.04] dark:shadow-[0_2px_10px_rgba(0,0,0,0.4)] dark:ring-white/18">
             <PlatformAvatar
@@ -1075,16 +1628,83 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
         </button>
       </AppTooltip>
 
+      {/* 1b. 顶层双模式切换舱：`💬 会话`（多人/多主群聊） vs `⚡ 工作台`（1 人 + 我的 Agent 舰队极速执行），采用 layoutId 弹簧滑动底衬 */}
+      <div
+        role="tablist"
+        aria-label="切换会话与单人工作台模式"
+        className="app-no-drag mt-3 flex w-[56px] shrink-0 flex-col gap-1 rounded-[16px] bg-black/[0.038] p-1 dark:bg-white/[0.05]"
+      >
+        <AppTooltip side="right" shortcut="⌥1" content="聊天会话（多人协同 · 群聊提案 · 1v1）">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={props.surfaceMode === "chats"}
+            onClick={() => props.onSelectSurface("chats")}
+            className={cn(
+              "im-press relative z-0 flex w-full cursor-pointer flex-col items-center gap-0.5 rounded-[12px] py-1.5",
+              props.surfaceMode === "chats"
+                ? "text-[#111318] dark:text-[#F4F4F6]"
+                : "text-[#5A6272] hover:text-[#111318] dark:text-[#9B9BA3] dark:hover:text-white",
+            )}
+          >
+            {props.surfaceMode === "chats" ? (
+              <motion.span
+                layoutId="oh-rail-surface-pill"
+                aria-hidden="true"
+                transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_PILL_SPRING}
+                className="pointer-events-none absolute inset-0 -z-10 rounded-[12px] bg-white shadow-[0_1px_4px_rgba(15,23,42,0.08)] ring-1 ring-black/[0.05] will-change-transform dark:bg-[#27272C] dark:ring-white/[0.1]"
+              />
+            ) : null}
+            <MessageCircle className="h-4 w-4" />
+            <span className="text-[10px] font-medium leading-none">会话</span>
+            {props.chatUnreadCount > 0 ? (
+              <span className="absolute top-1 right-1.5 h-1.5 w-1.5 rounded-full bg-[#E5484D] dark:bg-[#F05252]" />
+            ) : null}
+          </button>
+        </AppTooltip>
+
+        <AppTooltip side="right" shortcut="⌥2" content="工作台（个人任务与代码审阅）">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={props.surfaceMode === "workbench"}
+            onClick={() => props.onSelectSurface("workbench")}
+            className={cn(
+              "im-press relative z-0 flex w-full cursor-pointer flex-col items-center gap-0.5 rounded-[12px] py-1.5",
+              props.surfaceMode === "workbench"
+                ? "text-[#111318] dark:text-[#F4F4F6]"
+                : "text-[#5A6272] hover:text-[#111318] dark:text-[#9B9BA3] dark:hover:text-white",
+            )}
+          >
+            {props.surfaceMode === "workbench" ? (
+              <motion.span
+                layoutId="oh-rail-surface-pill"
+                aria-hidden="true"
+                transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_PILL_SPRING}
+                className="pointer-events-none absolute inset-0 -z-10 rounded-[12px] bg-white shadow-[0_1px_4px_rgba(15,23,42,0.08)] ring-1 ring-black/[0.05] will-change-transform dark:bg-[#27272C] dark:ring-white/[0.1]"
+              />
+            ) : null}
+            <ListTodo className="h-4 w-4" />
+            <span className="text-[10px] font-medium leading-none">工作台</span>
+            {props.workbenchNeedsYouCount > 0 ? (
+              <span className="absolute top-1 right-1.5 h-1.5 w-1.5 rounded-full bg-[#F59E0B]" />
+            ) : props.workbenchRunningCount > 0 ? (
+              <span className="absolute top-1 right-1.5 h-1.5 w-1.5 rounded-full bg-[#22C55E] animate-pulse" />
+            ) : null}
+          </button>
+        </AppTooltip>
+      </div>
+
       <div
         aria-hidden="true"
-        className="mt-3.5 h-px w-7 shrink-0 bg-black/[0.06] dark:bg-white/[0.08]"
+        className="mt-2.5 h-px w-7 shrink-0 bg-black/[0.06] dark:bg-white/[0.08]"
       />
 
-      {/* 2. 中部可滚动区：已连接的个人 Agents + 虚线圆形 `+ 接入 agent` */}
-      <div className="my-3 flex w-full flex-1 flex-col items-center gap-2.5 overflow-y-auto px-1 [scrollbar-width:none]">
+      {/* 2. 中部可滚动区：已连接的个人 Agents + 虚线圆形 `+ 接入 agent`（必须携带 min-h-0 确保高倍率缩放矮视口下可滚动不挤爆顶底） */}
+      <div className="my-2.5 flex min-h-0 w-full flex-1 flex-col items-center gap-2.5 overflow-y-auto px-1 [scrollbar-width:none]">
         {props.ownedAgents.map((agent) => {
           const agentHandle = `@${agent.slug}`;
-          const compactLabel = formatCompactRailAgentLabel(
+          const compactLabel = stripAgentOwnerPrefix(
             agent.displayName,
             props.currentUser.displayName,
           );
@@ -1192,7 +1812,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
       </div>
 
       {/* 3. 底部极简工具列：⌘K 搜索面板、管理后台（仅管理员）、主题切换、退出登录 */}
-      <div className="flex flex-col items-center gap-1 pt-1">
+      <div className="flex shrink-0 flex-col items-center gap-1 pt-1">
         <AppTooltip side="right" content="快速搜索与跳转" shortcut="⌘K">
           <IconButton
             size="md"
@@ -1242,6 +1862,41 @@ interface AuthenticatedWorkspaceViewProps {
   readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
 }
 
+interface SurfaceTransitionCustom {
+  readonly direction: 1 | -1;
+  readonly horizontal: boolean;
+  readonly reducedMotion: boolean;
+}
+
+const WORKSPACE_SURFACE_VARIANTS = {
+  enter: ({ direction, horizontal, reducedMotion }: SurfaceTransitionCustom) =>
+    reducedMotion
+      ? { opacity: 1, x: 0, y: 0, scale: 1 }
+      : {
+          opacity: 0,
+          x: horizontal ? direction * 20 : 0,
+          y: horizontal ? 0 : direction * 18,
+          scale: horizontal ? 1 : 0.99,
+        },
+  center: ({ reducedMotion }: SurfaceTransitionCustom) => ({
+    opacity: 1,
+    x: 0,
+    y: 0,
+    scale: 1,
+    zIndex: 1,
+    transition: reducedMotion ? INSTANT_TRANSITION : NATIVE_SURFACE_SPRING,
+  }),
+  exit: ({ direction, horizontal, reducedMotion }: SurfaceTransitionCustom) => ({
+    opacity: 0,
+    x: horizontal ? direction * -16 : 0,
+    y: horizontal ? 0 : direction * -14,
+    scale: horizontal ? 1 : 0.99,
+    zIndex: 0,
+    pointerEvents: "none" as const,
+    transition: reducedMotion ? INSTANT_TRANSITION : NATIVE_SURFACE_EXIT,
+  }),
+};
+
 function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const queryClient = useQueryClient();
   const location = useBrowserLocation();
@@ -1261,6 +1916,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     refetchInterval: notificationRefetchInterval,
   });
   const logoutMutation = useLogoutMutation();
+  const createRoomMutation = useCreateRoomMutation();
   const deleteOwnedAgentMutation = useDeleteOwnedAgentMutation();
   const updateOwnedAgentMutation = useUpdateOwnedAgentMutation();
   const deleteRoomMutation = useDeleteRoomMutation();
@@ -1275,10 +1931,19 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState<boolean>(false);
   const [accountSecurityOpen, setAccountSecurityOpen] = useState<boolean>(false);
+  const [pwaGuideOpen, setPwaGuideOpen] = useState<boolean>(false);
+  const [sidebarSectionTab, setSidebarSectionTab] = useState<SidebarSectionTab>("chats");
   const [createRoomOpen, setCreateRoomOpen] = useState<boolean>(false);
   const [joinRoomOpen, setJoinRoomOpen] = useState<boolean>(false);
   const [addFriendOpen, setAddFriendOpen] = useState<boolean>(false);
   const [editingFriend, setEditingFriend] = useState<FriendContactDto | null>(null);
+  const lastEditingFriendRef = useRef<FriendContactDto | null>(null);
+  if (editingFriend !== null) {
+    lastEditingFriendRef.current = editingFriend;
+  }
+  const [focusSidebarSearchSignal, setFocusSidebarSearchSignal] = useState<number>(0);
+  const reducedMotion = usePrefersReducedMotion();
+  const refreshState = useDisplayRefreshState();
   const [pendingDeleteRoom, setPendingDeleteRoom] = useState<DeleteRoomTarget | null>(null);
   const [pendingLeaveRoom, setPendingLeaveRoom] = useState<DeleteRoomTarget | null>(null);
   const [onboardingModalOpen, setOnboardingModalOpen] = useState<boolean>(false);
@@ -1289,6 +1954,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const [inspectConfirmDelete, setInspectConfirmDelete] = useState<boolean>(false);
   const [deletingAgentId, setDeletingAgentId] = useState<AgentId | null>(null);
   const [synthesizeSignal, setSynthesizeSignal] = useState<number>(0);
+  const [escalatingTaskId, setEscalatingTaskId] = useState<string | null>(null);
 
   const rooms = roomsQuery.data?.rooms ?? [];
   const friends = friendsQuery.data?.friends ?? [];
@@ -1305,6 +1971,9 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   const outgoingRequests = friendsQuery.data?.outgoingRequests ?? [];
   const discoverableAgents = friendsQuery.data?.discoverableAgents ?? [];
   const urlRoomId = parseSelectedRoomIdFromSearch(location.search);
+  const surfaceMode = parseWorkspaceSurfaceFromSearch(location.search);
+  const urlWorkspaceId = parseSelectedWorkspaceIdFromSearch(location.search);
+  const workbenchCounts = useSoloWorkbenchCounts();
 
   const lastIncomingRequestsRef = useRef<ReadonlySet<string> | null>(null);
   const incomingRequestSnapshot = friendsQuery.data?.incomingRequests;
@@ -1329,9 +1998,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     }
   }, [incomingRequestSnapshot]);
 
-  // 移动端（< md）当前页：深链携带 ?room= 时直接进入聊天，否则停留在会话列表首页
-  const [mobileShowChat, setMobileShowChat] = useState<boolean>(() => urlRoomId !== null);
-
+  // 移动端（< md）严格由 URL 查询参数 `?room=` 驱动是否进入聊天室，保证顶部返回与 Android 侧滑 `popstate` 100% 闭环
   const activeRoomId: RoomId | null = useMemo(() => {
     if (urlRoomId !== null && rooms.some((r) => r.id === urlRoomId)) {
       return urlRoomId;
@@ -1339,18 +2006,20 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     if (urlRoomId !== null && roomsQuery.isPending) {
       return urlRoomId;
     }
-    return rooms[0]?.id ?? null;
-  }, [urlRoomId, rooms, roomsQuery.isPending]);
+    return isDesktopChat ? (rooms[0]?.id ?? null) : null;
+  }, [isDesktopChat, urlRoomId, rooms, roomsQuery.isPending]);
 
-  // 当列表加载完成且 URL 尚未携带有效 room 参数时，静默对齐 URL 查询串以便刷新保留现场；若最后一个群已被删除则清理 URL 参数
+  // 桌面端（>= md）自动对齐默认房间查询串以便刷新保留现场；移动端处于首页 `/` 时绝不强塞 `?room=`，确保返回列表干净彻底
   useEffect(() => {
-    if (activeRoomId !== null && urlRoomId !== activeRoomId) {
+    if (surfaceMode === "workbench") {
+      return;
+    }
+    if (isDesktopChat && activeRoomId !== null && urlRoomId !== activeRoomId) {
       navigateTo(`/?room=${encodeURIComponent(activeRoomId)}`, { replace: true });
     } else if (activeRoomId === null && urlRoomId !== null && !roomsQuery.isPending) {
       navigateTo("/", { replace: true });
-      setMobileShowChat(false);
     }
-  }, [activeRoomId, urlRoomId, roomsQuery.isPending]);
+  }, [activeRoomId, isDesktopChat, surfaceMode, urlRoomId, roomsQuery.isPending]);
 
   // 若待确认删除/退出的房间在弹窗打开期间被远端 SSE `room.deleted` 移除，则同步关闭确认弹窗
   useEffect(() => {
@@ -1381,7 +2050,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
   const activeRoomDetailQuery = useQuery({
     ...roomDetailQueryOptions((activeRoomId ?? ("rom_placeholder" as RoomId)) as RoomId),
-    enabled: activeRoomId !== null,
+    enabled: activeRoomId !== null && surfaceMode === "chats",
   });
 
   const joinedRoomsSignature = useMemo(
@@ -1393,9 +2062,12 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     [rooms],
   );
 
-  // 移动端选中的会话可能仍藏在列表之后，隐藏的时间线不能读取并清掉未读。
-  const visibleRoomId = isDesktopChat || mobileShowChat ? activeRoomId : null;
+  // 移动端选中的会话或切换到单人工作台期间，隐藏的时间线不能读取并清掉聊天未读。
+  const mobileShowChat = !isDesktopChat && urlRoomId !== null && activeRoomId !== null;
+  const visibleRoomId =
+    surfaceMode === "chats" && (isDesktopChat || mobileShowChat) ? activeRoomId : null;
   const sseTelemetry = useRealtimeSseSync(true, sessionToken, visibleRoomId, joinedRoomsSignature);
+  useWorkspaceServerSync(true, activeRoomId);
   connectionStatusRef.current = sseTelemetry.status;
 
   const roomNotificationsRef = useRef<RoomNotificationState | null>(null);
@@ -1433,10 +2105,180 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     [props.ownedAgents],
   );
 
+  const totalChatUnread = useMemo(
+    () => rooms.reduce((sum, r) => sum + Math.max(0, r.lastSeq - r.yourLastReadSeq), 0),
+    [rooms],
+  );
+
   const handleSelectRoom = useCallback((nextRoomId: RoomId): void => {
+    acquireHighRefreshBurst();
     navigateTo(`/?room=${encodeURIComponent(nextRoomId)}`);
-    setMobileShowChat(true);
   }, []);
+
+  const handleBackToRoomList = useCallback((): void => {
+    acquireHighRefreshBurst();
+    navigateBackOr("/");
+  }, []);
+
+  const handleSelectSurface = useCallback(
+    (nextMode: WorkspaceSurfaceMode): void => {
+      acquireHighRefreshBurst();
+      if (nextMode === "workbench") {
+        const suffix =
+          isDesktopChat && activeRoomId !== null ? `&room=${encodeURIComponent(activeRoomId)}` : "";
+        navigateTo(`/?view=workbench${suffix}`);
+        return;
+      }
+      if (!isDesktopChat) {
+        navigateBackOr("/");
+        return;
+      }
+      if (activeRoomId !== null) {
+        navigateTo(`/?room=${encodeURIComponent(activeRoomId)}`);
+      } else {
+        navigateTo("/");
+      }
+    },
+    [activeRoomId, isDesktopChat],
+  );
+
+  // 原生桌面客户端全局快捷键导航：
+  // - Alt+1 / Alt+2：瞬时切换「会话」与「工作台」双空间
+  // - Alt+↑ / Alt+↓：在聊天会话列表中上下快速切房（对标 Slack / Telegram macOS / Linear）
+  // - ⌘/（Ctrl+/）：展开并聚焦左侧会话与通讯录快速筛选框
+  useEffect(() => {
+    const handleWorkspaceKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.isComposing) {
+        return;
+      }
+      if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+        if (event.code === "Digit1") {
+          event.preventDefault();
+          handleSelectSurface("chats");
+          return;
+        }
+        if (event.code === "Digit2") {
+          event.preventDefault();
+          handleSelectSurface("workbench");
+          return;
+        }
+        if (
+          surfaceMode === "chats" &&
+          rooms.length > 1 &&
+          (event.key === "ArrowUp" || event.key === "ArrowDown")
+        ) {
+          event.preventDefault();
+          const curIdx = activeRoomId !== null ? rooms.findIndex((r) => r.id === activeRoomId) : -1;
+          const delta = event.key === "ArrowDown" ? 1 : -1;
+          const nextIdx = curIdx < 0 ? 0 : (curIdx + delta + rooms.length) % rooms.length;
+          const nextRoom = rooms[nextIdx];
+          if (nextRoom !== undefined) {
+            handleSelectRoom(nextRoom.id);
+          }
+          return;
+        }
+      }
+      if (
+        surfaceMode === "chats" &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key === "/"
+      ) {
+        event.preventDefault();
+        setFocusSidebarSearchSignal((n) => n + 1);
+      }
+    };
+
+    window.addEventListener("keydown", handleWorkspaceKeyDown);
+    return () => window.removeEventListener("keydown", handleWorkspaceKeyDown);
+  }, [activeRoomId, handleSelectRoom, handleSelectSurface, rooms, surfaceMode]);
+
+  const handleOpenWorkbenchForWorkspace = useCallback(
+    (workspaceId?: string | undefined): void => {
+      const wsParam = workspaceId ? `&workspace=${encodeURIComponent(workspaceId)}` : "";
+      const roomParam = activeRoomId !== null ? `&room=${encodeURIComponent(activeRoomId)}` : "";
+      navigateTo(`/?view=workbench${wsParam}${roomParam}`);
+    },
+    [activeRoomId],
+  );
+
+  const handleEscalateSoloTaskToHuddle = useCallback(
+    async (task: SoloWorkTaskView): Promise<void> => {
+      setEscalatingTaskId(task.id);
+      try {
+        const roomTitle =
+          task.title.length > 26 ? `会诊：${task.title.slice(0, 26)}…` : `会诊：${task.title}`;
+        const res = await createRoomMutation.mutateAsync({
+          name: roomTitle,
+          topic: `${task.repoName} · ${task.worktreeBranch}（${getWorkTopologyLabel(task.topology)}）`,
+          rules: "围绕单人工作台升级的工单上下文交叉举证，收敛可执行提案供群主拍板。",
+          visibility: "invite_only",
+          governance: {
+            mode: "proposal",
+            allowAgentMentions: true,
+          },
+          ...(props.ownedAgents.length > 0
+            ? { initialAgentIds: props.ownedAgents.map((a) => a.id) }
+            : {}),
+        });
+
+        const blockerLine =
+          task.attention !== undefined && task.attention.answeredChoice === undefined
+            ? `\n- **待共同拍板问题**：${task.attention.question}\n  - 备选项：${task.attention.options.join(" / ")}`
+            : task.review?.verifierNote !== undefined
+              ? `\n- **独立审查摘要**：${task.review.verifierNote}`
+              : "";
+
+        const contextMessage = [
+          `### 任务讨论：${task.title}`,
+          `- **所属工作区与分支**：\`${task.repoName}\` · \`${task.worktreeBranch}\``,
+          `- **执行方式**：${getWorkTopologyLabel(task.topology)}`,
+          `- **背景说明**：${task.brief}${blockerLine}`,
+        ].join("\n");
+
+        let anchorSeq = 1;
+        try {
+          const msgRes = await sendRoomMessage(res.room.id, {
+            content: contextMessage,
+            ignoreUnread: true,
+          });
+          anchorSeq = msgRes.message.seq;
+        } catch {
+          // 即使首条背景消息投递波动，仍保证新建会诊群成功跳转
+        }
+
+        if (task.id.startsWith("wrk_")) {
+          await bindRoomWorkspaceOnServer(res.room.id, task.repoId);
+          await controlWorkTaskOnServer(task.id, "escalate_room", {
+            targetRoomId: res.room.id,
+          });
+        } else {
+          const createdRoomItem = dispatchRoomWorkItem({
+            roomId: res.room.id,
+            anchorSeq,
+            content: task.title,
+            members: res.room.members,
+            currentUserId: props.currentUser.id,
+            payload: {
+              topology: task.topology,
+              tier: task.tier,
+              linkedSoloTaskId: task.id,
+            },
+          });
+          bindRoomToWorkspace(res.room.id, task.repoId);
+          markSoloTaskEscalated(task.id, res.room.id, createdRoomItem.id);
+        }
+        handleSelectRoom(res.room.id);
+        toast.success(`已创建会诊群「${res.room.name}」并继承工作区「${task.repoName}」`);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "创建会诊群聊失败，请稍后重试");
+      } finally {
+        setEscalatingTaskId(null);
+      }
+    },
+    [createRoomMutation, handleSelectRoom, props.currentUser.id, props.ownedAgents],
+  );
 
   const openOnboarding = useCallback(
     (tab: OnboardingModalTab = "pair_agent", reclaimId?: AgentId): void => {
@@ -1485,12 +2327,13 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   }, []);
 
   const handleStartDirectAgentChat = useCallback(
-    (agentId: AgentId): void => {
+    (agentId: AgentId, onOpened?: () => void): void => {
       openDirectAgentMutation.mutate(agentId, {
         onSuccess: (res) => {
           setInspectedAgent(null);
           setInspectConfirmDelete(false);
           handleSelectRoom(res.room.id);
+          onOpened?.();
         },
         onError: (err) => {
           toast.error(err instanceof Error ? err.message : "无法打开与该 Agent 的单聊");
@@ -1714,7 +2557,12 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
   const handleLogout = useCallback((): void => {
     logoutMutation.mutate(undefined, {
-      onSuccess: () => toast.success("已退出当前账号"),
+      onSuccess: () => {
+        resetSoloWorkbenchMemory();
+        resetAllRoomWorkBuckets();
+        resetAgentCapabilityPrefsMemory();
+        toast.success("已退出当前账号");
+      },
     });
   }, [logoutMutation]);
 
@@ -1736,6 +2584,25 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       id: "quick-actions",
       heading: "快捷操作",
       items: [
+        {
+          id: "act-toggle-workbench-surface",
+          label:
+            surfaceMode === "workbench"
+              ? "切换回多人聊天会话 (Huddles)"
+              : "打开单人工作台 (Solo Workbench)",
+          subtitle:
+            surfaceMode === "workbench"
+              ? "回到群聊、好友私聊与提案讨论区"
+              : `个人工作区并发任务 · ${String(workbenchCounts.needsYou)} 项待确认`,
+          icon:
+            surfaceMode === "workbench" ? (
+              <MessageCircle className="h-4 w-4" />
+            ) : (
+              <ListTodo className="h-4 w-4" />
+            ),
+          keywords: ["workbench", "solo", "multica", "swarm", "工作台", "看板", "并发", "派活"],
+          onSelect: () => handleSelectSurface(surfaceMode === "workbench" ? "chats" : "workbench"),
+        },
         ...(activeRoomId !== null && activeRoomSummary?.kind !== "direct_human"
           ? [
               {
@@ -1745,7 +2612,9 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                 icon: <FileText className="h-4 w-4" />,
                 keywords: ["synthesize", "proposal", "提案", "总结", "整理"],
                 onSelect: () => {
-                  setMobileShowChat(true);
+                  if (activeRoomId !== null && !isDesktopChat && urlRoomId !== activeRoomId) {
+                    handleSelectRoom(activeRoomId);
+                  }
                   setSynthesizeSignal((s) => s + 1);
                 },
               },
@@ -1819,6 +2688,27 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           onSelect: () => setAccountSecurityOpen(true),
         },
         {
+          id: "act-open-welcome-portal",
+          label: "产品介绍与联系作者",
+          subtitle: "功能概览 · 工作台协作 · impangyan@outlook.com",
+          icon: <Compass className="h-4 w-4" />,
+          keywords: [
+            "welcome",
+            "about",
+            "portal",
+            "author",
+            "contact",
+            "email",
+            "介绍",
+            "关于",
+            "门户",
+            "作者",
+            "联系",
+            "邮箱",
+          ],
+          onSelect: () => navigateTo("/welcome"),
+        },
+        {
           id: "act-toggle-theme",
           label: isDark ? "始终使用白天模式" : "始终使用夜间模式",
           subtitle: "关闭自动切换并固定使用所选外观",
@@ -1833,6 +2723,26 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           icon: <Clock3 className="h-4 w-4" />,
           keywords: ["theme", "auto", "主题", "自动"],
           onSelect: () => setThemePreference("auto"),
+        },
+        {
+          id: "act-refresh-rate-mode",
+          label:
+            refreshState.preference === "max" ? "切换为标准省电帧率" : "开启最高刷新率（默认推荐）",
+          subtitle:
+            refreshState.preference === "max"
+              ? `当前已开启最高刷新率 · 实时面板 ${String(refreshState.detectedHz)}Hz`
+              : "恢复自适应屏幕支持的最高刷新率（120Hz / 144Hz / 240Hz）",
+          icon: <Gauge className="h-4 w-4" />,
+          keywords: ["fps", "hz", "promotion", "120hz", "144hz", "240hz", "刷新率", "帧率", "高刷"],
+          onSelect: () => {
+            const nextPref = refreshState.preference === "max" ? "standard" : "max";
+            setRefreshRatePreference(nextPref);
+            toast.success(
+              nextPref === "max"
+                ? `已开启最高刷新率（当前 ${String(refreshState.detectedHz)}Hz）`
+                : "已切换至标准省电帧率",
+            );
+          },
         },
       ],
     };
@@ -1914,29 +2824,54 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     friends,
     handleRequestDeleteRoom,
     handleSelectRoom,
+    handleSelectSurface,
     handleStartDirectAgentChat,
     handleStartDirectHumanChat,
     incomingRequests.length,
+    isDesktopChat,
     openOnboarding,
     props.currentUser.email,
     props.currentUser.id,
     props.currentUser.role,
     props.ownedAgents,
+    refreshState.detectedHz,
+    refreshState.preference,
     rooms,
     setThemePreference,
+    urlRoomId,
+    workbenchCounts.needsYou,
+    surfaceMode,
     themeMode,
   ]);
 
-  const isChatVisibleOnMobile = mobileShowChat && activeRoomId !== null;
+  const isChatVisibleOnMobile = mobileShowChat;
+  const urlWorkbenchTaskId = useMemo(() => {
+    const raw = new URLSearchParams(location.search).get("task")?.trim();
+    return raw && raw.length > 0 ? raw : null;
+  }, [location.search]);
+  const showMobileMainTabBar =
+    !isDesktopChat &&
+    !(surfaceMode === "chats" && isChatVisibleOnMobile) &&
+    !(surfaceMode === "workbench" && urlWorkbenchTaskId !== null);
   const activeRoomDetail = activeRoomDetailQuery.data?.room ?? null;
   const onboardingGroup = rooms.find((room) => room.id === visibleRoomId && room.kind === "group");
+  const surfaceTransitionCustom: SurfaceTransitionCustom = {
+    direction: surfaceMode === "workbench" ? 1 : -1,
+    horizontal: !isDesktopChat,
+    reducedMotion,
+  };
 
   return (
-    <div className="flex h-dvh w-screen overflow-hidden text-[#111318] md:gap-2.5 md:p-2.5 dark:text-[#F2F2F4]">
-      {/* 第 1 栏：72px 个人身份 + 我的 Agents + `+ 接入 agent` 悬浮液态玻璃导轨 */}
+    <div className="flex h-vvh w-full flex-col overflow-hidden text-[#111318] md:flex-row md:gap-2.5 md:p-2.5 dark:text-[#F2F2F4]">
+      {/* 第 1 栏：72px 个人身份 + 会话/工作台切换舱 + 我的 Agents + `+ 接入 agent` 悬浮液态玻璃导轨 */}
       <PersonalAgentRail
         currentUser={props.currentUser}
         ownedAgents={props.ownedAgents}
+        surfaceMode={surfaceMode}
+        chatUnreadCount={totalChatUnread}
+        workbenchNeedsYouCount={workbenchCounts.needsYou}
+        workbenchRunningCount={workbenchCounts.running}
+        onSelectSurface={handleSelectSurface}
         onStartDirectAgentChat={handleStartDirectAgentChat}
         onInspectAgent={(agent) => inspectOwnedAgent(agent, false)}
         onReclaimAgent={(agentId) => openOnboarding("pair_agent", agentId)}
@@ -1948,119 +2883,253 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         onLogout={handleLogout}
       />
 
-      {/* 第 2 栏：276px `聊天 | 通讯录` 悬浮液态玻璃侧栏 */}
-      <div
-        className={cn(
-          isChatVisibleOnMobile ? "hidden" : "flex",
-          "min-w-0 flex-1 md:flex md:flex-none",
-        )}
-      >
-        <RoomSidebar
-          currentUser={props.currentUser}
-          ownedAgents={props.ownedAgents}
-          friends={friends}
-          friendRemarks={friendRemarks}
-          incomingRequests={incomingRequests}
-          discoverableAgents={discoverableAgents}
-          rooms={rooms}
-          isLoadingRooms={roomsQuery.isPending}
-          isRoomsError={roomsQuery.isError}
-          onRetryRooms={() => void roomsQuery.refetch()}
-          activeRoomId={activeRoomId}
-          sseStatus={sseTelemetry.status}
-          onSelectRoom={handleSelectRoom}
-          onOpenCreateRoom={() => setCreateRoomOpen(true)}
-          onOpenJoinRoom={() => setJoinRoomOpen(true)}
-          onOpenMyAgents={() => openOnboarding("pair_agent")}
-          onOpenAddFriend={() => setAddFriendOpen(true)}
-          onStartDirectAgentChat={handleStartDirectAgentChat}
-          onStartDirectHumanChat={handleStartDirectHumanChat}
-          onAcceptFriendRequest={handleAcceptFriendRequest}
-          onDeclineFriendRequest={handleDeclineFriendRequest}
-          onEditFriendRemark={setEditingFriend}
-          onRemoveFriend={handleRemoveFriend}
-          onInspectSharedAgent={inspectSharedAgent}
-          onInspectOwnedAgent={(agent) => inspectOwnedAgent(agent, false)}
-          onReclaimOwnedAgent={(agentId) => openOnboarding("pair_agent", agentId)}
-          onRequestDeleteOwnedAgent={(agent) => inspectOwnedAgent(agent, true)}
-          onDeleteOwnedAgent={(agent) => handleDeleteOwnedAgent(agent.id, agent.displayName)}
-          deletingAgentId={deletingAgentId}
-          onRequestDeleteRoom={handleRequestDeleteRoom}
-          onRequestLeaveRoom={handleRequestLeaveRoom}
-          onUpdateRoomGovernance={handleUpdateRoomGovernanceFromMenu}
-          deletingRoomId={deleteRoomMutation.isPending ? (pendingDeleteRoom?.id ?? null) : null}
-          onLogout={handleLogout}
-          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
-          onOpenAdminConsole={() => navigateTo("/admin")}
-        />
+      {/* 右侧主空间舞台：仅上方内容区执行「会话 ⇄ 工作台」方向感知 GPU 弹簧切换，底部移动端主导航栏常驻不动 */}
+      <div className="relative grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden md:h-full md:overflow-visible">
+        <AnimatePresence initial={false} custom={surfaceTransitionCustom}>
+          {surfaceMode === "workbench" ? (
+            <motion.div
+              key="surface-workbench"
+              data-surface="workbench"
+              custom={surfaceTransitionCustom}
+              variants={WORKSPACE_SURFACE_VARIANTS}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              className="col-start-1 row-start-1 flex h-full min-h-0 w-full min-w-0 will-change-[transform,opacity]"
+            >
+              <ConnectedSoloWorkbench
+                currentUser={props.currentUser}
+                ownedAgents={props.ownedAgents}
+                initialWorkspaceId={urlWorkspaceId}
+                escalatingTaskId={escalatingTaskId}
+                onEscalateToHuddle={(task) => void handleEscalateSoloTaskToHuddle(task)}
+                onOpenEscalatedRoom={handleSelectRoom}
+                onSwitchToChats={() => handleSelectSurface("chats")}
+                onOpenConnectAgent={() => openOnboarding("pair_agent")}
+                onInspectOwnedAgent={(agent) => inspectOwnedAgent(agent, false)}
+              />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="surface-chats"
+              data-surface="chats"
+              custom={surfaceTransitionCustom}
+              variants={WORKSPACE_SURFACE_VARIANTS}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              className={cn(
+                "col-start-1 row-start-1 h-full min-h-0 w-full min-w-0 will-change-[transform,opacity]",
+                isDesktopChat
+                  ? "flex md:gap-2.5"
+                  : "relative grid grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] overflow-hidden [&>*]:col-start-1 [&>*]:row-start-1",
+              )}
+            >
+              <AnimatePresence initial={false}>
+                {/* 第 2 栏：桌面常驻 276px 侧栏；移动端在会话列表态呈现，进出聊天室具备丝滑水平推拉过渡 */}
+                {isDesktopChat || !isChatVisibleOnMobile ? (
+                  <motion.div
+                    key="pane-room-sidebar"
+                    initial={isDesktopChat || reducedMotion ? false : { opacity: 0, x: "-14%" }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={
+                      isDesktopChat || reducedMotion
+                        ? { opacity: 0 }
+                        : { opacity: 0, x: "-14%", pointerEvents: "none" }
+                    }
+                    transition={
+                      reducedMotion
+                        ? INSTANT_TRANSITION
+                        : { type: "spring", stiffness: 440, damping: 38, mass: 0.85 }
+                    }
+                    className={cn(
+                      "flex min-h-0 min-w-0",
+                      isDesktopChat
+                        ? "flex-none"
+                        : "col-start-1 row-start-1 h-full w-full will-change-[transform,opacity]",
+                    )}
+                  >
+                    <RoomSidebar
+                      currentUser={props.currentUser}
+                      ownedAgents={props.ownedAgents}
+                      friends={friends}
+                      friendRemarks={friendRemarks}
+                      incomingRequests={incomingRequests}
+                      discoverableAgents={discoverableAgents}
+                      rooms={rooms}
+                      isLoadingRooms={roomsQuery.isPending}
+                      isRoomsError={roomsQuery.isError}
+                      onRetryRooms={() => void roomsQuery.refetch()}
+                      activeRoomId={activeRoomId}
+                      sseStatus={sseTelemetry.status}
+                      onSelectRoom={handleSelectRoom}
+                      onOpenCreateRoom={() => setCreateRoomOpen(true)}
+                      onOpenJoinRoom={() => setJoinRoomOpen(true)}
+                      onOpenMyAgents={() => openOnboarding("pair_agent")}
+                      onOpenAddFriend={() => setAddFriendOpen(true)}
+                      onStartDirectAgentChat={handleStartDirectAgentChat}
+                      onStartDirectHumanChat={handleStartDirectHumanChat}
+                      onAcceptFriendRequest={handleAcceptFriendRequest}
+                      onDeclineFriendRequest={handleDeclineFriendRequest}
+                      onEditFriendRemark={setEditingFriend}
+                      onRemoveFriend={handleRemoveFriend}
+                      onInspectSharedAgent={inspectSharedAgent}
+                      onInspectOwnedAgent={(agent) => inspectOwnedAgent(agent, false)}
+                      onReclaimOwnedAgent={(agentId) => openOnboarding("pair_agent", agentId)}
+                      onRequestDeleteOwnedAgent={(agent) => inspectOwnedAgent(agent, true)}
+                      onDeleteOwnedAgent={(agent) =>
+                        handleDeleteOwnedAgent(agent.id, agent.displayName)
+                      }
+                      deletingAgentId={deletingAgentId}
+                      onRequestDeleteRoom={handleRequestDeleteRoom}
+                      onRequestLeaveRoom={handleRequestLeaveRoom}
+                      onUpdateRoomGovernance={handleUpdateRoomGovernanceFromMenu}
+                      deletingRoomId={
+                        deleteRoomMutation.isPending ? (pendingDeleteRoom?.id ?? null) : null
+                      }
+                      onLogout={handleLogout}
+                      onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+                      onOpenAccountSecurity={() => setAccountSecurityOpen(true)}
+                      onOpenPwaInstallGuide={() => setPwaGuideOpen(true)}
+                      onOpenAdminConsole={() => navigateTo("/admin")}
+                      onSwitchToWorkbench={() => handleSelectSurface("workbench")}
+                      workbenchNeedsYouCount={workbenchCounts.needsYou}
+                      sectionTab={sidebarSectionTab}
+                      onChangeSectionTab={setSidebarSectionTab}
+                      focusSearchSignal={focusSidebarSearchSignal}
+                    />
+                  </motion.div>
+                ) : null}
+
+                {/* 第 3 栏：通透聊天主舞台 vs 无会话极简空态 */}
+                {visibleRoomId !== null && (isDesktopChat || isChatVisibleOnMobile) ? (
+                  <motion.div
+                    key={isDesktopChat ? `room-${visibleRoomId}` : `mobile-room-${visibleRoomId}`}
+                    initial={
+                      reducedMotion
+                        ? false
+                        : isDesktopChat
+                          ? { opacity: 0, y: 4 }
+                          : { opacity: 0, x: "22%" }
+                    }
+                    animate={{ opacity: 1, x: 0, y: 0 }}
+                    exit={
+                      reducedMotion
+                        ? { opacity: 0 }
+                        : isDesktopChat
+                          ? { opacity: 0, y: -3, pointerEvents: "none" }
+                          : { opacity: 0, x: "22%", pointerEvents: "none" }
+                    }
+                    transition={
+                      reducedMotion
+                        ? INSTANT_TRANSITION
+                        : isDesktopChat
+                          ? NATIVE_VIEW_SWAP
+                          : { type: "spring", stiffness: 440, damping: 38, mass: 0.85 }
+                    }
+                    className={cn(
+                      "flex min-h-0 min-w-0 overflow-hidden",
+                      isDesktopChat
+                        ? "flex-1"
+                        : "col-start-1 row-start-1 h-full w-full will-change-[transform,opacity]",
+                    )}
+                  >
+                    <ActiveRoomStage
+                      roomId={visibleRoomId}
+                      currentUser={props.currentUser}
+                      friends={friends}
+                      friendRemarks={friendRemarks}
+                      ownedAgents={props.ownedAgents}
+                      synthesizeSignal={synthesizeSignal}
+                      realtimeLive={sseTelemetry.status === "live"}
+                      onOpenAddAgentModal={(tab, reclaimId) =>
+                        openOnboarding(tab ?? "pair_agent", reclaimId)
+                      }
+                      onOpenAddFriend={() => setAddFriendOpen(true)}
+                      onStartDirectHumanChat={handleStartDirectHumanChat}
+                      onSendFriendRequest={handleSendQuickFriendRequest}
+                      onStartDirectAgentChat={handleStartDirectAgentChat}
+                      onBackToList={handleBackToRoomList}
+                      onInspectAgent={(profile) => {
+                        setInspectConfirmDelete(false);
+                        setInspectedAgent(profile);
+                      }}
+                      onOpenWorkbench={handleOpenWorkbenchForWorkspace}
+                      onRequestDeleteRoom={handleRequestDeleteRoom}
+                      onRequestLeaveRoom={handleRequestLeaveRoom}
+                    />
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+
+              {isDesktopChat && visibleRoomId === null ? (
+                <main className="oh-stage-frame relative hidden flex-1 flex-col items-center justify-center overflow-y-auto p-8 md:flex md:rounded-[22px]">
+                  <div className="max-w-md select-none text-center">
+                    <BrandMark className="mx-auto mb-4 h-12 w-12 rounded-[14px] shadow-xs" />
+                    <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[#111318] dark:text-[#F2F2F4]">
+                      还没有聊天会话
+                    </h1>
+                    <p className="mt-2.5 text-[14px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                      支持与你的 Claude Code、Codex 开启 1v1
+                      单聊，添加站内好友私聊，或建群拉大家一起讨论。
+                    </p>
+
+                    <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                      <AppButton
+                        variant="primary"
+                        size="lg"
+                        leadingIcon={<Plus className="h-4 w-4" />}
+                        onClick={() => setCreateRoomOpen(true)}
+                      >
+                        建群
+                      </AppButton>
+                      <AppButton
+                        variant="secondary"
+                        size="lg"
+                        leadingIcon={<ListTodo className="h-4 w-4" />}
+                        onClick={() => handleSelectSurface("workbench")}
+                      >
+                        打开工作台
+                      </AppButton>
+                      <AppButton
+                        variant="secondary"
+                        size="lg"
+                        onClick={() => openOnboarding("pair_agent")}
+                      >
+                        接入 agent
+                      </AppButton>
+                    </div>
+                  </div>
+                </main>
+              ) : null}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
-      {/* 第 3 栏：通透聊天主舞台 vs 无会话极简空态 */}
-      {visibleRoomId !== null ? (
-        <div
-          className={cn(
-            isChatVisibleOnMobile ? "flex" : "hidden",
-            "min-w-0 flex-1 overflow-hidden md:flex",
-          )}
-        >
-          <ActiveRoomStage
-            key={visibleRoomId}
-            roomId={visibleRoomId}
-            currentUser={props.currentUser}
-            friends={friends}
-            friendRemarks={friendRemarks}
-            ownedAgents={props.ownedAgents}
-            synthesizeSignal={synthesizeSignal}
-            realtimeLive={sseTelemetry.status === "live"}
-            onOpenAddAgentModal={(tab, reclaimId) => openOnboarding(tab ?? "pair_agent", reclaimId)}
-            onOpenAddFriend={() => setAddFriendOpen(true)}
-            onStartDirectHumanChat={handleStartDirectHumanChat}
-            onSendFriendRequest={handleSendQuickFriendRequest}
-            onStartDirectAgentChat={handleStartDirectAgentChat}
-            onBackToList={() => setMobileShowChat(false)}
-            onInspectAgent={(profile) => {
-              setInspectConfirmDelete(false);
-              setInspectedAgent(profile);
-            }}
-            onRequestDeleteRoom={handleRequestDeleteRoom}
-            onRequestLeaveRoom={handleRequestLeaveRoom}
-          />
-        </div>
-      ) : (
-        <main className="oh-stage-frame relative hidden flex-1 flex-col items-center justify-center overflow-y-auto p-8 md:flex md:rounded-[22px]">
-          <div className="max-w-md select-none text-center">
-            <BrandMark className="mx-auto mb-4 h-12 w-12 rounded-[14px] shadow-xs" />
-            <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[#111318] dark:text-[#F2F2F4]">
-              还没有聊天会话
-            </h1>
-            <p className="mt-2.5 text-[14px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-              支持与你的 Claude Code、Codex 开启 1v1 单聊，添加站内好友私聊，或建群拉大家一起讨论。
-            </p>
-
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-              <AppButton
-                variant="primary"
-                size="lg"
-                leadingIcon={<Plus className="h-4 w-4" />}
-                onClick={() => setCreateRoomOpen(true)}
-              >
-                建群
-              </AppButton>
-              <AppButton
-                variant="secondary"
-                size="lg"
-                leadingIcon={<UserPlus className="h-4 w-4" />}
-                onClick={() => setAddFriendOpen(true)}
-              >
-                添加好友
-              </AppButton>
-              <AppButton variant="secondary" size="lg" onClick={() => openOnboarding("pair_agent")}>
-                接入 agent
-              </AppButton>
-            </div>
-          </div>
-        </main>
-      )}
+      {/* 移动端常驻底部主导航栏：独立于上方过渡容器之外，切换「聊天 · 通讯录 · 工作台」时底栏纹丝不动，仅胶囊滑块与上方内容平滑切换 */}
+      {showMobileMainTabBar ? (
+        <MobileMainTabBar
+          activeTab={surfaceMode === "workbench" ? "workbench" : sidebarSectionTab}
+          chatUnreadCount={totalChatUnread}
+          contactsBadgeText={
+            incomingRequests.length > 0 ? `${String(incomingRequests.length)} 新` : undefined
+          }
+          workbenchNeedsYouCount={workbenchCounts.needsYou}
+          onSelectTab={(tab) => {
+            if (tab === "workbench") {
+              if (surfaceMode !== "workbench") {
+                handleSelectSurface("workbench");
+              }
+            } else {
+              setSidebarSectionTab(tab);
+              if (surfaceMode !== "chats") {
+                handleSelectSurface("chats");
+              }
+            }
+          }}
+        />
+      ) : null}
 
       {/* 全局 `⌘K` / `Ctrl+K` 命令面板 */}
       <AppCommandPalette
@@ -2087,10 +3156,11 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         onOpenDirectHumanChat={handleStartDirectHumanChat}
       />
 
-      {editingFriend !== null ? (
+      {(editingFriend ?? lastEditingFriendRef.current) !== null ? (
         <EditFriendRemarkModal
-          key={editingFriend.friendshipId}
-          friend={editingFriend}
+          key={(editingFriend ?? lastEditingFriendRef.current)?.friendshipId}
+          open={editingFriend !== null}
+          friend={(editingFriend ?? lastEditingFriendRef.current) as FriendContactDto}
           onClose={() => setEditingFriend(null)}
         />
       ) : null}
@@ -2132,6 +3202,10 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         activeRoom={activeRoomDetail?.kind === "group" ? activeRoomDetail : null}
         connectionRoom={onboardingGroup}
         connectionRoomPending={roomsQuery.isPending}
+        isOpeningDirectChat={openDirectAgentMutation.isPending}
+        onVerifyReply={(agentId) =>
+          handleStartDirectAgentChat(agentId, () => setOnboardingModalOpen(false))
+        }
         onClose={() => setOnboardingModalOpen(false)}
       />
 
@@ -2157,6 +3231,8 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         currentUser={props.currentUser}
         onClose={() => setAccountSecurityOpen(false)}
       />
+
+      <PwaInstallGuideModal open={pwaGuideOpen} onClose={() => setPwaGuideOpen(false)} />
     </div>
   );
 }
@@ -2172,7 +3248,7 @@ export function WorkspaceShell() {
   // 首次鉴权用连接页。网络异常后的重试应保留已打开的认证表单。
   if (meQuery.isPending && !meQuery.isFetched) {
     return (
-      <main className="flex h-dvh flex-col items-center justify-center gap-3 bg-app-frame text-im-fg dark:bg-[#0F1014]">
+      <main className="flex h-vvh flex-col items-center justify-center gap-3 bg-app-frame text-im-fg dark:bg-[#0F1014]">
         <BrandMark className="h-10 w-10 rounded-[12px] shadow-xs" />
         <span className="text-[16px] font-semibold tracking-[-0.02em]">OpenHuddle</span>
         <span className="text-xs text-[#687082] dark:text-[#8E8E96]">正在连接…</span>

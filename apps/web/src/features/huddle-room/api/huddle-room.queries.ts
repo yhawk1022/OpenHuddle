@@ -67,6 +67,7 @@ import {
   updateOwnRoomRemark,
   updateRoomGovernance,
 } from "../../../lib/api-client.js";
+import { pickLatestIso, sortRoomsByLatestActivity } from "../../../lib/format.js";
 import {
   type DraftMessageAttachment,
   encodeMessageAttachment,
@@ -117,23 +118,37 @@ function reconcileJoinedRoomSequences(
   const cached = cachedValue as JoinedRoomsData | undefined;
   const incoming = incomingValue as JoinedRoomsData;
   if (cached === undefined) {
-    return incoming;
+    return {
+      ...incoming,
+      rooms: sortRoomsByLatestActivity(incoming.rooms),
+    };
   }
 
-  // 补拉和发送回执都可能晚于 SSE 或本地已读更新。以新列表为准，仅保护同一房间的单调游标。
+  // 补拉和发送回执都可能晚于 SSE 或本地已读更新。以新列表为准，保护同一房间的单调游标与最新消息时间并维持倒序。
   const cachedById = new Map(cached.rooms.map((room) => [room.id, room]));
-  const rooms = incoming.rooms.map((room) => {
-    const previous = cachedById.get(room.id);
-    return previous === undefined
-      ? room
-      : {
-          ...room,
-          lastSeq: asReadCursorSeq(Math.max(previous.lastSeq, room.lastSeq)),
-          yourLastReadSeq: asReadCursorSeq(
-            Math.max(previous.yourLastReadSeq, room.yourLastReadSeq),
-          ),
-        };
-  });
+  const rooms = sortRoomsByLatestActivity(
+    incoming.rooms.map((room) => {
+      const previous = cachedById.get(room.id);
+      if (previous === undefined) {
+        return room;
+      }
+      const mergedLastMessageAtIso =
+        room.lastMessageAtIso !== undefined
+          ? pickLatestIso(previous.lastMessageAtIso, room.lastMessageAtIso)
+          : previous.lastSeq > room.lastSeq
+            ? previous.lastMessageAtIso
+            : undefined;
+      const { lastMessageAtIso: _omit, ...restRoom } = room;
+      return {
+        ...restRoom,
+        lastSeq: asReadCursorSeq(Math.max(previous.lastSeq, room.lastSeq)),
+        yourLastReadSeq: asReadCursorSeq(Math.max(previous.yourLastReadSeq, room.yourLastReadSeq)),
+        ...(mergedLastMessageAtIso !== undefined
+          ? { lastMessageAtIso: mergedLastMessageAtIso }
+          : {}),
+      };
+    }),
+  );
   return replaceEqualDeep(cached, { ...incoming, rooms });
 }
 
@@ -394,7 +409,7 @@ async function cacheOpenedDirectRoom(queryClient: QueryClient, room: RoomDetailD
   queryClient.setQueryData(listKey, (previous) =>
     previous?.rooms.some((item) => item.id === room.id)
       ? previous
-      : { ok: true as const, rooms: [room, ...(previous?.rooms ?? [])] },
+      : { ok: true as const, rooms: sortRoomsByLatestActivity([room, ...(previous?.rooms ?? [])]) },
   );
   queryClient.setQueryData(huddleQueryKeys.roomDetail(room.id), { ok: true as const, room });
   void queryClient.invalidateQueries({ queryKey: listKey, exact: true });
@@ -760,15 +775,22 @@ export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto
         prev
           ? {
               ok: true,
-              rooms: prev.rooms.map((r) =>
-                r.id === roomId
-                  ? {
-                      ...r,
-                      lastSeq: confirmedCursor,
-                      yourLastReadSeq: confirmedCursor,
-                      governance: data.governance,
-                    }
-                  : r,
+              rooms: sortRoomsByLatestActivity(
+                prev.rooms.map((r) =>
+                  r.id === roomId
+                    ? {
+                        ...r,
+                        lastSeq: asReadCursorSeq(Math.max(r.lastSeq, confirmedCursor)),
+                        yourLastReadSeq: asReadCursorSeq(
+                          Math.max(r.yourLastReadSeq, confirmedCursor),
+                        ),
+                        lastMessageAtIso:
+                          pickLatestIso(r.lastMessageAtIso, data.message.createdAtIso) ??
+                          data.message.createdAtIso,
+                        governance: data.governance,
+                      }
+                    : r,
+                ),
               ),
             }
           : undefined,
@@ -814,6 +836,7 @@ export function useCreateProposalMutation(roomId: RoomId) {
         prev ? mergeProposalIntoCache(prev, res.proposal) : { ok: true, proposals: [res.proposal] },
       );
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.roomMessages(roomId) });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms(), exact: true });
     },
   });
 }
@@ -836,6 +859,7 @@ export function useSynthesizeProposalMutation(roomId: RoomId) {
         prev ? mergeProposalIntoCache(prev, res.proposal) : { ok: true, proposals: [res.proposal] },
       );
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.roomMessages(roomId) });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms(), exact: true });
     },
   });
 }
@@ -861,6 +885,7 @@ export function useCastProposalVoteMutation(roomId: RoomId) {
         prev ? mergeProposalIntoCache(prev, res.proposal) : { ok: true, proposals: [res.proposal] },
       );
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.roomMessages(roomId) });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms(), exact: true });
     },
   });
 }
@@ -884,6 +909,7 @@ export function useDecideProposalMutation(roomId: RoomId) {
         prev ? mergeProposalIntoCache(prev, res.proposal) : { ok: true, proposals: [res.proposal] },
       );
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.roomMessages(roomId) });
+      void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms(), exact: true });
     },
   });
 }

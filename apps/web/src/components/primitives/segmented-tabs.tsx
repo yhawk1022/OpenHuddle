@@ -10,6 +10,11 @@
 import { motion } from "motion/react";
 import { type KeyboardEvent, type ReactNode, useId } from "react";
 import { cn } from "../../lib/cn.js";
+import {
+  INSTANT_TRANSITION,
+  NATIVE_PILL_SPRING,
+  usePrefersReducedMotion,
+} from "../../lib/motion-physics.js";
 
 /** 单个分段标签项定义 */
 export interface SegmentedTabItem<T extends string = string> {
@@ -35,8 +40,8 @@ const TRACK_SIZE_CLASS: Record<SegmentedTabsSize, string> = {
 };
 
 const TAB_SIZE_CLASS: Record<SegmentedTabsSize, string> = {
-  xs: "h-6 rounded-full px-2.5 text-[11px] gap-1",
-  sm: "h-7 rounded-full px-3 text-xs gap-1.5",
+  xs: "h-6 rounded-full px-2.5 text-[11.5px] gap-1",
+  sm: "h-7 rounded-full px-3 text-[12.5px] gap-1.5",
   md: "h-8 rounded-full px-3.5 text-[13px] gap-1.5",
 };
 
@@ -67,7 +72,7 @@ export interface SegmentedTabsProps<T extends string = string> {
 }
 
 /**
- * 渲染带 `motion` 弹簧滑动纯白胶囊的 Pachat 分段控制器。
+ * 渲染带 `motion` 弹簧滑动高亮胶囊的分段控制器。
  *
  * @param props - 当前值、分段配置列表、尺寸与等宽策略
  * @returns 具备物理滑动高亮与键盘可达性的 `tablist` 组件
@@ -86,9 +91,15 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
 
   const reactId = useId();
   const resolvedLayoutId = layoutId ?? `oh-seg-pill-${reactId}`;
+  const reducedMotion = usePrefersReducedMotion();
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+    if (
+      event.key !== "ArrowLeft" &&
+      event.key !== "ArrowRight" &&
+      event.key !== "Home" &&
+      event.key !== "End"
+    ) {
       return;
     }
     const enabledItems = items.filter((item) => !item.disabled);
@@ -100,10 +111,17 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
       return;
     }
     event.preventDefault();
-    const delta = event.key === "ArrowRight" ? 1 : -1;
-    const nextIndex = (currentIndex + delta + enabledItems.length) % enabledItems.length;
+    let nextIndex = currentIndex;
+    if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = enabledItems.length - 1;
+    } else {
+      const delta = event.key === "ArrowRight" ? 1 : -1;
+      nextIndex = (currentIndex + delta + enabledItems.length) % enabledItems.length;
+    }
     const nextItem = enabledItems[nextIndex];
-    if (nextItem !== undefined) {
+    if (nextItem !== undefined && nextItem.value !== value) {
       onValueChange(nextItem.value);
     }
   };
@@ -139,7 +157,7 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
               }
             }}
             className={cn(
-              "relative z-0 inline-flex cursor-pointer items-center justify-center font-medium tracking-[-0.01em] outline-none transition-colors duration-150",
+              "relative z-0 inline-flex cursor-pointer items-center justify-center font-medium tracking-[-0.01em] outline-none touch-manipulation transition-[color,transform] duration-150 ease-out active:scale-[0.975] active:duration-[60ms]",
               "focus-visible:ring-2 focus-visible:ring-black/[0.15] dark:focus-visible:ring-white/[0.22]",
               "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45",
               TAB_SIZE_CLASS[size],
@@ -153,9 +171,9 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
               <motion.span
                 layoutId={resolvedLayoutId}
                 aria-hidden="true"
-                transition={{ type: "spring", stiffness: 520, damping: 36 }}
+                transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_PILL_SPRING}
                 className={cn(
-                  "pointer-events-none absolute inset-0 -z-10",
+                  "pointer-events-none absolute inset-0 -z-10 will-change-transform",
                   "bg-im-surface shadow-[0_1px_4px_rgba(15,23,42,0.07),0_1px_2px_rgba(15,23,42,0.03)]",
                   "dark:bg-white/[0.13] dark:shadow-[0_2px_8px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.14)]",
                   PILL_RADIUS_CLASS[size],

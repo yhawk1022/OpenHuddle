@@ -26,9 +26,9 @@ export type AppButtonSize = "xs" | "sm" | "md" | "lg";
  */
 export const appButtonVariants = cva(
   [
-    "app-no-drag relative inline-flex shrink-0 select-none items-center justify-center rounded-full font-medium tracking-[-0.01em]",
-    "cursor-pointer transition-all duration-150 ease-out",
-    "active:scale-[0.97] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
+    "app-no-drag relative inline-flex shrink-0 select-none items-center justify-center rounded-full font-medium tracking-[-0.01em] touch-manipulation",
+    "cursor-pointer transition-[transform,background-color,border-color,color,box-shadow,opacity] duration-[180ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+    "active:scale-[0.965] active:duration-[60ms] active:ease-[cubic-bezier(0.2,0,0,1)] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/[0.15] focus-visible:ring-offset-1 focus-visible:ring-offset-transparent dark:focus-visible:ring-white/[0.22]",
   ],
   {
@@ -89,9 +89,9 @@ export const appButtonVariants = cva(
  */
 export const iconButtonVariants = cva(
   [
-    "app-no-drag relative inline-flex shrink-0 select-none items-center justify-center rounded-full",
-    "cursor-pointer transition-all duration-150 ease-out",
-    "active:scale-[0.95] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
+    "app-no-drag relative inline-flex shrink-0 select-none items-center justify-center rounded-full touch-manipulation",
+    "cursor-pointer transition-[transform,background-color,border-color,color,box-shadow,opacity] duration-[180ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+    "active:scale-[0.92] active:duration-[60ms] active:ease-[cubic-bezier(0.2,0,0,1)] disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/[0.15] dark:focus-visible:ring-white/[0.22]",
   ],
   {
@@ -129,9 +129,9 @@ export const iconButtonVariants = cva(
         ],
       },
       size: {
-        xs: "h-6 w-6",
-        sm: "h-7 w-7",
-        md: "h-8 w-8",
+        xs: "h-6 w-6 [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-2",
+        sm: "h-7 w-7 [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-1.5",
+        md: "h-8 w-8 [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-1",
         lg: "h-9 w-9",
       },
     },
@@ -159,7 +159,7 @@ export interface AppButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> 
 }
 
 /**
- * 渲染 Pachat 极简胶囊风格的通用按钮。
+ * 渲染通用胶囊按钮组件。
  *
  * @remarks
  * 支持 `forwardRef` 以无缝作为 Radix `Tooltip.Trigger asChild`、`Popover.Trigger asChild` 或 `DropdownMenu.Trigger asChild` 的宿主元素。

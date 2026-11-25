@@ -38,6 +38,7 @@ import {
   FilePlus2,
   FileText,
   Globe,
+  ListTodo,
   Lock,
   LogOut,
   MessageCircle,
@@ -63,23 +64,37 @@ import {
   AppSwitch,
   AppTextarea,
   AppTooltip,
+  INSTANT_TRANSITION,
   IconButton,
+  NATIVE_VIEW_SWAP,
   type SegmentedTabItem,
   SegmentedTabs,
   appButtonVariants,
   cn,
   motion,
   toast,
+  usePrefersReducedMotion,
 } from "../../../components/primitives/index.js";
 import type { InspectedAgentProfile } from "../../../components/ui/agent-profile-dialog.js";
 import { PlatformAvatar, PlatformTagPill } from "../../../components/ui/identity-badges.js";
 import { ProposalCardView } from "../../../components/ui/proposal-card-view.js";
+import {
+  getExecutionTierMeta,
+  useAgentCapabilityPrefs,
+} from "../../../lib/agent-capability-prefs.js";
 import { ApiClientError, type SynthesizeProposalInput } from "../../../lib/api-client.js";
 import { getReachVisualMeta } from "../../../lib/format.js";
 import { useUpdateOwnRoomRemarkMutation } from "../api/huddle-room.queries.js";
+import type {
+  ObserveDryRunEntry,
+  RoomOrchestrationDefaults,
+  RoomWorkItemView,
+  WorkShowcasePreset,
+} from "../work/work-types.js";
+import { WorkInspectorTab } from "./work-inspector-tab.js";
 
 /** 右侧群信息抽屉标签页枚举 */
-export type InspectorTab = "members" | "proposals";
+export type InspectorTab = "members" | "tasks" | "proposals";
 
 const MODE_OPTIONS: ReadonlyArray<SegmentedTabItem<GovernanceMode>> = [
   { value: "free", label: "自由讨论" },
@@ -120,6 +135,26 @@ export interface RoomInspectorProps {
   readonly isUpdatingGovernance: boolean;
   readonly activeTab: InspectorTab;
   readonly onChangeTab: (tab: InspectorTab) => void;
+  readonly workItems?: ReadonlyArray<RoomWorkItemView> | undefined;
+  readonly activeRunningWorkItems?: ReadonlyArray<RoomWorkItemView> | undefined;
+  readonly needsHumanWorkItems?: ReadonlyArray<RoomWorkItemView> | undefined;
+  readonly workDefaults?: RoomOrchestrationDefaults | undefined;
+  readonly observeLogs?: ReadonlyArray<ObserveDryRunEntry> | undefined;
+  readonly focusedWorkItemId?: string | null | undefined;
+  readonly onUpdateWorkDefaults?: ((patch: Partial<RoomOrchestrationDefaults>) => void) | undefined;
+  readonly onSteerWorkSlice?:
+    | ((workItemId: string, note: string, sliceId?: string | undefined) => void)
+    | undefined;
+  readonly onStopWorkItem?: ((workItemId: string) => void) | undefined;
+  readonly onRetryWorkItem?: ((workItemId: string) => void) | undefined;
+  readonly onAnswerWorkAttention?: ((workItemId: string, choice: string) => void) | undefined;
+  readonly onDecideWorkReview?:
+    | ((workItemId: string, decision: "approve" | "rework") => void)
+    | undefined;
+  readonly onOpenComposerDispatch?: ((seedText?: string | undefined) => void) | undefined;
+  readonly onOpenWorkbench?: ((workspaceId?: string | undefined) => void) | undefined;
+  readonly onLoadWorkShowcase?: ((preset: WorkShowcasePreset) => void) | undefined;
+  readonly onClearWorkShowcase?: (() => void) | undefined;
   readonly proposals: ReadonlyArray<ProposalCardDto>;
   readonly isLoadingProposals: boolean;
   readonly isProposalsError: boolean;
@@ -257,6 +292,7 @@ function roleLabel(role: RoomMemberDto["role"]): string {
  */
 export function RoomInspector(props: RoomInspectorProps) {
   const surfaceMode = props.surfaceMode ?? "panel";
+  const reducedMotion = usePrefersReducedMotion();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [remarkDraft, setRemarkDraft] = useState<string | null>(null);
@@ -277,6 +313,7 @@ export function RoomInspector(props: RoomInspectorProps) {
   const [recommendedKey, setRecommendedKey] = useState<string>("A");
   const [optionDrafts, setOptionDrafts] =
     useState<ReadonlyArray<EditableOptionDraft>>(createInitialOptions);
+  const { getPref } = useAgentCapabilityPrefs();
 
   const teamGroups = useMemo(() => groupMembersByOwner(props.room.members), [props.room.members]);
   const agentMembers = useMemo(
@@ -317,6 +354,16 @@ export function RoomInspector(props: RoomInspectorProps) {
     }));
   }, [config.maxConsecutiveAgentTurns]);
 
+  const workItems = props.workItems ?? [];
+  const activeRunningWork = props.activeRunningWorkItems ?? [];
+  const needsHumanWork = props.needsHumanWorkItems ?? [];
+  const workBadgeCount =
+    needsHumanWork.length > 0
+      ? needsHumanWork.length
+      : activeRunningWork.length > 0
+        ? activeRunningWork.length
+        : workItems.length;
+
   const inspectorTabs: ReadonlyArray<SegmentedTabItem<InspectorTab>> = useMemo(
     () => [
       {
@@ -326,13 +373,25 @@ export function RoomInspector(props: RoomInspectorProps) {
         badge: String(props.room.members.length),
       },
       {
+        value: "tasks",
+        label: "任务",
+        icon: <ListTodo className="h-3.5 w-3.5" />,
+        ...(workBadgeCount > 0 ? { badge: String(workBadgeCount) } : {}),
+      },
+      {
         value: "proposals",
         label: "提案",
         icon: <FileText className="h-3.5 w-3.5" />,
         badge: openProposalsCount > 0 ? String(openProposalsCount) : String(props.proposals.length),
       },
     ],
-    [isGroupRoom, openProposalsCount, props.proposals.length, props.room.members.length],
+    [
+      isGroupRoom,
+      openProposalsCount,
+      props.proposals.length,
+      props.room.members.length,
+      workBadgeCount,
+    ],
   );
 
   const shareUrl =
@@ -500,1096 +559,1194 @@ export function RoomInspector(props: RoomInspectorProps) {
         <div className="h-3 shrink-0" />
       )}
 
-      {/* 3. 主体滚动内容区 */}
+      {/* 3. 主体滚动内容区（成员 ⇄ 任务 ⇄ 提案分栏轻量平滑切页） */}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-0.5 pb-[max(1rem,env(safe-area-inset-bottom))]">
-        {isDirectHuman || props.activeTab === "members" ? (
-          <div className="space-y-3.5">
-            {/* 跨主人 Agent 单聊安全隔离提示卡 */}
-            {isDirectAgent &&
-            props.room.peer?.kind === "agent" &&
-            props.room.peer.ownerUserId !== props.currentUserId ? (
-              <div className="flex items-start gap-2.5 rounded-[18px] bg-[#E6F5EC]/75 p-3 text-xs text-[#145335] ring-1 ring-inset ring-[#16A34A]/18 dark:bg-[#1B2B23]/75 dark:text-[#A7F3D0] dark:ring-[#34D399]/20">
-                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
-                <div className="leading-relaxed">
-                  <p className="font-semibold">外部共享 Agent 咨询模式</p>
-                  <p className="mt-0.5 opacity-90">
-                    该 Agent 归属于 {props.room.peer.ownerDisplayName}
-                    。你的发言在服务端强制标记为外部参考，不会触发对方宿主机的本机命令授权。
-                  </p>
-                </div>
-              </div>
-            ) : null}
-
-            {/* 3.1 群成员与挂载的 Agent */}
-            <section className="space-y-2.5">
-              <div className="flex select-none items-center justify-between gap-2 px-0.5">
-                <h3 className="text-[12px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                  {isGroupRoom
-                    ? `${String(onlineAgentCount)}/${String(agentMembers.length)} 个 Agent 在线`
-                    : "会话参与方"}
-                </h3>
-                {isGroupRoom ? (
-                  <div className="flex items-center gap-1">
-                    <AppButton
-                      variant="secondary"
-                      size="xs"
-                      leadingIcon={<UserPlus className="h-3 w-3" />}
-                      onClick={props.onOpenInviteMembersModal}
-                    >
-                      邀请成员
-                    </AppButton>
-                    <AppButton
-                      variant="soft"
-                      size="xs"
-                      leadingIcon={<Plus className="h-3 w-3" />}
-                      onClick={props.onOpenInviteAgentsModal}
-                    >
-                      添加我的 Agent
-                    </AppButton>
+        <AnimatePresence mode="wait" initial={false}>
+          {isDirectHuman || props.activeTab === "members" ? (
+            <motion.div
+              key="inspector-pane-members"
+              initial={reducedMotion ? false : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
+              transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
+              className="space-y-3.5"
+            >
+              {/* 跨主人 Agent 单聊安全隔离提示卡 */}
+              {isDirectAgent &&
+              props.room.peer?.kind === "agent" &&
+              props.room.peer.ownerUserId !== props.currentUserId ? (
+                <div className="flex items-start gap-2.5 rounded-[18px] bg-[#E6F5EC]/75 p-3 text-xs text-[#145335] ring-1 ring-inset ring-[#16A34A]/18 dark:bg-[#1B2B23]/75 dark:text-[#A7F3D0] dark:ring-[#34D399]/20">
+                  <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
+                  <div className="leading-relaxed">
+                    <p className="font-semibold">外部共享 Agent 咨询模式</p>
+                    <p className="mt-0.5 opacity-90">
+                      该 Agent 归属于 {props.room.peer.ownerDisplayName}
+                      。你的发言在服务端强制标记为外部参考，不会触发对方宿主机的本机命令授权。
+                    </p>
                   </div>
-                ) : null}
-              </div>
-
-              {isGroupRoom && agentMembers.length === 0 ? (
-                <button
-                  type="button"
-                  onClick={props.onOpenInviteAgentsModal}
-                  className="im-press flex w-full cursor-pointer flex-col items-center gap-1 rounded-[18px] border border-dashed border-black/18 bg-white/50 p-4 text-center transition hover:border-black/35 hover:bg-white/80 dark:border-white/18 dark:bg-white/[0.035] dark:hover:border-white/35 dark:hover:bg-white/[0.07]"
-                >
-                  <Plus className="h-5 w-5 text-[#111318] dark:text-[#ECECEF]" />
-                  <span className="text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
-                    群里还没有 Agent
-                  </span>
-                  <span className="text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
-                    选择自己的 Agent 加入群聊
-                  </span>
-                </button>
+                </div>
               ) : null}
 
-              <div className="space-y-2">
-                {teamGroups.map((group) => {
-                  const humanMember = group.human;
-                  const humanUserId = humanMember?.userId;
-                  const isOwnGroupMember = isGroupRoom && humanUserId === props.currentUserId;
-                  const isOtherHuman =
-                    humanUserId !== undefined && humanUserId !== props.currentUserId;
-                  const isAlreadyFriend =
-                    humanUserId !== undefined && friendUserIds.has(humanUserId);
-                  const humanMenuItems: ReadonlyArray<AppContextMenuEntry> =
-                    humanMember?.userId !== undefined
-                      ? (() => {
-                          const targetUserId = humanMember.userId;
-                          const targetName = humanMember.displayName;
-                          return [
-                            ...(isGroupRoom
-                              ? [
-                                  {
-                                    id: `ctx-insp-human-mention-${targetUserId}`,
-                                    label: `@ ${targetName}`,
-                                    icon: <AtSign className="h-3.5 w-3.5" />,
-                                    onSelect: () =>
-                                      props.onQuickMention({
-                                        kind: "human",
-                                        userId: targetUserId,
-                                        displayName: targetName,
-                                      }),
-                                  } satisfies AppContextMenuEntry,
-                                ]
-                              : []),
-                            ...(isGroupRoom &&
-                            isOtherHuman &&
-                            isAlreadyFriend &&
-                            props.onStartDirectHumanChat !== undefined
-                              ? [
-                                  {
-                                    id: `ctx-insp-human-dm-${targetUserId}`,
-                                    label: "发私聊消息",
-                                    icon: <MessageCircle className="h-3.5 w-3.5" />,
-                                    onSelect: () => props.onStartDirectHumanChat?.(targetUserId),
-                                  } satisfies AppContextMenuEntry,
-                                ]
-                              : []),
-                            ...(isGroupRoom &&
-                            isOtherHuman &&
-                            !isAlreadyFriend &&
-                            props.onSendFriendRequest !== undefined
-                              ? [
-                                  {
-                                    id: `ctx-insp-human-friend-${targetUserId}`,
-                                    label: "添加好友",
-                                    icon: <UserPlus className="h-3.5 w-3.5" />,
-                                    onSelect: () =>
-                                      props.onSendFriendRequest?.(targetUserId, targetName),
-                                  } satisfies AppContextMenuEntry,
-                                ]
-                              : []),
-                            {
-                              id: `ctx-insp-human-copy-${targetUserId}`,
-                              label: "复制昵称",
-                              icon: <Copy className="h-3.5 w-3.5" />,
-                              onSelect: () =>
-                                copyPlainText(targetName, "已复制成员昵称", targetName),
-                            },
-                          ];
-                        })()
-                      : [];
+              {/* 3.1 群成员与挂载的 Agent */}
+              <section className="space-y-2.5">
+                <div className="flex select-none flex-wrap items-center justify-between gap-2 px-0.5">
+                  <h3 className="text-[12px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                    {isGroupRoom
+                      ? `${String(onlineAgentCount)}/${String(agentMembers.length)} 个 Agent 在线`
+                      : "会话参与方"}
+                  </h3>
+                  {isGroupRoom ? (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <AppButton
+                        variant="secondary"
+                        size="xs"
+                        leadingIcon={<UserPlus className="h-3 w-3" />}
+                        onClick={props.onOpenInviteMembersModal}
+                        className="whitespace-nowrap"
+                      >
+                        邀请成员
+                      </AppButton>
+                      <AppButton
+                        variant="soft"
+                        size="xs"
+                        leadingIcon={<Plus className="h-3 w-3" />}
+                        onClick={props.onOpenInviteAgentsModal}
+                        className="whitespace-nowrap"
+                      >
+                        添加我的 Agent
+                      </AppButton>
+                    </div>
+                  ) : null}
+                </div>
 
-                  return (
-                    <div
-                      key={`team-${group.ownerUserId}`}
-                      className={cn(SECTION_CARD_CLASS, "p-2.5")}
-                    >
-                      {/* 主理人头行 */}
-                      <AppContextMenu items={humanMenuItems}>
-                        <div className="flex items-center justify-between gap-2 rounded-xl px-1.5 py-1 transition-colors data-[state=open]:bg-black/[0.06] dark:data-[state=open]:bg-white/[0.09]">
-                          <div className="flex min-w-0 items-center gap-2.5">
-                            <PlatformAvatar
-                              kind="human"
-                              displayName={group.ownerDisplayName}
-                              size="sm"
-                              className="[&>div]:rounded-full"
-                            />
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5">
-                                <p
-                                  className="truncate text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]"
-                                  title={
-                                    group.human?.remark !== undefined
-                                      ? group.human.displayName
-                                      : undefined
-                                  }
-                                >
-                                  {group.ownerDisplayName}
-                                </p>
-                                {group.human && isGroupRoom ? (
-                                  <span className="shrink-0 rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] font-medium text-[#4B5565] dark:bg-white/[0.08] dark:text-[#C4C4CA]">
-                                    {roleLabel(group.human.role)}
-                                  </span>
-                                ) : null}
-                              </div>
-                              <p className="mt-0.5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                                {group.human
-                                  ? isGroupRoom
-                                    ? "群成员"
-                                    : "会话成员"
-                                  : "未以本人账号进会话"}
-                                {group.agents.length > 0
-                                  ? ` · 接入 ${String(group.agents.length)} 个 Agent`
-                                  : ""}
-                              </p>
-                            </div>
-                          </div>
+                {isGroupRoom && agentMembers.length === 0 ? (
+                  <button
+                    type="button"
+                    onClick={props.onOpenInviteAgentsModal}
+                    className="im-press flex w-full cursor-pointer flex-col items-center gap-1 rounded-[18px] border border-dashed border-black/18 bg-white/50 p-4 text-center transition hover:border-black/35 hover:bg-white/80 dark:border-white/18 dark:bg-white/[0.035] dark:hover:border-white/35 dark:hover:bg-white/[0.07]"
+                  >
+                    <Plus className="h-5 w-5 text-[#111318] dark:text-[#ECECEF]" />
+                    <span className="text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
+                      群里还没有 Agent
+                    </span>
+                    <span className="text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
+                      选择自己的 Agent 加入群聊
+                    </span>
+                  </button>
+                ) : null}
 
-                          {group.human?.userId !== undefined && group.human !== null
-                            ? (() => {
-                                const targetUid = group.human.userId;
-                                const humanName = group.human.displayName;
-                                return (
-                                  <div className="flex shrink-0 items-center gap-1">
-                                    {isOwnGroupMember && remarkDraft === null ? (
-                                      <AppButton
-                                        variant="soft"
-                                        size="xs"
-                                        onClick={() => setRemarkDraft(group.human?.remark ?? "")}
-                                        className="h-6 px-2 text-[11px]"
-                                      >
-                                        我的群备注
-                                      </AppButton>
-                                    ) : null}
-                                    {isGroupRoom && isOtherHuman ? (
-                                      isAlreadyFriend &&
-                                      props.onStartDirectHumanChat !== undefined ? (
-                                        <AppButton
-                                          variant="soft"
-                                          size="xs"
-                                          onClick={() => props.onStartDirectHumanChat?.(targetUid)}
-                                          className="h-6 px-2 text-[11px]"
-                                        >
-                                          私聊
-                                        </AppButton>
-                                      ) : !isAlreadyFriend &&
-                                        props.onSendFriendRequest !== undefined ? (
-                                        <AppButton
-                                          variant="secondary"
-                                          size="xs"
-                                          onClick={() =>
-                                            props.onSendFriendRequest?.(targetUid, humanName)
-                                          }
-                                          className="h-6 px-2 text-[11px]"
-                                        >
-                                          加好友
-                                        </AppButton>
-                                      ) : null
-                                    ) : null}
-                                    {isGroupRoom ? (
-                                      <AppTooltip side="left" content={`在输入框 @${humanName}`}>
-                                        <IconButton
-                                          size="sm"
-                                          variant="ghost"
-                                          label={`点名 @${humanName}`}
-                                          onClick={() =>
-                                            props.onQuickMention({
-                                              kind: "human",
-                                              userId: targetUid,
-                                              displayName: humanName,
-                                            })
-                                          }
-                                        >
-                                          <AtSign className="h-3.5 w-3.5" />
-                                        </IconButton>
-                                      </AppTooltip>
-                                    ) : null}
-                                  </div>
-                                );
-                              })()
-                            : null}
-                        </div>
-                      </AppContextMenu>
-
-                      {isOwnGroupMember && remarkDraft !== null ? (
-                        <form
-                          className="my-1.5 space-y-2 px-1.5"
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            if (!remarkMutation.isPending) {
-                              remarkMutation.mutate(remarkDraft, {
-                                onSuccess: ({ remark }) => {
-                                  setRemarkDraft(null);
-                                  toast.success(remark === null ? "已清除群备注" : "已保存群备注");
-                                },
-                              });
-                            }
-                          }}
-                        >
-                          <label htmlFor={remarkInputId} className="block text-xs text-im-muted">
-                            我的群备注
-                          </label>
-                          <AppInput
-                            id={remarkInputId}
-                            size="sm"
-                            value={remarkDraft}
-                            onChange={(event) => setRemarkDraft(event.target.value)}
-                            placeholder={humanMember?.displayName}
-                            maxLength={80}
-                            disabled={remarkMutation.isPending}
-                            invalid={remarkMutation.isError}
-                          />
-                          <p className="text-[11px] text-im-muted">
-                            群成员可见，留空使用账号昵称。
-                          </p>
-                          {remarkMutation.isError ? (
-                            <p role="alert" className="text-xs text-[#C12C32] dark:text-[#F87171]">
-                              {remarkMutation.error instanceof ApiClientError
-                                ? remarkMutation.error.message
-                                : "保存群备注失败，请重试。"}
-                            </p>
-                          ) : null}
-                          <div className="flex justify-end gap-1.5">
-                            <AppButton
-                              type="button"
-                              variant="secondary"
-                              size="xs"
-                              disabled={remarkMutation.isPending}
-                              onClick={() => {
-                                remarkMutation.reset();
-                                setRemarkDraft(null);
-                              }}
-                            >
-                              取消
-                            </AppButton>
-                            <AppButton type="submit" size="xs" disabled={remarkMutation.isPending}>
-                              {remarkMutation.isPending ? "保存中…" : "保存"}
-                            </AppButton>
-                          </div>
-                        </form>
-                      ) : null}
-
-                      {/* 名下个人 Agent 列表 */}
-                      {group.agents.length > 0 ? (
-                        <ul className="mt-1.5 ml-3.5 space-y-1 border-l border-black/[0.08] pl-2.5 dark:border-white/[0.10]">
-                          {group.agents.map((agent) => {
-                            const reachMeta = getReachVisualMeta(agent.reach);
-                            const agentId = agent.agentId;
-                            const agentMentionText = `@${agent.displayName}`;
-                            const canDirectChatAgent =
-                              agentId !== undefined &&
-                              props.onStartDirectAgentChat !== undefined &&
-                              (agent.ownerUserId === props.currentUserId ||
-                                agent.allowExternalDm === true);
-                            const agentMemberMenuItems: ReadonlyArray<AppContextMenuEntry> = [
-                              ...(isGroupRoom && agentId !== undefined
+                <div className="space-y-2">
+                  {teamGroups.map((group) => {
+                    const humanMember = group.human;
+                    const humanUserId = humanMember?.userId;
+                    const isOwnGroupMember = isGroupRoom && humanUserId === props.currentUserId;
+                    const isOtherHuman =
+                      humanUserId !== undefined && humanUserId !== props.currentUserId;
+                    const isAlreadyFriend =
+                      humanUserId !== undefined && friendUserIds.has(humanUserId);
+                    const humanMenuItems: ReadonlyArray<AppContextMenuEntry> =
+                      humanMember?.userId !== undefined
+                        ? (() => {
+                            const targetUserId = humanMember.userId;
+                            const targetName = humanMember.displayName;
+                            return [
+                              ...(isGroupRoom
                                 ? [
                                     {
-                                      id: `ctx-insp-agt-mention-${agentId}`,
-                                      label: `@ ${agent.displayName}`,
+                                      id: `ctx-insp-human-mention-${targetUserId}`,
+                                      label: `@ ${targetName}`,
                                       icon: <AtSign className="h-3.5 w-3.5" />,
                                       onSelect: () =>
                                         props.onQuickMention({
-                                          kind: "agent",
-                                          agentId,
-                                          displayName: agent.displayName,
+                                          kind: "human",
+                                          userId: targetUserId,
+                                          displayName: targetName,
                                         }),
                                     } satisfies AppContextMenuEntry,
                                   ]
                                 : []),
-                              ...(isGroupRoom && canDirectChatAgent && agentId !== undefined
+                              ...(isGroupRoom &&
+                              isOtherHuman &&
+                              isAlreadyFriend &&
+                              props.onStartDirectHumanChat !== undefined
                                 ? [
                                     {
-                                      id: `ctx-insp-agt-dm-${agentId}`,
-                                      label: "发消息（1v1 单聊）",
+                                      id: `ctx-insp-human-dm-${targetUserId}`,
+                                      label: "发私聊消息",
                                       icon: <MessageCircle className="h-3.5 w-3.5" />,
-                                      onSelect: () => props.onStartDirectAgentChat?.(agentId),
+                                      onSelect: () => props.onStartDirectHumanChat?.(targetUserId),
+                                    } satisfies AppContextMenuEntry,
+                                  ]
+                                : []),
+                              ...(isGroupRoom &&
+                              isOtherHuman &&
+                              !isAlreadyFriend &&
+                              props.onSendFriendRequest !== undefined
+                                ? [
+                                    {
+                                      id: `ctx-insp-human-friend-${targetUserId}`,
+                                      label: "添加好友",
+                                      icon: <UserPlus className="h-3.5 w-3.5" />,
+                                      onSelect: () =>
+                                        props.onSendFriendRequest?.(targetUserId, targetName),
                                     } satisfies AppContextMenuEntry,
                                   ]
                                 : []),
                               {
-                                id: `ctx-insp-agt-inspect-${agentId ?? agent.displayName}`,
-                                label: "查看 Agent 名片",
-                                icon: <UserRound className="h-3.5 w-3.5" />,
-                                onSelect: () => handleInspectMemberAgent(agent),
-                              },
-                              {
-                                id: `ctx-insp-agt-copy-${agentId ?? agent.displayName}`,
-                                label: `复制 ${agentMentionText}`,
+                                id: `ctx-insp-human-copy-${targetUserId}`,
+                                label: "复制昵称",
                                 icon: <Copy className="h-3.5 w-3.5" />,
                                 onSelect: () =>
-                                  copyPlainText(
-                                    agentMentionText,
-                                    "已复制提及标识",
-                                    agentMentionText,
-                                  ),
+                                  copyPlainText(targetName, "已复制成员昵称", targetName),
                               },
                             ];
+                          })()
+                        : [];
 
-                            return (
-                              <AppContextMenu
-                                key={`mem-agt-${agent.agentId ?? agent.displayName}`}
-                                items={agentMemberMenuItems}
-                              >
-                                <li className="group flex items-center justify-between gap-1.5 rounded-xl bg-white/85 px-2.5 py-1.5 ring-1 ring-inset ring-black/[0.04] transition hover:bg-white data-[state=open]:bg-black/[0.06] data-[state=open]:ring-black/15 dark:bg-white/[0.05] dark:ring-white/[0.06] dark:hover:bg-white/[0.09] dark:data-[state=open]:bg-white/[0.11] dark:data-[state=open]:ring-white/20">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleInspectMemberAgent(agent)}
-                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left"
-                                  >
-                                    <PlatformAvatar
-                                      kind="agent"
-                                      displayName={agent.displayName}
-                                      platform={agent.platform}
-                                      reach={agent.reach}
-                                      size="sm"
-                                      className="[&>div]:rounded-full"
-                                    />
-                                    <span className="min-w-0 flex-1">
-                                      <span className="flex items-center gap-1.5">
-                                        <span className="truncate text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                                          {agent.displayName}
-                                        </span>
-                                        {agent.platform ? (
-                                          <PlatformTagPill
-                                            platform={agent.platform}
-                                            compact={true}
-                                          />
-                                        ) : null}
-                                      </span>
-                                      <span
-                                        title={reachMeta.description}
-                                        className="mt-0.5 flex items-center gap-1 text-[11px] text-[#687082] dark:text-[#8E8E96]"
-                                      >
-                                        <span
-                                          className={cn(
-                                            "h-1.5 w-1.5 rounded-full",
-                                            reachMeta.dotClass,
-                                          )}
-                                        />
-                                        <span>{reachMeta.shortLabel}</span>
-                                      </span>
-                                    </span>
-                                  </button>
-
-                                  {isGroupRoom && agentId !== undefined ? (
-                                    <AppButton
-                                      variant="soft"
-                                      size="xs"
-                                      onClick={() =>
-                                        props.onQuickMention({
-                                          kind: "agent",
-                                          agentId,
-                                          displayName: agent.displayName,
-                                        })
-                                      }
-                                      className="h-6 px-2.5 text-[11px]"
-                                    >
-                                      @TA
-                                    </AppButton>
-                                  ) : null}
-                                </li>
-                              </AppContextMenu>
-                            );
-                          })}
-                        </ul>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            {/* 3.2 邀请码与公开只读回放分享（仅群聊展示） */}
-            {isGroupRoom ? (
-              <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-1.5 font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                    {props.room.visibility === "public_shareable" ? (
-                      <Globe className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
-                    ) : (
-                      <Lock className="h-3.5 w-3.5 text-[#8E96A6] dark:text-[#8E8E96]" />
-                    )}
-                    <span>邀请与公开分享</span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                      {props.room.visibility === "public_shareable" ? "公开可分享" : "仅限邀请"}
-                    </span>
-                    <AppSwitch
-                      size="sm"
-                      ariaLabel="切换公开只读回放权限"
-                      checked={props.room.visibility === "public_shareable"}
-                      disabled={props.isUpdatingGovernance}
-                      onCheckedChange={(checked) => {
-                        const nextVis = checked ? "public_shareable" : "invite_only";
-                        props.onUpdateGovernance({ visibility: nextVis });
-                        toast.success(
-                          checked ? "已开启公开只读分享链接" : "已关闭公开分享，恢复仅限邀请加入",
-                        );
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {props.room.inviteToken ? (
-                  <div className="flex items-center gap-1.5">
-                    <code className="min-w-0 flex-1 truncate rounded-xl border border-black/[0.07] bg-white/90 px-2.5 py-1.5 font-mono text-[11.5px] text-[#111318] dark:border-white/[0.09] dark:bg-[#141417] dark:text-[#ECECEF]">
-                      {props.room.inviteToken}
-                    </code>
-                    <AppButton
-                      variant="secondary"
-                      size="sm"
-                      leadingIcon={
-                        copiedKey === "inv" ? (
-                          <Check className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
-                        )
-                      }
-                      onClick={() => copyText("inv", props.room.inviteToken ?? "")}
-                    >
-                      {copiedKey === "inv" ? "已复制" : "复制邀请码"}
-                    </AppButton>
-                  </div>
-                ) : null}
-
-                {props.room.visibility === "public_shareable" && shareUrl !== null ? (
-                  <div className="flex items-center gap-1.5">
-                    <AppButton
-                      variant="primary"
-                      size="sm"
-                      fullWidth={true}
-                      leadingIcon={
-                        copiedKey === "share" ? (
-                          <Check className="h-3.5 w-3.5" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
-                        )
-                      }
-                      onClick={() => copyText("share", shareUrl)}
-                    >
-                      {copiedKey === "share" ? "已复制公开链接" : "复制公开只读链接"}
-                    </AppButton>
-                    <AppTooltip side="top" content="在新标签页打开公开回放页">
-                      <a
-                        href={shareUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        aria-label="在新标签页打开公开回放页"
-                        className={cn(
-                          appButtonVariants({ variant: "secondary", size: "sm" }),
-                          "w-8 px-0",
-                        )}
+                    return (
+                      <div
+                        key={`team-${group.ownerUserId}`}
+                        className={cn(SECTION_CARD_CLASS, "p-2.5")}
                       >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </a>
-                    </AppTooltip>
-                  </div>
-                ) : null}
-              </section>
-            ) : null}
+                        {/* 主理人头行 */}
+                        <AppContextMenu items={humanMenuItems}>
+                          <div className="flex items-center justify-between gap-2 rounded-xl px-1.5 py-1 transition-colors data-[state=open]:bg-black/[0.06] dark:data-[state=open]:bg-white/[0.09]">
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              <PlatformAvatar
+                                kind="human"
+                                displayName={group.ownerDisplayName}
+                                size="sm"
+                                className="[&>div]:rounded-full"
+                              />
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <p
+                                    className="truncate text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]"
+                                    title={
+                                      group.human?.remark !== undefined
+                                        ? group.human.displayName
+                                        : undefined
+                                    }
+                                  >
+                                    {group.ownerDisplayName}
+                                  </p>
+                                  {group.human && isGroupRoom ? (
+                                    <span className="shrink-0 rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] font-medium text-[#4B5565] dark:bg-white/[0.08] dark:text-[#C4C4CA]">
+                                      {roleLabel(group.human.role)}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <p className="mt-0.5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                                  {group.human
+                                    ? isGroupRoom
+                                      ? "群成员"
+                                      : "会话成员"
+                                    : "未以本人账号进会话"}
+                                  {group.agents.length > 0
+                                    ? ` · 接入 ${String(group.agents.length)} 个 Agent`
+                                    : ""}
+                                </p>
+                              </div>
+                            </div>
 
-            {/* 3.3 可折叠「群设置与讨论规则」（群聊与 Agent 单聊展示；人类私聊隐藏） */}
-            {!isDirectHuman ? (
-              <section className={cn(SECTION_CARD_CLASS, "overflow-hidden")}>
-                <button
-                  type="button"
-                  onClick={() => setSettingsOpen((prev) => !prev)}
-                  aria-expanded={settingsOpen}
-                  className="flex w-full cursor-pointer select-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-[#111318] transition hover:bg-black/[0.03] dark:text-[#F2F2F4] dark:hover:bg-white/[0.04]"
-                >
-                  <span className="inline-flex items-center gap-1.5">
-                    <Settings2 className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
-                    <span>{isGroupRoom ? "群设置与讨论规则" : "单聊轮次与护栏规则"}</span>
-                  </span>
-                  <ChevronDown
-                    className={cn(
-                      "h-3.5 w-3.5 text-[#687082] transition-transform duration-200 dark:text-[#8E8E96]",
-                      settingsOpen && "rotate-180",
-                    )}
-                  />
-                </button>
-
-                <AnimatePresence initial={false}>
-                  {settingsOpen ? (
-                    <motion.div
-                      key="inspector-gov-body"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.18, ease: "easeOut" }}
-                      className="overflow-hidden border-t border-black/[0.06] dark:border-white/[0.07]"
-                    >
-                      <div className="space-y-3.5 p-3.5 text-xs">
-                        {isGroupRoom ? (
-                          <div>
-                            <p className="mb-1.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                              讨论节奏
-                            </p>
-                            <SegmentedTabs
-                              value={config.mode}
-                              onValueChange={(nextMode) => {
-                                if (nextMode !== config.mode && !props.isUpdatingGovernance) {
-                                  const label =
-                                    MODE_OPTIONS.find((m) => m.value === nextMode)?.label ??
-                                    nextMode;
-                                  props.onUpdateGovernance({ mode: nextMode });
-                                  toast.success(`讨论节奏已切换为「${String(label)}」`);
-                                }
-                              }}
-                              items={MODE_OPTIONS}
-                              size="xs"
-                              fullWidth={true}
-                              ariaLabel="讨论节奏"
-                            />
+                            {group.human?.userId !== undefined && group.human !== null
+                              ? (() => {
+                                  const targetUid = group.human.userId;
+                                  const humanName = group.human.displayName;
+                                  return (
+                                    <div className="flex shrink-0 items-center gap-1">
+                                      {isOwnGroupMember && remarkDraft === null ? (
+                                        <AppButton
+                                          variant="soft"
+                                          size="xs"
+                                          onClick={() => setRemarkDraft(group.human?.remark ?? "")}
+                                          className="h-6 px-2 text-[11px]"
+                                        >
+                                          我的群备注
+                                        </AppButton>
+                                      ) : null}
+                                      {isGroupRoom && isOtherHuman ? (
+                                        isAlreadyFriend &&
+                                        props.onStartDirectHumanChat !== undefined ? (
+                                          <AppButton
+                                            variant="soft"
+                                            size="xs"
+                                            onClick={() =>
+                                              props.onStartDirectHumanChat?.(targetUid)
+                                            }
+                                            className="h-6 px-2 text-[11px]"
+                                          >
+                                            私聊
+                                          </AppButton>
+                                        ) : !isAlreadyFriend &&
+                                          props.onSendFriendRequest !== undefined ? (
+                                          <AppButton
+                                            variant="secondary"
+                                            size="xs"
+                                            onClick={() =>
+                                              props.onSendFriendRequest?.(targetUid, humanName)
+                                            }
+                                            className="h-6 px-2 text-[11px]"
+                                          >
+                                            加好友
+                                          </AppButton>
+                                        ) : null
+                                      ) : null}
+                                      {isGroupRoom ? (
+                                        <AppTooltip side="left" content={`在输入框 @${humanName}`}>
+                                          <IconButton
+                                            size="sm"
+                                            variant="ghost"
+                                            label={`点名 @${humanName}`}
+                                            onClick={() =>
+                                              props.onQuickMention({
+                                                kind: "human",
+                                                userId: targetUid,
+                                                displayName: humanName,
+                                              })
+                                            }
+                                          >
+                                            <AtSign className="h-3.5 w-3.5" />
+                                          </IconButton>
+                                        </AppTooltip>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })()
+                              : null}
                           </div>
+                        </AppContextMenu>
+
+                        {isOwnGroupMember && remarkDraft !== null ? (
+                          <form
+                            className="my-1.5 space-y-2 px-1.5"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              if (!remarkMutation.isPending) {
+                                remarkMutation.mutate(remarkDraft, {
+                                  onSuccess: ({ remark }) => {
+                                    setRemarkDraft(null);
+                                    toast.success(
+                                      remark === null ? "已清除群备注" : "已保存群备注",
+                                    );
+                                  },
+                                });
+                              }
+                            }}
+                          >
+                            <label htmlFor={remarkInputId} className="block text-xs text-im-muted">
+                              我的群备注
+                            </label>
+                            <AppInput
+                              id={remarkInputId}
+                              size="sm"
+                              value={remarkDraft}
+                              onChange={(event) => setRemarkDraft(event.target.value)}
+                              placeholder={humanMember?.displayName}
+                              maxLength={80}
+                              disabled={remarkMutation.isPending}
+                              invalid={remarkMutation.isError}
+                            />
+                            <p className="text-[11px] text-im-muted">
+                              群成员可见，留空使用账号昵称。
+                            </p>
+                            {remarkMutation.isError ? (
+                              <p
+                                role="alert"
+                                className="text-xs text-[#C12C32] dark:text-[#F87171]"
+                              >
+                                {remarkMutation.error instanceof ApiClientError
+                                  ? remarkMutation.error.message
+                                  : "保存群备注失败，请重试。"}
+                              </p>
+                            ) : null}
+                            <div className="flex justify-end gap-1.5">
+                              <AppButton
+                                type="button"
+                                variant="secondary"
+                                size="xs"
+                                disabled={remarkMutation.isPending}
+                                onClick={() => {
+                                  remarkMutation.reset();
+                                  setRemarkDraft(null);
+                                }}
+                              >
+                                取消
+                              </AppButton>
+                              <AppButton
+                                type="submit"
+                                size="xs"
+                                disabled={remarkMutation.isPending}
+                              >
+                                {remarkMutation.isPending ? "保存中…" : "保存"}
+                              </AppButton>
+                            </div>
+                          </form>
                         ) : null}
 
-                        <div className="flex items-center justify-between gap-3">
-                          <label
-                            htmlFor="insp-turn-cap"
-                            className="font-medium text-[#111318] dark:text-[#ECECEF]"
-                          >
-                            连续 Agent 发言上限
-                          </label>
-                          <div className="w-28 shrink-0">
-                            <AppSelect
-                              id="insp-turn-cap"
-                              ariaLabel="连续 Agent 发言上限"
-                              size="sm"
-                              align="end"
-                              disabled={props.isUpdatingGovernance}
-                              value={String(config.maxConsecutiveAgentTurns)}
-                              onValueChange={(val) => {
-                                const parsed = Number(val);
-                                if (
-                                  Number.isFinite(parsed) &&
-                                  parsed !== config.maxConsecutiveAgentTurns
-                                ) {
-                                  props.onUpdateGovernance({ maxConsecutiveAgentTurns: parsed });
-                                  toast.success(`连续发言上限已设为 ${String(parsed)} 轮`);
-                                }
-                              }}
-                              options={turnCapOptions}
-                            />
-                          </div>
-                        </div>
+                        {/* 名下个人 Agent 列表 */}
+                        {group.agents.length > 0 ? (
+                          <ul className="mt-1.5 ml-3.5 space-y-1 border-l border-black/[0.08] pl-2.5 dark:border-white/[0.10]">
+                            {group.agents.map((agent) => {
+                              const reachMeta = getReachVisualMeta(agent.reach);
+                              const agentId = agent.agentId;
+                              const agentMentionText = `@${agent.displayName}`;
+                              const canDirectChatAgent =
+                                agentId !== undefined &&
+                                props.onStartDirectAgentChat !== undefined &&
+                                (agent.ownerUserId === props.currentUserId ||
+                                  agent.allowExternalDm === true);
+                              const agentMemberMenuItems: ReadonlyArray<AppContextMenuEntry> = [
+                                ...(isGroupRoom && agentId !== undefined
+                                  ? [
+                                      {
+                                        id: `ctx-insp-agt-mention-${agentId}`,
+                                        label: `@ ${agent.displayName}`,
+                                        icon: <AtSign className="h-3.5 w-3.5" />,
+                                        onSelect: () =>
+                                          props.onQuickMention({
+                                            kind: "agent",
+                                            agentId,
+                                            displayName: agent.displayName,
+                                          }),
+                                      } satisfies AppContextMenuEntry,
+                                    ]
+                                  : []),
+                                ...(isGroupRoom && canDirectChatAgent && agentId !== undefined
+                                  ? [
+                                      {
+                                        id: `ctx-insp-agt-dm-${agentId}`,
+                                        label: "发消息（1v1 单聊）",
+                                        icon: <MessageCircle className="h-3.5 w-3.5" />,
+                                        onSelect: () => props.onStartDirectAgentChat?.(agentId),
+                                      } satisfies AppContextMenuEntry,
+                                    ]
+                                  : []),
+                                {
+                                  id: `ctx-insp-agt-inspect-${agentId ?? agent.displayName}`,
+                                  label: "查看 Agent 名片",
+                                  icon: <UserRound className="h-3.5 w-3.5" />,
+                                  onSelect: () => handleInspectMemberAgent(agent),
+                                },
+                                {
+                                  id: `ctx-insp-agt-copy-${agentId ?? agent.displayName}`,
+                                  label: `复制 ${agentMentionText}`,
+                                  icon: <Copy className="h-3.5 w-3.5" />,
+                                  onSelect: () =>
+                                    copyPlainText(
+                                      agentMentionText,
+                                      "已复制提及标识",
+                                      agentMentionText,
+                                    ),
+                                },
+                              ];
 
-                        {isGroupRoom ? (
+                              return (
+                                <AppContextMenu
+                                  key={`mem-agt-${agent.agentId ?? agent.displayName}`}
+                                  items={agentMemberMenuItems}
+                                >
+                                  <li className="group flex items-center justify-between gap-1.5 rounded-xl bg-white/85 px-2.5 py-1.5 ring-1 ring-inset ring-black/[0.04] transition hover:bg-white data-[state=open]:bg-black/[0.06] data-[state=open]:ring-black/15 dark:bg-white/[0.05] dark:ring-white/[0.06] dark:hover:bg-white/[0.09] dark:data-[state=open]:bg-white/[0.11] dark:data-[state=open]:ring-white/20">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleInspectMemberAgent(agent)}
+                                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left"
+                                    >
+                                      <PlatformAvatar
+                                        kind="agent"
+                                        displayName={agent.displayName}
+                                        platform={agent.platform}
+                                        reach={agent.reach}
+                                        size="sm"
+                                        className="[&>div]:rounded-full"
+                                      />
+                                      <span className="min-w-0 flex-1">
+                                        <span className="flex items-center gap-1.5">
+                                          <span className="truncate text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                                            {agent.displayName}
+                                          </span>
+                                          {agent.platform ? (
+                                            <PlatformTagPill
+                                              platform={agent.platform}
+                                              compact={true}
+                                            />
+                                          ) : null}
+                                        </span>
+                                        <span
+                                          title={reachMeta.description}
+                                          className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-[#687082] dark:text-[#8E8E96]"
+                                        >
+                                          <span
+                                            className={cn(
+                                              "h-1.5 w-1.5 rounded-full",
+                                              reachMeta.dotClass,
+                                            )}
+                                          />
+                                          <span>{reachMeta.shortLabel}</span>
+                                          {(() => {
+                                            if (agent.ownerUserId !== props.currentUserId) {
+                                              return null;
+                                            }
+                                            const cap = getPref(agent.agentId, agent.platform);
+                                            if (
+                                              cap.tier === "chat_only" &&
+                                              !cap.nativeOrchestratorEnabled
+                                            ) {
+                                              return null;
+                                            }
+                                            const meta = getExecutionTierMeta(cap.tier);
+                                            return (
+                                              <>
+                                                <span className="opacity-50">·</span>
+                                                <span className="font-medium text-[#3B414E] dark:text-[#C4C4CA]">
+                                                  {cap.tier !== "chat_only"
+                                                    ? meta.shortLabel
+                                                    : "双模引擎"}
+                                                </span>
+                                              </>
+                                            );
+                                          })()}
+                                        </span>
+                                      </span>
+                                    </button>
+
+                                    {isGroupRoom && agentId !== undefined ? (
+                                      <AppButton
+                                        variant="soft"
+                                        size="xs"
+                                        onClick={() =>
+                                          props.onQuickMention({
+                                            kind: "agent",
+                                            agentId,
+                                            displayName: agent.displayName,
+                                          })
+                                        }
+                                        className="h-6 px-2.5 text-[11px]"
+                                      >
+                                        @TA
+                                      </AppButton>
+                                    ) : null}
+                                  </li>
+                                </AppContextMenu>
+                              );
+                            })}
+                          </ul>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
+              {/* 3.2 邀请码与公开只读回放分享（仅群聊展示） */}
+              {isGroupRoom ? (
+                <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-1.5 font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                      {props.room.visibility === "public_shareable" ? (
+                        <Globe className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
+                      ) : (
+                        <Lock className="h-3.5 w-3.5 text-[#8E96A6] dark:text-[#8E8E96]" />
+                      )}
+                      <span>邀请与公开分享</span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                        {props.room.visibility === "public_shareable" ? "公开可分享" : "仅限邀请"}
+                      </span>
+                      <AppSwitch
+                        size="sm"
+                        ariaLabel="切换公开只读回放权限"
+                        checked={props.room.visibility === "public_shareable"}
+                        disabled={props.isUpdatingGovernance}
+                        onCheckedChange={(checked) => {
+                          const nextVis = checked ? "public_shareable" : "invite_only";
+                          props.onUpdateGovernance({ visibility: nextVis });
+                          toast.success(
+                            checked ? "已开启公开只读分享链接" : "已关闭公开分享，恢复仅限邀请加入",
+                          );
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {props.room.inviteToken ? (
+                    <div className="flex items-center gap-1.5">
+                      <code className="min-w-0 flex-1 truncate rounded-xl border border-black/[0.07] bg-white/90 px-2.5 py-1.5 font-mono text-[11.5px] text-[#111318] dark:border-white/[0.09] dark:bg-[#141417] dark:text-[#ECECEF]">
+                        {props.room.inviteToken}
+                      </code>
+                      <AppButton
+                        variant="secondary"
+                        size="sm"
+                        leadingIcon={
+                          copiedKey === "inv" ? (
+                            <Check className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )
+                        }
+                        onClick={() => copyText("inv", props.room.inviteToken ?? "")}
+                      >
+                        {copiedKey === "inv" ? "已复制" : "复制邀请码"}
+                      </AppButton>
+                    </div>
+                  ) : null}
+
+                  {props.room.visibility === "public_shareable" && shareUrl !== null ? (
+                    <div className="flex items-center gap-1.5">
+                      <AppButton
+                        variant="primary"
+                        size="sm"
+                        fullWidth={true}
+                        leadingIcon={
+                          copiedKey === "share" ? (
+                            <Check className="h-3.5 w-3.5" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )
+                        }
+                        onClick={() => copyText("share", shareUrl)}
+                      >
+                        {copiedKey === "share" ? "已复制公开链接" : "复制公开只读链接"}
+                      </AppButton>
+                      <AppTooltip side="top" content="在新标签页打开公开回放页">
+                        <a
+                          href={shareUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label="在新标签页打开公开回放页"
+                          className={cn(
+                            appButtonVariants({ variant: "secondary", size: "sm" }),
+                            "w-8 px-0",
+                          )}
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      </AppTooltip>
+                    </div>
+                  ) : null}
+                </section>
+              ) : null}
+
+              {/* 3.3 可折叠「群设置与讨论规则」（群聊与 Agent 单聊展示；人类私聊隐藏） */}
+              {!isDirectHuman ? (
+                <section className={cn(SECTION_CARD_CLASS, "overflow-hidden")}>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsOpen((prev) => !prev)}
+                    aria-expanded={settingsOpen}
+                    className="flex w-full cursor-pointer select-none items-center justify-between px-3.5 py-3 text-xs font-semibold text-[#111318] transition hover:bg-black/[0.03] dark:text-[#F2F2F4] dark:hover:bg-white/[0.04]"
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <Settings2 className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
+                      <span>{isGroupRoom ? "群设置与讨论规则" : "单聊轮次与护栏规则"}</span>
+                    </span>
+                    <ChevronDown
+                      className={cn(
+                        "h-3.5 w-3.5 text-[#687082] transition-transform duration-200 dark:text-[#8E8E96]",
+                        settingsOpen && "rotate-180",
+                      )}
+                    />
+                  </button>
+
+                  <AnimatePresence initial={false}>
+                    {settingsOpen ? (
+                      <motion.div
+                        key="inspector-gov-body"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.18, ease: "easeOut" }}
+                        className="overflow-hidden border-t border-black/[0.06] dark:border-white/[0.07]"
+                      >
+                        <div className="space-y-3.5 p-3.5 text-xs">
+                          {isGroupRoom ? (
+                            <div>
+                              <p className="mb-1.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                                讨论节奏
+                              </p>
+                              <SegmentedTabs
+                                value={config.mode}
+                                onValueChange={(nextMode) => {
+                                  if (nextMode !== config.mode && !props.isUpdatingGovernance) {
+                                    const label =
+                                      MODE_OPTIONS.find((m) => m.value === nextMode)?.label ??
+                                      nextMode;
+                                    props.onUpdateGovernance({ mode: nextMode });
+                                    toast.success(`讨论节奏已切换为「${String(label)}」`);
+                                  }
+                                }}
+                                items={MODE_OPTIONS}
+                                size="xs"
+                                fullWidth={true}
+                                ariaLabel="讨论节奏"
+                              />
+                            </div>
+                          ) : null}
+
                           <div className="flex items-center justify-between gap-3">
                             <label
-                              htmlFor="insp-switch-mentions"
+                              htmlFor="insp-turn-cap"
+                              className="font-medium text-[#111318] dark:text-[#ECECEF]"
+                            >
+                              连续 Agent 发言上限
+                            </label>
+                            <div className="w-28 shrink-0">
+                              <AppSelect
+                                id="insp-turn-cap"
+                                ariaLabel="连续 Agent 发言上限"
+                                size="sm"
+                                align="end"
+                                disabled={props.isUpdatingGovernance}
+                                value={String(config.maxConsecutiveAgentTurns)}
+                                onValueChange={(val) => {
+                                  const parsed = Number(val);
+                                  if (
+                                    Number.isFinite(parsed) &&
+                                    parsed !== config.maxConsecutiveAgentTurns
+                                  ) {
+                                    props.onUpdateGovernance({ maxConsecutiveAgentTurns: parsed });
+                                    toast.success(`连续发言上限已设为 ${String(parsed)} 轮`);
+                                  }
+                                }}
+                                options={turnCapOptions}
+                              />
+                            </div>
+                          </div>
+
+                          {isGroupRoom ? (
+                            <div className="flex items-center justify-between gap-3">
+                              <label
+                                htmlFor="insp-switch-mentions"
+                                className="min-w-0 flex-1 cursor-pointer"
+                              >
+                                <span className="block font-medium text-[#111318] dark:text-[#ECECEF]">
+                                  Agent 互相 @ 唤醒
+                                </span>
+                                <span className="block text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                                  关闭后仅人类发言可唤醒 Agent
+                                </span>
+                              </label>
+                              <AppSwitch
+                                id="insp-switch-mentions"
+                                size="sm"
+                                checked={config.allowAgentMentions}
+                                disabled={props.isUpdatingGovernance}
+                                onCheckedChange={(checked) => {
+                                  props.onUpdateGovernance({ allowAgentMentions: checked });
+                                  toast.success(
+                                    checked
+                                      ? "已允许 Agent 互相 @ 唤醒"
+                                      : "已关闭 Agent 互相 @ 唤醒",
+                                  );
+                                }}
+                              />
+                            </div>
+                          ) : null}
+
+                          <div className="flex items-center justify-between gap-3">
+                            <label
+                              htmlFor="insp-switch-readlock"
                               className="min-w-0 flex-1 cursor-pointer"
                             >
                               <span className="block font-medium text-[#111318] dark:text-[#ECECEF]">
-                                Agent 互相 @ 唤醒
+                                先读后发保护
                               </span>
                               <span className="block text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                                关闭后仅人类发言可唤醒 Agent
+                                拦截未读最新消息的盲目抢答
                               </span>
                             </label>
                             <AppSwitch
-                              id="insp-switch-mentions"
+                              id="insp-switch-readlock"
                               size="sm"
-                              checked={config.allowAgentMentions}
+                              checked={config.requireReadBeforeSend}
                               disabled={props.isUpdatingGovernance}
                               onCheckedChange={(checked) => {
-                                props.onUpdateGovernance({ allowAgentMentions: checked });
+                                props.onUpdateGovernance({ requireReadBeforeSend: checked });
                                 toast.success(
-                                  checked ? "已允许 Agent 互相 @ 唤醒" : "已关闭 Agent 互相 @ 唤醒",
+                                  checked ? "已开启先读后发保护" : "已关闭先读后发保护",
                                 );
                               }}
                             />
                           </div>
-                        ) : null}
 
-                        <div className="flex items-center justify-between gap-3">
-                          <label
-                            htmlFor="insp-switch-readlock"
-                            className="min-w-0 flex-1 cursor-pointer"
-                          >
-                            <span className="block font-medium text-[#111318] dark:text-[#ECECEF]">
-                              先读后发保护
-                            </span>
-                            <span className="block text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                              拦截未读最新消息的盲目抢答
-                            </span>
-                          </label>
-                          <AppSwitch
-                            id="insp-switch-readlock"
-                            size="sm"
-                            checked={config.requireReadBeforeSend}
-                            disabled={props.isUpdatingGovernance}
-                            onCheckedChange={(checked) => {
-                              props.onUpdateGovernance({ requireReadBeforeSend: checked });
-                              toast.success(checked ? "已开启先读后发保护" : "已关闭先读后发保护");
-                            }}
-                          />
+                          {props.room.rules.trim().length > 0 ? (
+                            <div className="rounded-xl bg-white/85 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#141417] dark:ring-white/[0.07]">
+                              <p className="mb-1 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                                群约定
+                              </p>
+                              <p className="whitespace-pre-wrap text-xs leading-relaxed text-[#3B414E] dark:text-[#C4C4CA]">
+                                {props.room.rules}
+                              </p>
+                            </div>
+                          ) : null}
                         </div>
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                </section>
+              ) : null}
 
-                        {props.room.rules.trim().length > 0 ? (
-                          <div className="rounded-xl bg-white/85 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#141417] dark:ring-white/[0.07]">
-                            <p className="mb-1 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                              群约定
-                            </p>
-                            <p className="whitespace-pre-wrap text-xs leading-relaxed text-[#3B414E] dark:text-[#C4C4CA]">
-                              {props.room.rules}
-                            </p>
+              {/* 3.4 群主/单聊删除 或 群成员退出操作区 */}
+              {canDeleteRoom ? (
+                <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
+                  <div>
+                    <h3 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                      {isGroupRoom ? "群主管理" : "会话管理"}
+                    </h3>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                      {isGroupRoom
+                        ? "永久删除当前群聊及其全部消息与提案，此操作不可撤销。"
+                        : "删除当前一对一单聊会话及其历史消息记录（个人 Agent 与好友关系不受影响）。"}
+                    </p>
+                  </div>
+                  <AppButton
+                    variant="dangerSoft"
+                    size="sm"
+                    fullWidth={true}
+                    leadingIcon={<Trash2 className="h-3.5 w-3.5" />}
+                    onClick={() => props.onRequestDeleteRoom?.(props.room)}
+                  >
+                    {isGroupRoom ? "删除群聊" : "删除单聊会话"}
+                  </AppButton>
+                </section>
+              ) : isGroupRoom && !isRoomOwner && props.onRequestLeaveRoom !== undefined ? (
+                <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
+                  <div>
+                    <h3 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                      成员操作
+                    </h3>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                      退出当前群聊后需凭邀请码重新加入，群内历史消息会保留。
+                    </p>
+                  </div>
+                  <AppButton
+                    variant="dangerSoft"
+                    size="sm"
+                    fullWidth={true}
+                    leadingIcon={<LogOut className="h-3.5 w-3.5" />}
+                    onClick={() => props.onRequestLeaveRoom?.(props.room)}
+                  >
+                    退出群聊
+                  </AppButton>
+                </section>
+              ) : null}
+            </motion.div>
+          ) : props.activeTab === "tasks" ? (
+            <motion.div
+              key="inspector-pane-tasks"
+              initial={reducedMotion ? false : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
+              transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
+            >
+              <WorkInspectorTab
+                roomId={props.room.id}
+                members={props.room.members}
+                items={workItems}
+                activeRunningItems={activeRunningWork}
+                needsHumanItems={needsHumanWork}
+                defaults={props.workDefaults ?? { intakeMode: "off" }}
+                observeLogs={props.observeLogs ?? []}
+                focusedWorkItemId={props.focusedWorkItemId ?? null}
+                onUpdateDefaults={(patch) => props.onUpdateWorkDefaults?.(patch)}
+                onSteerSlice={(wid, note, sid) => props.onSteerWorkSlice?.(wid, note, sid)}
+                onStopItem={(wid) => props.onStopWorkItem?.(wid)}
+                onRetryItem={(wid) => props.onRetryWorkItem?.(wid)}
+                onAnswerAttention={(wid, choice) => props.onAnswerWorkAttention?.(wid, choice)}
+                onDecideReview={(wid, decision) => props.onDecideWorkReview?.(wid, decision)}
+                onOpenComposerDispatch={() => {
+                  if (surfaceMode === "sheet") {
+                    props.onClose();
+                  }
+                  props.onOpenComposerDispatch?.();
+                }}
+                onOpenWorkbench={props.onOpenWorkbench}
+                onLoadShowcase={(preset) => props.onLoadWorkShowcase?.(preset)}
+                onClearShowcase={() => props.onClearWorkShowcase?.()}
+              />
+            </motion.div>
+          ) : (
+            /* Tab 3: 结构化共识提案与人类拍板闭环 */
+            <motion.div
+              key="inspector-pane-proposals"
+              initial={reducedMotion ? false : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
+              transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
+              className="space-y-3.5"
+            >
+              {/* 自动整理 + BYOK + 手动新建 */}
+              <div className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3")}>
+                <div className="flex items-center gap-1.5">
+                  <AppButton
+                    variant="primary"
+                    size="sm"
+                    isLoading={props.isSynthesizing}
+                    leadingIcon={<FileText className="h-3.5 w-3.5" />}
+                    onClick={handleSynthesizeClick}
+                    className="flex-1"
+                  >
+                    {props.isSynthesizing ? "正在整理讨论要点…" : "整理近期讨论为提案"}
+                  </AppButton>
+
+                  <AppTooltip side="bottom" content="调整整理窗口或填写临时模型密钥">
+                    <IconButton
+                      size="md"
+                      variant={byokOpen ? "soft" : "secondary"}
+                      label="提案整理选项"
+                      aria-pressed={byokOpen}
+                      onClick={() => setByokOpen((prev) => !prev)}
+                    >
+                      <Settings2 className="h-3.5 w-3.5" />
+                    </IconButton>
+                  </AppTooltip>
+
+                  <AppButton
+                    variant={manualFormOpen ? "soft" : "secondary"}
+                    size="sm"
+                    aria-pressed={manualFormOpen}
+                    leadingIcon={<FilePlus2 className="h-3.5 w-3.5" />}
+                    onClick={() => setManualFormOpen((prev) => !prev)}
+                  >
+                    手写
+                  </AppButton>
+                </div>
+
+                <AnimatePresence initial={false}>
+                  {byokOpen ? (
+                    <motion.div
+                      key="byok-panel"
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.16 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="space-y-2 rounded-xl border border-black/[0.06] bg-white/90 p-2.5 text-xs dark:border-white/[0.08] dark:bg-[#141417]">
+                        <p className="font-medium text-[#111318] dark:text-[#ECECEF]">
+                          消息窗口与可选自定义模型（留空使用服务端默认）
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label
+                              htmlFor="synth-window-limit"
+                              className="mb-1 block text-[10.5px] text-[#687082] dark:text-[#8E8E96]"
+                            >
+                              读取最近消息条数
+                            </label>
+                            <AppInput
+                              id="synth-window-limit"
+                              size="sm"
+                              type="number"
+                              min={3}
+                              max={100}
+                              value={windowLimit}
+                              onChange={(e) =>
+                                setWindowLimit(
+                                  Math.min(100, Math.max(3, Number(e.target.value) || 30)),
+                                )
+                              }
+                            />
                           </div>
-                        ) : null}
+                          <div>
+                            <label
+                              htmlFor="synth-model"
+                              className="mb-1 block text-[10.5px] text-[#687082] dark:text-[#8E8E96]"
+                            >
+                              自定义模型 ID
+                            </label>
+                            <AppInput
+                              id="synth-model"
+                              size="sm"
+                              type="text"
+                              value={byokModel}
+                              onChange={(e) => setByokModel(e.target.value)}
+                              placeholder="gpt-4o-mini / deepseek-chat"
+                            />
+                          </div>
+                        </div>
+                        <AppInput
+                          size="sm"
+                          type="url"
+                          aria-label="OpenAI 兼容 Base URL"
+                          value={byokBaseUrl}
+                          onChange={(e) => setByokBaseUrl(e.target.value)}
+                          placeholder="可选 OpenAI 兼容 Base URL"
+                        />
+                        <AppInput
+                          size="sm"
+                          type="password"
+                          aria-label="BYOK API Key"
+                          value={byokApiKey}
+                          onChange={(e) => setByokApiKey(e.target.value)}
+                          placeholder="可选临时 API Key（仅当次透传，不保存）"
+                        />
                       </div>
                     </motion.div>
                   ) : null}
                 </AnimatePresence>
-              </section>
-            ) : null}
 
-            {/* 3.4 群主/单聊删除 或 群成员退出操作区 */}
-            {canDeleteRoom ? (
-              <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
-                <div>
-                  <h3 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                    {isGroupRoom ? "群主管理" : "会话管理"}
-                  </h3>
-                  <p className="mt-0.5 text-[11px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                    {isGroupRoom
-                      ? "永久删除当前群聊及其全部消息与提案，此操作不可撤销。"
-                      : "删除当前一对一单聊会话及其历史消息记录（个人 Agent 与好友关系不受影响）。"}
+                {synthErr ? (
+                  <p className="rounded-xl bg-[#E5484D]/10 px-2.5 py-1.5 text-[11.5px] text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
+                    整理失败：{synthErr}
                   </p>
-                </div>
-                <AppButton
-                  variant="dangerSoft"
-                  size="sm"
-                  fullWidth={true}
-                  leadingIcon={<Trash2 className="h-3.5 w-3.5" />}
-                  onClick={() => props.onRequestDeleteRoom?.(props.room)}
-                >
-                  {isGroupRoom ? "删除群聊" : "删除单聊会话"}
-                </AppButton>
-              </section>
-            ) : isGroupRoom && !isRoomOwner && props.onRequestLeaveRoom !== undefined ? (
-              <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
-                <div>
-                  <h3 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                    成员操作
-                  </h3>
-                  <p className="mt-0.5 text-[11px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                    退出当前群聊后需凭邀请码重新加入，群内历史消息会保留。
-                  </p>
-                </div>
-                <AppButton
-                  variant="dangerSoft"
-                  size="sm"
-                  fullWidth={true}
-                  leadingIcon={<LogOut className="h-3.5 w-3.5" />}
-                  onClick={() => props.onRequestLeaveRoom?.(props.room)}
-                >
-                  退出群聊
-                </AppButton>
-              </section>
-            ) : null}
-          </div>
-        ) : (
-          /* Tab 2: 结构化共识提案与人类拍板闭环 */
-          <div className="space-y-3.5">
-            {/* 自动整理 + BYOK + 手动新建 */}
-            <div className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3")}>
-              <div className="flex items-center gap-1.5">
-                <AppButton
-                  variant="primary"
-                  size="sm"
-                  isLoading={props.isSynthesizing}
-                  leadingIcon={<FileText className="h-3.5 w-3.5" />}
-                  onClick={handleSynthesizeClick}
-                  className="flex-1"
-                >
-                  {props.isSynthesizing ? "正在整理讨论要点…" : "整理近期讨论为提案"}
-                </AppButton>
-
-                <AppTooltip side="bottom" content="调整整理窗口或填写临时模型密钥">
-                  <IconButton
-                    size="md"
-                    variant={byokOpen ? "soft" : "secondary"}
-                    label="提案整理选项"
-                    aria-pressed={byokOpen}
-                    onClick={() => setByokOpen((prev) => !prev)}
-                  >
-                    <Settings2 className="h-3.5 w-3.5" />
-                  </IconButton>
-                </AppTooltip>
-
-                <AppButton
-                  variant={manualFormOpen ? "soft" : "secondary"}
-                  size="sm"
-                  aria-pressed={manualFormOpen}
-                  leadingIcon={<FilePlus2 className="h-3.5 w-3.5" />}
-                  onClick={() => setManualFormOpen((prev) => !prev)}
-                >
-                  手写
-                </AppButton>
+                ) : null}
               </div>
 
+              {/* 手动新建结构化提案表单 */}
               <AnimatePresence initial={false}>
-                {byokOpen ? (
-                  <motion.div
-                    key="byok-panel"
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: "auto", opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
+                {manualFormOpen ? (
+                  <motion.form
+                    key="manual-proposal-form"
+                    onSubmit={handleManualSubmit}
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
                     transition={{ duration: 0.16 }}
-                    className="overflow-hidden"
+                    className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}
                   >
-                    <div className="space-y-2 rounded-xl border border-black/[0.06] bg-white/90 p-2.5 text-xs dark:border-white/[0.08] dark:bg-[#141417]">
-                      <p className="font-medium text-[#111318] dark:text-[#ECECEF]">
-                        消息窗口与可选自定义模型（留空使用服务端默认）
-                      </p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label
-                            htmlFor="synth-window-limit"
-                            className="mb-1 block text-[10.5px] text-[#687082] dark:text-[#8E8E96]"
-                          >
-                            读取最近消息条数
-                          </label>
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                        手写对比提案
+                      </h4>
+                      <AppButton variant="ghost" size="xs" onClick={() => setManualFormOpen(false)}>
+                        收起
+                      </AppButton>
+                    </div>
+
+                    <AppInput
+                      size="sm"
+                      type="text"
+                      required={true}
+                      maxLength={160}
+                      aria-label="提案标题"
+                      value={draftTitle}
+                      onChange={(e) => setDraftTitle(e.target.value)}
+                      placeholder="提案标题（例如：通知同步采用 LISTEN/NOTIFY 还是 Redis）"
+                    />
+
+                    <AppTextarea
+                      rows={2}
+                      required={true}
+                      maxLength={2000}
+                      aria-label="决策背景"
+                      value={draftContext}
+                      onChange={(e) => setDraftContext(e.target.value)}
+                      placeholder="决策背景与关键约束…"
+                      className="resize-none py-2 text-[16px] md:text-xs"
+                    />
+
+                    <div className="space-y-2">
+                      {optionDrafts.map((opt, idx) => (
+                        <div
+                          key={opt.localId}
+                          className="space-y-1.5 rounded-xl bg-white/80 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.04] dark:ring-white/[0.07]"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <AppInput
+                              size="sm"
+                              type="text"
+                              required={true}
+                              maxLength={16}
+                              aria-label="方案 Key"
+                              value={opt.optionKey}
+                              onChange={(e) =>
+                                updateOptionDraft(idx, { optionKey: e.target.value })
+                              }
+                              placeholder="Key"
+                              containerClassName="w-16 shrink-0"
+                              className="font-mono font-semibold"
+                            />
+                            <AppInput
+                              size="sm"
+                              type="text"
+                              required={true}
+                              maxLength={120}
+                              aria-label="方案名称"
+                              value={opt.label}
+                              onChange={(e) => updateOptionDraft(idx, { label: e.target.value })}
+                              placeholder="方案名称"
+                              containerClassName="min-w-0 flex-1"
+                            />
+                            {optionDrafts.length > 1 ? (
+                              <IconButton
+                                size="sm"
+                                variant="ghost"
+                                label="删除备选方案"
+                                onClick={() =>
+                                  setOptionDrafts((prev) => prev.filter((_, i) => i !== idx))
+                                }
+                                className="text-[#8E96A6] hover:text-[#E5484D]"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </IconButton>
+                            ) : null}
+                          </div>
+
                           <AppInput
-                            id="synth-window-limit"
-                            size="sm"
-                            type="number"
-                            min={3}
-                            max={100}
-                            value={windowLimit}
-                            onChange={(e) =>
-                              setWindowLimit(
-                                Math.min(100, Math.max(3, Number(e.target.value) || 30)),
-                              )
-                            }
-                          />
-                        </div>
-                        <div>
-                          <label
-                            htmlFor="synth-model"
-                            className="mb-1 block text-[10.5px] text-[#687082] dark:text-[#8E8E96]"
-                          >
-                            自定义模型 ID
-                          </label>
-                          <AppInput
-                            id="synth-model"
                             size="sm"
                             type="text"
-                            value={byokModel}
-                            onChange={(e) => setByokModel(e.target.value)}
-                            placeholder="gpt-4o-mini / deepseek-chat"
+                            required={true}
+                            aria-label="方案核心思路"
+                            value={opt.summary}
+                            onChange={(e) => updateOptionDraft(idx, { summary: e.target.value })}
+                            placeholder="一句话方案思路 *"
+                          />
+                          <AppInput
+                            size="sm"
+                            type="text"
+                            aria-label="优势"
+                            value={opt.prosText}
+                            onChange={(e) => updateOptionDraft(idx, { prosText: e.target.value })}
+                            placeholder="优势（逗号分隔）"
+                          />
+                          <AppInput
+                            size="sm"
+                            type="text"
+                            aria-label="代价"
+                            value={opt.consText}
+                            onChange={(e) => updateOptionDraft(idx, { consText: e.target.value })}
+                            placeholder="代价（逗号分隔）"
+                          />
+                          <AppInput
+                            size="sm"
+                            type="text"
+                            aria-label="风险"
+                            value={opt.risksText}
+                            onChange={(e) => updateOptionDraft(idx, { risksText: e.target.value })}
+                            placeholder="风险（逗号分隔）"
                           />
                         </div>
-                      </div>
-                      <AppInput
-                        size="sm"
-                        type="url"
-                        aria-label="OpenAI 兼容 Base URL"
-                        value={byokBaseUrl}
-                        onChange={(e) => setByokBaseUrl(e.target.value)}
-                        placeholder="可选 OpenAI 兼容 Base URL"
-                      />
-                      <AppInput
-                        size="sm"
-                        type="password"
-                        aria-label="BYOK API Key"
-                        value={byokApiKey}
-                        onChange={(e) => setByokApiKey(e.target.value)}
-                        placeholder="可选临时 API Key（仅当次透传，不保存）"
-                      />
+                      ))}
                     </div>
-                  </motion.div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      {optionDrafts.length < 6 ? (
+                        <AppButton
+                          variant="ghost"
+                          size="xs"
+                          leadingIcon={<Plus className="h-3.5 w-3.5" />}
+                          onClick={() => {
+                            const nextLetter = String.fromCharCode(65 + optionDrafts.length);
+                            setOptionDrafts((prev) => [
+                              ...prev,
+                              {
+                                localId: `opt-${Date.now().toString(36)}`,
+                                optionKey: nextLetter,
+                                label: `方案 ${nextLetter}`,
+                                summary: "",
+                                prosText: "",
+                                consText: "",
+                                risksText: "",
+                              },
+                            ]);
+                          }}
+                        >
+                          增加方案
+                        </AppButton>
+                      ) : (
+                        <span />
+                      )}
+
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <label
+                          htmlFor="manual-recommended-key"
+                          className="text-[#687082] dark:text-[#8E8E96]"
+                        >
+                          推荐方案
+                        </label>
+                        <AppInput
+                          id="manual-recommended-key"
+                          size="sm"
+                          type="text"
+                          value={recommendedKey}
+                          onChange={(e) => setRecommendedKey(e.target.value)}
+                          containerClassName="w-14"
+                          className="font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    {createPropErr ? (
+                      <p className="text-xs text-[#C81E1E] dark:text-[#FCA5A5]">{createPropErr}</p>
+                    ) : null}
+
+                    <AppButton
+                      type="submit"
+                      variant="primary"
+                      size="sm"
+                      fullWidth={true}
+                      isLoading={props.isCreatingProposal}
+                    >
+                      发布提案到群聊
+                    </AppButton>
+                  </motion.form>
                 ) : null}
               </AnimatePresence>
 
-              {synthErr ? (
-                <p className="rounded-xl bg-[#E5484D]/10 px-2.5 py-1.5 text-[11.5px] text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
-                  整理失败：{synthErr}
-                </p>
-              ) : null}
-            </div>
-
-            {/* 手动新建结构化提案表单 */}
-            <AnimatePresence initial={false}>
-              {manualFormOpen ? (
-                <motion.form
-                  key="manual-proposal-form"
-                  onSubmit={handleManualSubmit}
-                  initial={{ opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  transition={{ duration: 0.16 }}
-                  className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}
-                >
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                      手写对比提案
-                    </h4>
-                    <AppButton variant="ghost" size="xs" onClick={() => setManualFormOpen(false)}>
-                      收起
-                    </AppButton>
-                  </div>
-
-                  <AppInput
-                    size="sm"
-                    type="text"
-                    required={true}
-                    maxLength={160}
-                    aria-label="提案标题"
-                    value={draftTitle}
-                    onChange={(e) => setDraftTitle(e.target.value)}
-                    placeholder="提案标题（例如：通知同步采用 LISTEN/NOTIFY 还是 Redis）"
-                  />
-
-                  <AppTextarea
-                    rows={2}
-                    required={true}
-                    maxLength={2000}
-                    aria-label="决策背景"
-                    value={draftContext}
-                    onChange={(e) => setDraftContext(e.target.value)}
-                    placeholder="决策背景与关键约束…"
-                    className="resize-none py-2 text-xs"
-                  />
-
-                  <div className="space-y-2">
-                    {optionDrafts.map((opt, idx) => (
-                      <div
-                        key={opt.localId}
-                        className="space-y-1.5 rounded-xl bg-white/80 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.04] dark:ring-white/[0.07]"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <AppInput
-                            size="sm"
-                            type="text"
-                            required={true}
-                            maxLength={16}
-                            aria-label="方案 Key"
-                            value={opt.optionKey}
-                            onChange={(e) => updateOptionDraft(idx, { optionKey: e.target.value })}
-                            placeholder="Key"
-                            containerClassName="w-16 shrink-0"
-                            className="font-mono font-semibold"
-                          />
-                          <AppInput
-                            size="sm"
-                            type="text"
-                            required={true}
-                            maxLength={120}
-                            aria-label="方案名称"
-                            value={opt.label}
-                            onChange={(e) => updateOptionDraft(idx, { label: e.target.value })}
-                            placeholder="方案名称"
-                            containerClassName="min-w-0 flex-1"
-                          />
-                          {optionDrafts.length > 1 ? (
-                            <IconButton
-                              size="sm"
-                              variant="ghost"
-                              label="删除备选方案"
-                              onClick={() =>
-                                setOptionDrafts((prev) => prev.filter((_, i) => i !== idx))
-                              }
-                              className="text-[#8E96A6] hover:text-[#E5484D]"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </IconButton>
-                          ) : null}
-                        </div>
-
-                        <AppInput
-                          size="sm"
-                          type="text"
-                          required={true}
-                          aria-label="方案核心思路"
-                          value={opt.summary}
-                          onChange={(e) => updateOptionDraft(idx, { summary: e.target.value })}
-                          placeholder="一句话方案思路 *"
-                        />
-                        <AppInput
-                          size="sm"
-                          type="text"
-                          aria-label="优势"
-                          value={opt.prosText}
-                          onChange={(e) => updateOptionDraft(idx, { prosText: e.target.value })}
-                          placeholder="优势（逗号分隔）"
-                        />
-                        <AppInput
-                          size="sm"
-                          type="text"
-                          aria-label="代价"
-                          value={opt.consText}
-                          onChange={(e) => updateOptionDraft(idx, { consText: e.target.value })}
-                          placeholder="代价（逗号分隔）"
-                        />
-                        <AppInput
-                          size="sm"
-                          type="text"
-                          aria-label="风险"
-                          value={opt.risksText}
-                          onChange={(e) => updateOptionDraft(idx, { risksText: e.target.value })}
-                          placeholder="风险（逗号分隔）"
-                        />
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2">
-                    {optionDrafts.length < 6 ? (
-                      <AppButton
-                        variant="ghost"
-                        size="xs"
-                        leadingIcon={<Plus className="h-3.5 w-3.5" />}
-                        onClick={() => {
-                          const nextLetter = String.fromCharCode(65 + optionDrafts.length);
-                          setOptionDrafts((prev) => [
-                            ...prev,
-                            {
-                              localId: `opt-${Date.now().toString(36)}`,
-                              optionKey: nextLetter,
-                              label: `方案 ${nextLetter}`,
-                              summary: "",
-                              prosText: "",
-                              consText: "",
-                              risksText: "",
-                            },
-                          ]);
-                        }}
-                      >
-                        增加方案
-                      </AppButton>
-                    ) : (
-                      <span />
-                    )}
-
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <label
-                        htmlFor="manual-recommended-key"
-                        className="text-[#687082] dark:text-[#8E8E96]"
-                      >
-                        推荐方案
-                      </label>
-                      <AppInput
-                        id="manual-recommended-key"
-                        size="sm"
-                        type="text"
-                        value={recommendedKey}
-                        onChange={(e) => setRecommendedKey(e.target.value)}
-                        containerClassName="w-14"
-                        className="font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  {createPropErr ? (
-                    <p className="text-xs text-[#C81E1E] dark:text-[#FCA5A5]">{createPropErr}</p>
-                  ) : null}
-
-                  <AppButton
-                    type="submit"
-                    variant="primary"
-                    size="sm"
-                    fullWidth={true}
-                    isLoading={props.isCreatingProposal}
-                  >
-                    发布提案到群聊
-                  </AppButton>
-                </motion.form>
-              ) : null}
-            </AnimatePresence>
-
-            {/* 提案卡片列表（四态完备） */}
-            {props.isLoadingProposals ? (
-              <div className="space-y-3">
-                {[1, 2].map((sk) => (
-                  <div
-                    key={`prop-sk-${String(sk)}`}
-                    className="h-36 animate-pulse rounded-[18px] bg-black/[0.05] dark:bg-white/[0.05]"
-                  />
-                ))}
-              </div>
-            ) : props.isProposalsError ? (
-              <div className="rounded-[18px] bg-[#E5484D]/10 p-3.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
-                <div className="flex items-center gap-1.5 font-semibold">
-                  <AlertCircle className="h-4 w-4" />
-                  <span>加载提案列表失败</span>
+              {/* 提案卡片列表（四态完备） */}
+              {props.isLoadingProposals ? (
+                <div className="space-y-3">
+                  {[1, 2].map((sk) => (
+                    <div
+                      key={`prop-sk-${String(sk)}`}
+                      className="h-36 animate-pulse rounded-[18px] bg-black/[0.05] dark:bg-white/[0.05]"
+                    />
+                  ))}
                 </div>
-                <AppButton
-                  variant="danger"
-                  size="xs"
-                  leadingIcon={<RefreshCw className="h-3 w-3" />}
-                  onClick={props.onRetryProposals}
-                  className="mt-2"
-                >
-                  重新加载
-                </AppButton>
-              </div>
-            ) : props.proposals.length === 0 ? (
-              <div className={cn(SECTION_CARD_CLASS, "p-6 text-center")}>
-                <FileText className="mx-auto h-5 w-5 text-[#8E96A6] dark:text-[#63636B]" />
-                <p className="mt-2 text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
-                  还没有提案
-                </p>
-                <p className="mt-1 text-[12px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                  等群里的讨论差不多有了眉目，点击上方「整理近期讨论为提案」对比优劣再拍板。
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {props.proposals.map((proposal) => (
-                  <ProposalCardView
-                    key={proposal.id}
-                    proposal={proposal}
-                    interactive={true}
-                    highlighted={props.focusedProposalId === proposal.id}
-                    isSubmittingVote={props.isSubmittingVote}
-                    isSubmittingDecision={props.isSubmittingDecision}
-                    onCastVote={props.onCastVote}
-                    onDecide={props.onDecideProposal}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+              ) : props.isProposalsError ? (
+                <div className="rounded-[18px] bg-[#E5484D]/10 p-3.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
+                  <div className="flex items-center gap-1.5 font-semibold">
+                    <AlertCircle className="h-4 w-4" />
+                    <span>加载提案列表失败</span>
+                  </div>
+                  <AppButton
+                    variant="danger"
+                    size="xs"
+                    leadingIcon={<RefreshCw className="h-3 w-3" />}
+                    onClick={props.onRetryProposals}
+                    className="mt-2"
+                  >
+                    重新加载
+                  </AppButton>
+                </div>
+              ) : props.proposals.length === 0 ? (
+                <div className={cn(SECTION_CARD_CLASS, "p-6 text-center")}>
+                  <FileText className="mx-auto h-5 w-5 text-[#8E96A6] dark:text-[#63636B]" />
+                  <p className="mt-2 text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
+                    还没有提案
+                  </p>
+                  <p className="mt-1 text-[12px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                    等群里的讨论差不多有了眉目，点击上方「整理近期讨论为提案」对比优劣再拍板。
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {props.proposals.map((proposal) => (
+                    <ProposalCardView
+                      key={proposal.id}
+                      proposal={proposal}
+                      interactive={true}
+                      highlighted={props.focusedProposalId === proposal.id}
+                      isSubmittingVote={props.isSubmittingVote}
+                      isSubmittingDecision={props.isSubmittingDecision}
+                      onCastVote={props.onCastVote}
+                      onDecide={props.onDecideProposal}
+                      onDispatchFromProposal={(seed) => {
+                        if (surfaceMode === "sheet") {
+                          props.onClose();
+                        }
+                        props.onOpenComposerDispatch?.(seed);
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </aside>
   );

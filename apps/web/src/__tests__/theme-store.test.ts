@@ -72,4 +72,37 @@ describe("theme schedule", () => {
     browserDocument.dispatchEvent(new Event("visibilitychange"));
     expect(isDark()).toBe(true);
   });
+
+  it("synchronizes meta[name=theme-color] with light and dark modes when present", () => {
+    let themeColor = "#000000";
+    const classes = new Set<string>(["dark"]);
+    const browserWindow = Object.assign(new EventTarget(), { setTimeout, clearTimeout });
+    const browserDocument = Object.assign(new EventTarget(), {
+      querySelector: (selector: string) =>
+        selector === 'meta[name="theme-color"]'
+          ? {
+              setAttribute: (name: string, val: string) => {
+                if (name === "content") themeColor = val;
+              },
+            }
+          : null,
+      documentElement: {
+        classList: {
+          contains: (name: string) => classes.has(name),
+          toggle: (name: string, enabled: boolean) => {
+            if (enabled) classes.add(name);
+            else classes.delete(name);
+          },
+        },
+      },
+    });
+    vi.stubGlobal("window", browserWindow);
+    vi.stubGlobal("document", browserDocument);
+
+    stopThemeSync = startThemeSync("light");
+    expect(themeColor).toBe("#dfe2e6");
+    stopThemeSync();
+    stopThemeSync = startThemeSync("dark");
+    expect(themeColor).toBe("#111113");
+  });
 });

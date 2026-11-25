@@ -13,6 +13,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { joinedRoomsQueryOptions } from "../features/huddle-room/api/huddle-room.queries.js";
 import { reconcileRoomNotifications } from "../features/huddle-room/room-notifications.js";
+import { sortRoomsByLatestActivity } from "../lib/format.js";
 
 const ROOM_ID = "rom_notification_1" as RoomId;
 const OTHER_ROOM_ID = "rom_notification_2" as RoomId;
@@ -102,5 +103,78 @@ describe("会话列表游标", () => {
     expect(client.getQueryData(options.queryKey)?.rooms).toEqual([
       { ...room(6, 5), name: stale.name },
     ]);
+  });
+
+  it("按最新消息时间倒序排列会话，且较晚返回的旧列表请求不会冲掉实时置顶顺序", async () => {
+    const olderRoomId = "rom_older_created" as RoomId;
+    const newerEmptyRoomId = "rom_newer_empty" as RoomId;
+    const activeRoomId = "rom_active_chat" as RoomId;
+
+    const olderCreatedWithNewMsg: RoomSummaryDto = {
+      ...room(3, 2, olderRoomId),
+      createdAtIso: "2026-11-20T08:00:00.000Z",
+      lastMessageAtIso: "2026-11-25T11:00:00.000Z",
+    };
+    const newerEmptyRoom: RoomSummaryDto = {
+      ...room(0, 0, newerEmptyRoomId),
+      createdAtIso: "2026-11-25T10:30:00.000Z",
+    };
+    const earlierActiveRoom: RoomSummaryDto = {
+      ...room(2, 2, activeRoomId),
+      createdAtIso: "2026-11-22T09:00:00.000Z",
+      lastMessageAtIso: "2026-11-25T09:15:00.000Z",
+    };
+
+    expect(
+      sortRoomsByLatestActivity([earlierActiveRoom, newerEmptyRoom, olderCreatedWithNewMsg]).map(
+        (r) => r.id,
+      ),
+    ).toEqual([olderRoomId, newerEmptyRoomId, activeRoomId]);
+
+    // 模拟在途 GET /api/v1/rooms 返回旧快照，而期间 SSE 已把 activeRoomId 推进到最新消息时间
+    const client = new QueryClient();
+    const options = joinedRoomsQueryOptions();
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    fetch.mockResolvedValueOnce(
+      Response.json({
+        ok: true,
+        rooms: [olderCreatedWithNewMsg, newerEmptyRoom, earlierActiveRoom],
+      }),
+    );
+    let respond: (response: Response) => void = () => {
+      throw new Error("Room list request did not start");
+    };
+    fetch.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          respond = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    await client.fetchQuery(options);
+
+    const refresh = client.fetchQuery(options);
+    const realtimeBumped: RoomSummaryDto = {
+      ...earlierActiveRoom,
+      lastSeq: asReadCursorSeq(5),
+      lastMessageAtIso: "2026-11-25T11:05:00.000Z",
+    };
+    client.setQueryData(options.queryKey, {
+      ok: true,
+      rooms: sortRoomsByLatestActivity([olderCreatedWithNewMsg, newerEmptyRoom, realtimeBumped]),
+    });
+
+    respond(
+      Response.json({
+        ok: true,
+        rooms: [olderCreatedWithNewMsg, newerEmptyRoom, earlierActiveRoom],
+      }),
+    );
+    await refresh;
+
+    const finalRooms = client.getQueryData(options.queryKey)?.rooms ?? [];
+    expect(finalRooms.map((r) => r.id)).toEqual([activeRoomId, olderRoomId, newerEmptyRoomId]);
+    expect(finalRooms[0]?.lastMessageAtIso).toBe("2026-11-25T11:05:00.000Z");
+    expect(finalRooms[0]?.lastSeq).toBe(5);
   });
 });

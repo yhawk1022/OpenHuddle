@@ -30,6 +30,9 @@ import {
   AtSign,
   Bot,
   Check,
+  ChevronDown,
+  Clock3,
+  Compass,
   Copy,
   ExternalLink,
   Globe,
@@ -38,6 +41,7 @@ import {
   LogIn,
   LogOut,
   MessageCircle,
+  Moon,
   PauseCircle,
   Pencil,
   Play,
@@ -47,6 +51,7 @@ import {
   Shield,
   ShieldAlert,
   SlidersHorizontal,
+  Sun,
   Trash2,
   UserCheck,
   UserMinus,
@@ -55,21 +60,30 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AnimatePresence,
   AppButton,
   AppContextMenu,
   type AppContextMenuEntry,
+  AppDropdownMenu,
+  AppDropdownMenuItem,
+  AppDropdownMenuLabel,
+  AppDropdownMenuSeparator,
   AppInput,
   AppPopover,
   AppTooltip,
+  INSTANT_TRANSITION,
   IconButton,
+  NATIVE_DISCLOSURE_TRANSITION,
+  NATIVE_PILL_SPRING,
+  NATIVE_VIEW_SWAP,
   type SegmentedTabItem,
   SegmentedTabs,
   cn,
   motion,
   toast,
+  usePrefersReducedMotion,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import {
@@ -77,9 +91,13 @@ import {
   getPlatformVisualMeta,
   getReachVisualMeta,
   getRoomDisplayName,
+  sortRoomsByLatestActivity,
 } from "../../../lib/format.js";
+import { navigateTo } from "../../../lib/session-store.js";
 import type { SseConnectionStatus } from "../../../lib/sse-sync.js";
-import { AccountThemeMenu } from "../../auth-pairing/index.js";
+import { isCoarsePointerDevice } from "../../../lib/viewport-sync.js";
+import { useAccountThemePreference } from "../../auth-pairing/index.js";
+import { PwaInstallBanner } from "../../pwa-install/index.js";
 
 /** 侧栏顶部分段标签枚举：`chats` = 聊天会话，`contacts` = 好友与 Agent 通讯录 */
 export type SidebarSectionTab = "chats" | "contacts";
@@ -176,8 +194,22 @@ export interface RoomSidebarProps {
   readonly deletingRoomId?: RoomId | null | undefined;
   /** 点击搜索框内 `⌘K` 徽章时打开全局命令面板 */
   readonly onOpenCommandPalette?: (() => void) | undefined;
+  /** 打开账号与密码安全设置弹窗 */
+  readonly onOpenAccountSecurity?: (() => void) | undefined;
+  /** 打开「添加到手机主屏幕」分步引导抽屉 */
+  readonly onOpenPwaInstallGuide?: (() => void) | undefined;
   /** 点击移动端管理后台入口（仅当 `currentUser.role === "admin"` 时展示） */
   readonly onOpenAdminConsole?: (() => void) | undefined;
+  /** 移动端（`< md`）快捷切换到个人工作台模式 */
+  readonly onSwitchToWorkbench?: (() => void) | undefined;
+  /** 个人工作台当前待主人拍板/签收数（用于窄屏入口微标提醒） */
+  readonly workbenchNeedsYouCount?: number | undefined;
+  /** 可选受控的聊天/通讯录分栏标签 */
+  readonly sectionTab?: SidebarSectionTab | undefined;
+  /** 可选分栏切换回调 */
+  readonly onChangeSectionTab?: ((tab: SidebarSectionTab) => void) | undefined;
+  /** 全局快捷键 `⌘/` 触发的展开并聚焦侧栏搜索信号 */
+  readonly focusSearchSignal?: number | undefined;
 }
 
 const ROOM_MODE_ITEMS: ReadonlyArray<{ readonly value: GovernanceMode; readonly label: string }> = [
@@ -270,20 +302,43 @@ function describeSse(status: SseConnectionStatus): {
  * @returns 会话与通讯录液态玻璃侧栏组件
  */
 export function RoomSidebar(props: RoomSidebarProps) {
-  const [activeTab, setActiveTab] = useState<SidebarSectionTab>("chats");
+  const [localActiveTab, setLocalActiveTab] = useState<SidebarSectionTab>("chats");
+  const activeTab = props.sectionTab ?? localActiveTab;
+  const setActiveTab = (next: SidebarSectionTab): void => {
+    setLocalActiveTab(next);
+    props.onChangeSectionTab?.(next);
+  };
   const [chatFilter, setChatFilter] = useState<ChatListFilter>("all");
   const [quickMenuOpen, setQuickMenuOpen] = useState<boolean>(false);
   const [searchExpanded, setSearchExpanded] = useState<boolean>(false);
   const [searchText, setSearchText] = useState<string>("");
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const lastSearchSignalRef = useRef<number>(props.focusSearchSignal ?? 0);
+  const reducedMotion = usePrefersReducedMotion();
   const sse = describeSse(props.sseStatus);
+
+  useEffect(() => {
+    const sig = props.focusSearchSignal ?? 0;
+    if (sig === lastSearchSignalRef.current) {
+      return;
+    }
+    lastSearchSignalRef.current = sig;
+    setSearchExpanded(true);
+    window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, [props.focusSearchSignal]);
 
   const friends = props.friends ?? [];
   const incomingRequests = props.incomingRequests ?? [];
   const discoverableAgents = props.discoverableAgents ?? [];
 
+  const sortedRooms = useMemo(() => sortRoomsByLatestActivity(props.rooms), [props.rooms]);
+
   const filteredRooms = useMemo(() => {
     const q = searchText.trim().toLowerCase();
-    return props.rooms.filter((r) => {
+    return sortedRooms.filter((r) => {
       if (chatFilter !== "all" && r.kind !== chatFilter) {
         return false;
       }
@@ -304,7 +359,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
         peerMatch
       );
     });
-  }, [chatFilter, props.friendRemarks, props.rooms, searchText]);
+  }, [chatFilter, props.friendRemarks, sortedRooms, searchText]);
 
   const filteredFriends = useMemo(() => {
     const q = searchText.trim().toLowerCase();
@@ -378,49 +433,147 @@ export function RoomSidebar(props: RoomSidebarProps) {
     });
   };
   const [confirmDeleteAgentId, setConfirmDeleteAgentId] = useState<AgentId | null>(null);
+  const { preference: themePreference, setPreference: setThemePreference } =
+    useAccountThemePreference();
 
   return (
-    <aside className="relative liquid-glass-panel flex h-full w-full shrink-0 select-none flex-col overflow-hidden pt-[env(safe-area-inset-top,0px)] md:w-[276px] md:rounded-[22px] md:pt-0 [--oh-avatar-ring:#F4F5F8] dark:[--oh-avatar-ring:#1E1E22]">
-      {/* 1. 60px 顶栏（Tauri v2 + Electron 双端可拖拽区）：本人头像 + 昵称 + 实时状态 + 快捷新建菜单与搜索 */}
+    <aside className="relative flex h-full w-full shrink-0 select-none flex-col overflow-hidden bg-sidebar-surface pt-[env(safe-area-inset-top,0px)] md:w-[276px] md:rounded-[22px] md:bg-transparent md:pt-0 md:liquid-glass-panel [--oh-avatar-ring:#F4F5F8] dark:[--oh-avatar-ring:#1E1E22]">
+      {/* 1. 56px/60px 顶栏：左侧点击本人头像与昵称展开账号/安全/主题菜单；右侧为清爽的搜索与 `+` 快捷发起菜单 */}
       <div
         data-tauri-drag-region=""
-        className="app-drag-region flex h-[60px] shrink-0 items-center justify-between gap-2 px-3.5"
+        className="app-drag-region flex h-[56px] shrink-0 items-center justify-between gap-2 px-3.5 md:h-[60px]"
       >
-        <div className="flex min-w-0 items-center gap-2.5">
-          <PlatformAvatar
-            kind="human"
-            displayName={props.currentUser.displayName}
-            size="sm"
-            className="[&>div]:h-8 [&>div]:w-8 [&>div]:rounded-full [&>div]:text-[13px]"
-          />
-          <div className="min-w-0 leading-tight">
-            <h2 className="truncate text-[14px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
+        <AppDropdownMenu
+          align="start"
+          className="min-w-60"
+          trigger={
+            <button
+              type="button"
+              aria-label="打开个人与账号设置菜单"
+              className="app-no-drag -ml-1 flex min-w-0 cursor-pointer items-center gap-2 rounded-2xl px-1.5 py-1 text-left transition hover:bg-black/[0.045] active:scale-[0.99] dark:hover:bg-white/[0.07]"
+            >
+              <PlatformAvatar
+                kind="human"
+                displayName={props.currentUser.displayName}
+                size="sm"
+                className="shrink-0 [&>div]:h-8 [&>div]:w-8 [&>div]:rounded-full [&>div]:text-[13px]"
+              />
+              <div className="min-w-0 leading-tight">
+                <div className="flex items-center gap-1">
+                  <h2 className="truncate text-[15px] font-semibold tracking-[-0.015em] text-[#111318] md:text-[14px] dark:text-[#F2F2F4]">
+                    {props.currentUser.displayName}
+                  </h2>
+                  <ChevronDown
+                    aria-hidden="true"
+                    className="h-3.5 w-3.5 shrink-0 text-[#8E96A6] dark:text-[#63636B]"
+                  />
+                </div>
+                <p className="mt-0.5 inline-flex items-center gap-1.5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                  <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", sse.dot)} />
+                  <span className="truncate">{sse.label}</span>
+                </p>
+              </div>
+            </button>
+          }
+        >
+          <div className="px-2.5 py-1.5">
+            <div className="truncate text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
               {props.currentUser.displayName}
-            </h2>
-            <AppTooltip side="bottom" content={`实时通道：${sse.label}`}>
-              <p className="app-no-drag mt-0.5 inline-flex cursor-default items-center gap-1.5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                <span className={cn("h-1.5 w-1.5 rounded-full", sse.dot)} />
-                <span>{sse.label}</span>
-              </p>
-            </AppTooltip>
+            </div>
+            <div className="truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
+              {props.currentUser.email}
+            </div>
           </div>
-        </div>
+          <AppDropdownMenuSeparator />
+          {props.onOpenAccountSecurity !== undefined ? (
+            <AppDropdownMenuItem onSelect={props.onOpenAccountSecurity}>
+              <KeyRound className="h-4 w-4 shrink-0" />
+              <span className="flex-1">账号与密码安全</span>
+            </AppDropdownMenuItem>
+          ) : null}
+          {props.onOpenCommandPalette !== undefined ? (
+            <AppDropdownMenuItem onSelect={props.onOpenCommandPalette}>
+              <Search className="h-4 w-4 shrink-0" />
+              <span className="flex-1">全局快速搜索</span>
+            </AppDropdownMenuItem>
+          ) : null}
+          <AppDropdownMenuItem onSelect={() => navigateTo("/welcome")}>
+            <Compass className="h-4 w-4 shrink-0" />
+            <span className="flex-1">产品介绍与联系作者</span>
+          </AppDropdownMenuItem>
+          {props.currentUser.role === "admin" && props.onOpenAdminConsole !== undefined ? (
+            <AppDropdownMenuItem onSelect={props.onOpenAdminConsole}>
+              <Shield className="h-4 w-4 shrink-0" />
+              <span className="flex-1">运营管理后台</span>
+            </AppDropdownMenuItem>
+          ) : null}
 
-        <div className="flex shrink-0 items-center gap-0.5">
-          <div className="app-no-drag md:hidden">
-            <AccountThemeMenu />
-          </div>
+          <AppDropdownMenuSeparator />
+          <AppDropdownMenuLabel className="text-im-muted">外观模式</AppDropdownMenuLabel>
+          <AppDropdownMenuItem
+            role="menuitemradio"
+            aria-checked={themePreference === "auto"}
+            onSelect={() => setThemePreference("auto")}
+          >
+            <Clock3 className="h-4 w-4 shrink-0" />
+            <span className="flex-1">自动切换（07:00 / 18:00）</span>
+            {themePreference === "auto" ? <Check className="h-4 w-4 shrink-0" /> : null}
+          </AppDropdownMenuItem>
+          <AppDropdownMenuItem
+            role="menuitemradio"
+            aria-checked={themePreference === "light"}
+            onSelect={() => setThemePreference("light")}
+          >
+            <Sun className="h-4 w-4 shrink-0" />
+            <span className="flex-1">白天模式</span>
+            {themePreference === "light" ? <Check className="h-4 w-4 shrink-0" /> : null}
+          </AppDropdownMenuItem>
+          <AppDropdownMenuItem
+            role="menuitemradio"
+            aria-checked={themePreference === "dark"}
+            onSelect={() => setThemePreference("dark")}
+          >
+            <Moon className="h-4 w-4 shrink-0" />
+            <span className="flex-1">夜间模式</span>
+            {themePreference === "dark" ? <Check className="h-4 w-4 shrink-0" /> : null}
+          </AppDropdownMenuItem>
+
+          <AppDropdownMenuSeparator />
+          <AppDropdownMenuItem danger={true} onSelect={props.onLogout}>
+            <LogOut className="h-4 w-4 shrink-0" />
+            <span className="flex-1">退出登录</span>
+          </AppDropdownMenuItem>
+        </AppDropdownMenu>
+
+        <div className="flex shrink-0 items-center gap-1">
+          <AppTooltip
+            side="bottom"
+            shortcut="⌘/"
+            content={searchExpanded ? "收起筛选" : "搜索会话、好友或 Agent"}
+          >
+            <IconButton
+              size="md"
+              variant={searchExpanded ? "soft" : "ghost"}
+              label={searchExpanded ? "收起搜索" : "展开搜索"}
+              aria-expanded={searchExpanded}
+              onClick={toggleSearch}
+            >
+              {searchExpanded ? <X className="h-4 w-4" /> : <Search className="h-4 w-4" />}
+            </IconButton>
+          </AppTooltip>
+
           <AppPopover
             open={quickMenuOpen}
             onOpenChange={setQuickMenuOpen}
             side="bottom"
             align="end"
-            className="w-44 space-y-0.5 p-1.5 text-xs"
+            className="w-48 space-y-0.5 p-1.5 text-[13px]"
             trigger={
               <IconButton
-                size="sm"
-                variant={quickMenuOpen ? "soft" : "ghost"}
+                size="md"
+                variant={quickMenuOpen ? "soft" : "secondary"}
                 label="发起聊天或添加好友"
+                className="md:border-transparent md:bg-transparent md:shadow-none"
               >
                 <Plus className="h-4 w-4" />
               </IconButton>
@@ -432,9 +585,9 @@ export function RoomSidebar(props: RoomSidebarProps) {
                 setQuickMenuOpen(false);
                 props.onOpenCreateRoom();
               }}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-2.5 py-2 text-left font-medium text-[#111318] transition hover:bg-black/[0.05] dark:text-[#F2F2F4] dark:hover:bg-white/[0.08]"
+              className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-2 text-left font-medium text-[#111318] transition hover:bg-black/[0.05] dark:text-[#F2F2F4] dark:hover:bg-white/[0.08]"
             >
-              <Users className="h-3.5 w-3.5 text-[#687082] dark:text-[#9B9BA3]" />
+              <Users className="h-4 w-4 text-[#687082] dark:text-[#9B9BA3]" />
               <span>发起群聊</span>
             </button>
             {props.onOpenAddFriend !== undefined ? (
@@ -444,9 +597,9 @@ export function RoomSidebar(props: RoomSidebarProps) {
                   setQuickMenuOpen(false);
                   props.onOpenAddFriend?.();
                 }}
-                className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-2.5 py-2 text-left font-medium text-[#111318] transition hover:bg-black/[0.05] dark:text-[#F2F2F4] dark:hover:bg-white/[0.08]"
+                className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-2 text-left font-medium text-[#111318] transition hover:bg-black/[0.05] dark:text-[#F2F2F4] dark:hover:bg-white/[0.08]"
               >
-                <UserPlus className="h-3.5 w-3.5 text-[#687082] dark:text-[#9B9BA3]" />
+                <UserPlus className="h-4 w-4 text-[#687082] dark:text-[#9B9BA3]" />
                 <span>添加好友</span>
               </button>
             ) : null}
@@ -456,9 +609,9 @@ export function RoomSidebar(props: RoomSidebarProps) {
                 setQuickMenuOpen(false);
                 props.onOpenMyAgents();
               }}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-2.5 py-2 text-left font-medium text-[#111318] transition hover:bg-black/[0.05] dark:text-[#F2F2F4] dark:hover:bg-white/[0.08]"
+              className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-2 text-left font-medium text-[#111318] transition hover:bg-black/[0.05] dark:text-[#F2F2F4] dark:hover:bg-white/[0.08]"
             >
-              <Bot className="h-3.5 w-3.5 text-[#687082] dark:text-[#9B9BA3]" />
+              <Bot className="h-4 w-4 text-[#687082] dark:text-[#9B9BA3]" />
               <span>接入个人 Agent</span>
             </button>
             <button
@@ -467,31 +620,16 @@ export function RoomSidebar(props: RoomSidebarProps) {
                 setQuickMenuOpen(false);
                 props.onOpenJoinRoom();
               }}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-xl px-2.5 py-2 text-left font-medium text-[#111318] transition hover:bg-black/[0.05] dark:text-[#F2F2F4] dark:hover:bg-white/[0.08]"
+              className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-2 text-left font-medium text-[#111318] transition hover:bg-black/[0.05] dark:text-[#F2F2F4] dark:hover:bg-white/[0.08]"
             >
-              <LogIn className="h-3.5 w-3.5 text-[#687082] dark:text-[#9B9BA3]" />
+              <LogIn className="h-4 w-4 text-[#687082] dark:text-[#9B9BA3]" />
               <span>凭邀请码进群</span>
             </button>
           </AppPopover>
-
-          <AppTooltip
-            side="bottom"
-            content={searchExpanded ? "收起筛选" : "搜索会话、好友或 Agent"}
-          >
-            <IconButton
-              size="sm"
-              variant={searchExpanded ? "soft" : "ghost"}
-              label={searchExpanded ? "收起搜索" : "展开搜索"}
-              aria-expanded={searchExpanded}
-              onClick={toggleSearch}
-            >
-              {searchExpanded ? <X className="h-4 w-4" /> : <Search className="h-4 w-4" />}
-            </IconButton>
-          </AppTooltip>
         </div>
       </div>
 
-      {/* 2. 按需平滑展开的筛选框（严格对齐 12px 垂直基准线） */}
+      {/* 2. 按需平滑展开的筛选框（严格对齐 12px 垂直基准线，支持 Escape 清空与收起） */}
       <AnimatePresence initial={false}>
         {searchExpanded ? (
           <motion.div
@@ -499,16 +637,29 @@ export function RoomSidebar(props: RoomSidebarProps) {
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.16, ease: "easeOut" }}
+            transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_DISCLOSURE_TRANSITION}
             className="overflow-hidden px-3"
           >
             <div className="pb-2.5">
               <AppInput
+                ref={searchInputRef}
                 size="sm"
-                type="text"
-                autoFocus={true}
+                type="search"
+                enterKeyHint="search"
+                autoFocus={!isCoarsePointerDevice()}
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (searchText.length > 0) {
+                      setSearchText("");
+                    } else {
+                      setSearchExpanded(false);
+                    }
+                  }
+                }}
                 aria-label={activeTab === "chats" ? "搜索会话" : "搜索好友或 Agent"}
                 placeholder={
                   activeTab === "chats" ? "搜索群聊或单聊对象…" : "搜索好友昵称或我的 Agent…"
@@ -541,8 +692,13 @@ export function RoomSidebar(props: RoomSidebarProps) {
         ) : null}
       </AnimatePresence>
 
-      {/* 3. `聊天 | 通讯录` 全胶囊分段滑块（与下方列表卡片左右严格同宽对齐） */}
-      <div className="shrink-0 px-3 pb-2">
+      {/* 移动端首次访问轻量「添加到手机主屏幕」引导卡片 */}
+      {props.onOpenPwaInstallGuide !== undefined ? (
+        <PwaInstallBanner onOpenGuide={props.onOpenPwaInstallGuide} className="px-3 pb-2" />
+      ) : null}
+
+      {/* 3. 桌面端 `聊天 | 通讯录` 顶部分段滑块（移动端由底部标准三栏导航栏统一承载） */}
+      <div className="hidden shrink-0 px-3 pb-2 md:block">
         <SegmentedTabs
           value={activeTab}
           onValueChange={setActiveTab}
@@ -553,677 +709,848 @@ export function RoomSidebar(props: RoomSidebarProps) {
         />
       </div>
 
-      {/* 4. 主列表滚动区 */}
-      {activeTab === "chats" ? (
-        <nav aria-label="会话列表" className="flex-1 overflow-y-auto px-3 pb-3">
-          {props.rooms.length > 0 ? (
-            <fieldset className="mb-2 flex min-w-0 flex-wrap items-center gap-1 px-0.5">
-              <legend className="sr-only">按会话类型筛选</legend>
-              {CHAT_KIND_FILTERS.map((filter) => {
-                const selected = chatFilter === filter;
-                return (
-                  <button
-                    key={filter}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => setChatFilter(filter)}
-                    className={cn(
-                      "min-h-6 cursor-pointer rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors",
-                      selected
-                        ? "bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]"
-                        : "text-[#687082] hover:bg-black/[0.045] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.07] dark:hover:text-[#F2F2F4]",
-                    )}
-                  >
-                    {filter === "all" ? "全部" : CHAT_KIND_META[filter].label}
-                  </button>
-                );
-              })}
-            </fieldset>
-          ) : null}
-
-          {props.isLoadingRooms ? (
-            <div className="space-y-1.5 px-1 py-1">
-              {[1, 2, 3].map((skeletonId) => (
-                <div
-                  key={`room-sk-${String(skeletonId)}`}
-                  className="flex items-center gap-3 rounded-2xl px-3 py-2.5"
-                >
-                  <div className="h-10 w-10 animate-pulse rounded-[13px] bg-black/[0.06] dark:bg-white/[0.06]" />
-                  <div className="flex-1 space-y-1.5">
-                    <div className="h-3.5 w-2/3 animate-pulse rounded bg-black/[0.06] dark:bg-white/[0.06]" />
-                    <div className="h-2.5 w-1/2 animate-pulse rounded bg-black/[0.04] dark:bg-white/[0.04]" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : props.isRoomsError ? (
-            <div className="mx-1 rounded-2xl bg-[#E5484D]/10 p-3.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
-              <div className="flex items-center gap-1.5 font-semibold">
-                <AlertCircle className="h-3.5 w-3.5" />
-                <span>会话列表加载失败</span>
-              </div>
-              <AppButton
-                variant="danger"
-                size="xs"
-                onClick={props.onRetryRooms}
-                leadingIcon={<RefreshCw className="h-3 w-3" />}
-                className="mt-2.5"
-              >
-                重试
-              </AppButton>
-            </div>
-          ) : props.rooms.length === 0 ? (
-            <div className="mx-1 my-2 rounded-2xl bg-black/[0.035] px-4 py-6 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.04] dark:ring-white/[0.06]">
-              <p className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                还没有聊天会话
-              </p>
-              <p className="mt-1 text-[12px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                支持与你的个人 Agent 开启 1v1 单聊、加好友私聊，或建群拉大家一起讨论。
-              </p>
-            </div>
-          ) : filteredRooms.length === 0 ? (
-            <p className="px-3 py-6 text-center text-xs text-[#687082] dark:text-[#8E8E96]">
-              {searchText.trim().length > 0
-                ? `没有找到匹配「${searchText}」的会话`
-                : chatFilter !== "all" && CHAT_KIND_META[chatFilter].emptyMessage}
-            </p>
-          ) : (
-            <ul className="space-y-1">
-              {filteredRooms.map((room) => {
-                const displayName = getRoomDisplayName(room, props.friendRemarks);
-                const kindMeta = CHAT_KIND_META[room.kind];
-                const KindIcon = kindMeta.icon;
-                const isActive = props.activeRoomId === room.id;
-                const isGroup = room.kind === "group";
-                const unreadCount = Math.max(0, room.lastSeq - room.yourLastReadSeq);
-                const isPausedBudget = room.governance.status === "paused_budget";
-                const isRoomOwner = room.ownerUserId === props.currentUser.id;
-                const canDeleteRoom =
-                  (room.kind === "direct_human" || isRoomOwner) &&
-                  props.onRequestDeleteRoom !== undefined;
-                const isDeletingThis = props.deletingRoomId === room.id;
-                const deleteLabel = isGroup ? "删除群聊" : "删除单聊会话";
-
-                const subtitleText = (() => {
-                  if (isPausedBudget) {
-                    return `等待续期${room.topic.length > 0 ? ` · ${room.topic}` : ""}`;
-                  }
-                  if (room.kind === "direct_agent") {
-                    if (room.peer?.kind === "agent") {
-                      const reachLabel = getReachVisualMeta(room.peer.reach).shortLabel;
-                      return room.peer.ownerUserId === props.currentUser.id
-                        ? `我的 · ${reachLabel}`
-                        : `来自 ${room.peer.ownerDisplayName} · ${reachLabel}`;
-                    }
-                    return "";
-                  }
-                  if (room.kind === "direct_human") {
-                    return room.peer?.kind === "human" ? (room.peer.email ?? "") : "";
-                  }
-                  if (room.topic.length > 0) {
-                    return room.topic;
-                  }
-                  return room.visibility === "public_shareable" ? "公开只读可分享" : "仅限邀请加入";
-                })();
-
-                const roomMenuItems: ReadonlyArray<AppContextMenuEntry> = [
-                  {
-                    id: `ctx-room-open-${room.id}`,
-                    label: isGroup ? "打开群聊" : "打开会话",
-                    icon: <MessageCircle className="h-3.5 w-3.5" />,
-                    onSelect: () => props.onSelectRoom(room.id),
-                  },
-                  {
-                    id: `ctx-room-newtab-${room.id}`,
-                    label: "在新标签页打开",
-                    icon: <ExternalLink className="h-3.5 w-3.5" />,
-                    onSelect: () => {
-                      if (typeof window !== "undefined") {
-                        window.open(
-                          `/?room=${encodeURIComponent(room.id)}`,
-                          "_blank",
-                          "noopener,noreferrer",
-                        );
-                      }
-                    },
-                  },
-                  {
-                    id: `ctx-room-copylink-${room.id}`,
-                    label: isGroup ? "复制群聊链接" : "复制会话链接",
-                    icon: <Link2 className="h-3.5 w-3.5" />,
-                    onSelect: () => {
-                      if (typeof window !== "undefined") {
-                        copySidebarText(
-                          `${window.location.origin}/?room=${encodeURIComponent(room.id)}`,
-                          "已复制会话链接",
-                          room.name,
-                        );
-                      }
-                    },
-                  },
-                  ...(isRoomOwner &&
-                  props.onUpdateRoomGovernance !== undefined &&
-                  (isGroup || isPausedBudget)
-                    ? [
-                        { kind: "separator" as const, id: `ctx-room-sep-gov-${room.id}` },
-                        ...(isPausedBudget
-                          ? [
-                              {
-                                id: `ctx-room-renew-${room.id}`,
-                                label: "继续讨论（续期轮次）",
-                                icon: <Play className="h-3.5 w-3.5" />,
-                                onSelect: () =>
-                                  props.onUpdateRoomGovernance?.(room.id, { renewBudget: true }),
-                              } satisfies AppContextMenuEntry,
-                            ]
-                          : []),
-                        ...(isGroup
-                          ? [
-                              {
-                                kind: "submenu" as const,
-                                id: `ctx-room-mode-${room.id}`,
-                                label: "讨论节奏",
-                                icon: <SlidersHorizontal className="h-3.5 w-3.5" />,
-                                items: ROOM_MODE_ITEMS.map((opt) => ({
-                                  id: `ctx-room-mode-${room.id}-${opt.value}`,
-                                  label: opt.label,
-                                  icon:
-                                    room.governance.config.mode === opt.value ? (
-                                      <Check className="h-3.5 w-3.5" />
-                                    ) : (
-                                      <span className="inline-block h-3.5 w-3.5" />
-                                    ),
-                                  onSelect: () => {
-                                    if (room.governance.config.mode !== opt.value) {
-                                      props.onUpdateRoomGovernance?.(room.id, { mode: opt.value });
-                                    }
-                                  },
-                                })),
-                              } satisfies AppContextMenuEntry,
-                              {
-                                id: `ctx-room-mentions-${room.id}`,
-                                label: room.governance.config.allowAgentMentions
-                                  ? "关闭 Agent 互相 @"
-                                  : "允许 Agent 互相 @",
-                                icon: room.governance.config.allowAgentMentions ? (
-                                  <ShieldAlert className="h-3.5 w-3.5" />
-                                ) : (
-                                  <AtSign className="h-3.5 w-3.5" />
-                                ),
-                                onSelect: () =>
-                                  props.onUpdateRoomGovernance?.(room.id, {
-                                    allowAgentMentions: !room.governance.config.allowAgentMentions,
-                                  }),
-                              } satisfies AppContextMenuEntry,
-                            ]
-                          : []),
-                      ]
-                    : []),
-                  ...(canDeleteRoom ||
-                  (isGroup && !isRoomOwner && props.onRequestLeaveRoom !== undefined)
-                    ? [{ kind: "separator" as const, id: `ctx-room-sep-danger-${room.id}` }]
-                    : []),
-                  ...(canDeleteRoom
-                    ? [
-                        {
-                          id: `ctx-room-delete-${room.id}`,
-                          label: deleteLabel,
-                          icon: <Trash2 className="h-3.5 w-3.5" />,
-                          danger: true,
-                          onSelect: () => props.onRequestDeleteRoom?.(room),
-                        } satisfies AppContextMenuEntry,
-                      ]
-                    : isGroup && !isRoomOwner && props.onRequestLeaveRoom !== undefined
-                      ? [
-                          {
-                            id: `ctx-room-leave-${room.id}`,
-                            label: "退出群聊",
-                            icon: <LogOut className="h-3.5 w-3.5" />,
-                            danger: true,
-                            onSelect: () => props.onRequestLeaveRoom?.(room),
-                          } satisfies AppContextMenuEntry,
-                        ]
-                      : []),
-                ];
-
-                return (
-                  <li key={room.id} className="relative">
-                    <AppContextMenu items={roomMenuItems}>
-                      <div
-                        className={cn(
-                          "group relative z-0 flex items-center gap-1 rounded-[16px] transition-colors duration-150",
-                          "data-[state=open]:bg-im-surface/75 dark:data-[state=open]:bg-white/[0.08]",
-                          canDeleteRoom && "pr-1.5",
-                          !isActive && "hover:bg-im-surface/60 dark:hover:bg-white/[0.045]",
-                        )}
-                      >
-                        {/* 液态弹簧滑动选中底衬：用柔灰底和阴影维持选中反馈 */}
-                        {isActive ? (
-                          <motion.span
-                            layoutId="oh-sidebar-active-room"
-                            aria-hidden="true"
-                            transition={{ type: "spring", stiffness: 520, damping: 38 }}
-                            className="pointer-events-none absolute inset-0 -z-10 rounded-[16px] bg-im-surface shadow-[0_3px_12px_-3px_rgba(15,23,42,0.06),0_1px_2px_rgba(15,23,42,0.025),inset_0_1px_0_rgba(255,255,255,0.35)] dark:bg-white/[0.095] dark:shadow-[0_4px_14px_-4px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.11)]"
-                          />
-                        ) : null}
-
-                        <button
-                          type="button"
-                          onClick={() => props.onSelectRoom(room.id)}
-                          aria-current={isActive ? "page" : undefined}
-                          className={cn(
-                            "flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[16px] py-2.5 pl-2.5 text-left transition-transform duration-150 active:scale-[0.99]",
-                            canDeleteRoom ? "pr-1" : "pr-2.5",
-                          )}
-                        >
-                          {room.kind === "direct_agent" ? (
-                            <PlatformAvatar
-                              kind="agent"
-                              displayName={room.peer?.displayName ?? room.name}
-                              platform={
-                                room.peer?.kind === "agent" ? room.peer.platform : undefined
-                              }
-                              reach={room.peer?.kind === "agent" ? room.peer.reach : undefined}
-                              size="lg"
-                              className="[&>div]:rounded-[12px]"
-                            />
-                          ) : room.kind === "direct_human" ? (
-                            <PlatformAvatar
-                              kind="human"
-                              displayName={room.peer?.displayName ?? room.name}
-                              size="lg"
-                            />
-                          ) : (
-                            <SidebarRoomAvatar
-                              roomId={room.id}
-                              name={room.name}
-                              isPausedBudget={isPausedBudget}
-                            />
-                          )}
-
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[13.5px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
-                              {displayName}
-                            </span>
-                            <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
-                              <span
-                                className={cn(
-                                  "inline-flex shrink-0 items-center gap-[3px] rounded-md px-1.5 text-[11px] font-semibold leading-4",
-                                  kindMeta.badgeClass,
-                                )}
-                              >
-                                <KindIcon aria-hidden="true" className="h-3 w-3" />
-                                {kindMeta.label}
-                              </span>
-                              {subtitleText.length > 0 ? (
-                                <span
-                                  className={cn(
-                                    "min-w-0 truncate text-[12px]",
-                                    isPausedBudget
-                                      ? "font-medium text-[#9A6700] dark:text-[#FCD34D]"
-                                      : isActive
-                                        ? "text-[#4B5565] dark:text-[#B4B4BC]"
-                                        : "text-[#687082] dark:text-[#8E8E96]",
-                                  )}
-                                >
-                                  {subtitleText}
-                                </span>
-                              ) : null}
-                            </span>
-                          </span>
-
-                          {unreadCount > 0 ? (
-                            <span
-                              aria-label={`${unreadCount} 条未读消息`}
-                              className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#E5484D] px-1.5 text-[11px] font-semibold tabular-nums text-white dark:bg-[#F05252]"
-                            >
-                              {unreadCount > 99 ? "99+" : unreadCount}
-                            </span>
-                          ) : null}
-                        </button>
-
-                        {canDeleteRoom ? (
-                          <AppTooltip side="top" content={deleteLabel}>
-                            <IconButton
-                              size="xs"
-                              variant="ghost"
-                              isLoading={isDeletingThis}
-                              label={`${deleteLabel} ${room.name}`}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                props.onRequestDeleteRoom?.(room);
-                              }}
-                              className={cn(
-                                "shrink-0 text-[#8E96A6] transition hover:bg-[#E5484D]/10 hover:text-[#E5484D] dark:text-[#63636B] dark:hover:bg-[#F05252]/15 dark:hover:text-[#F87171]",
-                                isDeletingThis
-                                  ? "opacity-100"
-                                  : "opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
-                              )}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </IconButton>
-                          </AppTooltip>
-                        ) : null}
-                      </div>
-                    </AppContextMenu>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </nav>
-      ) : (
-        /* 通讯录分栏：新的朋友 + 我的好友 + 我的 Agent + 开放私聊的外部 Agent */
-        <div
-          aria-label="好友与 Agent 通讯录"
-          className="flex-1 space-y-4 overflow-y-auto px-3 pb-3"
-        >
-          {/* A. 新的朋友（收到的待处理申请） */}
-          {incomingRequests.length > 0 ? (
-            <section className="space-y-1.5">
-              <div className="flex items-center justify-between px-2">
-                <span className="text-[11.5px] font-semibold text-[#E5484D] dark:text-[#F87171]">
-                  新的朋友 · {incomingRequests.length}
-                </span>
-              </div>
-              <ul className="space-y-1">
-                {incomingRequests.map((req) => (
-                  <li
-                    key={req.friendshipId}
-                    className="flex items-center justify-between gap-2 rounded-[16px] bg-im-surface/75 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.06] dark:ring-white/[0.08]"
-                  >
-                    <div className="flex min-w-0 items-center gap-2.5">
-                      <PlatformAvatar
-                        kind="human"
-                        displayName={req.peer.displayName}
-                        size="sm"
-                        className="[&>div]:rounded-full"
-                      />
-                      <div className="min-w-0">
-                        <p className="truncate text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                          {req.peer.displayName}
-                        </p>
-                        <p className="truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                          {req.note !== undefined ? req.note : req.peer.email}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {props.onDeclineFriendRequest !== undefined ? (
-                        <AppButton
-                          variant="ghost"
-                          size="xs"
-                          onClick={() =>
-                            props.onDeclineFriendRequest?.(req.friendshipId, req.peer.displayName)
-                          }
-                        >
-                          忽略
-                        </AppButton>
-                      ) : null}
-                      {props.onAcceptFriendRequest !== undefined ? (
-                        <AppButton
-                          variant="primary"
-                          size="xs"
-                          leadingIcon={<UserCheck className="h-3 w-3" />}
-                          onClick={() =>
-                            props.onAcceptFriendRequest?.(req.friendshipId, req.peer.displayName)
-                          }
-                        >
-                          同意
-                        </AppButton>
-                      ) : null}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
-
-          {/* B. 我的好友 */}
-          <section className="space-y-1">
-            <div className="flex items-center justify-between px-2 pb-0.5">
-              <span className="text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                我的好友 · {friends.length}
-              </span>
-              {props.onOpenAddFriend !== undefined ? (
-                <button
-                  type="button"
-                  onClick={props.onOpenAddFriend}
-                  className="cursor-pointer text-[11px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
-                >
-                  + 添加
-                </button>
-              ) : null}
-            </div>
-
-            {friends.length === 0 ? (
-              <div className="mx-1 rounded-2xl bg-black/[0.03] px-3.5 py-3.5 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.035] dark:ring-white/[0.06]">
-                <p className="text-[12px] text-[#687082] dark:text-[#8E8E96]">
-                  添加站内同伴为好友，即可直接 1v1 私聊或一键拉进群聊
-                </p>
-              </div>
-            ) : filteredFriends.length === 0 ? (
-              <p className="px-3 py-2 text-center text-xs text-[#8E96A6] dark:text-[#63636B]">
-                没有匹配的好友
-              </p>
-            ) : (
-              <ul className="space-y-1">
-                {filteredFriends.map((friend) => {
-                  const u = friend.user;
-                  const displayName = friend.remark ?? u.displayName;
-                  const friendMenuItems: ReadonlyArray<AppContextMenuEntry> = [
-                    ...(props.onStartDirectHumanChat !== undefined
-                      ? [
-                          {
-                            id: `ctx-frd-dm-${u.userId}`,
-                            label: "发私聊消息",
-                            icon: <MessageCircle className="h-3.5 w-3.5" />,
-                            onSelect: () => props.onStartDirectHumanChat?.(u.userId),
-                          } satisfies AppContextMenuEntry,
-                        ]
-                      : []),
-                    {
-                      id: `ctx-frd-remark-${u.userId}`,
-                      label: "编辑备注",
-                      icon: <Pencil className="h-3.5 w-3.5" />,
-                      onSelect: () => props.onEditFriendRemark(friend),
-                    },
-                    {
-                      id: `ctx-frd-copy-${u.userId}`,
-                      label: "复制邮箱",
-                      icon: <Copy className="h-3.5 w-3.5" />,
-                      onSelect: () => copySidebarText(u.email, "已复制好友邮箱", u.email),
-                    },
-                    ...(props.onRemoveFriend !== undefined
-                      ? [
-                          { kind: "separator" as const, id: `ctx-frd-sep-${u.userId}` },
-                          {
-                            id: `ctx-frd-remove-${u.userId}`,
-                            label: "解除好友关系",
-                            icon: <UserMinus className="h-3.5 w-3.5" />,
-                            danger: true,
-                            onSelect: () => props.onRemoveFriend?.(u.userId, displayName),
-                          } satisfies AppContextMenuEntry,
-                        ]
-                      : []),
-                  ];
-
+      {/* 4. 主列表滚动区（聊天 ⇄ 通讯录丝滑横向/微位移切页 + 筛选胶囊弹簧滑块） */}
+      <AnimatePresence mode="wait" initial={false}>
+        {activeTab === "chats" ? (
+          <motion.nav
+            key="sidebar-tab-chats"
+            aria-label="会话列表"
+            initial={reducedMotion ? false : { opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: -6 }}
+            transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
+            className="min-h-0 flex-1 overflow-y-auto px-3 pb-24 md:pb-3"
+          >
+            {props.rooms.length > 0 ? (
+              <fieldset className="mb-2.5 flex min-w-0 flex-wrap items-center gap-1.5 px-0.5 md:mb-2 md:gap-1">
+                <legend className="sr-only">按会话类型筛选</legend>
+                {CHAT_KIND_FILTERS.map((filter) => {
+                  const selected = chatFilter === filter;
                   return (
-                    <li key={friend.friendshipId}>
-                      <AppContextMenu items={friendMenuItems}>
-                        <div className="group flex items-center gap-1.5 rounded-[16px] pr-2 transition-colors hover:bg-im-surface/60 data-[state=open]:bg-im-surface/75 dark:hover:bg-white/[0.045] dark:data-[state=open]:bg-white/[0.08]">
-                          <button
-                            type="button"
-                            onClick={() => props.onStartDirectHumanChat?.(u.userId)}
-                            className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[16px] py-2 pl-2.5 pr-1 text-left active:scale-[0.99]"
-                          >
-                            <PlatformAvatar
-                              kind="human"
-                              displayName={u.displayName}
-                              size="md"
-                              className="[&>div]:rounded-full"
-                            />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-[13.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                                {displayName}
-                              </span>
-                              <span className="mt-0.5 block truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
-                                {u.email}
-                              </span>
-                            </span>
-                          </button>
-
-                          <AppTooltip side="top" content="编辑备注">
-                            <IconButton
-                              size="xs"
-                              variant="ghost"
-                              label={`编辑 ${displayName} 的备注`}
-                              onClick={() => props.onEditFriendRemark(friend)}
-                              className="shrink-0 text-[#687082] dark:text-[#8E8E96]"
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </IconButton>
-                          </AppTooltip>
-                        </div>
-                      </AppContextMenu>
-                    </li>
+                    <button
+                      key={filter}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => setChatFilter(filter)}
+                      className={cn(
+                        "im-press relative z-0 inline-flex h-8 cursor-pointer items-center justify-center rounded-full px-3.5 text-[13px] font-medium md:h-7 md:px-3 md:text-[12px]",
+                        selected
+                          ? "font-semibold text-white dark:text-[#111318]"
+                          : "bg-black/[0.04] text-[#5A6274] hover:bg-black/[0.07] hover:text-[#111318] md:bg-transparent dark:bg-white/[0.055] dark:text-[#9898A2] dark:hover:bg-white/[0.09] dark:hover:text-[#F2F2F4] md:dark:bg-transparent",
+                      )}
+                    >
+                      {selected ? (
+                        <motion.span
+                          layoutId="oh-sidebar-kind-filter"
+                          aria-hidden="true"
+                          transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_PILL_SPRING}
+                          className="pointer-events-none absolute inset-0 -z-10 rounded-full bg-[#181B22] will-change-transform dark:bg-[#EAEEF6]"
+                        />
+                      ) : null}
+                      <span className="relative z-10">
+                        {filter === "all" ? "全部" : CHAT_KIND_META[filter].label}
+                      </span>
+                    </button>
                   );
                 })}
-              </ul>
-            )}
-          </section>
+              </fieldset>
+            ) : null}
 
-          {/* C. 我的个人 Agent */}
-          <section className="space-y-1">
-            <div className="px-2 pb-0.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-              我的 agent · {props.ownedAgents.length}
-            </div>
-
-            {props.ownedAgents.length === 0 ? (
-              <div className="mx-1 rounded-2xl bg-black/[0.03] px-3.5 py-4 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.035] dark:ring-white/[0.06]">
-                <p className="text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                  还没有已接入的 agent
-                </p>
-                <p className="mt-1 text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                  把你的 Claude Code、Codex 或 Cursor 接入进来，支持随时 1v1 单聊或拉进群聊。
-                </p>
+            {props.isLoadingRooms ? (
+              <div className="space-y-1.5 px-1 py-1">
+                {[1, 2, 3].map((skeletonId) => (
+                  <div
+                    key={`room-sk-${String(skeletonId)}`}
+                    className="flex items-center gap-3 rounded-2xl px-3 py-2.5"
+                  >
+                    <div className="h-10 w-10 animate-pulse rounded-[13px] bg-black/[0.06] dark:bg-white/[0.06]" />
+                    <div className="flex-1 space-y-1.5">
+                      <div className="h-3.5 w-2/3 animate-pulse rounded bg-black/[0.06] dark:bg-white/[0.06]" />
+                      <div className="h-2.5 w-1/2 animate-pulse rounded bg-black/[0.04] dark:bg-white/[0.04]" />
+                    </div>
+                  </div>
+                ))}
               </div>
-            ) : filteredAgents.length === 0 ? (
-              <p className="px-3 py-2 text-center text-xs text-[#8E96A6] dark:text-[#63636B]">
-                没有匹配的个人 agent
+            ) : props.isRoomsError ? (
+              <div className="mx-1 rounded-2xl bg-[#E5484D]/10 p-3.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
+                <div className="flex items-center gap-1.5 font-semibold">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  <span>会话列表加载失败</span>
+                </div>
+                <AppButton
+                  variant="danger"
+                  size="xs"
+                  onClick={props.onRetryRooms}
+                  leadingIcon={<RefreshCw className="h-3 w-3" />}
+                  className="mt-2.5"
+                >
+                  重试
+                </AppButton>
+              </div>
+            ) : props.rooms.length === 0 ? (
+              <div className="mx-1 my-2 rounded-2xl bg-black/[0.035] px-4 py-6 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.04] dark:ring-white/[0.06]">
+                <p className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                  还没有聊天会话
+                </p>
+                <p className="mt-1 text-[12px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                  支持与你的个人 Agent 开启 1v1 单聊、加好友私聊，或建群拉大家一起讨论。
+                </p>
+                <div className="mt-3.5 flex flex-wrap items-center justify-center gap-2 md:hidden">
+                  <AppButton
+                    variant="primary"
+                    size="xs"
+                    leadingIcon={<Plus className="h-3.5 w-3.5" />}
+                    onClick={props.onOpenCreateRoom}
+                  >
+                    发起群聊
+                  </AppButton>
+                  <AppButton variant="secondary" size="xs" onClick={props.onOpenMyAgents}>
+                    接入 Agent
+                  </AppButton>
+                </div>
+              </div>
+            ) : filteredRooms.length === 0 ? (
+              <p className="px-3 py-6 text-center text-xs text-[#687082] dark:text-[#8E8E96]">
+                {searchText.trim().length > 0
+                  ? `没有找到匹配「${searchText}」的会话`
+                  : chatFilter !== "all" && CHAT_KIND_META[chatFilter].emptyMessage}
               </p>
             ) : (
-              <ul className="space-y-1">
-                {filteredAgents.map((agent) => {
-                  const platformMeta = getPlatformVisualMeta(agent.platform);
-                  const reachMeta = getReachVisualMeta(agent.reach);
-                  const isConfirming = confirmDeleteAgentId === agent.id;
-                  const isDeletingThis = props.deletingAgentId === agent.id;
-                  const agentHandle = `@${agent.slug}`;
-                  const canDeleteAgent =
-                    props.onRequestDeleteOwnedAgent !== undefined ||
-                    props.onDeleteOwnedAgent !== undefined;
-                  const agentMenuItems: ReadonlyArray<AppContextMenuEntry> = [
-                    ...(props.onStartDirectAgentChat !== undefined
-                      ? [
-                          {
-                            id: `ctx-agt-dm-${agent.id}`,
-                            label: "发消息（1v1 单聊）",
-                            icon: <MessageCircle className="h-3.5 w-3.5" />,
-                            onSelect: () => props.onStartDirectAgentChat?.(agent.id),
-                          } satisfies AppContextMenuEntry,
-                        ]
-                      : []),
-                    {
-                      id: `ctx-agt-inspect-${agent.id}`,
-                      label: "查看 Agent 名片与私聊设置",
-                      icon: <UserRound className="h-3.5 w-3.5" />,
-                      onSelect: () => {
-                        setConfirmDeleteAgentId(null);
-                        if (props.onInspectOwnedAgent !== undefined) {
-                          props.onInspectOwnedAgent(agent);
-                        } else {
-                          props.onOpenMyAgents();
-                        }
-                      },
-                    },
-                    {
-                      id: `ctx-agt-copy-${agent.id}`,
-                      label: `复制 ${agentHandle}`,
-                      icon: <Copy className="h-3.5 w-3.5" />,
-                      onSelect: () => copySidebarText(agentHandle, "已复制提及标识", agentHandle),
-                    },
-                    ...(props.onReclaimOwnedAgent !== undefined
-                      ? [
-                          {
-                            id: `ctx-agt-reclaim-${agent.id}`,
-                            label: "恢复原身份重连",
-                            icon: <KeyRound className="h-3.5 w-3.5" />,
-                            onSelect: () => props.onReclaimOwnedAgent?.(agent.id),
-                          } satisfies AppContextMenuEntry,
-                        ]
-                      : []),
-                    { kind: "separator", id: `ctx-agt-sep-danger-${agent.id}` },
-                    ...(canDeleteAgent
-                      ? [
-                          {
-                            id: `ctx-agt-delete-${agent.id}`,
-                            label: "删除该 Agent",
-                            icon: <Trash2 className="h-3.5 w-3.5" />,
-                            danger: true,
-                            disabled: isDeletingThis,
-                            onSelect: () => {
-                              if (props.onRequestDeleteOwnedAgent !== undefined) {
-                                props.onRequestDeleteOwnedAgent(agent);
-                              } else {
-                                setConfirmDeleteAgentId(agent.id);
-                              }
-                            },
-                          } satisfies AppContextMenuEntry,
-                        ]
-                      : []),
-                  ];
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.ul
+                  key={`chat-list-${chatFilter}`}
+                  initial={reducedMotion ? false : { opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -3 }}
+                  transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
+                  className="space-y-1"
+                >
+                  {filteredRooms.map((room) => {
+                    const displayName = getRoomDisplayName(room, props.friendRemarks);
+                    const kindMeta = CHAT_KIND_META[room.kind];
+                    const KindIcon = kindMeta.icon;
+                    const isActive = props.activeRoomId === room.id;
+                    const isGroup = room.kind === "group";
+                    const unreadCount = Math.max(0, room.lastSeq - room.yourLastReadSeq);
+                    const isPausedBudget = room.governance.status === "paused_budget";
+                    const isRoomOwner = room.ownerUserId === props.currentUser.id;
+                    const canDeleteRoom =
+                      (room.kind === "direct_human" || isRoomOwner) &&
+                      props.onRequestDeleteRoom !== undefined;
+                    const isDeletingThis = props.deletingRoomId === room.id;
+                    const deleteLabel = isGroup ? "删除群聊" : "删除单聊会话";
 
-                  return (
-                    <li key={agent.id}>
-                      <AppContextMenu items={agentMenuItems}>
-                        <div className="group flex items-center gap-1 rounded-[16px] pr-2 transition-colors hover:bg-im-surface/60 data-[state=open]:bg-im-surface/75 dark:hover:bg-white/[0.045] dark:data-[state=open]:bg-white/[0.08]">
+                    const subtitleText = (() => {
+                      if (isPausedBudget) {
+                        return `等待续期${room.topic.length > 0 ? ` · ${room.topic}` : ""}`;
+                      }
+                      if (room.kind === "direct_agent") {
+                        if (room.peer?.kind === "agent") {
+                          const reachLabel = getReachVisualMeta(room.peer.reach).shortLabel;
+                          return room.peer.ownerUserId === props.currentUser.id
+                            ? `我的 · ${reachLabel}`
+                            : `来自 ${room.peer.ownerDisplayName} · ${reachLabel}`;
+                        }
+                        return "";
+                      }
+                      if (room.kind === "direct_human") {
+                        return room.peer?.kind === "human" ? (room.peer.email ?? "") : "";
+                      }
+                      if (room.topic.length > 0) {
+                        return room.topic;
+                      }
+                      return room.visibility === "public_shareable"
+                        ? "公开只读可分享"
+                        : "仅限邀请加入";
+                    })();
+
+                    const roomMenuItems: ReadonlyArray<AppContextMenuEntry> = [
+                      {
+                        id: `ctx-room-open-${room.id}`,
+                        label: isGroup ? "打开群聊" : "打开会话",
+                        icon: <MessageCircle className="h-3.5 w-3.5" />,
+                        onSelect: () => props.onSelectRoom(room.id),
+                      },
+                      {
+                        id: `ctx-room-newtab-${room.id}`,
+                        label: "在新标签页打开",
+                        icon: <ExternalLink className="h-3.5 w-3.5" />,
+                        onSelect: () => {
+                          if (typeof window !== "undefined") {
+                            window.open(
+                              `/?room=${encodeURIComponent(room.id)}`,
+                              "_blank",
+                              "noopener,noreferrer",
+                            );
+                          }
+                        },
+                      },
+                      {
+                        id: `ctx-room-copylink-${room.id}`,
+                        label: isGroup ? "复制群聊链接" : "复制会话链接",
+                        icon: <Link2 className="h-3.5 w-3.5" />,
+                        onSelect: () => {
+                          if (typeof window !== "undefined") {
+                            copySidebarText(
+                              `${window.location.origin}/?room=${encodeURIComponent(room.id)}`,
+                              "已复制会话链接",
+                              room.name,
+                            );
+                          }
+                        },
+                      },
+                      ...(isRoomOwner &&
+                      props.onUpdateRoomGovernance !== undefined &&
+                      (isGroup || isPausedBudget)
+                        ? [
+                            { kind: "separator" as const, id: `ctx-room-sep-gov-${room.id}` },
+                            ...(isPausedBudget
+                              ? [
+                                  {
+                                    id: `ctx-room-renew-${room.id}`,
+                                    label: "继续讨论（续期轮次）",
+                                    icon: <Play className="h-3.5 w-3.5" />,
+                                    onSelect: () =>
+                                      props.onUpdateRoomGovernance?.(room.id, {
+                                        renewBudget: true,
+                                      }),
+                                  } satisfies AppContextMenuEntry,
+                                ]
+                              : []),
+                            ...(isGroup
+                              ? [
+                                  {
+                                    kind: "submenu" as const,
+                                    id: `ctx-room-mode-${room.id}`,
+                                    label: "讨论节奏",
+                                    icon: <SlidersHorizontal className="h-3.5 w-3.5" />,
+                                    items: ROOM_MODE_ITEMS.map((opt) => ({
+                                      id: `ctx-room-mode-${room.id}-${opt.value}`,
+                                      label: opt.label,
+                                      icon:
+                                        room.governance.config.mode === opt.value ? (
+                                          <Check className="h-3.5 w-3.5" />
+                                        ) : (
+                                          <span className="inline-block h-3.5 w-3.5" />
+                                        ),
+                                      onSelect: () => {
+                                        if (room.governance.config.mode !== opt.value) {
+                                          props.onUpdateRoomGovernance?.(room.id, {
+                                            mode: opt.value,
+                                          });
+                                        }
+                                      },
+                                    })),
+                                  } satisfies AppContextMenuEntry,
+                                  {
+                                    id: `ctx-room-mentions-${room.id}`,
+                                    label: room.governance.config.allowAgentMentions
+                                      ? "关闭 Agent 互相 @"
+                                      : "允许 Agent 互相 @",
+                                    icon: room.governance.config.allowAgentMentions ? (
+                                      <ShieldAlert className="h-3.5 w-3.5" />
+                                    ) : (
+                                      <AtSign className="h-3.5 w-3.5" />
+                                    ),
+                                    onSelect: () =>
+                                      props.onUpdateRoomGovernance?.(room.id, {
+                                        allowAgentMentions:
+                                          !room.governance.config.allowAgentMentions,
+                                      }),
+                                  } satisfies AppContextMenuEntry,
+                                ]
+                              : []),
+                          ]
+                        : []),
+                      ...(canDeleteRoom ||
+                      (isGroup && !isRoomOwner && props.onRequestLeaveRoom !== undefined)
+                        ? [{ kind: "separator" as const, id: `ctx-room-sep-danger-${room.id}` }]
+                        : []),
+                      ...(canDeleteRoom
+                        ? [
+                            {
+                              id: `ctx-room-delete-${room.id}`,
+                              label: deleteLabel,
+                              icon: <Trash2 className="h-3.5 w-3.5" />,
+                              danger: true,
+                              onSelect: () => props.onRequestDeleteRoom?.(room),
+                            } satisfies AppContextMenuEntry,
+                          ]
+                        : isGroup && !isRoomOwner && props.onRequestLeaveRoom !== undefined
+                          ? [
+                              {
+                                id: `ctx-room-leave-${room.id}`,
+                                label: "退出群聊",
+                                icon: <LogOut className="h-3.5 w-3.5" />,
+                                danger: true,
+                                onSelect: () => props.onRequestLeaveRoom?.(room),
+                              } satisfies AppContextMenuEntry,
+                            ]
+                          : []),
+                    ];
+
+                    return (
+                      <li key={room.id} className="relative">
+                        <AppContextMenu items={roomMenuItems}>
+                          <div
+                            className={cn(
+                              "group relative z-0 flex items-center gap-1 rounded-[16px] transition-colors duration-150",
+                              "data-[state=open]:bg-im-surface/75 dark:data-[state=open]:bg-white/[0.08]",
+                              canDeleteRoom && "pr-1.5",
+                              !isActive && "hover:bg-im-surface/60 dark:hover:bg-white/[0.045]",
+                            )}
+                          >
+                            {/* 液态弹簧滑动选中底衬：用柔灰底和阴影维持选中反馈 */}
+                            {isActive ? (
+                              <motion.span
+                                layoutId="oh-sidebar-active-room"
+                                aria-hidden="true"
+                                transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_PILL_SPRING}
+                                className="pointer-events-none absolute inset-0 -z-10 rounded-[16px] bg-im-surface shadow-[0_3px_12px_-3px_rgba(15,23,42,0.06),0_1px_2px_rgba(15,23,42,0.025),inset_0_1px_0_rgba(255,255,255,0.35)] will-change-transform dark:bg-white/[0.095] dark:shadow-[0_4px_14px_-4px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.11)]"
+                              />
+                            ) : null}
+
+                            <button
+                              type="button"
+                              onClick={() => props.onSelectRoom(room.id)}
+                              aria-current={isActive ? "page" : undefined}
+                              className={cn(
+                                "flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[16px] py-2.5 pl-2.5 text-left transition-transform duration-150 active:scale-[0.99]",
+                                canDeleteRoom ? "pr-1" : "pr-2.5",
+                              )}
+                            >
+                              {room.kind === "direct_agent" ? (
+                                <PlatformAvatar
+                                  kind="agent"
+                                  displayName={room.peer?.displayName ?? room.name}
+                                  platform={
+                                    room.peer?.kind === "agent" ? room.peer.platform : undefined
+                                  }
+                                  reach={room.peer?.kind === "agent" ? room.peer.reach : undefined}
+                                  size="lg"
+                                  className="[&>div]:rounded-[12px]"
+                                />
+                              ) : room.kind === "direct_human" ? (
+                                <PlatformAvatar
+                                  kind="human"
+                                  displayName={room.peer?.displayName ?? room.name}
+                                  size="lg"
+                                />
+                              ) : (
+                                <SidebarRoomAvatar
+                                  roomId={room.id}
+                                  name={room.name}
+                                  isPausedBudget={isPausedBudget}
+                                />
+                              )}
+
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-[13.5px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
+                                  {displayName}
+                                </span>
+                                <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
+                                  <span
+                                    className={cn(
+                                      "inline-flex shrink-0 items-center gap-[3px] rounded-md px-1.5 text-[11px] font-semibold leading-4",
+                                      kindMeta.badgeClass,
+                                    )}
+                                  >
+                                    <KindIcon aria-hidden="true" className="h-3 w-3" />
+                                    {kindMeta.label}
+                                  </span>
+                                  {subtitleText.length > 0 ? (
+                                    <span
+                                      className={cn(
+                                        "min-w-0 truncate text-[12px]",
+                                        isPausedBudget
+                                          ? "font-medium text-[#9A6700] dark:text-[#FCD34D]"
+                                          : isActive
+                                            ? "text-[#4B5565] dark:text-[#B4B4BC]"
+                                            : "text-[#687082] dark:text-[#8E8E96]",
+                                      )}
+                                    >
+                                      {subtitleText}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </span>
+
+                              {unreadCount > 0 ? (
+                                <span
+                                  aria-label={`${unreadCount} 条未读消息`}
+                                  className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#E5484D] px-1.5 text-[11px] font-semibold tabular-nums text-white dark:bg-[#F05252]"
+                                >
+                                  {unreadCount > 99 ? "99+" : unreadCount}
+                                </span>
+                              ) : null}
+                            </button>
+
+                            {canDeleteRoom ? (
+                              <AppTooltip side="top" content={deleteLabel}>
+                                <IconButton
+                                  size="xs"
+                                  variant="ghost"
+                                  isLoading={isDeletingThis}
+                                  label={`${deleteLabel} ${room.name}`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    props.onRequestDeleteRoom?.(room);
+                                  }}
+                                  className={cn(
+                                    "shrink-0 text-[#8E96A6] transition hover:bg-[#E5484D]/10 hover:text-[#E5484D] dark:text-[#63636B] dark:hover:bg-[#F05252]/15 dark:hover:text-[#F87171]",
+                                    isDeletingThis
+                                      ? "opacity-100"
+                                      : "opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100",
+                                  )}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </IconButton>
+                              </AppTooltip>
+                            ) : null}
+                          </div>
+                        </AppContextMenu>
+                      </li>
+                    );
+                  })}
+                </motion.ul>
+              </AnimatePresence>
+            )}
+          </motion.nav>
+        ) : (
+          /* 通讯录分栏：新的朋友 + 我的好友 + 我的 Agent + 开放私聊的外部 Agent */
+          <motion.div
+            key="sidebar-tab-contacts"
+            aria-label="好友与 Agent 通讯录"
+            initial={reducedMotion ? false : { opacity: 0, x: 8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: 6 }}
+            transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
+            className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-24 md:pb-3"
+          >
+            {/* A. 新的朋友（收到的待处理申请） */}
+            {incomingRequests.length > 0 ? (
+              <section className="space-y-1.5">
+                <div className="flex items-center justify-between px-2">
+                  <span className="text-[11.5px] font-semibold text-[#E5484D] dark:text-[#F87171]">
+                    新的朋友 · {incomingRequests.length}
+                  </span>
+                </div>
+                <ul className="space-y-1">
+                  {incomingRequests.map((req) => (
+                    <li
+                      key={req.friendshipId}
+                      className="flex items-center justify-between gap-2 rounded-[16px] bg-im-surface/75 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.06] dark:ring-white/[0.08]"
+                    >
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <PlatformAvatar
+                          kind="human"
+                          displayName={req.peer.displayName}
+                          size="sm"
+                          className="[&>div]:rounded-full"
+                        />
+                        <div className="min-w-0">
+                          <p className="truncate text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                            {req.peer.displayName}
+                          </p>
+                          <p className="truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                            {req.note !== undefined ? req.note : req.peer.email}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {props.onDeclineFriendRequest !== undefined ? (
+                          <AppButton
+                            variant="ghost"
+                            size="xs"
+                            onClick={() =>
+                              props.onDeclineFriendRequest?.(req.friendshipId, req.peer.displayName)
+                            }
+                          >
+                            忽略
+                          </AppButton>
+                        ) : null}
+                        {props.onAcceptFriendRequest !== undefined ? (
+                          <AppButton
+                            variant="primary"
+                            size="xs"
+                            leadingIcon={<UserCheck className="h-3 w-3" />}
+                            onClick={() =>
+                              props.onAcceptFriendRequest?.(req.friendshipId, req.peer.displayName)
+                            }
+                          >
+                            同意
+                          </AppButton>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
+            {/* B. 我的好友 */}
+            <section className="space-y-1">
+              <div className="flex items-center justify-between px-2 pb-0.5">
+                <span className="text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                  我的好友 · {friends.length}
+                </span>
+                {props.onOpenAddFriend !== undefined ? (
+                  <button
+                    type="button"
+                    onClick={props.onOpenAddFriend}
+                    className="cursor-pointer text-[11px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
+                  >
+                    + 添加
+                  </button>
+                ) : null}
+              </div>
+
+              {friends.length === 0 ? (
+                <div className="mx-1 rounded-2xl bg-black/[0.03] px-3.5 py-3.5 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.035] dark:ring-white/[0.06]">
+                  <p className="text-[12px] text-[#687082] dark:text-[#8E8E96]">
+                    添加站内同伴为好友，即可直接 1v1 私聊或一键拉进群聊
+                  </p>
+                </div>
+              ) : filteredFriends.length === 0 ? (
+                <p className="px-3 py-2 text-center text-xs text-[#8E96A6] dark:text-[#63636B]">
+                  没有匹配的好友
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {filteredFriends.map((friend) => {
+                    const u = friend.user;
+                    const displayName = friend.remark ?? u.displayName;
+                    const friendMenuItems: ReadonlyArray<AppContextMenuEntry> = [
+                      ...(props.onStartDirectHumanChat !== undefined
+                        ? [
+                            {
+                              id: `ctx-frd-dm-${u.userId}`,
+                              label: "发私聊消息",
+                              icon: <MessageCircle className="h-3.5 w-3.5" />,
+                              onSelect: () => props.onStartDirectHumanChat?.(u.userId),
+                            } satisfies AppContextMenuEntry,
+                          ]
+                        : []),
+                      {
+                        id: `ctx-frd-remark-${u.userId}`,
+                        label: "编辑备注",
+                        icon: <Pencil className="h-3.5 w-3.5" />,
+                        onSelect: () => props.onEditFriendRemark(friend),
+                      },
+                      {
+                        id: `ctx-frd-copy-${u.userId}`,
+                        label: "复制邮箱",
+                        icon: <Copy className="h-3.5 w-3.5" />,
+                        onSelect: () => copySidebarText(u.email, "已复制好友邮箱", u.email),
+                      },
+                      ...(props.onRemoveFriend !== undefined
+                        ? [
+                            { kind: "separator" as const, id: `ctx-frd-sep-${u.userId}` },
+                            {
+                              id: `ctx-frd-remove-${u.userId}`,
+                              label: "解除好友关系",
+                              icon: <UserMinus className="h-3.5 w-3.5" />,
+                              danger: true,
+                              onSelect: () => props.onRemoveFriend?.(u.userId, displayName),
+                            } satisfies AppContextMenuEntry,
+                          ]
+                        : []),
+                    ];
+
+                    return (
+                      <li key={friend.friendshipId}>
+                        <AppContextMenu items={friendMenuItems}>
+                          <div className="group flex items-center gap-1.5 rounded-[16px] pr-2 transition-colors hover:bg-im-surface/60 data-[state=open]:bg-im-surface/75 dark:hover:bg-white/[0.045] dark:data-[state=open]:bg-white/[0.08]">
+                            <button
+                              type="button"
+                              onClick={() => props.onStartDirectHumanChat?.(u.userId)}
+                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[16px] py-2 pl-2.5 pr-1 text-left active:scale-[0.99]"
+                            >
+                              <PlatformAvatar
+                                kind="human"
+                                displayName={u.displayName}
+                                size="md"
+                                className="[&>div]:rounded-full"
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-[13.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                                  {displayName}
+                                </span>
+                                <span className="mt-0.5 block truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
+                                  {u.email}
+                                </span>
+                              </span>
+                            </button>
+
+                            <AppTooltip side="top" content="编辑备注">
+                              <IconButton
+                                size="sm"
+                                variant="ghost"
+                                label={`编辑 ${displayName} 的备注`}
+                                onClick={() => props.onEditFriendRemark(friend)}
+                                className="shrink-0 text-[#687082] dark:text-[#8E8E96]"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </IconButton>
+                            </AppTooltip>
+                          </div>
+                        </AppContextMenu>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            {/* C. 我的个人 Agent */}
+            <section className="space-y-1">
+              <div className="flex items-center justify-between px-2 pb-0.5">
+                <span className="text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                  我的 agent · {props.ownedAgents.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={props.onOpenMyAgents}
+                  className="cursor-pointer text-[11px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
+                >
+                  + 接入
+                </button>
+              </div>
+
+              {props.ownedAgents.length === 0 ? (
+                <div className="mx-1 rounded-2xl bg-black/[0.03] px-3.5 py-4 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.035] dark:ring-white/[0.06]">
+                  <p className="text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                    还没有已接入的 agent
+                  </p>
+                  <p className="mt-1 text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                    把你的 Claude Code、Codex 或 Cursor 接入进来，支持随时 1v1 单聊或拉进群聊。
+                  </p>
+                </div>
+              ) : filteredAgents.length === 0 ? (
+                <p className="px-3 py-2 text-center text-xs text-[#8E96A6] dark:text-[#63636B]">
+                  没有匹配的个人 agent
+                </p>
+              ) : (
+                <ul className="space-y-1">
+                  {filteredAgents.map((agent) => {
+                    const platformMeta = getPlatformVisualMeta(agent.platform);
+                    const reachMeta = getReachVisualMeta(agent.reach);
+                    const isConfirming = confirmDeleteAgentId === agent.id;
+                    const isDeletingThis = props.deletingAgentId === agent.id;
+                    const agentHandle = `@${agent.slug}`;
+                    const canDeleteAgent =
+                      props.onRequestDeleteOwnedAgent !== undefined ||
+                      props.onDeleteOwnedAgent !== undefined;
+                    const agentMenuItems: ReadonlyArray<AppContextMenuEntry> = [
+                      ...(props.onStartDirectAgentChat !== undefined
+                        ? [
+                            {
+                              id: `ctx-agt-dm-${agent.id}`,
+                              label: "发消息（1v1 单聊）",
+                              icon: <MessageCircle className="h-3.5 w-3.5" />,
+                              onSelect: () => props.onStartDirectAgentChat?.(agent.id),
+                            } satisfies AppContextMenuEntry,
+                          ]
+                        : []),
+                      {
+                        id: `ctx-agt-inspect-${agent.id}`,
+                        label: "查看 Agent 名片与私聊设置",
+                        icon: <UserRound className="h-3.5 w-3.5" />,
+                        onSelect: () => {
+                          setConfirmDeleteAgentId(null);
+                          if (props.onInspectOwnedAgent !== undefined) {
+                            props.onInspectOwnedAgent(agent);
+                          } else {
+                            props.onOpenMyAgents();
+                          }
+                        },
+                      },
+                      {
+                        id: `ctx-agt-copy-${agent.id}`,
+                        label: `复制 ${agentHandle}`,
+                        icon: <Copy className="h-3.5 w-3.5" />,
+                        onSelect: () => copySidebarText(agentHandle, "已复制提及标识", agentHandle),
+                      },
+                      ...(props.onReclaimOwnedAgent !== undefined
+                        ? [
+                            {
+                              id: `ctx-agt-reclaim-${agent.id}`,
+                              label: "恢复原身份重连",
+                              icon: <KeyRound className="h-3.5 w-3.5" />,
+                              onSelect: () => props.onReclaimOwnedAgent?.(agent.id),
+                            } satisfies AppContextMenuEntry,
+                          ]
+                        : []),
+                      { kind: "separator", id: `ctx-agt-sep-danger-${agent.id}` },
+                      ...(canDeleteAgent
+                        ? [
+                            {
+                              id: `ctx-agt-delete-${agent.id}`,
+                              label: "删除该 Agent",
+                              icon: <Trash2 className="h-3.5 w-3.5" />,
+                              danger: true,
+                              disabled: isDeletingThis,
+                              onSelect: () => {
+                                if (props.onRequestDeleteOwnedAgent !== undefined) {
+                                  props.onRequestDeleteOwnedAgent(agent);
+                                } else {
+                                  setConfirmDeleteAgentId(agent.id);
+                                }
+                              },
+                            } satisfies AppContextMenuEntry,
+                          ]
+                        : []),
+                    ];
+
+                    return (
+                      <li key={agent.id}>
+                        <AppContextMenu items={agentMenuItems}>
+                          <div className="group flex items-center gap-1.5 rounded-[16px] pr-2 transition-colors hover:bg-im-surface/60 data-[state=open]:bg-im-surface/75 dark:hover:bg-white/[0.045] dark:data-[state=open]:bg-white/[0.08]">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setConfirmDeleteAgentId(null);
+                                if (props.onInspectOwnedAgent !== undefined) {
+                                  props.onInspectOwnedAgent(agent);
+                                } else {
+                                  props.onOpenMyAgents();
+                                }
+                              }}
+                              className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[16px] py-2 pl-2.5 pr-1 text-left active:scale-[0.99]"
+                            >
+                              <PlatformAvatar
+                                kind="agent"
+                                displayName={agent.displayName}
+                                platform={agent.platform}
+                                reach={agent.reach}
+                                size="md"
+                                className="[&>div]:rounded-full"
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="flex items-center gap-1.5">
+                                  <span className="truncate text-[13.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                                    {agent.displayName}
+                                  </span>
+                                  {agent.allowExternalDm ? (
+                                    <span
+                                      title="已开放站内其他用户 1v1 私聊"
+                                      className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[#E6F5EC] px-1.5 py-0.2 text-[10px] font-medium text-[#145335] dark:bg-[#1B2B23] dark:text-[#6EE7B7]"
+                                    >
+                                      <Globe className="h-2.5 w-2.5" />
+                                      公开
+                                    </span>
+                                  ) : null}
+                                </span>
+                                <span className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
+                                  <span
+                                    className={cn(
+                                      "h-1.5 w-1.5 shrink-0 rounded-full",
+                                      reachMeta.dotClass,
+                                    )}
+                                  />
+                                  <span className="truncate">
+                                    {platformMeta.label} · {reachMeta.shortLabel}
+                                  </span>
+                                </span>
+                              </span>
+                            </button>
+
+                            {!isConfirming && props.onStartDirectAgentChat !== undefined ? (
+                              <AppTooltip side="top" content="1v1 单聊">
+                                <IconButton
+                                  size="sm"
+                                  variant="ghost"
+                                  label={`单聊 ${agent.displayName}`}
+                                  onClick={() => props.onStartDirectAgentChat?.(agent.id)}
+                                  className="shrink-0 text-[#687082] opacity-100 transition hover:text-[#111318] md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
+                                >
+                                  <MessageCircle className="h-3.5 w-3.5" />
+                                </IconButton>
+                              </AppTooltip>
+                            ) : null}
+
+                            {props.onDeleteOwnedAgent !== undefined ? (
+                              isConfirming ? (
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <AppButton
+                                    variant="ghost"
+                                    size="xs"
+                                    disabled={isDeletingThis}
+                                    onClick={() => setConfirmDeleteAgentId(null)}
+                                  >
+                                    取消
+                                  </AppButton>
+                                  <AppButton
+                                    variant="danger"
+                                    size="xs"
+                                    isLoading={isDeletingThis}
+                                    onClick={() => {
+                                      props.onDeleteOwnedAgent?.(agent);
+                                      setConfirmDeleteAgentId(null);
+                                    }}
+                                  >
+                                    删除
+                                  </AppButton>
+                                </div>
+                              ) : (
+                                <AppTooltip side="top" content="删除该 Agent">
+                                  <IconButton
+                                    size="sm"
+                                    variant="ghost"
+                                    label={`删除 ${agent.displayName}`}
+                                    onClick={() => setConfirmDeleteAgentId(agent.id)}
+                                    className="shrink-0 text-[#8E96A6] opacity-100 transition hover:text-[#E5484D] md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:text-[#63636B] dark:hover:text-[#F87171]"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </IconButton>
+                                </AppTooltip>
+                              )
+                            ) : null}
+                          </div>
+                        </AppContextMenu>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            {/* D. 站内开放私聊的外部共享 Agent */}
+            {filteredDiscoverableAgents.length > 0 ? (
+              <section className="space-y-1">
+                <div className="px-2 pb-0.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                  开放私聊的外部 agent · {filteredDiscoverableAgents.length}
+                </div>
+                <ul className="space-y-1">
+                  {filteredDiscoverableAgents.map((extAgent) => {
+                    const reachMeta = getReachVisualMeta(extAgent.reach);
+                    return (
+                      <li key={extAgent.id}>
+                        <div className="group flex items-center gap-1.5 rounded-[16px] pr-2 transition-colors hover:bg-im-surface/60 dark:hover:bg-white/[0.045]">
                           <button
                             type="button"
                             onClick={() => {
-                              setConfirmDeleteAgentId(null);
-                              if (props.onInspectOwnedAgent !== undefined) {
-                                props.onInspectOwnedAgent(agent);
+                              if (props.onInspectSharedAgent !== undefined) {
+                                props.onInspectSharedAgent(extAgent);
                               } else {
-                                props.onOpenMyAgents();
+                                props.onStartDirectAgentChat?.(extAgent.id);
                               }
                             }}
                             className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[16px] py-2 pl-2.5 pr-1 text-left active:scale-[0.99]"
                           >
                             <PlatformAvatar
                               kind="agent"
-                              displayName={agent.displayName}
-                              platform={agent.platform}
-                              reach={agent.reach}
+                              displayName={extAgent.displayName}
+                              platform={extAgent.platform}
+                              reach={extAgent.reach}
                               size="md"
                               className="[&>div]:rounded-full"
                             />
                             <span className="min-w-0 flex-1">
-                              <span className="flex items-center gap-1.5">
-                                <span className="truncate text-[13.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                                  {agent.displayName}
-                                </span>
-                                {agent.allowExternalDm ? (
-                                  <span
-                                    title="已开放站内其他用户 1v1 私聊"
-                                    className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[#E6F5EC] px-1.5 py-0.2 text-[10px] font-medium text-[#145335] dark:bg-[#1B2B23] dark:text-[#6EE7B7]"
-                                  >
-                                    <Globe className="h-2.5 w-2.5" />
-                                    公开
-                                  </span>
-                                ) : null}
+                              <span className="block truncate text-[13.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                                {extAgent.displayName}
                               </span>
-                              <span className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
+                              <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
                                 <span
                                   className={cn(
                                     "h-1.5 w-1.5 shrink-0 rounded-full",
@@ -1231,143 +1558,35 @@ export function RoomSidebar(props: RoomSidebarProps) {
                                   )}
                                 />
                                 <span className="truncate">
-                                  {platformMeta.label} · {reachMeta.shortLabel}
+                                  {extAgent.ownerDisplayName} 共享 · {reachMeta.shortLabel}
                                 </span>
                               </span>
                             </span>
                           </button>
 
-                          {!isConfirming && props.onStartDirectAgentChat !== undefined ? (
-                            <AppTooltip side="top" content="1v1 单聊">
-                              <IconButton
-                                size="xs"
-                                variant="ghost"
-                                label={`单聊 ${agent.displayName}`}
-                                onClick={() => props.onStartDirectAgentChat?.(agent.id)}
-                                className="shrink-0 text-[#687082] opacity-100 transition hover:text-[#111318] md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
-                              >
-                                <MessageCircle className="h-3.5 w-3.5" />
-                              </IconButton>
-                            </AppTooltip>
-                          ) : null}
-
-                          {props.onDeleteOwnedAgent !== undefined ? (
-                            isConfirming ? (
-                              <div className="flex shrink-0 items-center gap-1">
-                                <AppButton
-                                  variant="ghost"
-                                  size="xs"
-                                  disabled={isDeletingThis}
-                                  onClick={() => setConfirmDeleteAgentId(null)}
-                                >
-                                  取消
-                                </AppButton>
-                                <AppButton
-                                  variant="danger"
-                                  size="xs"
-                                  isLoading={isDeletingThis}
-                                  onClick={() => {
-                                    props.onDeleteOwnedAgent?.(agent);
-                                    setConfirmDeleteAgentId(null);
-                                  }}
-                                >
-                                  删除
-                                </AppButton>
-                              </div>
-                            ) : (
-                              <AppTooltip side="top" content="删除该 Agent">
-                                <IconButton
-                                  size="xs"
-                                  variant="ghost"
-                                  label={`删除 ${agent.displayName}`}
-                                  onClick={() => setConfirmDeleteAgentId(agent.id)}
-                                  className="shrink-0 text-[#8E96A6] opacity-100 transition hover:text-[#E5484D] md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 dark:text-[#63636B] dark:hover:text-[#F87171]"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </IconButton>
-                              </AppTooltip>
-                            )
+                          {props.onStartDirectAgentChat !== undefined ? (
+                            <AppButton
+                              variant="soft"
+                              size="xs"
+                              onClick={() => props.onStartDirectAgentChat?.(extAgent.id)}
+                              className="h-6 shrink-0 px-2 text-[11px]"
+                            >
+                              私聊
+                            </AppButton>
                           ) : null}
                         </div>
-                      </AppContextMenu>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ) : null}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-          {/* D. 站内开放私聊的外部共享 Agent */}
-          {filteredDiscoverableAgents.length > 0 ? (
-            <section className="space-y-1">
-              <div className="px-2 pb-0.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                开放私聊的外部 agent · {filteredDiscoverableAgents.length}
-              </div>
-              <ul className="space-y-1">
-                {filteredDiscoverableAgents.map((extAgent) => {
-                  const reachMeta = getReachVisualMeta(extAgent.reach);
-                  return (
-                    <li key={extAgent.id}>
-                      <div className="group flex items-center gap-1.5 rounded-[16px] pr-2 transition-colors hover:bg-im-surface/60 dark:hover:bg-white/[0.045]">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (props.onInspectSharedAgent !== undefined) {
-                              props.onInspectSharedAgent(extAgent);
-                            } else {
-                              props.onStartDirectAgentChat?.(extAgent.id);
-                            }
-                          }}
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-[16px] py-2 pl-2.5 pr-1 text-left active:scale-[0.99]"
-                        >
-                          <PlatformAvatar
-                            kind="agent"
-                            displayName={extAgent.displayName}
-                            platform={extAgent.platform}
-                            reach={extAgent.reach}
-                            size="md"
-                            className="[&>div]:rounded-full"
-                          />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[13.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                              {extAgent.displayName}
-                            </span>
-                            <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                              <span
-                                className={cn(
-                                  "h-1.5 w-1.5 shrink-0 rounded-full",
-                                  reachMeta.dotClass,
-                                )}
-                              />
-                              <span className="truncate">
-                                {extAgent.ownerDisplayName} 共享 · {reachMeta.shortLabel}
-                              </span>
-                            </span>
-                          </span>
-                        </button>
-
-                        {props.onStartDirectAgentChat !== undefined ? (
-                          <AppButton
-                            variant="soft"
-                            size="xs"
-                            onClick={() => props.onStartDirectAgentChat?.(extAgent.id)}
-                            className="h-6 shrink-0 px-2 text-[11px]"
-                          >
-                            私聊
-                          </AppButton>
-                        ) : null}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          ) : null}
-        </div>
-      )}
-
-      {/* 5. 统一底部操作停靠栏（轻柔微分割，移动端自然合并接入 Agent 与退出入口） */}
-      <div className="shrink-0 border-t border-black/[0.045] px-3 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] md:pb-3 dark:border-white/[0.06]">
+      {/* 5. 桌面端底部操作停靠栏（仅 >= md 展示；移动端底部主导航栏已提升至 WorkspaceShell 外壳常驻，新建类动作统一归于右上角 `+` 菜单） */}
+      <div className="hidden shrink-0 border-t border-black/[0.045] px-3 pt-2.5 pb-3 md:block dark:border-white/[0.06]">
         {activeTab === "chats" ? (
           <div className="flex items-center gap-1.5">
             <AppButton
@@ -1375,7 +1594,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
               size="sm"
               leadingIcon={<Plus className="h-3.5 w-3.5" />}
               onClick={props.onOpenCreateRoom}
-              className="flex-1"
+              className="min-w-0 flex-1 whitespace-nowrap"
             >
               建群
             </AppButton>
@@ -1385,13 +1604,14 @@ export function RoomSidebar(props: RoomSidebarProps) {
                 size="sm"
                 leadingIcon={<UserPlus className="h-3.5 w-3.5" />}
                 onClick={props.onOpenAddFriend}
+                className="shrink-0 whitespace-nowrap"
               >
                 加好友
               </AppButton>
             ) : null}
             <AppTooltip side="top" content="凭邀请码进群">
               <IconButton
-                size="sm"
+                size="md"
                 variant="secondary"
                 label="凭邀请码进群"
                 onClick={props.onOpenJoinRoom}
@@ -1399,49 +1619,16 @@ export function RoomSidebar(props: RoomSidebarProps) {
                 <LogIn className="h-3.5 w-3.5" />
               </IconButton>
             </AppTooltip>
-            <AppTooltip side="top" content="接入我的 Agent">
-              <IconButton
-                size="sm"
-                variant="secondary"
-                label="接入我的 Agent"
-                onClick={props.onOpenMyAgents}
-                className="md:hidden"
-              >
-                <Bot className="h-3.5 w-3.5" />
-              </IconButton>
-            </AppTooltip>
-            {props.currentUser.role === "admin" && props.onOpenAdminConsole !== undefined ? (
-              <AppTooltip side="top" content="运营管理后台">
-                <IconButton
-                  size="sm"
-                  variant="secondary"
-                  label="打开运营管理后台"
-                  onClick={props.onOpenAdminConsole}
-                  className="md:hidden"
-                >
-                  <Shield className="h-3.5 w-3.5" />
-                </IconButton>
-              </AppTooltip>
-            ) : null}
-            <IconButton
-              size="sm"
-              variant="ghost"
-              label="退出登录"
-              onClick={props.onLogout}
-              className="text-[#8E96A6] hover:text-[#E5484D] md:hidden dark:text-[#63636B] dark:hover:text-[#F87171]"
-            >
-              <LogOut className="h-4 w-4" />
-            </IconButton>
           </div>
         ) : (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             {props.onOpenAddFriend !== undefined ? (
               <AppButton
                 variant="primary"
                 size="sm"
                 leadingIcon={<UserPlus className="h-3.5 w-3.5" />}
                 onClick={props.onOpenAddFriend}
-                className="flex-1"
+                className="min-w-0 flex-1 whitespace-nowrap"
               >
                 添加好友
               </AppButton>
@@ -1451,32 +1638,10 @@ export function RoomSidebar(props: RoomSidebarProps) {
               size="sm"
               leadingIcon={<Plus className="h-3.5 w-3.5" />}
               onClick={props.onOpenMyAgents}
-              className={props.onOpenAddFriend !== undefined ? undefined : "flex-1"}
+              className="min-w-0 flex-1 whitespace-nowrap"
             >
-              接入 agent
+              接入 Agent
             </AppButton>
-            {props.currentUser.role === "admin" && props.onOpenAdminConsole !== undefined ? (
-              <AppTooltip side="top" content="运营管理后台">
-                <IconButton
-                  size="sm"
-                  variant="secondary"
-                  label="打开运营管理后台"
-                  onClick={props.onOpenAdminConsole}
-                  className="md:hidden"
-                >
-                  <Shield className="h-3.5 w-3.5" />
-                </IconButton>
-              </AppTooltip>
-            ) : null}
-            <IconButton
-              size="sm"
-              variant="ghost"
-              label="退出登录"
-              onClick={props.onLogout}
-              className="text-[#8E96A6] hover:text-[#E5484D] md:hidden dark:text-[#63636B] dark:hover:text-[#F87171]"
-            >
-              <LogOut className="h-4 w-4" />
-            </IconButton>
           </div>
         )}
       </div>

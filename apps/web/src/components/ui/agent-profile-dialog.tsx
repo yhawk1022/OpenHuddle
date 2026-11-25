@@ -18,8 +18,10 @@ import {
   AtSign,
   BadgeCheck,
   Check,
+  ChevronDown,
   Clock,
   Copy,
+  FolderGit2,
   Globe,
   KeyRound,
   Lock,
@@ -28,7 +30,12 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import {
+  type AgentExecutionTier,
+  getExecutionTierMeta,
+  useAgentCapabilityPrefs,
+} from "../../lib/agent-capability-prefs.js";
 import {
   formatMessageTimestamp,
   getInitials,
@@ -36,11 +43,15 @@ import {
   getReachVisualMeta,
 } from "../../lib/format.js";
 import {
+  AnimatePresence,
   AppButton,
+  AppInput,
   AppModal,
   AppSwitch,
   AppTooltip,
   IconButton,
+  type SegmentedTabItem,
+  SegmentedTabs,
   cn,
   motion,
   toast,
@@ -160,7 +171,7 @@ function resolveReachPill(
 }
 
 /**
- * 渲染 Pachat 极简风格的个人 Agent 联系人名片弹窗。
+ * 渲染个人 Agent 联系人名片与能力配置弹窗。
  *
  * @remarks
  * `--reclaim` 恢复入口仅对名片所属 Owner 本人展示（`ownerUserId === currentUserId`），
@@ -169,13 +180,26 @@ function resolveReachPill(
  * @param props - 当前选中的 Agent 名片、当前人类用户 ID 及快捷操作回调
  * @returns 名片模态弹窗；`profile` 为空时返回 `null`
  */
+const CAPABILITY_TIER_TABS: ReadonlyArray<SegmentedTabItem<AgentExecutionTier>> = [
+  { value: "chat_only", label: "仅讨论" },
+  { value: "workspace_read", label: "只读查库" },
+  { value: "worktree_write", label: "Worktree 改码" },
+];
+
 export function AgentProfileDialog(props: AgentProfileDialogProps) {
-  const { profile } = props;
+  const lastProfileRef = useRef<InspectedAgentProfile | null>(props.profile);
+  if (props.profile !== null) {
+    lastProfileRef.current = props.profile;
+  }
+  const profile = props.profile ?? lastProfileRef.current;
+  const isOpen = props.profile !== null;
   const [copiedHandle, setCopiedHandle] = useState<boolean>(false);
   const [confirmingDelete, setConfirmingDelete] = useState<boolean>(false);
+  const [capabilityExpanded, setCapabilityExpanded] = useState<boolean>(false);
+  const { getPref, setPref } = useAgentCapabilityPrefs();
 
   // 切换查看不同 Agent 名片或外部显式请求删除确认时同步局部交互态
-  const activeAgentId = profile?.agentId;
+  const activeAgentId = props.profile?.agentId;
   useEffect(() => {
     if (activeAgentId !== undefined) {
       setCopiedHandle(false);
@@ -213,14 +237,115 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
     });
   };
 
+  const hasFooterActions = Boolean(
+    (props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true)) ||
+      props.onMentionAgent ||
+      (isOwnedByMe && (props.onReclaimAgent || props.onDeleteAgent)),
+  );
+
+  const footerNode = hasFooterActions ? (
+    <div className="flex flex-col gap-2">
+      {props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true) ? (
+        <AppButton
+          variant="primary"
+          size="md"
+          fullWidth={true}
+          isLoading={props.isOpeningDirectChat === true}
+          leadingIcon={<MessageCircle aria-hidden="true" className="h-4 w-4" />}
+          onClick={() => {
+            props.onStartDirectChat?.(profile.agentId);
+          }}
+        >
+          发消息（1v1 单聊）
+        </AppButton>
+      ) : null}
+
+      {props.onMentionAgent ? (
+        <AppButton
+          variant={
+            props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true)
+              ? "secondary"
+              : "primary"
+          }
+          size="md"
+          fullWidth={true}
+          leadingIcon={<AtSign aria-hidden="true" className="h-4 w-4" />}
+          onClick={() => {
+            props.onMentionAgent?.(profile.agentId, profile.displayName);
+            props.onClose();
+          }}
+        >
+          在群里 @ TA
+        </AppButton>
+      ) : null}
+
+      {isOwnedByMe && confirmingDelete && props.onDeleteAgent ? (
+        <div className="space-y-2.5 rounded-[16px] bg-[#E5484D]/[0.08] px-3 py-2.5 ring-1 ring-inset ring-[#E5484D]/20 dark:bg-[#F05252]/[0.12] dark:ring-[#F05252]/25">
+          <p className="text-[12px] leading-relaxed text-[#8A1C14] dark:text-[#FCA5A5]">
+            确定彻底删除「{profile.displayName}
+            」？将自动移出所有群聊、吊销令牌并停止本机监听（群内历史消息会安全保留）。
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            <AppButton
+              variant="secondary"
+              size="sm"
+              disabled={props.isDeletingAgent === true}
+              onClick={() => setConfirmingDelete(false)}
+            >
+              取消
+            </AppButton>
+            <AppButton
+              variant="danger"
+              size="sm"
+              isLoading={props.isDeletingAgent === true}
+              leadingIcon={<Trash2 aria-hidden="true" className="h-3.5 w-3.5" />}
+              onClick={() => props.onDeleteAgent?.(profile.agentId, profile.displayName)}
+            >
+              确认彻底删除
+            </AppButton>
+          </div>
+        </div>
+      ) : isOwnedByMe && (props.onReclaimAgent || props.onDeleteAgent) ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {props.onReclaimAgent ? (
+            <AppButton
+              variant="secondary"
+              size="sm"
+              leadingIcon={<KeyRound aria-hidden="true" className="h-3.5 w-3.5" />}
+              onClick={() => {
+                props.onReclaimAgent?.(profile.agentId);
+                props.onClose();
+              }}
+              className="min-w-0 flex-1 whitespace-nowrap"
+            >
+              恢复原身份重连
+            </AppButton>
+          ) : null}
+          {props.onDeleteAgent ? (
+            <AppButton
+              variant="dangerSoft"
+              size="sm"
+              leadingIcon={<Trash2 aria-hidden="true" className="h-3.5 w-3.5" />}
+              onClick={() => setConfirmingDelete(true)}
+              className="min-w-0 flex-1 whitespace-nowrap"
+            >
+              删除该 Agent
+            </AppButton>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  ) : undefined;
+
   return (
     <AppModal
-      open={true}
+      open={isOpen}
       onClose={props.onClose}
       title="Agent 名片"
       subtitle="身份归属与实时在线状态"
       maxWidthClass="max-w-[400px]"
-      bodyClassName="px-6 pt-5 pb-6"
+      bodyClassName="px-4 pt-4 pb-4 sm:px-6 sm:pt-5 sm:pb-5"
+      footer={footerNode}
     >
       <div className="select-none space-y-4">
         {/* 顶部圆形粉彩大头像 + 宿主平台胶囊 + 在线状态胶囊（无廉价渐变封面横幅） */}
@@ -387,6 +512,156 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
           </p>
         ) : null}
 
+        {/* 主人专属：本地执行工作区、Worktree 隔离与温热会话加速设置 */}
+        {isOwnedByMe
+          ? (() => {
+              const capPref = getPref(profile.agentId, profile.platform);
+              const tierMeta = getExecutionTierMeta(capPref.tier);
+              return (
+                <div className="overflow-hidden rounded-[18px] bg-black/[0.035] ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
+                  <button
+                    type="button"
+                    onClick={() => setCapabilityExpanded((v) => !v)}
+                    aria-expanded={capabilityExpanded}
+                    className="flex w-full cursor-pointer items-center justify-between gap-2 px-3.5 py-3 text-left transition hover:bg-black/[0.025] dark:hover:bg-white/[0.03]"
+                  >
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <FolderGit2 className="h-4 w-4 shrink-0 text-[#111318] dark:text-[#F2F2F4]" />
+                      <div className="min-w-0">
+                        <p className="text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                          执行工作区与提速设置
+                        </p>
+                        <p className="mt-0.5 truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                          {tierMeta.shortLabel}
+                          {capPref.warmSessionEnabled ? " · 15m 温热驻留" : ""}
+                          {profile.platform === "antigravity" && capPref.nativeOrchestratorEnabled
+                            ? " · 原生双模"
+                            : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronDown
+                      className={cn(
+                        "h-3.5 w-3.5 shrink-0 text-[#687082] transition-transform dark:text-[#8E8E96]",
+                        capabilityExpanded && "rotate-180",
+                      )}
+                    />
+                  </button>
+
+                  <AnimatePresence initial={false}>
+                    {capabilityExpanded ? (
+                      <motion.div
+                        key="profile-cap-body"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.16 }}
+                        className="overflow-hidden border-t border-black/[0.06] dark:border-white/[0.08]"
+                      >
+                        <div className="space-y-3 p-3.5 text-xs">
+                          <div>
+                            <p className="mb-1.5 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
+                              本地执行授权边界（仅响应你本人签批的工单）
+                            </p>
+                            <SegmentedTabs
+                              value={capPref.tier}
+                              onValueChange={(nextTier) => {
+                                setPref(profile.agentId, { tier: nextTier }, profile.platform);
+                                toast.success(
+                                  `已更新为「${getExecutionTierMeta(nextTier).shortLabel}」`,
+                                );
+                              }}
+                              items={CAPABILITY_TIER_TABS}
+                              size="xs"
+                              fullWidth={true}
+                              ariaLabel="选择 Agent 本地执行授权档位"
+                            />
+                            <p className="mt-1.5 text-[11px] leading-snug text-[#687082] dark:text-[#8E8E96]">
+                              {tierMeta.description}
+                            </p>
+                          </div>
+
+                          {capPref.tier !== "chat_only" ? (
+                            <div>
+                              <label
+                                htmlFor="profile-workspace-path"
+                                className="mb-1 block text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]"
+                              >
+                                绑定的本地代码库路径
+                              </label>
+                              <AppInput
+                                id="profile-workspace-path"
+                                size="sm"
+                                value={capPref.workspacePath}
+                                onChange={(e) =>
+                                  setPref(
+                                    profile.agentId,
+                                    { workspacePath: e.target.value },
+                                    profile.platform,
+                                  )
+                                }
+                                placeholder="/Users/you/Developer/OpenHuddle"
+                                className="font-mono text-[16px] md:text-[11.5px]"
+                              />
+                            </div>
+                          ) : null}
+
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="font-medium text-[#111318] dark:text-[#F2F2F4]">
+                                15 分钟温热会话驻留
+                              </p>
+                              <p className="text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
+                                复用进程与上游 KV 缓存，消除 5~10s 冷启动
+                              </p>
+                            </div>
+                            <AppSwitch
+                              size="sm"
+                              ariaLabel="切换 15 分钟温热会话驻留"
+                              checked={capPref.warmSessionEnabled}
+                              onCheckedChange={(checked) =>
+                                setPref(
+                                  profile.agentId,
+                                  { warmSessionEnabled: checked },
+                                  profile.platform,
+                                )
+                              }
+                            />
+                          </div>
+
+                          {profile.platform === "antigravity" ? (
+                            <div className="flex items-center justify-between gap-2 border-t border-black/[0.05] pt-2.5 dark:border-white/[0.07]">
+                              <div className="min-w-0">
+                                <p className="font-medium text-[#111318] dark:text-[#F2F2F4]">
+                                  原生双模规划与执行
+                                </p>
+                                <p className="text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
+                                  进程内由 Carbon 只读规划 + Hydrogen 极速执行
+                                </p>
+                              </div>
+                              <AppSwitch
+                                size="sm"
+                                ariaLabel="切换 Antigravity 原生 Orchestrator 双模"
+                                checked={capPref.nativeOrchestratorEnabled}
+                                onCheckedChange={(checked) =>
+                                  setPref(
+                                    profile.agentId,
+                                    { nativeOrchestratorEnabled: checked },
+                                    profile.platform,
+                                  )
+                                }
+                              />
+                            </div>
+                          ) : null}
+                        </div>
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
+                </div>
+              );
+            })()
+          : null}
+
         {/* 主人专属：是否允许站内其他用户与该 Agent 1v1 私聊 */}
         {isOwnedByMe && props.onToggleAllowExternalDm !== undefined ? (
           <div className="flex items-center justify-between gap-3 rounded-[18px] bg-black/[0.035] px-3.5 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
@@ -429,106 +704,6 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
           />
           <span>身份由服务端凭独立 oh_agt_ 令牌核验，改昵称也无法冒充主人归属。</span>
         </p>
-
-        {/* 底部胶囊操作栏 */}
-        {(props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true)) ||
-        props.onMentionAgent ||
-        (isOwnedByMe && (props.onReclaimAgent || props.onDeleteAgent)) ? (
-          <div className="flex flex-col gap-2 pt-1">
-            {props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true) ? (
-              <AppButton
-                variant="primary"
-                size="lg"
-                fullWidth={true}
-                isLoading={props.isOpeningDirectChat === true}
-                leadingIcon={<MessageCircle aria-hidden="true" className="h-4 w-4" />}
-                onClick={() => {
-                  props.onStartDirectChat?.(profile.agentId);
-                }}
-              >
-                发消息（1v1 单聊）
-              </AppButton>
-            ) : null}
-
-            {props.onMentionAgent ? (
-              <AppButton
-                variant={
-                  props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true)
-                    ? "secondary"
-                    : "primary"
-                }
-                size={
-                  props.onStartDirectChat && (isOwnedByMe || profile.allowExternalDm === true)
-                    ? "md"
-                    : "lg"
-                }
-                fullWidth={true}
-                leadingIcon={<AtSign aria-hidden="true" className="h-4 w-4" />}
-                onClick={() => {
-                  props.onMentionAgent?.(profile.agentId, profile.displayName);
-                  props.onClose();
-                }}
-              >
-                在群里 @ TA
-              </AppButton>
-            ) : null}
-
-            {isOwnedByMe && props.onReclaimAgent && !confirmingDelete ? (
-              <AppButton
-                variant="secondary"
-                size="md"
-                fullWidth={true}
-                leadingIcon={<KeyRound aria-hidden="true" className="h-3.5 w-3.5" />}
-                onClick={() => {
-                  props.onReclaimAgent?.(profile.agentId);
-                  props.onClose();
-                }}
-              >
-                断连了？恢复原身份重连
-              </AppButton>
-            ) : null}
-
-            {isOwnedByMe && props.onDeleteAgent ? (
-              confirmingDelete ? (
-                <div className="space-y-2.5 rounded-[18px] bg-[#E5484D]/[0.08] px-3.5 py-3 ring-1 ring-inset ring-[#E5484D]/20 dark:bg-[#F05252]/[0.12] dark:ring-[#F05252]/25">
-                  <p className="text-[12px] leading-relaxed text-[#8A1C14] dark:text-[#FCA5A5]">
-                    确定彻底删除「{profile.displayName}
-                    」？将自动移出所有群聊、吊销令牌并停止本机监听（群内历史消息会安全保留）。
-                  </p>
-                  <div className="flex items-center justify-end gap-2">
-                    <AppButton
-                      variant="secondary"
-                      size="sm"
-                      disabled={props.isDeletingAgent === true}
-                      onClick={() => setConfirmingDelete(false)}
-                    >
-                      取消
-                    </AppButton>
-                    <AppButton
-                      variant="danger"
-                      size="sm"
-                      isLoading={props.isDeletingAgent === true}
-                      leadingIcon={<Trash2 aria-hidden="true" className="h-3.5 w-3.5" />}
-                      onClick={() => props.onDeleteAgent?.(profile.agentId, profile.displayName)}
-                    >
-                      确认彻底删除
-                    </AppButton>
-                  </div>
-                </div>
-              ) : (
-                <AppButton
-                  variant="dangerSoft"
-                  size="md"
-                  fullWidth={true}
-                  leadingIcon={<Trash2 aria-hidden="true" className="h-3.5 w-3.5" />}
-                  onClick={() => setConfirmingDelete(true)}
-                >
-                  删除该 Agent
-                </AppButton>
-              )
-            ) : null}
-          </div>
-        ) : null}
       </div>
     </AppModal>
   );

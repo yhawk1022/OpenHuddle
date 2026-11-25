@@ -32,7 +32,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import {
   AnimatePresence,
   AppButton,
@@ -224,8 +224,26 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
       subtitle="拉上同伴和各自的 Agent，在一个群里核对事实、把方案聊透"
       maxWidthClass="max-w-lg"
       icon={<MessagesSquare className="h-4 w-4" />}
+      footer={
+        <div className="flex select-none items-center justify-end gap-2">
+          <AppButton variant="ghost" size="md" onClick={props.onClose}>
+            取消
+          </AppButton>
+          <AppButton
+            type="submit"
+            form="create-room-form"
+            variant="primary"
+            size="md"
+            isLoading={createMutation.isPending}
+            disabled={name.trim().length === 0}
+            leadingIcon={<Plus aria-hidden="true" className="h-3.5 w-3.5" />}
+          >
+            创建群聊
+          </AppButton>
+        </div>
+      }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form id="create-room-form" onSubmit={handleSubmit} className="space-y-4">
         {/* 群聊即时预览卡片 */}
         <div className="flex select-none items-center gap-3 rounded-[18px] bg-black/[0.035] p-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.05] dark:ring-white/[0.08]">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
@@ -402,10 +420,10 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
           />
         </div>
 
-        {/* 讨论组织模式：高对比三栏卡片 */}
+        {/* 讨论组织模式：桌面三栏卡片，移动端单列紧凑选项防 320px/360px 挤爆 */}
         <fieldset>
           <legend className={LABEL_CLASS}>聊天节奏</legend>
-          <div className="mt-1.5 grid grid-cols-3 gap-2">
+          <div className="mt-1.5 grid grid-cols-1 gap-2 sm:grid-cols-3">
             {GOVERNANCE_MODE_OPTIONS.map((option) => {
               const selected = mode === option.value;
               return (
@@ -462,22 +480,6 @@ export function CreateRoomModal(props: CreateRoomModalProps) {
             {errMsg}
           </div>
         ) : null}
-
-        <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.06] pt-3.5 dark:border-white/[0.08]">
-          <AppButton variant="ghost" size="md" onClick={props.onClose}>
-            取消
-          </AppButton>
-          <AppButton
-            type="submit"
-            variant="primary"
-            size="md"
-            isLoading={createMutation.isPending}
-            disabled={name.trim().length === 0}
-            leadingIcon={<Plus aria-hidden="true" className="h-3.5 w-3.5" />}
-          >
-            创建群聊
-          </AppButton>
-        </div>
       </form>
     </ModalDialog>
   );
@@ -500,7 +502,11 @@ function extractInviteTokenFromRawInput(raw: string): string {
   const trimmed = raw.trim();
   const shareMatch = /\/share\/([^/?#\s]+)/.exec(trimmed);
   if (shareMatch?.[1] !== undefined) {
-    return decodeURIComponent(shareMatch[1]);
+    try {
+      return decodeURIComponent(shareMatch[1]);
+    } catch {
+      return shareMatch[1];
+    }
   }
   return trimmed;
 }
@@ -549,8 +555,26 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
       subtitle="粘贴同伴发来的群邀请码或回放链接即可进群"
       maxWidthClass="max-w-md"
       icon={<LogIn className="h-4 w-4" />}
+      footer={
+        <div className="flex select-none items-center justify-end gap-2">
+          <AppButton variant="ghost" size="md" onClick={props.onClose}>
+            取消
+          </AppButton>
+          <AppButton
+            type="submit"
+            form="join-room-form"
+            variant="primary"
+            size="md"
+            isLoading={joinMutation.isPending}
+            disabled={parsedToken.length < 4}
+            leadingIcon={<LogIn aria-hidden="true" className="h-3.5 w-3.5" />}
+          >
+            加入群聊
+          </AppButton>
+        </div>
+      }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form id="join-room-form" onSubmit={handleSubmit} className="space-y-4">
         <div>
           <label htmlFor="join-room-token-input" className={LABEL_CLASS}>
             邀请码或分享链接 <span className="text-[#E5484D]">*</span>
@@ -558,13 +582,14 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
           <AppInput
             id="join-room-token-input"
             type="text"
+            enterKeyHint="done"
             size="lg"
             required={true}
             value={rawInput}
             onChange={(e) => setRawInput(e.target.value)}
             leadingIcon={<Link2 className="h-4 w-4" />}
             placeholder="inv_01jk9x... 或 https://.../share/inv_..."
-            className="font-mono text-xs placeholder:font-sans"
+            className="font-mono text-[16px] md:text-xs placeholder:font-sans"
             containerClassName="mt-1.5"
           />
           <AnimatePresence mode="wait" initial={false}>
@@ -605,22 +630,6 @@ export function JoinRoomModal(props: JoinRoomModalProps) {
             {errMsg}
           </div>
         ) : null}
-
-        <div className="flex select-none items-center justify-end gap-2 border-t border-black/[0.06] pt-3.5 dark:border-white/[0.08]">
-          <AppButton variant="ghost" size="md" onClick={props.onClose}>
-            取消
-          </AppButton>
-          <AppButton
-            type="submit"
-            variant="primary"
-            size="md"
-            isLoading={joinMutation.isPending}
-            disabled={parsedToken.length < 4}
-            leadingIcon={<LogIn aria-hidden="true" className="h-3.5 w-3.5" />}
-          >
-            加入群聊
-          </AppButton>
-        </div>
       </form>
     </ModalDialog>
   );
@@ -650,14 +659,18 @@ export interface DeleteRoomConfirmModalProps {
  * @returns 删除群聊确认弹窗
  */
 export function DeleteRoomConfirmModal(props: DeleteRoomConfirmModalProps) {
-  const targetRoom = props.room;
+  const lastRoomRef = useRef<DeleteRoomTarget | null>(props.room);
+  if (props.room !== null) {
+    lastRoomRef.current = props.room;
+  }
+  const targetRoom = props.room ?? lastRoomRef.current;
   const errMsg = resolveMutationErrorMessage(props.error);
   const isDirect =
     targetRoom !== null && targetRoom.kind !== undefined && targetRoom.kind !== "group";
 
   return (
     <ModalDialog
-      open={targetRoom !== null}
+      open={props.room !== null}
       onClose={props.isDeleting ? () => undefined : props.onClose}
       title={isDirect ? "删除单聊会话" : "删除群聊"}
       subtitle="此操作不可撤销，请确认后继续"
@@ -744,12 +757,16 @@ export interface LeaveRoomConfirmModalProps {
  * @returns 退出群聊确认弹窗
  */
 export function LeaveRoomConfirmModal(props: LeaveRoomConfirmModalProps) {
-  const targetRoom = props.room;
+  const lastRoomRef = useRef<DeleteRoomTarget | null>(props.room);
+  if (props.room !== null) {
+    lastRoomRef.current = props.room;
+  }
+  const targetRoom = props.room ?? lastRoomRef.current;
   const errMsg = resolveMutationErrorMessage(props.error);
 
   return (
     <ModalDialog
-      open={targetRoom !== null}
+      open={props.room !== null}
       onClose={props.isLeaving ? () => undefined : props.onClose}
       title="退出群聊"
       subtitle="退出后需要重新使用邀请码才能再次加入"

@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "OpenHuddle — 多 Agent 群聊与协作工作台",
+  "short_name": "OpenHuddle",
+  "description": "一键连通各类个人 Agent，支持受控多 Agent 群聊提案拍板与隔离工作台并行改码审阅",
+  "lang": "zh-CN",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#111113",
+  "theme_color": "#111113",
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

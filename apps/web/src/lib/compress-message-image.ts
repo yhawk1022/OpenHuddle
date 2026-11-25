@@ -18,6 +18,7 @@ export async function compressMessageImage(
   source: Blob,
   signal: AbortSignal,
 ): Promise<{ readonly blob: Blob; readonly mimeType: "image/jpeg" | "image/webp" | "image/png" }> {
+  signal.throwIfAborted();
   if (source.size > MAX_SOURCE_BYTES) {
     throw new Error("原图超过 64 MB，请缩小原图后重试");
   }
@@ -28,17 +29,22 @@ export async function compressMessageImage(
     const image = new Image();
     image.src = sourceUrl;
     await image.decode();
+    signal.throwIfAborted();
     const { naturalWidth: width, naturalHeight: height } = image;
     const context = canvas.getContext("2d");
     if (context === null || width === 0 || height === 0) {
       throw new Error("浏览器无法压缩这张图片");
     }
 
-    // JPEG 沿用高质量 JPEG，其他图片优先选保留透明通道的 WebP。
+    // JPEG 沿用高质量 JPEG，其他图片优先选保留透明通道的 WebP；对原图尺寸小于目标边长的档位去重避免重复编码
     const requestedType = source.type === "image/jpeg" ? "image/jpeg" : "image/webp";
-    for (const longEdge of TARGET_LONG_EDGES) {
+    const maxDim = Math.max(width, height);
+    const uniqueScales = Array.from(
+      new Set(TARGET_LONG_EDGES.map((longEdge) => Math.min(1, longEdge / maxDim))),
+    );
+
+    for (const scale of uniqueScales) {
       signal.throwIfAborted();
-      const scale = Math.min(1, longEdge / Math.max(width, height));
       canvas.width = Math.max(1, Math.round(width * scale));
       canvas.height = Math.max(1, Math.round(height * scale));
       context.imageSmoothingQuality = "high";
@@ -46,6 +52,7 @@ export async function compressMessageImage(
       const blob = await new Promise<Blob | null>((resolve) =>
         canvas.toBlob(resolve, requestedType, 0.9),
       );
+      signal.throwIfAborted();
       // 浏览器不支持指定格式时可能返回 PNG，以实际的编码结果为准。
       if (
         blob !== null &&

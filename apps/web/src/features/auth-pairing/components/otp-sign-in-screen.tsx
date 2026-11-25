@@ -1,13 +1,12 @@
 /**
  * @module web/features/auth-pairing/otp-sign-in-screen
- * @description Pachat 社论极简风格双栏认证入口（左侧 `Figtree` 大字号群聊实况卡片预览 + 右侧邮箱密码登录 / 邮箱验证码激活注册 / 忘记密码重置三态卡片）。
+ * @description OpenHuddle 首页产品门户与认证入口（支持 `/` 未登录认证态与 `/welcome` 已登录/未登录通用介绍态）。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 服务端能力自发现：挂载时查询 `/api/v1/auth/config`（零密钥），自动适配 `allowPublicSignup` 开关、`allowedEmailDomains` 提示、邮件投递模式与重发冷却秒数。
- * 2. 纯邮箱+密码主流程：注册必须通过邮箱 6 位验证码核验后方可创建账号；日常登录仅需邮箱+密码；忘记密码通过邮箱 6 位验证码安全重设（同时兼容早期无密码老用户首次设密）。
- * 3. 开发零摩擦闭环：当服务端未配置 SMTP 且处于开发/测试回退态返回 `devOtpCode` 时，渲染鼠尾草绿快捷填入卡片，支持一键填入验证码。
- * 4. 全屏星点背景在表单和预览卡下方绘制，支持系统减少动态效果设置，且不会拦截交互。
- * 5. Tauri v2 + Electron 双栖窗口壳：`html/body` 已被全局锁定 `overflow: hidden`，本屏自身使用 `h-dvh` + 内部滚动容器；顶部栏声明 `data-tauri-drag-region` 与 `.app-drag-region`。
+ * 1. 单一 DOM 树响应式重排：首屏采用 3 块直接子节点的 CSS Grid，窄屏（`< lg`）按「标题导览 → 登录卡片 → 双模预览器」流式排列，保障 `390×844` 首屏免滚直达「登录」按钮；宽屏（`>= lg`）自动归位为左 7（标题 + 预览器）右 5（认证/已登录空间卡）双栏。
+ * 2. `/welcome` 双态可达：当 `portalMode === "welcome"` 且当前已登录人类账号时，不强制重定向回 `/`，顶栏展示「返回工作台」，右栏切换为当前已登录空间卡片；未登录完成认证后自动跳转 `/`。
+ * 3. 单层模糊光学纪律：顶栏采用轻磨砂 `backdrop-blur-xl`（内部零 `liquid-glass-*`）；首屏认证卡与双模预览器各用单层 `relative liquid-glass-modal`（内部零二次模糊）；首屏下方内容卡片全部采用无模糊分层表面，保障 120Hz 顺滑滚动。
+ * 4. 全页单实例 `AppContextMenu`：内容区根据命中目标与选区动态生成菜单；命中原生输入控件时在冒泡阶段 `stopPropagation` 完整放行系统编辑与密码填充菜单。
  */
 import { type AuthCodeSentResponse, PASSWORD_MIN_LENGTH } from "@openhuddle/protocol";
 import { useQuery } from "@tanstack/react-query";
@@ -19,36 +18,82 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  ListTodo,
   Lock,
   Mail,
+  MessageCircle,
+  Moon,
   Send,
   ShieldCheck,
+  Smartphone,
+  Sun,
   User,
 } from "lucide-react";
-import { type FormEvent, useEffect, useState } from "react";
+import {
+  type FormEvent,
+  type MouseEvent as ReactMouseEvent,
+  type UIEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { BrandMark } from "../../../components/brand-mark.js";
 import {
   AnimatePresence,
   AppButton,
+  AppContextMenu,
   AppInput,
+  IconButton,
   type SegmentedTabItem,
   SegmentedTabs,
   cn,
   motion,
   toast,
+  usePrefersReducedMotion,
 } from "../../../components/primitives/index.js";
 import { HuddleConstellationBackground } from "../../../components/ui/huddle-constellation-background.js";
-import { ApiClientError } from "../../../lib/api-client.js";
+import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
+import { ApiClientError, type HumanMeResponseDto } from "../../../lib/api-client.js";
+import { isAgentLiveReachable } from "../../../lib/format.js";
+import { navigateBackOr, navigateTo } from "../../../lib/session-store.js";
+import { toggleGuestThemePreference, useThemeMode } from "../../../lib/theme-store.js";
+import { PwaInstallGuideModal, usePwaInstallState } from "../../pwa-install/index.js";
 import {
   authConfigQueryOptions,
+  currentMeQueryOptions,
+  useAccountThemePreference,
   useConfirmPasswordResetMutation,
   useLoginWithPasswordMutation,
   useRegisterWithPasswordMutation,
   useRequestPasswordResetCodeMutation,
   useRequestRegisterCodeMutation,
 } from "../api/auth-pairing.queries.js";
+import { AccountThemeMenu } from "./account-theme-menu.js";
+import {
+  DEFAULT_PORTAL_CONTEXT_HIT,
+  PortalArchitectureSection,
+  PortalCapabilitiesSection,
+  type PortalContextHitInfo,
+  PortalFooter,
+  PortalHeroPreview,
+  PortalMobileQuickGuide,
+  PortalOpenSourceContactSection,
+  buildPortalContextMenuEntries,
+  copyPortalText,
+  inspectPortalContextTarget,
+} from "./portal-showcase-sections.js";
 
 const LABEL_CLASS = "block text-xs font-medium text-[#3A3A3C] dark:text-zinc-300";
+
+/** 门户运行模式：`auth` = 未登录入口门禁，`welcome` = 公开/已登录均可浏览的产品介绍页 */
+export type PortalMode = "auth" | "welcome";
+
+/** `AuthScreen` 组件入参属性 */
+export interface AuthScreenProps {
+  readonly portalMode?: PortalMode | undefined;
+}
 
 type AuthViewMode = "login" | "register" | "reset";
 type PrimaryAuthTab = "login" | "register";
@@ -58,39 +103,13 @@ const AUTH_TAB_ITEMS: ReadonlyArray<SegmentedTabItem<PrimaryAuthTab>> = [
   { value: "register", label: "注册账号" },
 ];
 
-/** 群聊预览中单条 Agent 气泡的静态展示数据 */
-interface PreviewAgentBubble {
-  readonly key: string;
-  readonly monogram: string;
-  readonly name: string;
-  readonly ownerNote: string;
-  readonly avatarClass: string;
-  readonly text: string;
-  readonly time: string;
-}
-
-/** 左侧 Pachat 风格群聊预览中的个人 Agent 发言（纯静态演示数据，零网络请求） */
-const PREVIEW_AGENT_BUBBLES: ReadonlyArray<PreviewAgentBubble> = [
-  {
-    key: "claude",
-    monogram: "CC",
-    name: "Claude Code",
-    ownerNote: "Alex 的 Agent",
-    avatarClass:
-      "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2B251D] dark:text-[#EAD8BC] dark:ring-white/[0.08]",
-    text: "直接用 Postgres LISTEN/NOTIFY 就够了，2C4G 机器可以少维护一个 Redis 实例。",
-    time: "10:42",
-  },
-  {
-    key: "codex",
-    monogram: "CX",
-    name: "Codex",
-    ownerNote: "庞彦的 Agent",
-    avatarClass:
-      "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1B2433] dark:text-[#CFE1FF] dark:ring-white/[0.08]",
-    text: "同意。补充一个边界：NOTIFY 单条上限 8KB，只推最新序号让客户端按需拉取最稳妥。",
-    time: "10:43",
-  },
+const HEADER_NAV_ITEMS: ReadonlyArray<{
+  readonly targetId: string;
+  readonly label: string;
+}> = [
+  { targetId: "portal-capabilities", label: "核心能力" },
+  { targetId: "portal-architecture", label: "性能与多端" },
+  { targetId: "portal-open-source", label: "开源与联系" },
 ];
 
 /**
@@ -217,131 +236,25 @@ function formatAuthError(error: unknown): {
         return {
           text: "服务器尚未配置 SMTP 发信服务，暂无法发送邮箱验证码，请联系管理员。",
         };
+      case "INTERNAL_SERVER_ERROR":
+        if (
+          error.requestId === "gateway" ||
+          error.requestId === "network" ||
+          error.requestId === "timeout"
+        ) {
+          return { text: error.message };
+        }
+        return {
+          text:
+            error.requestId && error.requestId !== "unknown"
+              ? `服务器内部处理异常，请稍后重试（请求编号：${error.requestId}）。`
+              : "后端服务暂未就绪或内部异常，请稍后重试。",
+        };
       default:
         return { text: `${error.message} (${error.code})` };
     }
   }
   return error instanceof Error ? { text: error.message } : { text: "请求失败，请稍后重试。" };
-}
-
-/**
- * 渲染左侧无极光光斑、纯净纸感的 Pachat 群聊实况预览卡片。
- */
-function LiveHuddlePreview() {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "spring", stiffness: 360, damping: 32, delay: 0.05 }}
-      className="relative liquid-glass-modal select-none overflow-hidden rounded-[28px] dark:bg-[#16171C]/[0.74]"
-    >
-      {/* 卡片顶部群聊头：圆角方标 + 群标题 + 实时在线圆点 */}
-      <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-5 py-3.5 dark:border-white/[0.07]">
-        <div className="flex min-w-0 items-center gap-3">
-          <div
-            aria-hidden="true"
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[#DCE8FC] text-[14px] font-semibold text-[#1D3E78] shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] ring-1 ring-inset ring-white/80 dark:bg-[#222938] dark:text-[#B8D0FA] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.10)] dark:ring-white/[0.08]"
-          >
-            实
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-[14px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
-              实时同步方案讨论
-            </p>
-            <p className="flex items-center gap-1.5 text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#16A34A] dark:bg-[#34D399]" />
-              <span>2 位成员 · 2 个 Agent 在线</span>
-            </p>
-          </div>
-        </div>
-        <span className="rounded-full bg-black/[0.05] px-2.5 py-1 text-[11px] font-medium text-[#4B5565] dark:bg-white/[0.07] dark:text-[#C4C4CA]">
-          群聊实况
-        </span>
-      </div>
-
-      {/* 协调半透聊天画布：对齐全站三角色对话气泡色阶，消除顶栏与画布的生硬黑块断层 */}
-      <div className="space-y-3.5 bg-im-canvas/70 px-5 py-4.5 dark:bg-black/[0.16]">
-        {/* 本人发出的暖亚麻/烟熏石墨气泡 */}
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ type: "spring", stiffness: 420, damping: 32, delay: 0.1 }}
-          className="flex justify-end"
-        >
-          <div className="max-w-[82%]">
-            <div className="rounded-[18px_6px_18px_18px] bg-im-self px-3.5 py-2.5 text-[13.5px] leading-[1.52] text-im-self-fg ring-1 ring-inset ring-black/[0.05] dark:ring-white/[0.10]">
-              <span className="font-medium text-[#157347] dark:text-[#6EE7B7]">
-                @Claude Code @Codex
-              </span>{" "}
-              多进程实时推送用 Redis 还是直接走 PG？帮我核对一下取舍。
-            </div>
-            <p className="mt-1 text-right text-[11px] text-[#8E96A6] dark:text-[#8E8E96]">
-              我 · 10:41
-            </p>
-          </div>
-        </motion.div>
-
-        {/* 同伴与本人的个人 Agent 气泡 */}
-        {PREVIEW_AGENT_BUBBLES.map((bubble, idx) => (
-          <motion.div
-            key={bubble.key}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{
-              type: "spring",
-              stiffness: 420,
-              damping: 32,
-              delay: 0.16 + idx * 0.07,
-            }}
-            className="flex items-start gap-2.5"
-          >
-            <div
-              className={cn(
-                "flex h-9 w-9 shrink-0 items-center justify-center rounded-full font-mono text-[11px] font-semibold",
-                bubble.avatarClass,
-              )}
-            >
-              {bubble.monogram}
-            </div>
-            <div className="min-w-0 max-w-[82%]">
-              <p className="mb-1 flex items-center gap-1.5 text-[12px]">
-                <span className="font-medium text-[#111318] dark:text-[#F2F2F4]">
-                  {bubble.name}
-                </span>
-                <span className="text-[#687082] dark:text-[#8E8E96]">{bubble.ownerNote}</span>
-                <span className="text-[#939BAD] dark:text-[#63636B]">{bubble.time}</span>
-              </p>
-              <div className="rounded-[6px_18px_18px_18px] bg-im-peer px-3.5 py-2.5 text-[13.5px] leading-[1.52] text-im-peer-fg shadow-[0_1px_2px_rgba(15,23,42,0.04)] ring-1 ring-inset ring-black/[0.05] dark:ring-white/[0.07]">
-                {bubble.text}
-              </div>
-            </div>
-          </motion.div>
-        ))}
-
-        {/* 温润鼠尾草绿已拍板决议便签 */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ type: "spring", stiffness: 420, damping: 32, delay: 0.32 }}
-          className="ml-11 rounded-[18px] bg-im-human px-4 py-3 text-im-human-fg ring-1 ring-inset ring-emerald-900/[0.08] dark:ring-emerald-400/[0.14]"
-        >
-          <div className="flex items-center justify-between gap-2">
-            <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-[#145335] dark:text-[#6EE7B7]">
-              <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5" />
-              <span>已拍板结论</span>
-            </span>
-            <span className="text-[11px] text-[#2F6849] dark:text-[#9ACBB0]">2/2 Agent 赞成</span>
-          </div>
-          <p className="mt-1 text-[13px] font-medium leading-snug">
-            采用 Postgres LISTEN/NOTIFY + 单机内存双模总线
-          </p>
-          <p className="mt-0.5 text-[11.5px] text-[#3B6E52] dark:text-[#A4C9B4]">
-            零 Redis 依赖 · 通知仅推序号 · 由人类最终确认通过
-          </p>
-        </motion.div>
-      </div>
-    </motion.div>
-  );
 }
 
 /**
@@ -373,12 +286,129 @@ function PasswordStrengthMeter(props: { readonly password: string }) {
 }
 
 /**
- * 渲染 OpenHuddle 邮箱+密码登录、邮箱验证码注册激活与忘记密码重置双栏入口屏。
- *
- * @returns 社论标题 + 群聊实况预览与三态认证卡片视图
+ * 已登录状态下访问 `/welcome` 时展示的当前协作空间概览卡片。
  */
-export function AuthScreen() {
+function AuthenticatedPortalSpaceCard(props: { readonly me: HumanMeResponseDto }) {
+  const { user, agents } = props.me;
+  const onlineCount = agents.filter((agent) => isAgentLiveReachable(agent.reach)).length;
+  const previewAgents = agents.slice(0, 5);
+
+  return (
+    <div className="relative liquid-glass-modal overflow-hidden rounded-[24px] p-5 sm:rounded-[28px] sm:p-7 dark:bg-[#16171C]/[0.78]">
+      <div className="flex items-center gap-3.5">
+        <PlatformAvatar kind="human" displayName={user.displayName} size="lg" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h2 className="truncate text-[18px] font-semibold tracking-[-0.02em] text-[#111318] sm:text-[20px] dark:text-[#F2F2F4]">
+              {user.displayName}
+            </h2>
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#E3F3EC] px-2 py-0.5 text-[11px] font-medium text-[#1E5638] dark:bg-[#16271F] dark:text-[#86E0A6]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#16A34A] dark:bg-[#34D399]" />
+              <span>已登录</span>
+            </span>
+          </div>
+          <p className="mt-0.5 truncate text-[12.5px] text-[#687082] dark:text-[#8E8E96]">
+            {user.email}
+          </p>
+        </div>
+      </div>
+
+      {/* 已连接 Agent 数量摘要槽（暗色底严格 #141417） */}
+      <div className="mt-4 rounded-[16px] border border-black/[0.06] bg-[#EFF1F4] px-3.5 py-3 dark:border-white/[0.07] dark:bg-[#141417]">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[12px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
+            已绑定个人 Agent
+          </span>
+          <span className="font-mono text-[12px] font-semibold tabular-nums text-[#111318] dark:text-[#F2F2F4]">
+            {agents.length > 0
+              ? `${String(agents.length)} 个已接入 · ${String(onlineCount)} 个在线`
+              : "暂未接入 Agent"}
+          </span>
+        </div>
+
+        {previewAgents.length > 0 ? (
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            {previewAgents.map((agent) => (
+              <span
+                key={agent.id}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-black/[0.05] bg-white/85 py-0.5 pl-1 pr-2.5 text-[11.5px] font-medium text-[#1F2430] dark:border-white/[0.08] dark:bg-[#1E1F24] dark:text-[#E4E4E7]"
+              >
+                <PlatformAvatar
+                  kind="agent"
+                  displayName={agent.displayName}
+                  platform={agent.platform}
+                  reach={agent.reach}
+                  size="xs"
+                />
+                <span className="truncate">{agent.displayName}</span>
+              </span>
+            ))}
+            {agents.length > previewAgents.length ? (
+              <span className="px-1.5 font-mono text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                +{String(agents.length - previewAgents.length)}
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-1.5 text-[12px] leading-relaxed text-[#5A6272] dark:text-[#8E8E96]">
+            进入工作台后点击左侧导轨「接入 agent」，即可连通 Claude Code、Codex 或任意 MCP 客户端。
+          </p>
+        )}
+      </div>
+
+      <div className="mt-5 space-y-2.5">
+        <AppButton
+          variant="primary"
+          size="lg"
+          fullWidth={true}
+          leadingIcon={<MessageCircle aria-hidden="true" className="h-4 w-4" />}
+          trailingIcon={<ArrowRight aria-hidden="true" className="h-4 w-4" />}
+          onClick={() => navigateTo("/")}
+          className="h-10.5 rounded-full text-[14px] font-medium sm:h-11"
+        >
+          进入聊天会话
+        </AppButton>
+
+        <AppButton
+          variant="secondary"
+          size="lg"
+          fullWidth={true}
+          leadingIcon={<ListTodo aria-hidden="true" className="h-4 w-4" />}
+          onClick={() => navigateTo("/?view=workbench")}
+          className="h-10.5 rounded-full text-[13.5px] font-medium sm:h-11"
+        >
+          打开个人工作台
+        </AppButton>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 渲染 OpenHuddle 首页产品门户与三态认证入口。
+ *
+ * @param props - 可选 `portalMode`（`"auth"` 或 `"welcome"`）
+ * @returns 完整响应式门户与认证/已登录空间视图
+ */
+export function AuthScreen(props: AuthScreenProps) {
+  const portalMode: PortalMode = props.portalMode ?? "auth";
+
   const authConfigQuery = useQuery(authConfigQueryOptions());
+  const welcomeMeQuery = useQuery({
+    ...currentMeQueryOptions(),
+    enabled: portalMode === "welcome",
+  });
+
+  const authenticatedMe: HumanMeResponseDto | null =
+    portalMode === "welcome" &&
+    !welcomeMeQuery.isError &&
+    welcomeMeQuery.data !== null &&
+    welcomeMeQuery.data !== undefined &&
+    welcomeMeQuery.data.callerKind === "human"
+      ? welcomeMeQuery.data
+      : null;
+  const isAuthenticatedWelcome = authenticatedMe !== null;
+
   const allowPublicSignup = authConfigQuery.data?.allowPublicSignup ?? true;
   const allowedEmailDomains = authConfigQuery.data?.allowedEmailDomains ?? [];
   const emailDeliveryMode = authConfigQuery.data?.emailDeliveryMode ?? "smtp";
@@ -401,11 +431,23 @@ export function AuthScreen() {
   const [resetCooldownSec, setResetCooldownSec] = useState<number>(0);
   const [localValidationError, setLocalValidationError] = useState<string | null>(null);
 
+  const [showScrollLoginCta, setShowScrollLoginCta] = useState<boolean>(false);
+  const [pwaGuideOpen, setPwaGuideOpen] = useState<boolean>(false);
+  const [contextHit, setContextHit] = useState<PortalContextHitInfo>(DEFAULT_PORTAL_CONTEXT_HIT);
+
+  const mainScrollRef = useRef<HTMLElement | null>(null);
+  const emailInputRef = useRef<HTMLInputElement | null>(null);
+
   const loginMutation = useLoginWithPasswordMutation();
   const requestRegisterCodeMutation = useRequestRegisterCodeMutation();
   const registerMutation = useRegisterWithPasswordMutation();
   const requestResetCodeMutation = useRequestPasswordResetCodeMutation();
   const confirmResetMutation = useConfirmPasswordResetMutation();
+
+  const themeMode = useThemeMode();
+  const accountTheme = useAccountThemePreference();
+  const pwaState = usePwaInstallState();
+  const reducedMotion = usePrefersReducedMotion();
 
   // 冷却倒计时器：每秒递减直至归零
   const hasActiveCooldown = registerCooldownSec > 0 || resetCooldownSec > 0;
@@ -426,6 +468,58 @@ export function AuthScreen() {
       setMode("login");
     }
   }, [allowPublicSignup, mode]);
+
+  const navigateFromWelcomeAfterAuth = (): void => {
+    if (typeof window !== "undefined" && /^\/welcome(\/|$)/.test(window.location.pathname)) {
+      navigateTo("/", { replace: true });
+    }
+  };
+
+  const scrollToTop = useCallback((): void => {
+    mainScrollRef.current?.scrollTo({
+      top: 0,
+      behavior: reducedMotion ? "auto" : "smooth",
+    });
+  }, [reducedMotion]);
+
+  const scrollToSection = useCallback(
+    (sectionId: string): void => {
+      if (typeof document === "undefined") {
+        return;
+      }
+      const target = document.getElementById(sectionId);
+      if (!target) {
+        return;
+      }
+      target.scrollIntoView({
+        behavior: reducedMotion ? "auto" : "smooth",
+        block: "start",
+      });
+    },
+    [reducedMotion],
+  );
+
+  const handleJumpToAuthOrReturn = useCallback((): void => {
+    if (isAuthenticatedWelcome) {
+      navigateBackOr("/");
+      return;
+    }
+    scrollToTop();
+    emailInputRef.current?.focus({ preventScroll: true });
+  }, [isAuthenticatedWelcome, scrollToTop]);
+
+  const handleMainScroll = (event: UIEvent<HTMLElement>): void => {
+    const scrolledPastHero = event.currentTarget.scrollTop > 420;
+    setShowScrollLoginCta((prev) => (prev === scrolledPastHero ? prev : scrolledPastHero));
+  };
+
+  const handleTogglePortalTheme = useCallback((): void => {
+    if (isAuthenticatedWelcome) {
+      accountTheme.setPreference(themeMode === "dark" ? "light" : "dark");
+    } else {
+      toggleGuestThemePreference();
+    }
+  }, [accountTheme, isAuthenticatedWelcome, themeMode]);
 
   const trimmedEmail = email.trim().toLowerCase();
   const trimmedDisplayName = displayName.trim();
@@ -462,6 +556,7 @@ export function AuthScreen() {
       {
         onSuccess: (res) => {
           toast.success(`欢迎回来，${res.user.displayName}`);
+          navigateFromWelcomeAfterAuth();
         },
       },
     );
@@ -541,6 +636,7 @@ export function AuthScreen() {
       {
         onSuccess: (res) => {
           toast.success(`注册成功，欢迎加入 OpenHuddle，${res.user.displayName}！`);
+          navigateFromWelcomeAfterAuth();
         },
       },
     );
@@ -617,6 +713,7 @@ export function AuthScreen() {
           toast.success("密码已重置并为你登录", {
             description: "该账号在其余设备上的历史会话已全部安全下线",
           });
+          navigateFromWelcomeAfterAuth();
         },
       },
     );
@@ -660,685 +757,905 @@ export function AuthScreen() {
 
   const activeDevOtpMeta = mode === "register" ? registerCodeMeta : resetCodeMeta;
 
+  /* ── 全页单实例右键菜单构建 ── */
+  const handleCopyFromMenu = useCallback(
+    (text: string, successTitle: string, description?: string | undefined): void => {
+      void copyPortalText(text).then((ok) => {
+        if (ok) {
+          toast.success(successTitle, description !== undefined ? { description } : undefined);
+        } else {
+          toast.error("复制失败，请手动选中复制");
+        }
+      });
+    },
+    [],
+  );
+
+  const contextMenuEntries = useMemo(
+    () =>
+      buildPortalContextMenuEntries(
+        contextHit.isEditableInput ? DEFAULT_PORTAL_CONTEXT_HIT : contextHit,
+        {
+          isAuthenticatedWelcome,
+          isDarkTheme: themeMode === "dark",
+          onCopyText: handleCopyFromMenu,
+          onOpenMailClient: (targetEmail) => {
+            if (typeof window !== "undefined") {
+              window.location.href = `mailto:${targetEmail}`;
+            }
+          },
+          onOpenExternalLink: (href) => {
+            if (typeof window !== "undefined") {
+              window.open(href, "_blank", "noopener,noreferrer");
+            }
+          },
+          onPrimaryAuthOrReturn: handleJumpToAuthOrReturn,
+          onScrollToPreview: () => scrollToSection("portal-preview"),
+          onScrollToCapabilities: () => scrollToSection("portal-capabilities"),
+          onToggleTheme: handleTogglePortalTheme,
+          onCopySiteUrl: () => {
+            const url = typeof window !== "undefined" ? window.location.origin : "";
+            if (url.length > 0) {
+              handleCopyFromMenu(url, "已复制本站链接", url);
+            }
+          },
+        },
+      ),
+    [
+      contextHit,
+      handleCopyFromMenu,
+      handleJumpToAuthOrReturn,
+      handleTogglePortalTheme,
+      isAuthenticatedWelcome,
+      scrollToSection,
+      themeMode,
+    ],
+  );
+
+  const handleContextMenuCapture = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    const nextHit = inspectPortalContextTarget(event.target);
+    if (!nextHit.isEditableInput) {
+      setContextHit(nextHit);
+    }
+  };
+
+  const handleBubbleEditableGuard = (event: ReactMouseEvent<HTMLElement>): void => {
+    const hit = inspectPortalContextTarget(event.target);
+    if (hit.isEditableInput) {
+      event.stopPropagation();
+    }
+  };
+
+  const hasSecondaryHeaderCta = isAuthenticatedWelcome || showScrollLoginCta;
+
   return (
-    // 全局 body 已锁定滚动，背景和内部滚动区域都由本屏管理。
-    <div className="relative isolate flex h-dvh flex-col overflow-hidden bg-app-frame text-im-fg dark:bg-[#0E0F13]">
+    // 全局 body 已锁定滚动，背景和内部滚动区域均由本屏独立托管（高度随 visualViewport 动态收缩以适配软键盘）。
+    <div className="relative isolate flex h-vvh flex-col overflow-hidden bg-app-frame text-im-fg dark:bg-[#0E0F13]">
       <HuddleConstellationBackground />
 
+      {/* 单层轻磨砂顶栏（内部严禁出现任何 liquid-glass-*） */}
       <header
         data-tauri-drag-region=""
-        className="app-drag-region pt-safe relative z-20 shrink-0 select-none"
+        className="app-drag-region pt-safe relative z-20 shrink-0 select-none border-b border-black/[0.05] bg-app-frame/85 backdrop-blur-xl dark:border-white/[0.06] dark:bg-[#0E0F13]/85"
       >
-        <div className="mx-auto flex w-full max-w-[1140px] items-center px-6 py-4 sm:px-10">
-          <div className="pointer-events-none flex items-center gap-2.5">
+        <div className="mx-auto flex w-full max-w-[1200px] items-center justify-between gap-3 px-4 py-2.5 sm:px-6 sm:py-3 lg:px-10">
+          <button
+            type="button"
+            onClick={scrollToTop}
+            aria-label="回到 OpenHuddle 页面顶部"
+            className="app-no-drag inline-flex shrink-0 cursor-pointer items-center gap-2.5 rounded-xl py-0.5 text-left transition-opacity hover:opacity-85"
+          >
             <BrandMark className="h-6 w-6 shrink-0" />
-            <span className="text-[17.5px] font-bold tracking-[-0.025em] text-[#111318] dark:text-white">
+            <span className="text-[17px] font-bold tracking-[-0.025em] text-[#111318] sm:text-[17.5px] dark:text-white">
               OpenHuddle
             </span>
+          </button>
+
+          <nav aria-label="门户分区导览" className="app-no-drag hidden items-center gap-1 md:flex">
+            {HEADER_NAV_ITEMS.map((item) => (
+              <button
+                key={item.targetId}
+                type="button"
+                onClick={() => scrollToSection(item.targetId)}
+                className="shrink-0 cursor-pointer whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-medium text-[#4B5565] transition-colors hover:bg-black/[0.045] hover:text-[#111318] dark:text-[#A1A1AA] dark:hover:bg-white/[0.07] dark:hover:text-white"
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="app-no-drag flex shrink-0 items-center gap-1.5">
+            {pwaState.shouldShowSmartBanner ? (
+              <button
+                type="button"
+                onClick={() => setPwaGuideOpen(true)}
+                className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full bg-black/[0.05] px-2.5 text-xs font-medium text-[#3B414E] transition hover:bg-black/[0.09] dark:bg-white/[0.08] dark:text-[#D4D4D8] dark:hover:bg-white/[0.14]"
+              >
+                <Smartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                <span className={cn(hasSecondaryHeaderCta && "hidden sm:inline")}>
+                  添加到主屏幕
+                </span>
+                {hasSecondaryHeaderCta ? <span className="sm:hidden">主屏幕</span> : null}
+              </button>
+            ) : null}
+
+            {isAuthenticatedWelcome ? (
+              <AppButton
+                variant="primary"
+                size="sm"
+                leadingIcon={<ArrowLeft aria-hidden="true" className="h-3.5 w-3.5" />}
+                onClick={() => navigateBackOr("/")}
+              >
+                返回工作台
+              </AppButton>
+            ) : showScrollLoginCta ? (
+              <AppButton variant="primary" size="sm" onClick={handleJumpToAuthOrReturn}>
+                去登录
+              </AppButton>
+            ) : null}
+
+            {isAuthenticatedWelcome ? (
+              <AccountThemeMenu />
+            ) : (
+              <IconButton
+                size="sm"
+                variant="ghost"
+                label={themeMode === "dark" ? "切换为白天模式" : "切换为夜间模式"}
+                onClick={toggleGuestThemePreference}
+              >
+                {themeMode === "dark" ? (
+                  <Sun aria-hidden="true" className="h-4 w-4" />
+                ) : (
+                  <Moon aria-hidden="true" className="h-4 w-4" />
+                )}
+              </IconButton>
+            )}
           </div>
         </div>
       </header>
 
-      <main className="relative z-10 min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="mx-auto grid min-h-full w-full max-w-[1140px] items-center gap-10 px-6 py-8 sm:px-10 lg:grid-cols-12 lg:gap-14 lg:py-10">
-          {/* 左栏：社论大标题 + 液态玻璃群聊实况预览卡片 */}
-          <section className="lg:col-span-7">
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ type: "spring", stiffness: 380, damping: 32 }}
-              className="select-none"
+      {/* 全页单实例右键菜单包裹内容主滚动区 */}
+      <AppContextMenu items={contextMenuEntries}>
+        <main
+          ref={mainScrollRef}
+          onScroll={handleMainScroll}
+          onContextMenuCapture={handleContextMenuCapture}
+          className="pb-safe relative z-10 min-h-0 flex-1 overflow-y-auto overscroll-contain"
+        >
+          {/* 内部冒泡守卫：命中 input / textarea 等控件时阻断事件到达 Radix Trigger，100% 保留浏览器原生编辑与密码填充菜单 */}
+          <div
+            onContextMenu={handleBubbleEditableGuard}
+            className="mx-auto flex w-full max-w-[1200px] flex-col gap-12 px-4 pt-3.5 pb-10 sm:gap-16 sm:px-6 sm:pt-7 sm:pb-14 lg:gap-20 lg:px-10 lg:pt-9"
+          >
+            {/* 首屏区（#portal-hero）：单一 DOM 树 3 子块响应式重排 */}
+            <section
+              id="portal-hero"
+              className="shrink-0 grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-12 lg:items-start lg:gap-x-10 lg:gap-y-7 xl:gap-x-14"
             >
-              <h1 className="text-balance text-4xl font-semibold leading-[1.12] tracking-[-0.03em] text-[#111318] sm:text-5xl dark:text-[#F2F2F4]">
-                有事，<span className="inline-block">和你的 AI</span>{" "}
-                <span className="inline-block">一起聊。</span>
-              </h1>
-              <p className="mt-4 max-w-xl text-pretty text-[15px] leading-[1.62] text-[#525A6B] sm:text-[16px] dark:text-[#A5A7B2]">
-                让 Claude Code、Codex 和同伴的 Agent 一起查资料、聊方案，最后由你决定。
-              </p>
-            </motion.div>
+              {/* 块 A：主副标题 + <lg 快捷导览胶囊条 */}
+              <div className="min-w-0 lg:col-span-7 lg:col-start-1 lg:row-start-1">
+                <motion.div
+                  initial={reducedMotion ? false : { opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                >
+                  <h1 className="text-balance text-[25px] font-semibold leading-[1.18] tracking-[-0.03em] text-[#111318] sm:text-[40px] sm:leading-[1.14] xl:text-[46px] xl:leading-[1.12] dark:text-[#F2F2F4]">
+                    和你的多路 Agent 一起讨论、改码、拍板。
+                  </h1>
+                  <p className="mt-2 max-w-xl text-pretty text-[13px] leading-[1.52] text-[#525A6B] sm:mt-3.5 sm:text-[15.5px] sm:leading-[1.62] dark:text-[#A5A7B2]">
+                    一键连通 Claude Code、Codex、Cursor、Gemini、OpenClaw 等个人
+                    Agent。在受控群聊里交叉求证并收敛提案，在隔离工作台里并行改码、审阅
+                    Diff，最后由你决定。
+                  </p>
+                </motion.div>
 
-            <div className="mt-8 hidden lg:block">
-              <LiveHuddlePreview />
-            </div>
-          </section>
+                <PortalMobileQuickGuide
+                  onScrollToPreview={() => scrollToSection("portal-preview")}
+                  onScrollToContact={() => scrollToSection("portal-contact")}
+                />
+              </div>
 
-          {/* 右栏：Apple Liquid Glass 圆角认证卡片（登录 / 注册账号 / 重置密码） */}
-          <section className="mx-auto w-full max-w-md lg:col-span-5 lg:max-w-none">
-            <motion.div
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ type: "spring", stiffness: 400, damping: 32, delay: 0.06 }}
-              className="relative liquid-glass-modal overflow-hidden rounded-[28px] p-6 sm:p-8 dark:bg-[#16171C]/[0.78]"
-            >
-              {/* 登录 / 注册顶部分段切换器（仅非重置密码态且开放注册时展示） */}
-              {mode !== "reset" && allowPublicSignup ? (
-                <div className="mb-6">
-                  <SegmentedTabs<PrimaryAuthTab>
-                    value={mode}
-                    onValueChange={(next) => switchMode(next)}
-                    items={AUTH_TAB_ITEMS}
-                    size="md"
-                    fullWidth={true}
-                    ariaLabel="选择登录或注册"
-                  />
-                </div>
-              ) : null}
-
-              <AnimatePresence mode="wait" initial={false}>
-                {mode === "login" ? (
-                  <motion.form
-                    key="auth-login"
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -10 }}
-                    transition={{ duration: 0.16, ease: "easeOut" }}
-                    onSubmit={handleLoginSubmit}
-                    className="space-y-5"
-                  >
-                    <div className="select-none">
-                      <h2 className="text-[22px] font-semibold tracking-[-0.02em] text-[#141414] dark:text-zinc-100">
-                        欢迎回来
-                      </h2>
-                      <p className="mt-1.5 text-[13px] leading-relaxed text-[#6E6E73] dark:text-zinc-400">
-                        使用你的注册邮箱与密码登录 OpenHuddle 协作空间。
-                      </p>
-                    </div>
-
-                    {!allowPublicSignup ? (
-                      <div className="rounded-2xl bg-im-surface-muted px-3.5 py-2.5 text-[12px] leading-relaxed text-im-muted dark:bg-white/[0.05] dark:text-zinc-400">
-                        当前实例已关闭自助注册，仅限已有账号登录。
-                      </div>
-                    ) : null}
-
-                    <div className="space-y-3.5">
-                      <div>
-                        <label htmlFor="auth-login-email" className={LABEL_CLASS}>
-                          邮箱地址
-                        </label>
-                        <AppInput
-                          id="auth-login-email"
-                          type="email"
-                          size="lg"
-                          required={true}
-                          autoComplete="email"
-                          value={email}
-                          onChange={(e) => {
-                            setEmail(e.target.value);
-                            setLocalValidationError(null);
-                          }}
-                          leadingIcon={<Mail className="h-4 w-4" />}
-                          placeholder="you@example.com"
-                          containerClassName="mt-1.5"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between gap-2">
-                          <label htmlFor="auth-login-password" className={LABEL_CLASS}>
-                            登录密码
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => switchMode("reset")}
-                            className="cursor-pointer text-[12px] font-medium text-[#6E6E73] transition-colors hover:text-[#141414] dark:text-zinc-400 dark:hover:text-zinc-100"
-                          >
-                            忘记密码？
-                          </button>
-                        </div>
-                        <AppInput
-                          id="auth-login-password"
-                          type={showPassword ? "text" : "password"}
-                          size="lg"
-                          required={true}
-                          autoComplete="current-password"
-                          value={password}
-                          onChange={(e) => {
-                            setPassword(e.target.value);
-                            setLocalValidationError(null);
-                          }}
-                          leadingIcon={<Lock className="h-4 w-4" />}
-                          trailingSlot={passwordToggleButton}
-                          placeholder="请输入登录密码"
-                          containerClassName="mt-1.5"
-                        />
-                      </div>
-                    </div>
-
-                    {formattedError ? (
-                      <div
-                        role="alert"
-                        className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs leading-relaxed text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
-                      >
-                        {formattedError.text}
-                      </div>
-                    ) : null}
-
-                    <AppButton
-                      type="submit"
-                      variant="primary"
-                      size="lg"
-                      fullWidth={true}
-                      isLoading={loginMutation.isPending}
-                      disabled={!isEmailShapeValid || password.length === 0}
-                      className="h-11 rounded-full text-[14px] font-medium"
-                      trailingIcon={
-                        !loginMutation.isPending ? (
-                          <ArrowRight aria-hidden="true" className="h-4 w-4" />
-                        ) : undefined
-                      }
-                    >
-                      {loginMutation.isPending ? "正在登录..." : "登录"}
-                    </AppButton>
-
-                    <div className="flex select-none items-center justify-between gap-2 pt-0.5 text-[12px] text-[#8E8E93] dark:text-zinc-500">
-                      <span>开源可自托管 · Owner-First</span>
-                      {allowPublicSignup ? (
-                        <button
-                          type="button"
-                          onClick={() => switchMode("register")}
-                          className="cursor-pointer font-medium text-[#141414] underline-offset-4 hover:underline dark:text-zinc-200"
-                        >
-                          还没有账号？去注册
-                        </button>
-                      ) : null}
-                    </div>
-                  </motion.form>
-                ) : mode === "register" ? (
-                  <motion.form
-                    key="auth-register"
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 10 }}
-                    transition={{ duration: 0.16, ease: "easeOut" }}
-                    onSubmit={handleRegisterSubmit}
-                    className="space-y-4"
-                  >
-                    <div className="select-none">
-                      <h2 className="text-[22px] font-semibold tracking-[-0.02em] text-[#141414] dark:text-zinc-100">
-                        创建你的账号
-                      </h2>
-                      <p className="mt-1 text-[13px] leading-relaxed text-[#6E6E73] dark:text-zinc-400">
-                        先验证邮箱收到的 6 位激活码，再设置登录密码即可开启协作。
-                      </p>
-                    </div>
-
-                    {allowedEmailDomains.length > 0 ? (
-                      <div className="flex items-start gap-2 rounded-2xl bg-im-surface-muted px-3.5 py-2 text-[12px] leading-relaxed text-[#52525B] dark:bg-white/[0.05] dark:text-zinc-300">
-                        <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#2A7B59] dark:text-[#5ED3A2]" />
-                        <span>
-                          仅允许使用 {allowedEmailDomains.map((domain) => `@${domain}`).join("、")}{" "}
-                          邮箱注册
-                        </span>
-                      </div>
-                    ) : null}
-
-                    {emailDeliveryMode === "unavailable" ? (
-                      <div className="flex items-start gap-2 rounded-2xl border border-[#D97706]/30 bg-[#FEF3C7]/70 px-3.5 py-2.5 text-[12px] leading-relaxed text-[#92400E] dark:border-[#F59E0B]/25 dark:bg-[#451A03]/35 dark:text-[#FCD34D]">
-                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        <span>
-                          当前服务器尚未配置 SMTP 发信服务，暂无法下发注册验证邮件，请联系管理员。
-                        </span>
-                      </div>
-                    ) : null}
-
-                    <div className="space-y-3">
-                      <div>
-                        <label htmlFor="auth-reg-email" className={LABEL_CLASS}>
-                          邮箱地址
-                        </label>
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <AppInput
-                            id="auth-reg-email"
-                            type="email"
-                            size="lg"
-                            required={true}
-                            autoComplete="email"
-                            value={email}
-                            onChange={(e) => {
-                              setEmail(e.target.value);
-                              setLocalValidationError(null);
-                            }}
-                            leadingIcon={<Mail className="h-4 w-4" />}
-                            placeholder="you@example.com"
-                            containerClassName="flex-1"
+              {/* 块 B：认证卡片 或 当前已登录空间卡片（移动端紧随标题下方，确保 390×844 首屏直达「登录」主按钮） */}
+              <div className="mx-auto w-full max-w-md min-w-0 lg:col-span-5 lg:col-start-8 lg:row-span-2 lg:row-start-1 lg:max-w-none">
+                <motion.div
+                  initial={reducedMotion ? false : { opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ type: "spring", stiffness: 400, damping: 32, delay: 0.04 }}
+                >
+                  {authenticatedMe !== null ? (
+                    <AuthenticatedPortalSpaceCard me={authenticatedMe} />
+                  ) : (
+                    <div className="relative liquid-glass-modal overflow-hidden rounded-[24px] p-5 sm:rounded-[28px] sm:p-7 dark:bg-[#16171C]/[0.78]">
+                      {/* 登录 / 注册顶部分段切换器（仅非重置密码态且开放注册时展示） */}
+                      {mode !== "reset" && allowPublicSignup ? (
+                        <div className="mb-4 sm:mb-5">
+                          <SegmentedTabs<PrimaryAuthTab>
+                            value={mode}
+                            onValueChange={(next) => switchMode(next)}
+                            items={AUTH_TAB_ITEMS}
+                            size="md"
+                            fullWidth={true}
+                            ariaLabel="选择登录或注册"
                           />
-                          <AppButton
-                            type="button"
-                            variant="secondary"
-                            size="lg"
-                            isLoading={requestRegisterCodeMutation.isPending}
-                            disabled={
-                              !isEmailShapeValid ||
-                              registerCooldownSec > 0 ||
-                              emailDeliveryMode === "unavailable"
-                            }
-                            onClick={handleSendRegisterCode}
-                            leadingIcon={
-                              !requestRegisterCodeMutation.isPending &&
-                              registerCooldownSec === 0 ? (
-                                <Send className="h-3.5 w-3.5" />
-                              ) : undefined
-                            }
-                            className="h-10 shrink-0 rounded-xl px-3.5 text-xs font-medium whitespace-nowrap"
-                          >
-                            {registerCooldownSec > 0
-                              ? `${registerCooldownSec}s 后重发`
-                              : registerCodeMeta
-                                ? "重新发送"
-                                : "发送验证码"}
-                          </AppButton>
                         </div>
-                        <p
-                          id="auth-reg-code-hint"
-                          className="mt-1.5 text-[12px] leading-relaxed text-[#6E6E73] dark:text-zinc-400"
-                        >
-                          如果收不到验证码，请检查邮箱的垃圾邮件文件夹。
-                        </p>
-                      </div>
+                      ) : null}
 
-                      {/* 发送成功回执（真实 SMTP 或开发模式快捷码） */}
-                      {activeDevOtpMeta ? (
-                        activeDevOtpMeta.devOtpCode !== undefined ? (
-                          <div className="select-none rounded-2xl bg-[#E3F3EC] px-3.5 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#16271F] dark:ring-white/[0.08]">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[11.5px] font-medium text-[#1E5638] dark:text-[#86E0A6]">
-                                开发模式验证码
-                              </span>
-                              <div className="flex items-center gap-2">
-                                <code className="rounded-md bg-white/90 px-2 py-0.5 font-mono text-xs font-semibold tracking-widest text-[#141414] ring-1 ring-black/[0.06] dark:bg-black/30 dark:text-zinc-100 dark:ring-white/[0.1]">
-                                  {activeDevOtpMeta.devOtpCode}
-                                </code>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setVerificationCode(activeDevOtpMeta.devOtpCode ?? "")
-                                  }
-                                  className="cursor-pointer rounded-full bg-[#141414] px-2.5 py-1 text-[11px] font-medium text-white transition hover:opacity-85 dark:bg-white dark:text-[#141414]"
-                                >
-                                  一键填入
-                                </button>
+                      <AnimatePresence mode="wait" initial={false}>
+                        {mode === "login" ? (
+                          <motion.form
+                            key="auth-login"
+                            initial={reducedMotion ? false : { opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: -10 }}
+                            transition={{ duration: 0.16, ease: "easeOut" }}
+                            onSubmit={handleLoginSubmit}
+                            className="space-y-3.5 sm:space-y-4.5"
+                          >
+                            <div className="select-none">
+                              <h2 className="text-[19px] font-semibold tracking-[-0.02em] text-[#141414] sm:text-[22px] dark:text-zinc-100">
+                                欢迎回来
+                              </h2>
+                              <p className="mt-1 text-[12.5px] leading-snug text-[#6E6E73] sm:mt-1.5 sm:text-[13px] sm:leading-relaxed dark:text-zinc-400">
+                                使用你的注册邮箱与密码登录 OpenHuddle 协作空间。
+                              </p>
+                            </div>
+
+                            {!allowPublicSignup ? (
+                              <div className="rounded-2xl bg-im-surface-muted px-3.5 py-2.5 text-[12px] leading-relaxed text-im-muted dark:bg-white/[0.05] dark:text-zinc-400">
+                                当前实例已关闭自助注册，仅限已有账号登录。
+                              </div>
+                            ) : null}
+
+                            <div className="space-y-3 sm:space-y-3.5">
+                              <div>
+                                <label htmlFor="auth-login-email" className={LABEL_CLASS}>
+                                  邮箱地址
+                                </label>
+                                <AppInput
+                                  ref={emailInputRef}
+                                  id="auth-login-email"
+                                  type="email"
+                                  inputMode="email"
+                                  enterKeyHint="next"
+                                  size="lg"
+                                  required={true}
+                                  autoComplete="email"
+                                  value={email}
+                                  onChange={(e) => {
+                                    setEmail(e.target.value);
+                                    setLocalValidationError(null);
+                                  }}
+                                  leadingIcon={<Mail className="h-4 w-4" />}
+                                  placeholder="you@example.com"
+                                  containerClassName="mt-1 sm:mt-1.5"
+                                />
+                              </div>
+
+                              <div>
+                                <div className="flex items-center justify-between gap-2">
+                                  <label htmlFor="auth-login-password" className={LABEL_CLASS}>
+                                    登录密码
+                                  </label>
+                                  <button
+                                    type="button"
+                                    onClick={() => switchMode("reset")}
+                                    className="cursor-pointer text-[12px] font-medium text-[#6E6E73] transition-colors hover:text-[#141414] dark:text-zinc-400 dark:hover:text-zinc-100"
+                                  >
+                                    忘记密码？
+                                  </button>
+                                </div>
+                                <AppInput
+                                  id="auth-login-password"
+                                  type={showPassword ? "text" : "password"}
+                                  enterKeyHint="go"
+                                  size="lg"
+                                  required={true}
+                                  autoComplete="current-password"
+                                  value={password}
+                                  onChange={(e) => {
+                                    setPassword(e.target.value);
+                                    setLocalValidationError(null);
+                                  }}
+                                  leadingIcon={<Lock className="h-4 w-4" />}
+                                  trailingSlot={passwordToggleButton}
+                                  placeholder="请输入登录密码"
+                                  containerClassName="mt-1 sm:mt-1.5"
+                                />
                               </div>
                             </div>
-                          </div>
-                        ) : (
-                          <p className="flex items-center gap-1.5 rounded-xl bg-[#E3F3EC]/80 px-3 py-2 text-[12px] text-[#1E5638] dark:bg-[#16271F] dark:text-[#86E0A6]">
-                            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                            <span>
-                              验证码已发往 {activeDevOtpMeta.email}（
-                              {Math.round(activeDevOtpMeta.expiresInSec / 60)} 分钟内有效）
-                            </span>
-                          </p>
-                        )
-                      ) : null}
 
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <div>
-                          <label htmlFor="auth-reg-code" className={LABEL_CLASS}>
-                            6 位邮箱验证码
-                          </label>
-                          <AppInput
-                            id="auth-reg-code"
-                            aria-describedby="auth-reg-code-hint"
-                            type="text"
-                            size="lg"
-                            inputMode="numeric"
-                            autoComplete="one-time-code"
-                            maxLength={6}
-                            required={true}
-                            value={verificationCode}
-                            onChange={(e) => {
-                              setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6));
-                              setLocalValidationError(null);
-                            }}
-                            leadingIcon={<KeyRound className="h-4 w-4" />}
-                            placeholder="000000"
-                            className="font-mono tracking-[0.22em] placeholder:tracking-[0.22em]"
-                            containerClassName="mt-1.5"
-                          />
-                        </div>
+                            {formattedError ? (
+                              <div
+                                role="alert"
+                                className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs leading-relaxed text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
+                              >
+                                {formattedError.text}
+                              </div>
+                            ) : null}
 
-                        <div>
-                          <label htmlFor="auth-reg-name" className={LABEL_CLASS}>
-                            你的名字
-                          </label>
-                          <AppInput
-                            id="auth-reg-name"
-                            type="text"
-                            size="lg"
-                            maxLength={80}
-                            required={true}
-                            autoComplete="name"
-                            value={displayName}
-                            onChange={(e) => {
-                              setDisplayName(e.target.value);
-                              setLocalValidationError(null);
-                            }}
-                            leadingIcon={<User className="h-4 w-4" />}
-                            placeholder="例如：庞彦 / Alex"
-                            containerClassName="mt-1.5"
-                          />
-                        </div>
-                      </div>
+                            <AppButton
+                              type="submit"
+                              variant="primary"
+                              size="lg"
+                              fullWidth={true}
+                              isLoading={loginMutation.isPending}
+                              disabled={!isEmailShapeValid || password.length === 0}
+                              className="h-10.5 rounded-full text-[14px] font-medium sm:h-11"
+                              trailingIcon={
+                                !loginMutation.isPending ? (
+                                  <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                                ) : undefined
+                              }
+                            >
+                              {loginMutation.isPending ? "正在登录..." : "登录"}
+                            </AppButton>
 
-                      <div>
-                        <label htmlFor="auth-reg-password" className={LABEL_CLASS}>
-                          设置密码
-                        </label>
-                        <AppInput
-                          id="auth-reg-password"
-                          type={showPassword ? "text" : "password"}
-                          size="lg"
-                          required={true}
-                          minLength={PASSWORD_MIN_LENGTH}
-                          autoComplete="new-password"
-                          value={password}
-                          onChange={(e) => {
-                            setPassword(e.target.value);
-                            setLocalValidationError(null);
-                          }}
-                          leadingIcon={<Lock className="h-4 w-4" />}
-                          trailingSlot={passwordToggleButton}
-                          placeholder={`至少 ${PASSWORD_MIN_LENGTH} 位字符`}
-                          containerClassName="mt-1.5"
-                        />
-                        <PasswordStrengthMeter password={password} />
-                      </div>
-
-                      <div>
-                        <label htmlFor="auth-reg-password-confirm" className={LABEL_CLASS}>
-                          确认密码
-                        </label>
-                        <AppInput
-                          id="auth-reg-password-confirm"
-                          type={showConfirmPassword ? "text" : "password"}
-                          size="lg"
-                          required={true}
-                          autoComplete="new-password"
-                          value={confirmPassword}
-                          invalid={confirmPassword.length > 0 && confirmPassword !== password}
-                          onChange={(e) => {
-                            setConfirmPassword(e.target.value);
-                            setLocalValidationError(null);
-                          }}
-                          leadingIcon={<Lock className="h-4 w-4" />}
-                          trailingSlot={confirmPasswordToggleButton}
-                          placeholder="再次输入密码"
-                          containerClassName="mt-1.5"
-                        />
-                      </div>
-                    </div>
-
-                    {formattedError ? (
-                      <div
-                        role="alert"
-                        className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs leading-relaxed text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
-                      >
-                        <p>{formattedError.text}</p>
-                        {formattedError.suggestSwitchToLogin ? (
-                          <button
-                            type="button"
-                            onClick={() => switchMode("login")}
-                            className="mt-1.5 cursor-pointer font-semibold underline underline-offset-2"
-                          >
-                            直接用该邮箱登录 →
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
-
-                    <AppButton
-                      type="submit"
-                      variant="primary"
-                      size="lg"
-                      fullWidth={true}
-                      isLoading={registerMutation.isPending}
-                      disabled={
-                        !isEmailShapeValid ||
-                        verificationCode.length !== 6 ||
-                        trimmedDisplayName.length === 0 ||
-                        password.length < PASSWORD_MIN_LENGTH ||
-                        confirmPassword !== password
-                      }
-                      className="h-11 rounded-full text-[14px] font-medium"
-                      trailingIcon={
-                        !registerMutation.isPending ? (
-                          <ArrowRight aria-hidden="true" className="h-4 w-4" />
-                        ) : undefined
-                      }
-                    >
-                      {registerMutation.isPending ? "正在创建账号..." : "完成注册并进入"}
-                    </AppButton>
-                  </motion.form>
-                ) : (
-                  <motion.form
-                    key="auth-reset"
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 10 }}
-                    transition={{ duration: 0.16, ease: "easeOut" }}
-                    onSubmit={handleResetSubmit}
-                    className="space-y-4"
-                  >
-                    <div className="select-none">
-                      <AppButton
-                        type="button"
-                        variant="ghost"
-                        size="xs"
-                        leadingIcon={<ArrowLeft aria-hidden="true" className="h-3.5 w-3.5" />}
-                        onClick={() => switchMode("login")}
-                        className="-ml-2.5"
-                      >
-                        返回登录
-                      </AppButton>
-                      <h2 className="mt-2.5 text-[22px] font-semibold tracking-[-0.02em] text-[#141414] dark:text-zinc-100">
-                        重置登录密码
-                      </h2>
-                      <p className="mt-1 text-[13px] leading-relaxed text-[#6E6E73] dark:text-zinc-400">
-                        通过邮箱接收 6 位验证码重设密码；早期无密码老用户也可在此直接设置登录密码。
-                      </p>
-                    </div>
-
-                    {emailDeliveryMode === "unavailable" ? (
-                      <div className="flex items-start gap-2 rounded-2xl border border-[#D97706]/30 bg-[#FEF3C7]/70 px-3.5 py-2.5 text-[12px] leading-relaxed text-[#92400E] dark:border-[#F59E0B]/25 dark:bg-[#451A03]/35 dark:text-[#FCD34D]">
-                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        <span>当前服务器尚未配置 SMTP 发信服务，暂无法发送重置邮件。</span>
-                      </div>
-                    ) : null}
-
-                    <div className="space-y-3">
-                      <div>
-                        <label htmlFor="auth-reset-email" className={LABEL_CLASS}>
-                          注册邮箱
-                        </label>
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <AppInput
-                            id="auth-reset-email"
-                            type="email"
-                            size="lg"
-                            required={true}
-                            autoComplete="email"
-                            value={email}
-                            onChange={(e) => {
-                              setEmail(e.target.value);
-                              setLocalValidationError(null);
-                            }}
-                            leadingIcon={<Mail className="h-4 w-4" />}
-                            placeholder="you@example.com"
-                            containerClassName="flex-1"
-                          />
-                          <AppButton
-                            type="button"
-                            variant="secondary"
-                            size="lg"
-                            isLoading={requestResetCodeMutation.isPending}
-                            disabled={
-                              !isEmailShapeValid ||
-                              resetCooldownSec > 0 ||
-                              emailDeliveryMode === "unavailable"
-                            }
-                            onClick={handleSendResetCode}
-                            leadingIcon={
-                              !requestResetCodeMutation.isPending && resetCooldownSec === 0 ? (
-                                <Send className="h-3.5 w-3.5" />
-                              ) : undefined
-                            }
-                            className="h-10 shrink-0 rounded-xl px-3.5 text-xs font-medium whitespace-nowrap"
-                          >
-                            {resetCooldownSec > 0
-                              ? `${resetCooldownSec}s 后重发`
-                              : resetCodeMeta
-                                ? "重新发送"
-                                : "发送验证码"}
-                          </AppButton>
-                        </div>
-                      </div>
-
-                      {activeDevOtpMeta ? (
-                        activeDevOtpMeta.devOtpCode !== undefined ? (
-                          <div className="select-none rounded-2xl bg-[#E3F3EC] px-3.5 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#16271F] dark:ring-white/[0.08]">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[11.5px] font-medium text-[#1E5638] dark:text-[#86E0A6]">
-                                开发模式重置码
-                              </span>
-                              <div className="flex items-center gap-2">
-                                <code className="rounded-md bg-white/90 px-2 py-0.5 font-mono text-xs font-semibold tracking-widest text-[#141414] ring-1 ring-black/[0.06] dark:bg-black/30 dark:text-zinc-100 dark:ring-white/[0.1]">
-                                  {activeDevOtpMeta.devOtpCode}
-                                </code>
+                            <div className="flex select-none items-center justify-between gap-2 pt-0.5 text-[12px] text-[#8E8E93] dark:text-zinc-500">
+                              <span>开源 · 可私有化部署</span>
+                              {allowPublicSignup ? (
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    setVerificationCode(activeDevOtpMeta.devOtpCode ?? "")
-                                  }
-                                  className="cursor-pointer rounded-full bg-[#141414] px-2.5 py-1 text-[11px] font-medium text-white transition hover:opacity-85 dark:bg-white dark:text-[#141414]"
+                                  onClick={() => switchMode("register")}
+                                  className="cursor-pointer font-medium text-[#141414] underline-offset-4 hover:underline dark:text-zinc-200"
                                 >
-                                  一键填入
+                                  还没有账号？去注册
                                 </button>
+                              ) : null}
+                            </div>
+                          </motion.form>
+                        ) : mode === "register" ? (
+                          <motion.form
+                            key="auth-register"
+                            initial={reducedMotion ? false : { opacity: 0, x: 10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: 10 }}
+                            transition={{ duration: 0.16, ease: "easeOut" }}
+                            onSubmit={handleRegisterSubmit}
+                            className="space-y-3.5 sm:space-y-4"
+                          >
+                            <div className="select-none">
+                              <h2 className="text-[19px] font-semibold tracking-[-0.02em] text-[#141414] sm:text-[22px] dark:text-zinc-100">
+                                创建你的账号
+                              </h2>
+                              <p className="mt-1 text-[12.5px] leading-relaxed text-[#6E6E73] sm:text-[13px] dark:text-zinc-400">
+                                先验证邮箱收到的 6 位激活码，再设置登录密码即可开启协作。
+                              </p>
+                            </div>
+
+                            {allowedEmailDomains.length > 0 ? (
+                              <div className="flex items-start gap-2 rounded-2xl bg-im-surface-muted px-3.5 py-2 text-[12px] leading-relaxed text-[#52525B] dark:bg-white/[0.05] dark:text-zinc-300">
+                                <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#2A7B59] dark:text-[#5ED3A2]" />
+                                <span>
+                                  仅允许使用{" "}
+                                  {allowedEmailDomains.map((domain) => `@${domain}`).join("、")}{" "}
+                                  邮箱注册
+                                </span>
+                              </div>
+                            ) : null}
+
+                            {emailDeliveryMode === "unavailable" ? (
+                              <div className="flex items-start gap-2 rounded-2xl border border-[#D97706]/30 bg-[#FEF3C7]/70 px-3.5 py-2.5 text-[12px] leading-relaxed text-[#92400E] dark:border-[#F59E0B]/25 dark:bg-[#451A03]/35 dark:text-[#FCD34D]">
+                                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                <span>
+                                  当前服务器尚未配置 SMTP
+                                  发信服务，暂无法下发注册验证邮件，请联系管理员。
+                                </span>
+                              </div>
+                            ) : null}
+
+                            <div className="space-y-3">
+                              <div>
+                                <label htmlFor="auth-reg-email" className={LABEL_CLASS}>
+                                  邮箱地址
+                                </label>
+                                <div className="mt-1.5 flex flex-col gap-2 sm:flex-row sm:items-center">
+                                  <AppInput
+                                    ref={emailInputRef}
+                                    id="auth-reg-email"
+                                    type="email"
+                                    inputMode="email"
+                                    enterKeyHint="next"
+                                    size="lg"
+                                    required={true}
+                                    autoComplete="email"
+                                    value={email}
+                                    onChange={(e) => {
+                                      setEmail(e.target.value);
+                                      setLocalValidationError(null);
+                                    }}
+                                    leadingIcon={<Mail className="h-4 w-4" />}
+                                    placeholder="you@example.com"
+                                    containerClassName="w-full sm:min-w-0 sm:flex-1"
+                                  />
+                                  <AppButton
+                                    type="button"
+                                    variant="secondary"
+                                    size="lg"
+                                    isLoading={requestRegisterCodeMutation.isPending}
+                                    disabled={
+                                      !isEmailShapeValid ||
+                                      registerCooldownSec > 0 ||
+                                      emailDeliveryMode === "unavailable"
+                                    }
+                                    onClick={handleSendRegisterCode}
+                                    leadingIcon={
+                                      !requestRegisterCodeMutation.isPending &&
+                                      registerCooldownSec === 0 ? (
+                                        <Send className="h-3.5 w-3.5" />
+                                      ) : undefined
+                                    }
+                                    className="h-10 w-full shrink-0 justify-center rounded-xl px-3.5 text-xs font-medium whitespace-nowrap sm:w-auto"
+                                  >
+                                    {registerCooldownSec > 0
+                                      ? `${registerCooldownSec}s 后重发`
+                                      : registerCodeMeta
+                                        ? "重新发送"
+                                        : "发送验证码"}
+                                  </AppButton>
+                                </div>
+                                <p
+                                  id="auth-reg-code-hint"
+                                  className="mt-1.5 text-[12px] leading-relaxed text-[#6E6E73] dark:text-zinc-400"
+                                >
+                                  如果收不到验证码，请检查邮箱的垃圾邮件文件夹。
+                                </p>
+                              </div>
+
+                              {/* 发送成功回执（真实 SMTP 或开发模式快捷码） */}
+                              {activeDevOtpMeta ? (
+                                activeDevOtpMeta.devOtpCode !== undefined ? (
+                                  <div className="select-none rounded-2xl bg-[#E3F3EC] px-3.5 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#16271F] dark:ring-white/[0.08]">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-[11.5px] font-medium text-[#1E5638] dark:text-[#86E0A6]">
+                                        开发模式验证码
+                                      </span>
+                                      <div className="flex items-center gap-2">
+                                        <code className="rounded-md bg-white/90 px-2 py-0.5 font-mono text-xs font-semibold tracking-widest text-[#141414] ring-1 ring-black/[0.06] dark:bg-black/30 dark:text-zinc-100 dark:ring-white/[0.1]">
+                                          {activeDevOtpMeta.devOtpCode}
+                                        </code>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setVerificationCode(activeDevOtpMeta.devOtpCode ?? "")
+                                          }
+                                          className="cursor-pointer rounded-full bg-[#141414] px-2.5 py-1 text-[11px] font-medium text-white transition hover:opacity-85 dark:bg-white dark:text-[#141414]"
+                                        >
+                                          一键填入
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="flex items-center gap-1.5 rounded-xl bg-[#E3F3EC]/80 px-3 py-2 text-[12px] text-[#1E5638] dark:bg-[#16271F] dark:text-[#86E0A6]">
+                                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                                    <span>
+                                      验证码已发往 {activeDevOtpMeta.email}（
+                                      {Math.round(activeDevOtpMeta.expiresInSec / 60)} 分钟内有效）
+                                    </span>
+                                  </p>
+                                )
+                              ) : null}
+
+                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                <div>
+                                  <label htmlFor="auth-reg-code" className={LABEL_CLASS}>
+                                    6 位邮箱验证码
+                                  </label>
+                                  <AppInput
+                                    id="auth-reg-code"
+                                    aria-describedby="auth-reg-code-hint"
+                                    type="text"
+                                    size="lg"
+                                    inputMode="numeric"
+                                    autoComplete="one-time-code"
+                                    maxLength={6}
+                                    required={true}
+                                    value={verificationCode}
+                                    onChange={(e) => {
+                                      setVerificationCode(
+                                        e.target.value.replace(/\D/g, "").slice(0, 6),
+                                      );
+                                      setLocalValidationError(null);
+                                    }}
+                                    leadingIcon={<KeyRound className="h-4 w-4" />}
+                                    placeholder="000000"
+                                    className="font-mono tracking-[0.22em] placeholder:tracking-[0.22em]"
+                                    containerClassName="mt-1.5"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label htmlFor="auth-reg-name" className={LABEL_CLASS}>
+                                    你的名字
+                                  </label>
+                                  <AppInput
+                                    id="auth-reg-name"
+                                    type="text"
+                                    size="lg"
+                                    maxLength={80}
+                                    required={true}
+                                    autoComplete="name"
+                                    value={displayName}
+                                    onChange={(e) => {
+                                      setDisplayName(e.target.value);
+                                      setLocalValidationError(null);
+                                    }}
+                                    leadingIcon={<User className="h-4 w-4" />}
+                                    placeholder="例如：庞彦 / Alex"
+                                    containerClassName="mt-1.5"
+                                  />
+                                </div>
+                              </div>
+
+                              <div>
+                                <label htmlFor="auth-reg-password" className={LABEL_CLASS}>
+                                  设置密码
+                                </label>
+                                <AppInput
+                                  id="auth-reg-password"
+                                  type={showPassword ? "text" : "password"}
+                                  size="lg"
+                                  required={true}
+                                  minLength={PASSWORD_MIN_LENGTH}
+                                  autoComplete="new-password"
+                                  value={password}
+                                  onChange={(e) => {
+                                    setPassword(e.target.value);
+                                    setLocalValidationError(null);
+                                  }}
+                                  leadingIcon={<Lock className="h-4 w-4" />}
+                                  trailingSlot={passwordToggleButton}
+                                  placeholder={`至少 ${PASSWORD_MIN_LENGTH} 位字符`}
+                                  containerClassName="mt-1.5"
+                                />
+                                <PasswordStrengthMeter password={password} />
+                              </div>
+
+                              <div>
+                                <label htmlFor="auth-reg-password-confirm" className={LABEL_CLASS}>
+                                  确认密码
+                                </label>
+                                <AppInput
+                                  id="auth-reg-password-confirm"
+                                  type={showConfirmPassword ? "text" : "password"}
+                                  size="lg"
+                                  required={true}
+                                  autoComplete="new-password"
+                                  value={confirmPassword}
+                                  invalid={
+                                    confirmPassword.length > 0 && confirmPassword !== password
+                                  }
+                                  onChange={(e) => {
+                                    setConfirmPassword(e.target.value);
+                                    setLocalValidationError(null);
+                                  }}
+                                  leadingIcon={<Lock className="h-4 w-4" />}
+                                  trailingSlot={confirmPasswordToggleButton}
+                                  placeholder="再次输入密码"
+                                  containerClassName="mt-1.5"
+                                />
                               </div>
                             </div>
-                          </div>
+
+                            {formattedError ? (
+                              <div
+                                role="alert"
+                                className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs leading-relaxed text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
+                              >
+                                <p>{formattedError.text}</p>
+                                {formattedError.suggestSwitchToLogin ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => switchMode("login")}
+                                    className="mt-1.5 inline-flex cursor-pointer items-center gap-1 font-semibold underline underline-offset-2"
+                                  >
+                                    <span>直接用该邮箱登录</span>
+                                    <ArrowRight aria-hidden="true" className="h-3 w-3" />
+                                  </button>
+                                ) : null}
+                              </div>
+                            ) : null}
+
+                            <AppButton
+                              type="submit"
+                              variant="primary"
+                              size="lg"
+                              fullWidth={true}
+                              isLoading={registerMutation.isPending}
+                              disabled={
+                                !isEmailShapeValid ||
+                                verificationCode.length !== 6 ||
+                                trimmedDisplayName.length === 0 ||
+                                password.length < PASSWORD_MIN_LENGTH ||
+                                confirmPassword !== password
+                              }
+                              className="h-10.5 rounded-full text-[14px] font-medium sm:h-11"
+                              trailingIcon={
+                                !registerMutation.isPending ? (
+                                  <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                                ) : undefined
+                              }
+                            >
+                              {registerMutation.isPending ? "正在创建账号..." : "完成注册并进入"}
+                            </AppButton>
+                          </motion.form>
                         ) : (
-                          <p className="flex items-center gap-1.5 rounded-xl bg-[#E3F3EC]/80 px-3 py-2 text-[12px] text-[#1E5638] dark:bg-[#16271F] dark:text-[#86E0A6]">
-                            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                            <span>如果该邮箱已注册，6 位重置验证码已发往你的收件箱。</span>
-                          </p>
-                        )
-                      ) : null}
+                          <motion.form
+                            key="auth-reset"
+                            initial={reducedMotion ? false : { opacity: 0, x: 10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: 10 }}
+                            transition={{ duration: 0.16, ease: "easeOut" }}
+                            onSubmit={handleResetSubmit}
+                            className="space-y-3.5 sm:space-y-4"
+                          >
+                            <div className="select-none">
+                              <AppButton
+                                type="button"
+                                variant="ghost"
+                                size="xs"
+                                leadingIcon={
+                                  <ArrowLeft aria-hidden="true" className="h-3.5 w-3.5" />
+                                }
+                                onClick={() => switchMode("login")}
+                                className="-ml-2.5"
+                              >
+                                返回登录
+                              </AppButton>
+                              <h2 className="mt-2 text-[19px] font-semibold tracking-[-0.02em] text-[#141414] sm:text-[22px] dark:text-zinc-100">
+                                重置登录密码
+                              </h2>
+                              <p className="mt-1 text-[12.5px] leading-relaxed text-[#6E6E73] sm:text-[13px] dark:text-zinc-400">
+                                通过邮箱接收 6
+                                位验证码重设密码；早期无密码老用户也可在此直接设置登录密码。
+                              </p>
+                            </div>
 
-                      <div>
-                        <label htmlFor="auth-reset-code" className={LABEL_CLASS}>
-                          6 位邮箱验证码
-                        </label>
-                        <AppInput
-                          id="auth-reset-code"
-                          type="text"
-                          size="lg"
-                          inputMode="numeric"
-                          autoComplete="one-time-code"
-                          maxLength={6}
-                          required={true}
-                          value={verificationCode}
-                          onChange={(e) => {
-                            setVerificationCode(e.target.value.replace(/\D/g, "").slice(0, 6));
-                            setLocalValidationError(null);
-                          }}
-                          leadingIcon={<KeyRound className="h-4 w-4" />}
-                          placeholder="000000"
-                          className="font-mono tracking-[0.28em] placeholder:tracking-[0.28em]"
-                          containerClassName="mt-1.5"
-                        />
-                      </div>
+                            {emailDeliveryMode === "unavailable" ? (
+                              <div className="flex items-start gap-2 rounded-2xl border border-[#D97706]/30 bg-[#FEF3C7]/70 px-3.5 py-2.5 text-[12px] leading-relaxed text-[#92400E] dark:border-[#F59E0B]/25 dark:bg-[#451A03]/35 dark:text-[#FCD34D]">
+                                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                <span>当前服务器尚未配置 SMTP 发信服务，暂无法发送重置邮件。</span>
+                              </div>
+                            ) : null}
 
-                      <div>
-                        <label htmlFor="auth-reset-password" className={LABEL_CLASS}>
-                          新密码
-                        </label>
-                        <AppInput
-                          id="auth-reset-password"
-                          type={showPassword ? "text" : "password"}
-                          size="lg"
-                          required={true}
-                          minLength={PASSWORD_MIN_LENGTH}
-                          autoComplete="new-password"
-                          value={password}
-                          onChange={(e) => {
-                            setPassword(e.target.value);
-                            setLocalValidationError(null);
-                          }}
-                          leadingIcon={<Lock className="h-4 w-4" />}
-                          trailingSlot={passwordToggleButton}
-                          placeholder={`至少 ${PASSWORD_MIN_LENGTH} 位字符`}
-                          containerClassName="mt-1.5"
-                        />
-                        <PasswordStrengthMeter password={password} />
-                      </div>
+                            <div className="space-y-3">
+                              <div>
+                                <label htmlFor="auth-reset-email" className={LABEL_CLASS}>
+                                  注册邮箱
+                                </label>
+                                <div className="mt-1.5 flex flex-col gap-2 sm:flex-row sm:items-center">
+                                  <AppInput
+                                    ref={emailInputRef}
+                                    id="auth-reset-email"
+                                    type="email"
+                                    inputMode="email"
+                                    enterKeyHint="next"
+                                    size="lg"
+                                    required={true}
+                                    autoComplete="email"
+                                    value={email}
+                                    onChange={(e) => {
+                                      setEmail(e.target.value);
+                                      setLocalValidationError(null);
+                                    }}
+                                    leadingIcon={<Mail className="h-4 w-4" />}
+                                    placeholder="you@example.com"
+                                    containerClassName="w-full sm:min-w-0 sm:flex-1"
+                                  />
+                                  <AppButton
+                                    type="button"
+                                    variant="secondary"
+                                    size="lg"
+                                    isLoading={requestResetCodeMutation.isPending}
+                                    disabled={
+                                      !isEmailShapeValid ||
+                                      resetCooldownSec > 0 ||
+                                      emailDeliveryMode === "unavailable"
+                                    }
+                                    onClick={handleSendResetCode}
+                                    leadingIcon={
+                                      !requestResetCodeMutation.isPending &&
+                                      resetCooldownSec === 0 ? (
+                                        <Send className="h-3.5 w-3.5" />
+                                      ) : undefined
+                                    }
+                                    className="h-10 w-full shrink-0 justify-center rounded-xl px-3.5 text-xs font-medium whitespace-nowrap sm:w-auto"
+                                  >
+                                    {resetCooldownSec > 0
+                                      ? `${resetCooldownSec}s 后重发`
+                                      : resetCodeMeta
+                                        ? "重新发送"
+                                        : "发送验证码"}
+                                  </AppButton>
+                                </div>
+                              </div>
 
-                      <div>
-                        <label htmlFor="auth-reset-password-confirm" className={LABEL_CLASS}>
-                          确认新密码
-                        </label>
-                        <AppInput
-                          id="auth-reset-password-confirm"
-                          type={showConfirmPassword ? "text" : "password"}
-                          size="lg"
-                          required={true}
-                          autoComplete="new-password"
-                          value={confirmPassword}
-                          invalid={confirmPassword.length > 0 && confirmPassword !== password}
-                          onChange={(e) => {
-                            setConfirmPassword(e.target.value);
-                            setLocalValidationError(null);
-                          }}
-                          leadingIcon={<Lock className="h-4 w-4" />}
-                          trailingSlot={confirmPasswordToggleButton}
-                          placeholder="再次输入新密码"
-                          containerClassName="mt-1.5"
-                        />
-                      </div>
+                              {activeDevOtpMeta ? (
+                                activeDevOtpMeta.devOtpCode !== undefined ? (
+                                  <div className="select-none rounded-2xl bg-[#E3F3EC] px-3.5 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#16271F] dark:ring-white/[0.08]">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-[11.5px] font-medium text-[#1E5638] dark:text-[#86E0A6]">
+                                        开发模式重置码
+                                      </span>
+                                      <div className="flex items-center gap-2">
+                                        <code className="rounded-md bg-white/90 px-2 py-0.5 font-mono text-xs font-semibold tracking-widest text-[#141414] ring-1 ring-black/[0.06] dark:bg-black/30 dark:text-zinc-100 dark:ring-white/[0.1]">
+                                          {activeDevOtpMeta.devOtpCode}
+                                        </code>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setVerificationCode(activeDevOtpMeta.devOtpCode ?? "")
+                                          }
+                                          className="cursor-pointer rounded-full bg-[#141414] px-2.5 py-1 text-[11px] font-medium text-white transition hover:opacity-85 dark:bg-white dark:text-[#141414]"
+                                        >
+                                          一键填入
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="flex items-center gap-1.5 rounded-xl bg-[#E3F3EC]/80 px-3 py-2 text-[12px] text-[#1E5638] dark:bg-[#16271F] dark:text-[#86E0A6]">
+                                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                                    <span>如果该邮箱已注册，6 位重置验证码已发往你的收件箱。</span>
+                                  </p>
+                                )
+                              ) : null}
+
+                              <div>
+                                <label htmlFor="auth-reset-code" className={LABEL_CLASS}>
+                                  6 位邮箱验证码
+                                </label>
+                                <AppInput
+                                  id="auth-reset-code"
+                                  type="text"
+                                  size="lg"
+                                  inputMode="numeric"
+                                  autoComplete="one-time-code"
+                                  maxLength={6}
+                                  required={true}
+                                  value={verificationCode}
+                                  onChange={(e) => {
+                                    setVerificationCode(
+                                      e.target.value.replace(/\D/g, "").slice(0, 6),
+                                    );
+                                    setLocalValidationError(null);
+                                  }}
+                                  leadingIcon={<KeyRound className="h-4 w-4" />}
+                                  placeholder="000000"
+                                  className="font-mono tracking-[0.28em] placeholder:tracking-[0.28em]"
+                                  containerClassName="mt-1.5"
+                                />
+                              </div>
+
+                              <div>
+                                <label htmlFor="auth-reset-password" className={LABEL_CLASS}>
+                                  新密码
+                                </label>
+                                <AppInput
+                                  id="auth-reset-password"
+                                  type={showPassword ? "text" : "password"}
+                                  size="lg"
+                                  required={true}
+                                  minLength={PASSWORD_MIN_LENGTH}
+                                  autoComplete="new-password"
+                                  value={password}
+                                  onChange={(e) => {
+                                    setPassword(e.target.value);
+                                    setLocalValidationError(null);
+                                  }}
+                                  leadingIcon={<Lock className="h-4 w-4" />}
+                                  trailingSlot={passwordToggleButton}
+                                  placeholder={`至少 ${PASSWORD_MIN_LENGTH} 位字符`}
+                                  containerClassName="mt-1.5"
+                                />
+                                <PasswordStrengthMeter password={password} />
+                              </div>
+
+                              <div>
+                                <label
+                                  htmlFor="auth-reset-password-confirm"
+                                  className={LABEL_CLASS}
+                                >
+                                  确认新密码
+                                </label>
+                                <AppInput
+                                  id="auth-reset-password-confirm"
+                                  type={showConfirmPassword ? "text" : "password"}
+                                  size="lg"
+                                  required={true}
+                                  autoComplete="new-password"
+                                  value={confirmPassword}
+                                  invalid={
+                                    confirmPassword.length > 0 && confirmPassword !== password
+                                  }
+                                  onChange={(e) => {
+                                    setConfirmPassword(e.target.value);
+                                    setLocalValidationError(null);
+                                  }}
+                                  leadingIcon={<Lock className="h-4 w-4" />}
+                                  trailingSlot={confirmPasswordToggleButton}
+                                  placeholder="再次输入新密码"
+                                  containerClassName="mt-1.5"
+                                />
+                              </div>
+                            </div>
+
+                            {formattedError ? (
+                              <div
+                                role="alert"
+                                className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs leading-relaxed text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
+                              >
+                                {formattedError.text}
+                              </div>
+                            ) : null}
+
+                            <AppButton
+                              type="submit"
+                              variant="primary"
+                              size="lg"
+                              fullWidth={true}
+                              isLoading={confirmResetMutation.isPending}
+                              disabled={
+                                !isEmailShapeValid ||
+                                verificationCode.length !== 6 ||
+                                password.length < PASSWORD_MIN_LENGTH ||
+                                confirmPassword !== password
+                              }
+                              className="h-10.5 rounded-full text-[14px] font-medium sm:h-11"
+                              trailingIcon={
+                                !confirmResetMutation.isPending ? (
+                                  <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                                ) : undefined
+                              }
+                            >
+                              {confirmResetMutation.isPending
+                                ? "正在更新密码..."
+                                : "重置密码并登录"}
+                            </AppButton>
+                          </motion.form>
+                        )}
+                      </AnimatePresence>
                     </div>
+                  )}
+                </motion.div>
+              </div>
 
-                    {formattedError ? (
-                      <div
-                        role="alert"
-                        className="rounded-2xl border border-[#FF3B30]/25 bg-[#FF3B30]/[0.07] px-3.5 py-2.5 text-xs leading-relaxed text-[#D70015] dark:bg-[#FF453A]/12 dark:text-[#FF6961]"
-                      >
-                        {formattedError.text}
-                      </div>
-                    ) : null}
+              {/* 块 C：双模实景预览器（全视口断点可达，不再在 <lg 隐藏） */}
+              <div
+                id="portal-preview"
+                className="mx-auto w-full max-w-2xl min-w-0 scroll-mt-4 lg:col-span-7 lg:col-start-1 lg:row-start-2 lg:max-w-none"
+              >
+                <motion.div
+                  initial={reducedMotion ? false : { opacity: 0, y: 14 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ type: "spring", stiffness: 360, damping: 32, delay: 0.06 }}
+                >
+                  <PortalHeroPreview />
+                </motion.div>
+              </div>
+            </section>
 
-                    <AppButton
-                      type="submit"
-                      variant="primary"
-                      size="lg"
-                      fullWidth={true}
-                      isLoading={confirmResetMutation.isPending}
-                      disabled={
-                        !isEmailShapeValid ||
-                        verificationCode.length !== 6 ||
-                        password.length < PASSWORD_MIN_LENGTH ||
-                        confirmPassword !== password
-                      }
-                      className="h-11 rounded-full text-[14px] font-medium"
-                      trailingIcon={
-                        !confirmResetMutation.isPending ? (
-                          <ArrowRight aria-hidden="true" className="h-4 w-4" />
-                        ) : undefined
-                      }
-                    >
-                      {confirmResetMutation.isPending ? "正在更新密码..." : "重置密码并登录"}
-                    </AppButton>
-                  </motion.form>
-                )}
-              </AnimatePresence>
-            </motion.div>
-          </section>
-        </div>
-      </main>
+            {/* 首屏下方三大门户分区 */}
+            <PortalCapabilitiesSection />
+
+            <PortalArchitectureSection onOpenPwaGuide={() => setPwaGuideOpen(true)} />
+
+            <PortalOpenSourceContactSection
+              isAuthenticatedWelcome={isAuthenticatedWelcome}
+              onPrimaryAuthOrReturn={handleJumpToAuthOrReturn}
+            />
+
+            <PortalFooter onScrollToTop={scrollToTop} />
+          </div>
+        </main>
+      </AppContextMenu>
+
+      <PwaInstallGuideModal open={pwaGuideOpen} onClose={() => setPwaGuideOpen(false)} />
     </div>
   );
 }
 
 /**
- * 向后兼容旧导出名（指向升级后的 `AuthScreen` 完整邮箱+密码注册与登录页）。
+ * 向后兼容旧导出名（指向升级后的 `AuthScreen` 首页门户与认证入口）。
  */
 export const OtpSignInScreen = AuthScreen;

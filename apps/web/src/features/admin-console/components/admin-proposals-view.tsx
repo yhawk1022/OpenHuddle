@@ -70,9 +70,11 @@ export function AdminProposalsView(props: {
   return (
     <div className="space-y-4">
       <div className="oh-elevated-card flex flex-wrap items-center gap-2.5 rounded-2xl p-3.5">
-        <div className="min-w-[220px] flex-1">
+        <div className="w-full sm:min-w-[220px] sm:flex-1">
           <AppInput
             size="sm"
+            type="search"
+            enterKeyHint="search"
             value={searchInput}
             onChange={(e) => {
               setSearchInput(e.target.value);
@@ -99,7 +101,7 @@ export function AdminProposalsView(props: {
           />
         </div>
 
-        <div className="w-44">
+        <div className="w-full sm:w-44">
           <AppSelect
             size="sm"
             value={statusFilter}
@@ -132,7 +134,7 @@ export function AdminProposalsView(props: {
           />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto overscroll-x-contain">
               <table className="w-full min-w-[820px] border-collapse text-left text-[13px]">
                 <thead>
                   <tr className="border-b border-black/[0.06] bg-black/[0.02] text-[11.5px] font-semibold text-[#687082] dark:border-white/[0.07] dark:bg-white/[0.02] dark:text-[#8E96AB]">

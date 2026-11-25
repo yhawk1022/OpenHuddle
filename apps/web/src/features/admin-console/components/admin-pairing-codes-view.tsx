@@ -74,21 +74,25 @@ export function AdminPairingCodesView() {
   return (
     <div className="space-y-4">
       <div className="oh-elevated-card flex flex-wrap items-center justify-between gap-3 rounded-2xl p-3.5">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <SegmentedTabs
-            value={statusFilter}
-            onValueChange={(next) => {
-              setStatusFilter(next);
-              setPage(1);
-            }}
-            items={CODE_STATUS_TABS}
-            size="sm"
-            ariaLabel="按配对码状态筛选"
-          />
+        <div className="flex w-full flex-wrap items-center gap-2.5 sm:w-auto">
+          <div className="no-scrollbar max-w-full overflow-x-auto">
+            <SegmentedTabs
+              value={statusFilter}
+              onValueChange={(next) => {
+                setStatusFilter(next);
+                setPage(1);
+              }}
+              items={CODE_STATUS_TABS}
+              size="sm"
+              ariaLabel="按配对码状态筛选"
+            />
+          </div>
 
-          <div className="w-60 sm:w-72">
+          <div className="w-full sm:w-72">
             <AppInput
               size="sm"
+              type="search"
+              enterKeyHint="search"
               value={searchInput}
               onChange={(e) => {
                 setSearchInput(e.target.value);
@@ -119,6 +123,7 @@ export function AdminPairingCodesView() {
         <AppButton
           variant="secondary"
           size="sm"
+          className="w-full sm:w-auto"
           isLoading={purgeMutation.isPending}
           leadingIcon={<Eraser className="h-3.5 w-3.5" />}
           onClick={() => purgeMutation.mutate()}
@@ -144,7 +149,7 @@ export function AdminPairingCodesView() {
           />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto overscroll-x-contain">
               <table className="w-full min-w-[780px] border-collapse text-left text-[13px]">
                 <thead>
                   <tr className="border-b border-black/[0.06] bg-black/[0.02] text-[11.5px] font-semibold text-[#687082] dark:border-white/[0.07] dark:bg-white/[0.02] dark:text-[#8E96AB]">

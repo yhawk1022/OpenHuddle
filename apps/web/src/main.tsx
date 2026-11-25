@@ -7,15 +7,22 @@
  * 2. 路由极简隔离：`/share/:inviteToken` 走公开只读会话回放视图，其余路径走认证多智能体 IM 工作台。
  */
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { StrictMode, Suspense, lazy, useLayoutEffect } from "react";
+import { StrictMode, Suspense, lazy, useEffect, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { AppToaster, AppTooltipProvider } from "./components/primitives/index.js";
-import { currentMeQueryOptions } from "./features/auth-pairing/index.js";
+import {
+  AppToaster,
+  AppTooltipProvider,
+  MotionConfig,
+  startDisplayRefreshRuntime,
+} from "./components/primitives/index.js";
+import { AuthScreen, currentMeQueryOptions } from "./features/auth-pairing/index.js";
 import { WorkspaceShell } from "./features/huddle-room/components/workspace-shell.js";
 import { PublicSharePage } from "./features/public-share/index.js";
+import { startPwaInstallRuntime } from "./features/pwa-install/index.js";
 import { createAppQueryClient } from "./lib/query-client.js";
 import { useBrowserLocation } from "./lib/session-store.js";
-import { startThemeSync } from "./lib/theme-store.js";
+import { startThemeSync, useGuestThemePreference } from "./lib/theme-store.js";
+import { startVisualViewportSync } from "./lib/viewport-sync.js";
 import "./styles.css";
 
 const queryClient = createAppQueryClient();
@@ -27,6 +34,14 @@ const LazyAdminConsolePage = lazy(() =>
   })),
 );
 
+function safeDecodeUriSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 /**
  * 顶层客户端路由分发器。
  *
@@ -37,20 +52,34 @@ export function AppRoot() {
   const shareMatch = /^\/share\/([^/?#]+)/.exec(location.pathname);
   // 只观察认证入口的自省结果，公开页面无需额外发起身份请求。
   const meQuery = useQuery({ ...currentMeQueryOptions(), enabled: false });
+  const guestPreference = useGuestThemePreference();
   const authenticated =
     shareMatch === null && !meQuery.isError && meQuery.data?.callerKind === "human";
-  const preference = authenticated ? (meQuery.data?.themePreference ?? "auto") : "dark";
+  const preference = authenticated
+    ? (meQuery.data?.themePreference ?? "auto")
+    : shareMatch !== null
+      ? "dark"
+      : guestPreference;
   useLayoutEffect(() => startThemeSync(preference), [preference]);
+  useLayoutEffect(() => startVisualViewportSync(), []);
+  useLayoutEffect(() => startDisplayRefreshRuntime(), []);
+  useEffect(() => {
+    startPwaInstallRuntime();
+  }, []);
 
   if (shareMatch?.[1] !== undefined) {
-    return <PublicSharePage inviteToken={decodeURIComponent(shareMatch[1])} />;
+    return <PublicSharePage inviteToken={safeDecodeUriSegment(shareMatch[1])} />;
+  }
+
+  if (/^\/welcome(\/|$)/.test(location.pathname)) {
+    return <AuthScreen portalMode="welcome" />;
   }
 
   if (/^\/admin(\/|$)/.test(location.pathname)) {
     return (
       <Suspense
         fallback={
-          <main className="flex h-dvh flex-col items-center justify-center gap-2 bg-app-frame text-im-fg">
+          <main className="flex h-vvh flex-col items-center justify-center gap-2 bg-app-frame text-im-fg">
             <span className="text-[15px] font-semibold tracking-[-0.015em]">OpenHuddle</span>
             <span className="text-xs text-im-muted">正在加载管理后台…</span>
           </main>
@@ -69,12 +98,14 @@ const rootElement = document.getElementById("root");
 if (rootElement) {
   createRoot(rootElement).render(
     <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <AppTooltipProvider delayDuration={150}>
-          <AppRoot />
-          <AppToaster />
-        </AppTooltipProvider>
-      </QueryClientProvider>
+      <MotionConfig reducedMotion="user">
+        <QueryClientProvider client={queryClient}>
+          <AppTooltipProvider delayDuration={150}>
+            <AppRoot />
+            <AppToaster />
+          </AppTooltipProvider>
+        </QueryClientProvider>
+      </MotionConfig>
     </StrictMode>,
   );
 }

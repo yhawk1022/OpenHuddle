@@ -64,7 +64,7 @@ export const AppSwitch = forwardRef<HTMLButtonElement, AppSwitchProps>(
         {...(name !== undefined ? { name } : {})}
         {...(ariaLabel !== undefined ? { "aria-label": ariaLabel } : {})}
         className={cn(
-          "app-no-drag peer relative inline-flex shrink-0 cursor-pointer items-center rounded-full p-0.5 outline-none transition-colors duration-200",
+          "app-no-drag group peer relative inline-flex shrink-0 cursor-pointer items-center rounded-full p-0.5 outline-none touch-manipulation transition-colors duration-200 ease-out",
           "bg-black/[0.11] hover:bg-black/[0.16]",
           "data-[state=checked]:bg-[#16A34A] data-[state=checked]:hover:bg-[#15803D]",
           "dark:bg-white/[0.12] dark:hover:bg-white/[0.18]",
@@ -77,7 +77,7 @@ export const AppSwitch = forwardRef<HTMLButtonElement, AppSwitchProps>(
       >
         <Switch.Thumb
           className={cn(
-            "pointer-events-none block rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.22)] ring-1 ring-black/[0.04] transition-transform duration-200 ease-out will-change-transform",
+            "pointer-events-none block rounded-full bg-white shadow-[0_1px_3px_rgba(0,0,0,0.24)] ring-1 ring-black/[0.04] transition-transform duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform group-active:scale-x-[1.08]",
             isSmall
               ? "h-4 w-4 data-[state=checked]:translate-x-4 data-[state=unchecked]:translate-x-0"
               : "h-5 w-5 data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0",

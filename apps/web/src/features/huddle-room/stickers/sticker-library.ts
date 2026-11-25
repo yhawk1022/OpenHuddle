@@ -11,6 +11,7 @@ import {
 } from "@openhuddle/protocol";
 import { roomMessageAttachmentPath } from "../../../lib/api-client.js";
 import { createClientOperationKey } from "../../../lib/format.js";
+import { getStoredSessionToken } from "../../../lib/session-store.js";
 
 const STORE_NAME = "stickers";
 const MAX_STICKERS = 48;
@@ -156,12 +157,18 @@ export async function saveRoomSticker(
     throw new Error("该消息没有可收藏的表情");
   }
 
-  const response = await fetch(roomMessageAttachmentPath(message.roomId, message.seq));
+  const sessionToken = getStoredSessionToken();
+  const response = await fetch(roomMessageAttachmentPath(message.roomId, message.seq), {
+    credentials: "include",
+    ...(sessionToken ? { headers: { Authorization: `Bearer ${sessionToken}` } } : {}),
+    signal: AbortSignal.timeout(15_000),
+  });
   if (!response.ok) {
     throw new Error("无法读取这条消息的表情，请稍后重试");
   }
   const blob = await response.blob();
-  if (blob.size !== attachment.byteLength || blob.type !== attachment.mimeType) {
+  const normalizedMime = blob.type.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (blob.size !== attachment.byteLength || normalizedMime !== attachment.mimeType.toLowerCase()) {
     throw new Error("无法读取这条消息的表情，请稍后重试");
   }
 

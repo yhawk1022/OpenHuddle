@@ -30,9 +30,9 @@ export interface AppSelectOption<T extends string = string> {
 export type AppSelectSize = "sm" | "md" | "lg";
 
 const SELECT_TRIGGER_SIZE_CLASS: Record<AppSelectSize, string> = {
-  sm: "h-8 rounded-xl px-2.5 text-xs gap-1.5",
-  md: "h-9 rounded-xl px-3 text-[13px] gap-2",
-  lg: "h-10 rounded-xl px-3.5 text-sm gap-2",
+  sm: "h-9 md:h-8 rounded-xl px-2.5 text-[13px] md:text-xs gap-1.5",
+  md: "h-10 md:h-9 rounded-xl px-3 text-[13.5px] md:text-[13px] gap-2",
+  lg: "h-11 md:h-10 rounded-xl px-3.5 text-sm gap-2",
 };
 
 /** `AppSelect` 入参属性 */
@@ -107,7 +107,7 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
         {...(id !== undefined ? { id } : {})}
         {...(ariaLabel !== undefined ? { "aria-label": ariaLabel } : {})}
         className={cn(
-          "app-no-drag group inline-flex w-full min-w-0 cursor-pointer select-none items-center justify-between text-left font-medium outline-none transition-all duration-150",
+          "app-no-drag group inline-flex w-full min-w-0 cursor-pointer select-none items-center justify-between text-left font-medium outline-none touch-manipulation transition-[transform,background-color,border-color,box-shadow,color] duration-[160ms] ease-[cubic-bezier(0.22,1,0.36,1)] active:scale-[0.99] active:duration-[60ms]",
           "border border-black/[0.10] bg-[#F6F7FA] text-[#111318]",
           "hover:bg-white hover:border-black/[0.16]",
           "focus-visible:bg-white focus-visible:border-[#181B22]/35 focus-visible:ring-[3px] focus-visible:ring-[#181B22]/[0.07] data-[state=open]:bg-white data-[state=open]:border-[#181B22]/35 data-[state=open]:ring-[3px] data-[state=open]:ring-[#181B22]/[0.07]",
@@ -146,8 +146,9 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
           position="popper"
           align={align}
           sideOffset={6}
+          collisionPadding={12}
           className={cn(
-            "relative liquid-glass-modal oh-floating-menu app-no-drag z-[95] max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-2xl p-1",
+            "relative liquid-glass-modal oh-floating-menu app-no-drag z-[95] max-h-[min(18rem,calc(var(--oh-vvh,100dvh)-2rem))] max-w-[calc(100vw-1.5rem)] min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-2xl p-1",
             "text-[#111318]",
             "dark:text-[#ECEFF6]",
             contentClassName,
@@ -160,7 +161,7 @@ export function AppSelect<T extends string = string>(props: AppSelectProps<T>) {
                 value={option.value}
                 disabled={Boolean(option.disabled)}
                 className={cn(
-                  "relative flex cursor-pointer select-none items-center gap-2 rounded-xl py-1.5 pr-8 pl-2.5 text-[13px] outline-none transition-colors",
+                  "relative flex cursor-pointer select-none items-center gap-2 rounded-xl py-2.5 md:py-1.5 pr-8 pl-2.5 text-[13.5px] md:text-[13px] outline-none transition-colors",
                   "text-[#3B414E] data-[highlighted]:bg-black/[0.04] data-[highlighted]:text-[#111318]",
                   "dark:text-[#B4BCD0] dark:data-[highlighted]:bg-white/[0.07] dark:data-[highlighted]:text-[#ECEFF6]",
                   "data-[state=checked]:font-semibold data-[state=checked]:text-[#111318] dark:data-[state=checked]:text-white",

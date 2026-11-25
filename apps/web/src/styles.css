@@ -302,37 +302,39 @@
 @keyframes oh-radix-menu-in {
   from {
     opacity: 0;
-    transform: scale(0.97) translateY(-2px);
+    transform: scale3d(0.965, 0.965, 1) translate3d(0, -3px, 0);
   }
   to {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: scale3d(1, 1, 1) translate3d(0, 0, 0);
   }
 }
 
 @keyframes oh-radix-menu-out {
   from {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: scale3d(1, 1, 1) translate3d(0, 0, 0);
   }
   to {
     opacity: 0;
-    transform: scale(0.98) translateY(-2px);
+    transform: scale3d(0.975, 0.975, 1) translate3d(0, -2px, 0);
   }
 }
 
 @keyframes oh-radix-tooltip-in {
   from {
     opacity: 0;
-    transform: scale(0.96);
+    transform: scale3d(0.95, 0.95, 1);
   }
   to {
     opacity: 1;
-    transform: scale(1);
+    transform: scale3d(1, 1, 1);
   }
 }
 
 .oh-floating-menu {
+  will-change: transform, opacity;
+  backface-visibility: hidden;
   transform-origin: var(
     --radix-popover-content-transform-origin,
     var(
@@ -343,14 +345,17 @@
 }
 
 .oh-floating-menu[data-state="open"] {
-  animation: oh-radix-menu-in 140ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: oh-radix-menu-in 150ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .oh-floating-menu[data-state="closed"] {
-  animation: oh-radix-menu-out 100ms ease-in forwards;
+  pointer-events: none;
+  animation: oh-radix-menu-out 110ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
 }
 
 .oh-tooltip-content {
+  will-change: transform, opacity;
+  backface-visibility: hidden;
   transform-origin: var(--radix-tooltip-content-transform-origin, center bottom);
 }
 
@@ -360,15 +365,32 @@
 }
 
 /* ─────────────────────────────────────────────────────────────
- * 2. 原生 App 外壳与有机自然柔雾衬底
+ * 2. 原生 App 外壳、可视视口锁定与有机自然柔雾衬底
  * ───────────────────────────────────────────────────────────── */
 html,
-body,
-#root {
+body {
+  width: 100%;
   height: 100%;
-  height: 100dvh;
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+#root {
+  position: fixed;
+  top: var(--oh-vv-offset-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--oh-vvh, 100dvh);
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.h-vvh {
+  height: var(--oh-vvh, 100dvh);
+}
+
+.min-h-vvh {
+  min-height: var(--oh-vvh, 100dvh);
 }
 
 html {
@@ -385,6 +407,34 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+/* 消除移动端 300ms 延迟与连点意外双击缩放 */
+button,
+a,
+summary,
+label,
+input,
+textarea,
+select,
+[role="button"],
+[role="tab"],
+[role="menuitem"],
+[role="option"],
+[role="switch"] {
+  touch-action: manipulation;
+}
+
+/* iOS Safari / WebKit 铁律兜底：移动端所有可聚焦输入控件计算字号 >= 16px，彻底根治点击自动放大页面 */
+@media (max-width: 767px), (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(
+      [type="color"]
+    ),
+  textarea,
+  select,
+  [contenteditable="true"] {
+    font-size: max(16px, 1em) !important;
+  }
 }
 
 /* 有机自然柔雾衬底：日光为清透雾蓝+暖香槟+薄荷雾+柔灰；暗夜为雾灰天光+暖陶沙+林间墨绿 */
@@ -433,6 +483,11 @@ body::before {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* 软键盘弹起时底部已被键盘物理垫起，自动归零 Home Indicator 冗余留白 */
+html[data-keyboard-open="true"] .pb-safe {
+  padding-bottom: 0px;
+}
+
 .pl-safe {
   padding-left: env(safe-area-inset-left, 0px);
 }
@@ -441,22 +496,48 @@ body::before {
   padding-right: env(safe-area-inset-right, 0px);
 }
 
+/* 横向触控滑轨隐藏滚动条 */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* ─────────────────────────────────────────────────────────────
  * 3. Apple Liquid Glass 五大光学表面原语 + 主舞台框架
  * ─────────────────────────────────────────────────────────────
  * 铁律：工具类自身绝不声明 `position: relative`（以免覆盖 `fixed` / `absolute`），
  * 宿主组件须自带 `relative` / `absolute` / `fixed` 以正确约束 `::before` 135° 菲涅尔高光边框。 */
 
-/* 原生触感按压反馈：<button className="im-press"> */
+/* 原生触感非对称按压反馈：按下 60ms 瞬时响应，松手 180ms 弹性复位 */
 @utility im-press {
-  transition: transform 120ms ease, background-color 150ms ease, color 150ms ease, opacity 150ms
-    ease;
+  transition:
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 140ms ease-out,
+    border-color 140ms ease-out, color 140ms ease-out, box-shadow 160ms ease-out, opacity 140ms
+    ease-out;
   -webkit-user-select: none;
   user-select: none;
+  touch-action: manipulation;
 
   &:active:not(:disabled) {
-    transform: scale(0.97);
+    transform: scale3d(0.968, 0.968, 1);
+    transition-duration: 60ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
   }
+}
+
+/* 独立 GPU 合成层提升：隔绝下方滚动时间线重绘与上方毛玻璃栏的互相失效 */
+@utility oh-gpu-layer {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+/* 引用跳转命中脉冲动效 */
+@utility oh-jump-flash {
+  animation: oh-msg-flash 1.35s cubic-bezier(0.22, 1, 0.36, 1) 1;
 }
 
 /* 主聊天舞台底壳（轻透底色 + 纯净高光边，不施加重度 blur 以确保消息流 120Hz 顺滑） */
@@ -508,6 +589,7 @@ body::before {
   -webkit-backdrop-filter: blur(28px) saturate(185%);
   backdrop-filter: blur(28px) saturate(185%);
   box-shadow: var(--oh-lg-inner), var(--oh-lg-shadow-panel);
+  backface-visibility: hidden;
 
   &:where(.dark, .dark *) {
     -webkit-backdrop-filter: blur(28px) saturate(185%) brightness(1.06);
@@ -537,6 +619,7 @@ body::before {
   -webkit-backdrop-filter: blur(24px) saturate(195%);
   backdrop-filter: blur(24px) saturate(195%);
   box-shadow: var(--oh-lg-inner), var(--oh-lg-shadow-bar);
+  backface-visibility: hidden;
 
   &:where(.dark, .dark *) {
     -webkit-backdrop-filter: blur(26px) saturate(185%) brightness(1.07);
@@ -566,7 +649,9 @@ body::before {
   -webkit-backdrop-filter: blur(26px) saturate(195%);
   backdrop-filter: blur(26px) saturate(195%);
   box-shadow: var(--oh-lg-inner), var(--oh-lg-shadow-bar);
-  transition: background-color 180ms ease, box-shadow 180ms ease;
+  backface-visibility: hidden;
+  transition: background-color 180ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms
+    cubic-bezier(0.22, 1, 0.36, 1);
 
   &:where(.dark, .dark *) {
     -webkit-backdrop-filter: blur(28px) saturate(190%) brightness(1.07);
@@ -642,6 +727,7 @@ body::before {
   -webkit-backdrop-filter: blur(36px) saturate(195%);
   backdrop-filter: blur(36px) saturate(195%);
   box-shadow: var(--oh-lg-inner), var(--oh-lg-shadow-modal);
+  backface-visibility: hidden;
 
   &:where(.dark, .dark *) {
     -webkit-backdrop-filter: blur(36px) saturate(195%) brightness(1.06);

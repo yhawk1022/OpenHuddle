@@ -6,8 +6,34 @@
  * 1. 聚合胶囊按钮（`rounded-full`）、凹陷微质感输入框、Radix 无障碍浮层、`motion` 弹簧分段滑块、`vaul` 物理抽屉、`sonner` 轻提示与 `cmdk` 命令面板，向业务层提供零 `any`、零廉价紫光渐变的统一原语。
  * 2. 严格遵守全工作区仅使用具名导出（Named Exports）规范。
  */
-export { AnimatePresence, motion } from "motion/react";
+export { AnimatePresence, MotionConfig, motion } from "motion/react";
 export { cn, type ClassValue } from "../../lib/cn.js";
+export {
+  DEFAULT_REFRESH_RATE_PREFERENCE,
+  acquireHighRefreshBurst,
+  getRefreshRatePreference,
+  setRefreshRatePreference,
+  startDisplayRefreshRuntime,
+  useDisplayRefreshState,
+  type DisplayRefreshSnapshot,
+  type RefreshRatePreference,
+} from "../../lib/display-refresh.js";
+export {
+  INSTANT_TRANSITION,
+  NATIVE_BACKDROP_ENTER,
+  NATIVE_BACKDROP_EXIT,
+  NATIVE_DISCLOSURE_TRANSITION,
+  NATIVE_LIVE_BUBBLE_SPRING,
+  NATIVE_MODAL_EXIT,
+  NATIVE_MODAL_SPRING,
+  NATIVE_PANEL_EXIT,
+  NATIVE_PANEL_SPRING,
+  NATIVE_PILL_SPRING,
+  NATIVE_SURFACE_EXIT,
+  NATIVE_SURFACE_SPRING,
+  NATIVE_VIEW_SWAP,
+  usePrefersReducedMotion,
+} from "../../lib/motion-physics.js";
 
 export {
   AppButton,

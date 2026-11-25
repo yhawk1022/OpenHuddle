@@ -19,13 +19,13 @@ import { cn } from "../../lib/cn.js";
 export type AppInputSize = "sm" | "md" | "lg";
 
 const INPUT_SHELL_SIZE_CLASS: Record<AppInputSize, string> = {
-  sm: "h-8 rounded-xl px-2.5 text-xs gap-1.5",
-  md: "h-9 rounded-xl px-3 text-[13px] gap-2",
-  lg: "h-10 rounded-xl px-3.5 text-sm gap-2.5",
+  sm: "h-9 md:h-8 rounded-xl px-2.5 text-[16px] md:text-xs gap-1.5",
+  md: "h-9.5 md:h-9 rounded-xl px-3 text-[16px] md:text-[13px] gap-2",
+  lg: "h-10.5 md:h-10 rounded-xl px-3.5 text-[16px] md:text-sm gap-2.5",
 };
 
 const SURFACE_BASE_CLASS = [
-  "app-no-drag transition-all duration-150",
+  "app-no-drag transition-[background-color,border-color,box-shadow,color] duration-150 ease-out",
   "border border-black/[0.07] bg-black/[0.03] text-[#111318]",
   "hover:bg-black/[0.04] hover:border-black/[0.11]",
   "focus-within:bg-im-input-focus focus-within:border-[#181B22]/25 focus-within:ring-[3px] focus-within:ring-[#181B22]/[0.06]",
@@ -93,7 +93,7 @@ export const AppInput = forwardRef<HTMLInputElement, AppInputProps>(function App
         disabled={disabled}
         aria-invalid={invalid || undefined}
         className={cn(
-          "h-full w-full min-w-0 flex-1 border-0 bg-transparent p-0 text-inherit caret-[#181B22] outline-none placeholder:text-im-placeholder disabled:cursor-not-allowed dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]",
+          "h-full w-full min-w-0 flex-1 border-0 bg-transparent p-0 text-inherit caret-[#181B22] outline-none placeholder:text-[13.5px] md:placeholder:text-inherit placeholder:text-im-placeholder disabled:cursor-not-allowed dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]",
           className,
         )}
         {...rest}
@@ -128,8 +128,8 @@ export const AppTextarea = forwardRef<HTMLTextAreaElement, AppTextareaProps>(
         disabled={disabled}
         aria-invalid={invalid || undefined}
         className={cn(
-          "app-no-drag block w-full min-w-0 resize-y rounded-xl px-3 py-2.5 text-[13px] leading-relaxed outline-none transition-all duration-150",
-          "border border-black/[0.10] bg-im-input text-[#111318] placeholder:text-im-placeholder",
+          "app-no-drag block w-full min-w-0 resize-y rounded-xl px-3 py-2.5 text-[16px] md:text-[13px] leading-relaxed outline-none transition-[background-color,border-color,box-shadow,color] duration-150 ease-out",
+          "border border-black/[0.10] bg-im-input text-[#111318] placeholder:text-[13.5px] md:placeholder:text-[13px] placeholder:text-im-placeholder",
           "hover:border-black/[0.16] focus:bg-im-input-focus focus:border-[#181B22]/35 focus:ring-[3px] focus:ring-[#181B22]/[0.07]",
           "dark:border-white/[0.09] dark:bg-[#161619] dark:text-[#F2F2F4] dark:placeholder:text-[#63636B]",
           "dark:hover:border-white/[0.16] dark:focus:bg-[#1C1C20] dark:focus:border-white/[0.25] dark:focus:ring-white/[0.08]",

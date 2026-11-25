@@ -15,12 +15,14 @@ import {
   type RoomGovernanceState,
   type RoomId,
   type RoomSummaryDto,
+  type SseEvent,
   SseEventSchema,
   asReadCursorSeq,
   assertNever,
 } from "@openhuddle/protocol";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { pickLatestIso, sortRoomsByLatestActivity } from "./format.js";
 import {
   type OptimisticMessageItem,
   type RoomMessagesCacheData,
@@ -35,6 +37,24 @@ export interface RealtimeSseTelemetry {
   readonly status: SseConnectionStatus;
   readonly connectionId: string | null;
   readonly lastHeartbeatIso: string | null;
+}
+
+export type WorkRealtimeSignalEvent = Extract<
+  SseEvent,
+  { readonly type: "workspace.updated" | "work.updated" | "work.trace" }
+>;
+const workRealtimeListeners = new Set<(event: WorkRealtimeSignalEvent) => void>();
+
+/**
+ * 订阅工作区或协作工单的实时变更信号，供外部存储按需拉取权威快照。
+ */
+export function subscribeWorkRealtimeSignals(
+  listener: (event: WorkRealtimeSignalEvent) => void,
+): () => void {
+  workRealtimeListeners.add(listener);
+  return () => {
+    workRealtimeListeners.delete(listener);
+  };
 }
 
 /**
@@ -329,7 +349,8 @@ export function useRealtimeSseSync(
               : { ok: true, messages: [event.message], latestSeq: event.message.seq, governance };
           });
 
-          // 2. 同步更新左侧房间概览列表中的 lastSeq（若用户正停留在当前房间则同步推进已读游标避免假未读跳动）
+          // 2. 同步更新左侧房间概览列表中的 lastSeq 与最新消息时间并重排（若用户正停留在当前房间则同步推进已读游标避免假未读跳动；撤回旧消息不置顶）
+          const isNewMessage = event.message.recalledAtIso === undefined;
           queryClient.setQueryData<{
             readonly ok: true;
             readonly rooms: ReadonlyArray<RoomSummaryDto>;
@@ -337,26 +358,33 @@ export function useRealtimeSseSync(
             if (!prev) {
               return undefined;
             }
+            const nextRooms = prev.rooms.map((room) => {
+              if (room.id !== event.roomId) {
+                return room;
+              }
+              const nextLastSeq = event.message.seq > room.lastSeq ? nextCursor : room.lastSeq;
+              const nextLastMessageAtIso = isNewMessage
+                ? pickLatestIso(room.lastMessageAtIso, event.message.createdAtIso)
+                : room.lastMessageAtIso;
+              return {
+                ...room,
+                lastSeq: nextLastSeq,
+                yourLastReadSeq:
+                  isViewingRoom || event.message.author.isYou
+                    ? asReadCursorSeq(Math.max(room.yourLastReadSeq, nextCursor))
+                    : room.yourLastReadSeq,
+                ...(nextLastMessageAtIso !== undefined
+                  ? { lastMessageAtIso: nextLastMessageAtIso }
+                  : {}),
+              };
+            });
             return {
               ok: true,
-              rooms: prev.rooms.map((room) => {
-                if (room.id !== event.roomId) {
-                  return room;
-                }
-                const nextLastSeq = event.message.seq > room.lastSeq ? nextCursor : room.lastSeq;
-                return {
-                  ...room,
-                  lastSeq: nextLastSeq,
-                  yourLastReadSeq:
-                    isViewingRoom || event.message.author.isYou
-                      ? asReadCursorSeq(Math.max(room.yourLastReadSeq, nextCursor))
-                      : room.yourLastReadSeq,
-                };
-              }),
+              rooms: isNewMessage ? sortRoomsByLatestActivity(nextRooms) : nextRooms,
             };
           });
 
-          // 3. 同步更新房间详情缓存的 lastSeq
+          // 3. 同步更新房间详情缓存的 lastSeq 与 lastMessageAtIso
           queryClient.setQueryData<{ readonly ok: true; readonly room: RoomDetailDto }>(
             huddleQueryKeys.roomDetail(event.roomId),
             (prev) => {
@@ -365,11 +393,17 @@ export function useRealtimeSseSync(
               }
               const nextLastSeq =
                 event.message.seq > prev.room.lastSeq ? nextCursor : prev.room.lastSeq;
+              const nextLastMessageAtIso = isNewMessage
+                ? pickLatestIso(prev.room.lastMessageAtIso, event.message.createdAtIso)
+                : prev.room.lastMessageAtIso;
               return {
                 ok: true,
                 room: {
                   ...prev.room,
                   lastSeq: nextLastSeq,
+                  ...(nextLastMessageAtIso !== undefined
+                    ? { lastMessageAtIso: nextLastMessageAtIso }
+                    : {}),
                 },
               };
             },
@@ -489,6 +523,44 @@ export function useRealtimeSseSync(
           return;
         }
 
+        case "workspace.updated": {
+          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.workspaces() });
+          if (event.roomId !== undefined) {
+            void queryClient.invalidateQueries({
+              queryKey: huddleQueryKeys.roomWorkspaces(event.roomId),
+            });
+            void queryClient.invalidateQueries({
+              queryKey: huddleQueryKeys.roomDetail(event.roomId),
+              exact: true,
+            });
+          }
+          for (const listener of workRealtimeListeners) {
+            listener(event);
+          }
+          return;
+        }
+
+        case "work.updated": {
+          void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.workItems() });
+          if (event.roomId !== undefined) {
+            void queryClient.invalidateQueries({
+              queryKey: huddleQueryKeys.roomDetail(event.roomId),
+              exact: true,
+            });
+          }
+          for (const listener of workRealtimeListeners) {
+            listener(event);
+          }
+          return;
+        }
+
+        case "work.trace": {
+          for (const listener of workRealtimeListeners) {
+            listener(event);
+          }
+          return;
+        }
+
         default:
           assertNever(event);
       }
@@ -509,6 +581,9 @@ export function useRealtimeSseSync(
       "room.deleted",
       "room.upserted",
       "friendship.updated",
+      "workspace.updated",
+      "work.updated",
+      "work.trace",
     ] as const;
 
     source.addEventListener("message", onMessage);
@@ -517,6 +592,15 @@ export function useRealtimeSseSync(
     }
 
     source.onerror = () => {
+      // 当会话失效返回非 200 时，EventSource 会直接进入 CLOSED 且不再自动重连；此时同步刷新身份查询以回到登录态
+      if (source.readyState === EventSource.CLOSED) {
+        setTelemetry((prev) => ({
+          ...prev,
+          status: "offline",
+        }));
+        void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
+        return;
+      }
       setTelemetry((prev) => ({
         ...prev,
         status: "reconnecting",

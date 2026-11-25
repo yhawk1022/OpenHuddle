@@ -12,6 +12,7 @@ import {
   type AppSelectOption,
   IconButton,
 } from "../../../components/primitives/index.js";
+import { HighlightedCodeBlock } from "../../../components/ui/syntax-code.js";
 import { adminAuditLogsQueryOptions } from "../api/admin-console.queries.js";
 import {
   AdminEmptyState,
@@ -57,9 +58,11 @@ export function AdminAuditLogsView() {
   return (
     <div className="space-y-4">
       <div className="oh-elevated-card flex flex-wrap items-center gap-2.5 rounded-2xl p-3.5">
-        <div className="min-w-[220px] flex-1">
+        <div className="w-full sm:min-w-[220px] sm:flex-1">
           <AppInput
             size="sm"
+            type="search"
+            enterKeyHint="search"
             value={searchInput}
             onChange={(e) => {
               setSearchInput(e.target.value);
@@ -86,7 +89,7 @@ export function AdminAuditLogsView() {
           />
         </div>
 
-        <div className="w-48">
+        <div className="w-full sm:w-48">
           <AppSelect
             size="sm"
             value={targetFilter}
@@ -160,8 +163,11 @@ export function AdminAuditLogsView() {
                     </div>
 
                     {isExpanded && hasMeta ? (
-                      <pre className="mt-2.5 overflow-x-auto rounded-xl border border-black/[0.06] bg-im-code p-3 font-mono text-[11px] leading-relaxed text-[#3B414E] dark:border-white/[0.07] dark:text-[#B4BCD0]">
-                        {JSON.stringify(log.metadata, null, 2)}
+                      <pre className="mt-2.5 overflow-x-auto overscroll-x-contain rounded-xl border border-black/[0.06] bg-im-code p-3 font-mono text-[11px] leading-relaxed text-[#3B414E] dark:border-white/[0.07] dark:text-[#B4BCD0]">
+                        <HighlightedCodeBlock
+                          code={JSON.stringify(log.metadata, null, 2)}
+                          language="json"
+                        />
                       </pre>
                     ) : null}
                   </li>

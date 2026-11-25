@@ -282,7 +282,7 @@ export function StickerPicker(props: {
           <p className="mt-1">添加本地图片，或在聊天中收藏表情。</p>
         </div>
       ) : (
-        <ul className="mt-2 grid max-h-[min(17rem,45dvh)] grid-cols-3 gap-1 overflow-y-auto">
+        <ul className="mt-2 grid max-h-[min(17rem,calc(var(--oh-vvh,100dvh)-9rem))] grid-cols-3 gap-1 overflow-y-auto overscroll-contain">
           {saved.data.map((sticker) => (
             <SavedStickerTile
               key={sticker.id}

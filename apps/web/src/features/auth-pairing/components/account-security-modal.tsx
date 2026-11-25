@@ -205,6 +205,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
               <AppInput
                 id="account-current-password"
                 type={showPasswords ? "text" : "password"}
+                enterKeyHint="next"
                 size="md"
                 autoComplete="current-password"
                 value={currentPassword}
@@ -226,6 +227,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
             <AppInput
               id="account-new-password"
               type={showPasswords ? "text" : "password"}
+              enterKeyHint="next"
               size="md"
               minLength={PASSWORD_MIN_LENGTH}
               autoComplete="new-password"
@@ -247,6 +249,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
             <AppInput
               id="account-confirm-new-password"
               type={showPasswords ? "text" : "password"}
+              enterKeyHint="done"
               size="md"
               autoComplete="new-password"
               value={confirmNewPassword}

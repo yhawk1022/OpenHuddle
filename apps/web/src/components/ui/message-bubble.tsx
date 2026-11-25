@@ -25,12 +25,14 @@ import {
   ChevronRight,
   Copy,
   FileText,
+  ListTodo,
   Loader2,
+  MoreHorizontal,
   Reply,
   RotateCcw,
   UserRound,
 } from "lucide-react";
-import { useState } from "react";
+import { type KeyboardEvent, type MouseEvent, type TouchEvent, useRef, useState } from "react";
 import {
   canViewerRecallMessage,
   formatMessageTimestamp,
@@ -41,10 +43,14 @@ import type { OptimisticMessageItem } from "../../lib/query-keys.js";
 import {
   AppContextMenu,
   type AppContextMenuEntry,
+  AppSheetDrawer,
   AppTooltip,
+  INSTANT_TRANSITION,
+  NATIVE_LIVE_BUBBLE_SPRING,
   cn,
   motion,
   toast,
+  usePrefersReducedMotion,
 } from "../primitives/index.js";
 import type { InspectedAgentProfile } from "./agent-profile-dialog.js";
 import { AuthorMicroTag, MessageSemanticBadge, PlatformAvatar } from "./identity-badges.js";
@@ -77,21 +83,21 @@ export interface MessageBubbleProps {
   /** 收藏当前已确认的表情附件。 */
   readonly onSaveSticker?: ((message: MessageDto) => void) | undefined;
   readonly onOpenProposal?: ((proposalId: ProposalId) => void) | undefined;
+  /** 将当前消息内容一键填入底部 `[⚡派活]` 编排舱转为执行工单 */
+  readonly onConvertToWorkTask?: ((content: string) => void) | undefined;
   readonly onInspectAgent?: ((profile: InspectedAgentProfile) => void) | undefined;
   /** 点击引用块时的跳转回调；缺省时组件自行滚动到 `#msg-seq-{seq}` 并短暂高亮 */
   readonly onJumpToSeq?: ((seq: MessageSeq) => void) | undefined;
+  /**
+   * 是否启用实时新消息入场弹簧动效（默认 `false`）。
+   * 关键性能不变量：历史消息切换会话时保持 `false` 静态直出（零 JS 弹簧实例），仅对新发送或 SSE 实时到达的新消息开启。
+   */
+  readonly animateEntrance?: boolean | undefined;
 }
 
 /** 引用跳转命中后的瞬时高亮工具类（保持完整字面量以便 Tailwind CSS 扫描包含） */
 const JUMP_HIGHLIGHT_CLASS = "bg-im-accent-soft";
-
-/** 气泡轻盈弹簧入场物理参数 */
-const BUBBLE_SPRING = {
-  type: "spring",
-  stiffness: 480,
-  damping: 35,
-  mass: 0.72,
-} as const;
+const JUMP_FLASH_CLASS = "oh-jump-flash";
 
 /**
  * 默认引用跳转行为：平滑滚动到目标 `#msg-seq-{seq}` 锚点并短暂淡入柔和底色。
@@ -108,14 +114,17 @@ function scrollToMessageSeq(seq: MessageSeq): void {
     return;
   }
   target.scrollIntoView({ behavior: "smooth", block: "center" });
-  target.classList.add(JUMP_HIGHLIGHT_CLASS);
+  target.classList.remove(JUMP_FLASH_CLASS);
+  // 强制读取一次 offsetWidth 以支持连续点击同一引用时重播闪烁关键帧
+  void target.offsetWidth;
+  target.classList.add(JUMP_HIGHLIGHT_CLASS, JUMP_FLASH_CLASS);
   window.setTimeout(() => {
-    target.classList.remove(JUMP_HIGHLIGHT_CLASS);
+    target.classList.remove(JUMP_HIGHLIGHT_CLASS, JUMP_FLASH_CLASS);
   }, 1_400);
 }
 
 /**
- * 渲染单条 Pachat 风格群聊消息：
+ * 渲染单条群聊消息气泡：
  * - 本人右对齐暖象牙纸气泡（`#F6F2EC` / `dark:#272521`，`rounded-[18px_6px_18px_18px]`）；
  * - 其他人类左对齐 36px 圆形头像 + 鼠尾草绿气泡（`#E3F3EC` / `dark:#16271F`，`rounded-[6px_18px_18px_18px]`）；
  * - Agent 左对齐 36px 圆形粉彩头像 + 柔灰气泡（`#F5F5F7` / `dark:#1C1C1F`，`rounded-[6px_18px_18px_18px]`）；
@@ -129,11 +138,16 @@ export function MessageBubble(props: MessageBubbleProps) {
   const authorDisplayName = props.authorDisplayName ?? message.author.displayName;
   const [copied, setCopied] = useState(false);
   const [capturedSelection, setCapturedSelection] = useState("");
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const longPressTimerRef = useRef<number | null>(null);
+  const touchOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const reducedMotion = usePrefersReducedMotion();
 
   const isSelf = message.author.isYou;
   const isGrouped = props.isGroupedWithPrevious === true;
   const isRecalled = message.recalledAtIso !== undefined;
   const isPending = message._optimisticPending === true;
+  const shouldAnimateEntrance = props.animateEntrance === true && !reducedMotion;
   const hasContent = message.content.length > 0;
   const isSticker = message.attachment?.stickerName !== undefined;
   const isStandaloneSticker =
@@ -249,6 +263,39 @@ export function MessageBubble(props: MessageBubbleProps) {
     scrollToMessageSeq(seq);
   };
 
+  // 原生桌面 IM 快捷回复交互：支持按住 Alt 单击任意气泡快速引用，或双击行空白/头像侧区域触发引用回复（不干扰双击选中文本或代码）
+  const handleRowDoubleClick = (event: MouseEvent<HTMLElement>): void => {
+    if (props.readOnly || isPending || !props.onReply) {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, a, pre, code, input, textarea")) {
+      return;
+    }
+    const selectedText =
+      typeof window !== "undefined" ? (window.getSelection()?.toString().trim() ?? "") : "";
+    if (selectedText.length > 0) {
+      return;
+    }
+    props.onReply(message);
+  };
+
+  const handleBubbleClick = (event: MouseEvent<HTMLDivElement>): void => {
+    if (!event.altKey || props.readOnly || isPending || !props.onReply) {
+      return;
+    }
+    event.preventDefault();
+    props.onReply(message);
+  };
+
+  const handleBubbleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (!event.altKey || event.key !== "Enter" || props.readOnly || isPending || !props.onReply) {
+      return;
+    }
+    event.preventDefault();
+    props.onReply(message);
+  };
+
   const isAgentInspectable = message.author.kind === "agent" && props.onInspectAgent !== undefined;
   const agentPlatformLabel =
     message.author.kind === "agent" && message.author.platform !== undefined
@@ -296,6 +343,16 @@ export function MessageBubble(props: MessageBubbleProps) {
                 label: "收藏表情",
                 icon: <BookmarkPlus className="h-3.5 w-3.5" />,
                 onSelect: () => props.onSaveSticker?.(message),
+              } satisfies AppContextMenuEntry,
+            ]
+          : []),
+        ...(hasContent && props.onConvertToWorkTask !== undefined
+          ? [
+              {
+                id: "ctx-msg-to-task",
+                label: "转为任务…",
+                icon: <ListTodo className="h-3.5 w-3.5" />,
+                onSelect: () => props.onConvertToWorkTask?.(message.content),
               } satisfies AppContextMenuEntry,
             ]
           : []),
@@ -349,14 +406,124 @@ export function MessageBubble(props: MessageBubbleProps) {
           : []),
       ];
 
-  // ── 悬浮 Liquid Glass 快捷操作条（↩ 回复 · @ · 复制 · 撤回） ──
+  // ── 悬浮 Liquid Glass 快捷操作条（桌面指针悬停可见；触屏端改为气泡侧边 `⋯` 与长按底部抽屉） ──
+  const actionableMobileItems = contextMenuItems.filter(
+    (entry): entry is Extract<AppContextMenuEntry, { readonly onSelect: () => void }> =>
+      entry.kind !== "separator" && entry.kind !== "label",
+  );
+
+  const cancelTouchLongPress = (): void => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    touchOriginRef.current = null;
+  };
+
+  const handleBubbleTouchStart = (event: TouchEvent<HTMLDivElement>): void => {
+    if (isContextMenuDisabled || actionableMobileItems.length === 0 || event.touches.length !== 1) {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("a, button, audio, input, textarea, pre, code")) {
+      return;
+    }
+    const touch = event.touches[0];
+    if (!touch) {
+      return;
+    }
+    cancelTouchLongPress();
+    touchOriginRef.current = { x: touch.clientX, y: touch.clientY };
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTimerRef.current = null;
+      const activeSel =
+        typeof window !== "undefined" ? (window.getSelection()?.toString().trim() ?? "") : "";
+      if (activeSel.length > 0) {
+        return;
+      }
+      if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+        navigator.vibrate(10);
+      }
+      setMobileActionsOpen(true);
+    }, 460);
+  };
+
+  const handleBubbleTouchMove = (event: TouchEvent<HTMLDivElement>): void => {
+    if (longPressTimerRef.current === null || touchOriginRef.current === null) {
+      return;
+    }
+    const touch = event.touches[0];
+    if (!touch) {
+      cancelTouchLongPress();
+      return;
+    }
+    const dx = Math.abs(touch.clientX - touchOriginRef.current.x);
+    const dy = Math.abs(touch.clientY - touchOriginRef.current.y);
+    if (dx > 8 || dy > 8) {
+      cancelTouchLongPress();
+    }
+  };
+
+  const mobileQuickTrigger =
+    !isContextMenuDisabled && actionableMobileItems.length > 0 ? (
+      <button
+        type="button"
+        aria-label="消息操作菜单"
+        onClick={(e) => {
+          e.stopPropagation();
+          setMobileActionsOpen(true);
+        }}
+        className="app-no-drag relative inline-flex [@media(hover:hover)]:hidden h-7 w-7 shrink-0 items-center justify-center self-end rounded-full text-im-subtle/80 transition-colors active:bg-im-hover active:text-im-fg after:absolute after:-inset-1.5"
+      >
+        <MoreHorizontal className="h-3.5 w-3.5" />
+      </button>
+    ) : null;
+
+  const mobileActionSheet =
+    !isContextMenuDisabled && actionableMobileItems.length > 0 ? (
+      <AppSheetDrawer
+        open={mobileActionsOpen}
+        onOpenChange={setMobileActionsOpen}
+        side="bottom"
+        title={authorDisplayName}
+        subtitle={getMessageSnippet(message, 48) || timeLabel}
+      >
+        <div className="divide-y divide-black/[0.06] px-3 pb-2 dark:divide-white/[0.07]">
+          {actionableMobileItems.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              disabled={Boolean(entry.disabled)}
+              onClick={() => {
+                setMobileActionsOpen(false);
+                entry.onSelect();
+              }}
+              className={cn(
+                "flex min-h-11 w-full items-center gap-3 px-2 py-2.5 text-left text-[14px] font-medium transition-colors active:bg-black/[0.04] disabled:opacity-45 dark:active:bg-white/[0.06]",
+                entry.danger
+                  ? "text-[#C6282E] dark:text-[#F88B8B]"
+                  : "text-[#111318] dark:text-[#ECEFF6]",
+              )}
+            >
+              {entry.icon !== undefined ? (
+                <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center opacity-85">
+                  {entry.icon}
+                </span>
+              ) : null}
+              <span className="min-w-0 flex-1 truncate">{entry.label}</span>
+            </button>
+          ))}
+        </div>
+      </AppSheetDrawer>
+    ) : null;
+
   const actionBar =
     !props.readOnly && !isPending ? (
       <div
         className={cn(
-          "liquid-glass-pill pointer-events-none absolute -top-4 z-10 flex translate-y-0.5 select-none items-center gap-0.5 rounded-full px-1.5 py-0.5 opacity-0 transition-all duration-150",
-          "group-focus-within/msg:pointer-events-auto group-focus-within/msg:translate-y-0 group-focus-within/msg:opacity-100",
-          "group-hover/msg:pointer-events-auto group-hover/msg:translate-y-0 group-hover/msg:opacity-100",
+          "liquid-glass-pill [@media(hover:none)]:hidden pointer-events-none absolute -top-4 z-10 flex translate-y-1 scale-[0.97] select-none items-center gap-0.5 rounded-full px-1.5 py-0.5 opacity-0 transition-[opacity,transform] duration-[140ms] ease-[cubic-bezier(0.16,1,0.3,1)] will-change-[transform,opacity]",
+          "group-focus-within/msg:pointer-events-auto group-focus-within/msg:translate-y-0 group-focus-within/msg:scale-100 group-focus-within/msg:opacity-100",
+          "group-hover/msg:pointer-events-auto group-hover/msg:translate-y-0 group-hover/msg:scale-100 group-hover/msg:opacity-100",
           isSelf ? "right-1.5" : "left-1.5",
         )}
       >
@@ -546,7 +713,7 @@ export function MessageBubble(props: MessageBubbleProps) {
                 key={option}
                 type="button"
                 onClick={() => props.onAnswerAttention?.(message.seq, option)}
-                className="app-no-drag cursor-pointer rounded-full bg-[#181B22] px-3 py-1 text-[11.5px] font-medium text-white transition hover:bg-[#252A35] active:scale-[0.97] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
+                className="app-no-drag cursor-pointer whitespace-normal rounded-2xl bg-[#181B22] px-3 py-1.5 text-left text-[11.5px] font-medium leading-snug text-white transition hover:bg-[#252A35] active:scale-[0.97] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
               >
                 {option}
               </button>
@@ -590,28 +757,16 @@ export function MessageBubble(props: MessageBubbleProps) {
 
   // ── 3. 本人发出消息（isSelf）：右对齐并使用本人气泡的主题色 ──
   if (isSelf) {
-    return (
-      <article
-        id={anchorId}
-        data-seq={message.seq}
-        className={cn(
-          "group/msg flex justify-end rounded-xl pl-10 pr-1 transition-colors duration-700 sm:pl-16",
-          isGrouped ? "mt-1" : "mt-3.5",
-          isPending && "opacity-75",
-        )}
-      >
-        <motion.div
-          initial={{ opacity: 0, y: 5, scale: 0.99 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={BUBBLE_SPRING}
-          className="ml-auto flex min-w-0 max-w-[78%] flex-col items-end"
-        >
-          {!isGrouped ? (
-            <div className="mb-1 flex select-none items-center gap-2 pr-0.5 leading-none">
-              {timeNode}
-            </div>
-          ) : null}
+    const selfContent = (
+      <>
+        {!isGrouped ? (
+          <div className="mb-1 flex select-none items-center gap-2 pr-0.5 leading-none">
+            {timeNode}
+          </div>
+        ) : null}
 
+        <div className="relative flex min-w-0 max-w-full items-end gap-1">
+          {mobileQuickTrigger}
           <div className="relative min-w-0 max-w-full">
             {actionBar}
             <AppContextMenu
@@ -624,13 +779,19 @@ export function MessageBubble(props: MessageBubbleProps) {
               }}
             >
               <div
+                onClick={handleBubbleClick}
+                onKeyDown={handleBubbleKeyDown}
                 onContextMenuCapture={captureBubbleSelection}
+                onTouchStart={handleBubbleTouchStart}
+                onTouchMove={handleBubbleTouchMove}
+                onTouchEnd={cancelTouchLongPress}
+                onTouchCancel={cancelTouchLongPress}
                 className={cn(
-                  "min-w-0 transition-shadow",
+                  "min-w-0 transition-shadow duration-150",
                   isStandaloneSticker
                     ? "rounded-lg p-1"
                     : cn(
-                        "px-4 py-2.5",
+                        "px-3.5 py-2.5 sm:px-4",
                         isGrouped ? "rounded-[18px]" : "rounded-[18px_6px_18px_18px]",
                         "bg-im-self text-im-self-fg ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
                         "dark:ring-1 dark:ring-inset dark:ring-white/[0.11] dark:shadow-[0_2px_8px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.08)]",
@@ -645,9 +806,38 @@ export function MessageBubble(props: MessageBubbleProps) {
             </AppContextMenu>
             {attentionPanel}
           </div>
+        </div>
+        {mobileActionSheet}
 
-          {isGrouped && isPending ? <div className="mt-0.5 pr-1">{timeNode}</div> : null}
-        </motion.div>
+        {isGrouped && isPending ? <div className="mt-0.5 pr-1">{timeNode}</div> : null}
+      </>
+    );
+
+    return (
+      <article
+        id={anchorId}
+        data-seq={message.seq}
+        onDoubleClick={handleRowDoubleClick}
+        className={cn(
+          "group/msg flex justify-end rounded-xl pl-5 pr-1 transition-[background-color,opacity] duration-200 sm:pl-16",
+          isGrouped ? "mt-1" : "mt-3.5",
+          isPending && "opacity-80",
+        )}
+      >
+        {shouldAnimateEntrance ? (
+          <motion.div
+            initial={{ opacity: 0, y: 6, scale: 0.985 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_LIVE_BUBBLE_SPRING}
+            className="ml-auto flex min-w-0 max-w-[86%] sm:max-w-[78%] flex-col items-end will-change-[transform,opacity]"
+          >
+            {selfContent}
+          </motion.div>
+        ) : (
+          <div className="ml-auto flex min-w-0 max-w-[86%] sm:max-w-[78%] flex-col items-end">
+            {selfContent}
+          </div>
+        )}
       </article>
     );
   }
@@ -668,75 +858,38 @@ export function MessageBubble(props: MessageBubbleProps) {
     />
   );
 
-  return (
-    <article
-      id={anchorId}
-      data-seq={message.seq}
-      className={cn(
-        "group/msg flex items-start gap-2.5 rounded-xl pl-1 pr-10 transition-colors duration-700 sm:pr-16",
-        isGrouped ? "mt-1" : "mt-3.5",
-        isPending && "opacity-75",
-      )}
-    >
-      {/* 左侧 36px 圆形头像对齐列：连续分组时隐藏头像，悬停轻显紧凑时刻 */}
-      <div className="flex w-9 shrink-0 justify-center">
-        {isGrouped ? (
-          <time
-            dateTime={message.createdAtIso}
-            className="mt-2.5 select-none text-[11px] tabular-nums text-im-subtle opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100"
-          >
-            {timeLabel}
-          </time>
-        ) : isAgentInspectable ? (
-          <AppTooltip content={`查看 ${message.author.displayName} 资料`} side="top">
+  const peerContent = (
+    <>
+      {/* 发送者头部：13px font-medium 名字 + 12px 灰字时间 + 安静归属说明 */}
+      {!isGrouped ? (
+        <div className="mb-1 flex max-w-full select-none items-baseline gap-2 overflow-hidden pl-0.5 leading-none">
+          {isAgentInspectable ? (
             <button
               type="button"
               onClick={handleAgentInspect}
-              className="app-no-drag mt-0.5 cursor-pointer rounded-full outline-none transition-transform duration-150 hover:opacity-90 active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-black/20 dark:focus-visible:ring-white/25"
+              className="app-no-drag cursor-pointer truncate text-[13px] font-medium text-[#111318] outline-none transition-opacity hover:opacity-75 focus-visible:underline dark:text-[#F2F2F4]"
             >
-              {avatar}
+              {authorDisplayName}
             </button>
-          </AppTooltip>
-        ) : (
-          <div className="mt-0.5">{avatar}</div>
-        )}
-      </div>
+          ) : (
+            <span className="truncate text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
+              {authorDisplayName}
+            </span>
+          )}
 
-      <motion.div
-        initial={{ opacity: 0, y: 5, scale: 0.99 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={BUBBLE_SPRING}
-        className="flex min-w-0 max-w-[78%] flex-col items-start"
-      >
-        {/* 发送者头部：13px font-medium 名字 + 12px 灰字时间 + 安静归属说明 */}
-        {!isGrouped ? (
-          <div className="mb-1 flex max-w-full select-none items-baseline gap-2 overflow-hidden pl-0.5 leading-none">
-            {isAgentInspectable ? (
-              <button
-                type="button"
-                onClick={handleAgentInspect}
-                className="app-no-drag cursor-pointer truncate text-[13px] font-medium text-[#111318] outline-none transition-opacity hover:opacity-75 focus-visible:underline dark:text-[#F2F2F4]"
-              >
-                {authorDisplayName}
-              </button>
-            ) : (
-              <span className="truncate text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
-                {authorDisplayName}
-              </span>
-            )}
+          <span className="shrink-0">{timeNode}</span>
 
-            <span className="shrink-0">{timeNode}</span>
+          <AuthorMicroTag
+            kind={message.author.kind}
+            trustLevel={message.author.trustLevel}
+            ownerName={props.authorOwnerName}
+            isYourOwner={message.author.isYourOwner}
+            platformLabel={agentPlatformLabel}
+          />
+        </div>
+      ) : null}
 
-            <AuthorMicroTag
-              kind={message.author.kind}
-              trustLevel={message.author.trustLevel}
-              ownerName={props.authorOwnerName}
-              isYourOwner={message.author.isYourOwner}
-              platformLabel={agentPlatformLabel}
-            />
-          </div>
-        ) : null}
-
+      <div className="relative flex min-w-0 max-w-full items-end gap-1">
         <div className="relative min-w-0 max-w-full">
           {actionBar}
           <AppContextMenu
@@ -749,13 +902,19 @@ export function MessageBubble(props: MessageBubbleProps) {
             }}
           >
             <div
+              onClick={handleBubbleClick}
+              onKeyDown={handleBubbleKeyDown}
               onContextMenuCapture={captureBubbleSelection}
+              onTouchStart={handleBubbleTouchStart}
+              onTouchMove={handleBubbleTouchMove}
+              onTouchEnd={cancelTouchLongPress}
+              onTouchCancel={cancelTouchLongPress}
               className={cn(
-                "min-w-0 transition-shadow",
+                "min-w-0 transition-shadow duration-150",
                 isStandaloneSticker
                   ? "rounded-lg p-1"
                   : cn(
-                      "px-4 py-2.5",
+                      "px-3.5 py-2.5 sm:px-4",
                       isGrouped ? "rounded-[18px]" : "rounded-[6px_18px_18px_18px]",
                       peerBubbleSurfaceClass,
                     ),
@@ -768,7 +927,61 @@ export function MessageBubble(props: MessageBubbleProps) {
           </AppContextMenu>
           {attentionPanel}
         </div>
-      </motion.div>
+        {mobileQuickTrigger}
+      </div>
+      {mobileActionSheet}
+    </>
+  );
+
+  return (
+    <article
+      id={anchorId}
+      data-seq={message.seq}
+      onDoubleClick={handleRowDoubleClick}
+      className={cn(
+        "group/msg flex items-start gap-2 rounded-xl pl-1 pr-2.5 transition-[background-color,opacity] duration-200 sm:gap-2.5 sm:pr-16",
+        isGrouped ? "mt-1" : "mt-3.5",
+        isPending && "opacity-80",
+      )}
+    >
+      {/* 左侧 36px 圆形头像对齐列：连续分组时隐藏头像，悬停轻显紧凑时刻 */}
+      <div className="flex w-8 sm:w-9 shrink-0 justify-center">
+        {isGrouped ? (
+          <time
+            dateTime={message.createdAtIso}
+            className="mt-2.5 select-none text-[11px] tabular-nums text-im-subtle opacity-0 transition-opacity duration-150 group-hover/msg:opacity-100"
+          >
+            {timeLabel}
+          </time>
+        ) : isAgentInspectable ? (
+          <AppTooltip content={`查看 ${message.author.displayName} 资料`} side="top">
+            <button
+              type="button"
+              onClick={handleAgentInspect}
+              className="im-press app-no-drag mt-0.5 cursor-pointer rounded-full outline-none hover:opacity-90 focus-visible:ring-2 focus-visible:ring-black/20 dark:focus-visible:ring-white/25"
+            >
+              {avatar}
+            </button>
+          </AppTooltip>
+        ) : (
+          <div className="mt-0.5">{avatar}</div>
+        )}
+      </div>
+
+      {shouldAnimateEntrance ? (
+        <motion.div
+          initial={{ opacity: 0, y: 6, scale: 0.985 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_LIVE_BUBBLE_SPRING}
+          className="flex min-w-0 max-w-[86%] sm:max-w-[78%] flex-col items-start will-change-[transform,opacity]"
+        >
+          {peerContent}
+        </motion.div>
+      ) : (
+        <div className="flex min-w-0 max-w-[86%] sm:max-w-[78%] flex-col items-start">
+          {peerContent}
+        </div>
+      )}
     </article>
   );
 }

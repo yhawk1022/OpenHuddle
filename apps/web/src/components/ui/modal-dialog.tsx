@@ -38,7 +38,7 @@ export interface ModalDialogProps {
  * 渲染桌面端纯净弹簧模态窗 + 移动端 `Vaul` 物理抽屉。
  *
  * @remarks
- * 作为业务层到 `AppModal` 原语的语义适配门面，确保全站弹窗具备一致的焦点环、无障碍标题描述与 Pachat 双主题极简对比度。
+ * 作为业务层到 `AppModal` 原语的语义适配门面，统一提供焦点环、无障碍标题描述与明暗双主题对比度。
  *
  * @param props - 弹窗开关状态、标题说明、可选图标、底部栏与子内容
  * @returns 响应式原生级模态层

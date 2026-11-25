@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   ChevronDown,
   HelpCircle,
+  ListTodo,
   MessageSquarePlus,
   Scale,
   ThumbsUp,
@@ -39,7 +40,6 @@ import {
   SegmentedTabs,
   cn,
   motion,
-  toast,
 } from "../primitives/index.js";
 import { AuthorMicroTag, PlatformAvatar } from "./identity-badges.js";
 
@@ -51,6 +51,8 @@ export interface ProposalCardViewProps {
   readonly isSubmittingDecision?: boolean | undefined;
   readonly onCastVote?: ((proposalId: ProposalId, body: CastProposalVoteBody) => void) | undefined;
   readonly onDecide?: ((proposalId: ProposalId, body: DecideProposalBody) => void) | undefined;
+  /** 将已拍板或选定的提案方案一键送入底部 `[⚡派活]` 编排舱派发执行 */
+  readonly onDispatchFromProposal?: ((promptSeed: string) => void) | undefined;
   readonly highlighted?: boolean | undefined;
 }
 
@@ -128,10 +130,10 @@ function getStanceMeta(stance: ProposalVoteStance) {
 }
 
 /**
- * 渲染 Pachat 温润编辑部风格的共识决策卡：备选方案利弊对照、共识进度条、分段评议表态器与胶囊一键拍板。
+ * 渲染结构化提案与协同决策卡片：备选方案利弊对照、投票汇总、分段表态与人工拍板。
  *
  * @param props - 提案 DTO、异步加载态与交互回调
- * @returns 结构化共识决策卡片视图
+ * @returns 提案决策卡片视图
  */
 export function ProposalCardView(props: ProposalCardViewProps) {
   const { proposal } = props;
@@ -170,13 +172,11 @@ export function ProposalCardView(props: ProposalCardViewProps) {
     if (!props.onCastVote || trimmedRationale.length === 0) {
       return;
     }
-    const stanceLabel = getStanceMeta(voteStance).label;
     props.onCastVote(proposal.id, {
       stance: voteStance,
       ...(selectedOptionKey.length > 0 ? { preferredOptionKey: selectedOptionKey } : {}),
       rationale: trimmedRationale,
     });
-    toast.success(`已提交「${stanceLabel}」表态`);
     setVoteRationale("");
     setVoteDrawerOpen(false);
   };
@@ -193,11 +193,6 @@ export function ProposalCardView(props: ProposalCardViewProps) {
         : {}),
       ...(trimmedNote.length > 0 ? { decisionNote: trimmedNote } : {}),
     });
-    if (decision === "approved") {
-      toast.success(`已拍板采纳方案 ${selectedOptionKey || "默认方案"}`);
-    } else {
-      toast.success("已驳回提案并请群内重议");
-    }
   };
 
   return (
@@ -254,7 +249,24 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                     : "已驳回，继续讨论"}
                 </span>
               </span>
-              {proposal.decidedBy ? (
+              {proposal.status === "approved" && props.onDispatchFromProposal !== undefined ? (
+                <AppButton
+                  variant="secondary"
+                  size="xs"
+                  leadingIcon={<ListTodo className="h-3 w-3" />}
+                  onClick={() => {
+                    const chosenOpt = proposal.draft.options.find(
+                      (o) => o.optionKey === (proposal.decidedOptionKey ?? selectedOptionKey),
+                    );
+                    const seed = chosenOpt
+                      ? `按已拍板提案「${proposal.draft.title}（${chosenOpt.label}）」落地执行：${chosenOpt.summary}`
+                      : `按已拍板提案「${proposal.draft.title}」落地执行：${proposal.draft.contextSummary}`;
+                    props.onDispatchFromProposal?.(seed);
+                  }}
+                >
+                  派发执行 →
+                </AppButton>
+              ) : proposal.decidedBy ? (
                 <span className="text-[11.5px] font-normal tabular-nums opacity-80">
                   {proposal.decidedBy.displayName}
                   {proposal.decidedAtIso
@@ -599,7 +611,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                       value={voteRationale}
                       onChange={(e) => setVoteRationale(e.target.value)}
                       placeholder="写下赞成或质疑的理由..."
-                      className="resize-none text-xs"
+                      className="resize-none text-[16px] md:text-xs"
                     />
 
                     <div className="flex justify-end">
@@ -647,9 +659,9 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                 disabled={selectedOptionKey.length === 0}
                 leadingIcon={<CheckCircle2 className="h-4 w-4" />}
                 onClick={() => handleDecision("approved")}
-                className="flex-1"
+                className="min-w-0 flex-1"
               >
-                {`拍板采纳 ${selectedOptionKey}`}
+                <span className="truncate">{`拍板采纳 ${selectedOptionKey}`}</span>
               </AppButton>
 
               <AppButton

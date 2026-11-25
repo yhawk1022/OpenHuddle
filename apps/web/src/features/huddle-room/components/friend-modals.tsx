@@ -38,6 +38,7 @@ import { ModalDialog } from "../../../components/ui/modal-dialog.js";
 import { PlatformGlyph } from "../../../components/ui/platform-icons.js";
 import { ApiClientError } from "../../../lib/api-client.js";
 import { getPlatformVisualMeta } from "../../../lib/format.js";
+import { isCoarsePointerDevice } from "../../../lib/viewport-sync.js";
 import {
   useAcceptFriendRequestMutation,
   useAddRoomMembersMutation,
@@ -148,15 +149,23 @@ export function AddFriendModal(props: AddFriendModalProps) {
       subtitle="按昵称或注册邮箱搜索站内同伴，互为好友后即可发起 1v1 私聊与直接拉群"
       maxWidthClass="max-w-lg"
       icon={<UserPlus className="h-4 w-4" />}
+      footer={
+        <div className="flex justify-end">
+          <AppButton variant="secondary" size="md" onClick={props.onClose}>
+            完成
+          </AppButton>
+        </div>
+      }
     >
       <div className="space-y-4">
         {/* 1. 搜索输入框与验证附言 */}
         <div className="space-y-2.5">
           <AppInput
             id="add-friend-search-input"
-            type="text"
+            type="search"
+            enterKeyHint="search"
             size="lg"
-            autoFocus={true}
+            autoFocus={!isCoarsePointerDevice()}
             value={queryText}
             onChange={(e) => setQueryText(e.target.value)}
             leadingIcon={<Search className="h-4 w-4" />}
@@ -212,7 +221,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                 未找到匹配「{trimmedQuery}」的活跃用户
               </div>
             ) : (
-              <ul className="max-h-60 space-y-1.5 overflow-y-auto pr-0.5">
+              <ul className="space-y-1.5 pr-0.5 sm:max-h-60 sm:overflow-y-auto">
                 {searchResults.map((item) => {
                   const u = item.user;
                   return (
@@ -321,7 +330,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                 收到的好友申请 · {props.incomingRequests.length}
               </span>
             </div>
-            <ul className="max-h-48 space-y-1.5 overflow-y-auto">
+            <ul className="space-y-1.5 sm:max-h-48 sm:overflow-y-auto">
               {props.incomingRequests.map((req) => (
                 <li
                   key={req.friendshipId}
@@ -376,7 +385,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
             <span className="block px-1 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
               已发出的申请 · {props.outgoingRequests.length}
             </span>
-            <ul className="max-h-36 space-y-1 overflow-y-auto">
+            <ul className="space-y-1 sm:max-h-36 sm:overflow-y-auto">
               {props.outgoingRequests.map((req) => (
                 <li
                   key={req.friendshipId}
@@ -400,12 +409,6 @@ export function AddFriendModal(props: AddFriendModalProps) {
             </ul>
           </div>
         ) : null}
-
-        <div className="flex justify-end border-t border-black/[0.06] pt-3 dark:border-white/[0.08]">
-          <AppButton variant="secondary" size="md" onClick={props.onClose}>
-            完成
-          </AppButton>
-        </div>
       </div>
     </ModalDialog>
   );
@@ -418,10 +421,11 @@ export function AddFriendModal(props: AddFriendModalProps) {
  * @returns 备注编辑弹窗
  */
 export function EditFriendRemarkModal(props: {
+  readonly open?: boolean | undefined;
   readonly friend: FriendContactDto;
   readonly onClose: () => void;
 }) {
-  const { friend, onClose } = props;
+  const { open = true, friend, onClose } = props;
   const [remark, setRemark] = useState(friend.remark ?? "");
   const mutation = useUpdateFriendRemarkMutation();
 
@@ -435,7 +439,7 @@ export function EditFriendRemarkModal(props: {
 
   return (
     <ModalDialog
-      open={true}
+      open={open}
       onClose={() => {
         if (!mutation.isPending) {
           onClose();
@@ -483,6 +487,8 @@ export function EditFriendRemarkModal(props: {
 
 /** `InviteMembersModal` 入参属性 */
 export interface InviteMembersModalProps {
+  /** 是否打开弹窗（默认 `true`，传入受控布尔值可驱动 135ms 退场动效） */
+  readonly open?: boolean | undefined;
   /** 从群成员面板进入时，可仅显示自己名下的 Agent。 */
   readonly mode: "members" | "agents";
   readonly onClose: () => void;
@@ -608,7 +614,7 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
 
   return (
     <ModalDialog
-      open={true}
+      open={props.open ?? true}
       onClose={() => {
         if (!isSubmitting) {
           props.onClose();
@@ -618,11 +624,29 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
       subtitle={agentsOnly ? `选择要加入「${props.roomName}」的 Agent。` : undefined}
       maxWidthClass="max-w-lg"
       icon={<Users className="h-4 w-4" />}
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <AppButton variant="ghost" size="md" disabled={isSubmitting} onClick={props.onClose}>
+            取消
+          </AppButton>
+          <AppButton
+            type="submit"
+            form="invite-members-form"
+            variant="primary"
+            size="md"
+            disabled={totalSelected === 0}
+            isLoading={isSubmitting}
+          >
+            拉入群聊{totalSelected > 0 ? ` (${String(totalSelected)})` : ""}
+          </AppButton>
+        </div>
+      }
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <form id="invite-members-form" onSubmit={handleSubmit} className="space-y-4">
         <AppInput
           size="sm"
-          type="text"
+          type="search"
+          enterKeyHint="search"
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
           leadingIcon={<Search className="h-3.5 w-3.5" />}
@@ -655,7 +679,7 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
                   : "你的全部好友均已在群内。"}
               </p>
             ) : (
-              <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+              <div className="flex flex-wrap gap-1.5 sm:max-h-40 sm:overflow-y-auto">
                 {candidateFriends.map((friend) => {
                   const isSelected = selectedUserIds.has(friend.user.userId);
                   return (
@@ -706,7 +730,7 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
                   : "没有符合筛选条件的 Agent。"}
             </p>
           ) : (
-            <div className="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+            <div className="flex flex-wrap gap-1.5 sm:max-h-40 sm:overflow-y-auto">
               {candidateAgents.map((agent) => {
                 const meta = getPlatformVisualMeta(agent.platform);
                 const isSelected = selectedAgentIds.has(agent.id);
@@ -739,21 +763,6 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
               })}
             </div>
           )}
-        </div>
-
-        <div className="flex items-center justify-end gap-2 border-t border-black/[0.06] pt-3.5 dark:border-white/[0.08]">
-          <AppButton variant="ghost" size="md" disabled={isSubmitting} onClick={props.onClose}>
-            取消
-          </AppButton>
-          <AppButton
-            type="submit"
-            variant="primary"
-            size="md"
-            disabled={totalSelected === 0}
-            isLoading={isSubmitting}
-          >
-            拉入群聊{totalSelected > 0 ? ` (${String(totalSelected)})` : ""}
-          </AppButton>
         </div>
       </form>
     </ModalDialog>

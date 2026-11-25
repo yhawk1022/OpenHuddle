@@ -24,7 +24,7 @@ import {
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { BrandMark } from "../../components/brand-mark.js";
 import { AppButton, AppTooltip, motion, toast } from "../../components/primitives/index.js";
 import {
@@ -62,20 +62,6 @@ export function publicShareReplayQueryOptions(inviteToken: string) {
 /** `PublicSharePage` 入参属性 */
 export interface PublicSharePageProps {
   readonly inviteToken: string;
-}
-
-/**
- * 查找由某条消息发起的结构化提案。
- *
- * @param msg - 时间线消息
- * @param proposals - 快照中的全部提案
- * @returns 关联提案；不存在时为 `undefined`
- */
-function findProposalForMessage(
-  msg: MessageDto,
-  proposals: ReadonlyArray<ProposalCardDto>,
-): ProposalCardDto | undefined {
-  return proposals.find((p) => p.originMessageSeq === msg.seq);
 }
 
 /**
@@ -222,8 +208,36 @@ export function PublicSharePage(props: PublicSharePageProps) {
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [focusedProposalId, setFocusedProposalId] = useState<ProposalId | null>(null);
   const [inspectedAgent, setInspectedAgent] = useState<InspectedAgentProfile | null>(null);
+  const copiedTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+    };
+  }, []);
 
   const snapshot = shareQuery.data;
+
+  const proposalByOriginSeq = useMemo(() => {
+    const map = new Map<number, ProposalCardDto>();
+    if (snapshot) {
+      for (const proposal of snapshot.proposals) {
+        map.set(proposal.originMessageSeq, proposal);
+      }
+    }
+    return map;
+  }, [snapshot]);
+
+  const referenceNowMs = useMemo(() => {
+    if (!snapshot || snapshot.messages.length === 0) {
+      return 0;
+    }
+    const lastIso = snapshot.messages[snapshot.messages.length - 1]?.createdAtIso;
+    const parsed = lastIso !== undefined ? Date.parse(lastIso) : Number.NaN;
+    return Number.isFinite(parsed) ? parsed : 0;
+  }, [snapshot]);
 
   const messageBySeq = useMemo(() => {
     const map = new Map<number, MessageDto>();
@@ -259,7 +273,10 @@ export function PublicSharePage(props: PublicSharePageProps) {
         toast.success("公开回放链接已复制", {
           description: "任何人无需登录即可只读浏览这段讨论与最终结论",
         });
-        window.setTimeout(() => setCopiedLink(false), 1_800);
+        if (copiedTimerRef.current !== null) {
+          window.clearTimeout(copiedTimerRef.current);
+        }
+        copiedTimerRef.current = window.setTimeout(() => setCopiedLink(false), 1_800);
       })
       .catch(() => {
         toast.error("复制链接失败，请手动复制地址栏 URL");
@@ -293,36 +310,38 @@ export function PublicSharePage(props: PublicSharePageProps) {
         : "这个群聊不存在，或群主已关闭公开分享权限。";
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden text-[#111318] dark:text-[#F2F2F4]">
+    <div className="flex h-vvh w-full flex-col overflow-hidden text-[#111318] dark:text-[#F2F2F4]">
       {/* 顶部 Apple Liquid Glass 标题栏：支持 Tauri v2 与 Electron 无边框拖拽 */}
       <header
         data-tauri-drag-region=""
         className="app-drag-region pt-safe relative liquid-glass-bar z-20 shrink-0 select-none"
       >
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-          <div className="flex min-w-0 items-center gap-2.5">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3.5 py-2.5 sm:gap-3 sm:px-6 sm:py-3">
+          <div className="flex min-w-0 items-center gap-2">
             <button
               type="button"
               onClick={() => navigateTo("/")}
               aria-label="返回 OpenHuddle 首页"
-              className="app-no-drag flex cursor-pointer items-center gap-2 rounded-full px-1 py-0.5 transition hover:opacity-80 active:scale-[0.98]"
+              className="app-no-drag flex min-w-0 cursor-pointer items-center gap-2 rounded-full px-1 py-0.5 transition hover:opacity-80 active:scale-[0.98]"
             >
               <BrandMark className="h-6 w-6 shrink-0" />
-              <span className="text-[17px] font-bold tracking-[-0.025em] text-[#111318] dark:text-white">
+              <span className="truncate text-[15.5px] font-bold tracking-[-0.025em] text-[#111318] sm:text-[17px] dark:text-white">
                 OpenHuddle
               </span>
             </button>
-            <span className="pointer-events-none hidden items-center gap-1 rounded-full bg-black/[0.05] px-2.5 py-0.5 text-[11px] font-medium text-[#4B5565] sm:inline-flex dark:bg-white/[0.07] dark:text-[#C4C4CA]">
+            <span className="pointer-events-none hidden shrink-0 items-center gap-1 rounded-full bg-black/[0.05] px-2.5 py-0.5 text-[11px] font-medium text-[#4B5565] sm:inline-flex dark:bg-white/[0.07] dark:text-[#C4C4CA]">
               <Globe aria-hidden="true" className="h-3 w-3 text-[#16A34A] dark:text-[#34D399]" />
               <span>公开回放</span>
             </span>
           </div>
 
-          <div className="app-no-drag flex items-center gap-2">
+          <div className="app-no-drag flex shrink-0 items-center gap-1.5 sm:gap-2">
             <AppTooltip content="复制公开只读回放链接" side="bottom">
               <AppButton
                 variant="secondary"
                 size="sm"
+                className="shrink-0 whitespace-nowrap"
+                aria-label={copiedLink ? "已复制公开链接" : "复制公开链接"}
                 leadingIcon={
                   copiedLink ? (
                     <Check
@@ -341,10 +360,11 @@ export function PublicSharePage(props: PublicSharePageProps) {
             <AppButton
               variant="primary"
               size="sm"
+              className="shrink-0 whitespace-nowrap"
               trailingIcon={<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />}
               onClick={() => navigateTo("/")}
             >
-              打开 OpenHuddle
+              <span className="max-[359px]:hidden">打开 </span>OpenHuddle
             </AppButton>
           </div>
         </div>
@@ -499,7 +519,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                         toDayKey(prev.createdAtIso) !== toDayKey(msg.createdAtIso);
                       const replied =
                         msg.replyToSeq !== undefined ? messageBySeq.get(msg.replyToSeq) : undefined;
-                      const linkedProposal = findProposalForMessage(msg, snapshot.proposals);
+                      const linkedProposal = proposalByOriginSeq.get(msg.seq);
                       const agentMember =
                         msg.author.agentId !== undefined
                           ? memberByAgentId.get(msg.author.agentId)
@@ -520,7 +540,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                             linkedProposal={linkedProposal}
                             authorOwnerName={agentMember?.ownerDisplayName}
                             authorReach={agentMember?.reach}
-                            nowMs={0}
+                            nowMs={referenceNowMs}
                             readOnly={true}
                             isGroupedWithPrevious={
                               !showDayDivider && shouldGroupWithPrevious(prev, msg)
@@ -536,7 +556,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
               </div>
 
               {/* 底部只读提示与建群引导栏 */}
-              <div className="pb-safe flex select-none flex-wrap items-center justify-between gap-3 border-t border-black/[0.06] bg-im-surface/45 px-4 py-3 sm:px-6 dark:border-white/[0.07] dark:bg-white/[0.03]">
+              <div className="flex select-none flex-wrap items-center justify-between gap-3 border-t border-black/[0.06] bg-im-surface/45 px-4 py-3 sm:px-6 lg:pb-safe dark:border-white/[0.07] dark:bg-white/[0.03]">
                 <div className="flex min-w-0 items-center gap-2 rounded-full bg-black/[0.045] px-3.5 py-2 text-xs text-[#687082] dark:bg-white/[0.07] dark:text-[#9B9BA3]">
                   <Eye aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                   <span className="truncate">只读回放 · 访客无需登录即可阅读，无法直接发言</span>
@@ -544,6 +564,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                 <AppButton
                   variant="primary"
                   size="md"
+                  className="shrink-0 whitespace-nowrap"
                   trailingIcon={<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />}
                   onClick={() => navigateTo("/")}
                 >
@@ -557,7 +578,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
               initial={{ opacity: 0, y: 14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ type: "spring", stiffness: 380, damping: 32, delay: 0.06 }}
-              className="space-y-3 px-4 pb-8 sm:px-0 lg:sticky lg:top-6 lg:col-span-4 lg:max-h-[calc(100dvh-6rem)] lg:overflow-y-auto lg:pb-0"
+              className="space-y-3 px-4 pb-[max(2rem,env(safe-area-inset-bottom,0px))] sm:px-0 lg:sticky lg:top-6 lg:col-span-4 lg:max-h-[calc(var(--oh-vvh,100dvh)-6rem)] lg:overflow-y-auto lg:pb-0"
             >
               <h2 className="flex select-none items-center gap-1.5 px-1 text-xs font-semibold text-[#4B5565] dark:text-[#9B9BA3]">
                 <FileCheck2 aria-hidden="true" className="h-3.5 w-3.5" />

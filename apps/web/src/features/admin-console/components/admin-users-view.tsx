@@ -215,6 +215,7 @@ function AdminUserDetailDrawerContent(props: {
         <div className="flex items-center gap-2">
           <AppInput
             size="sm"
+            containerClassName="min-w-0 flex-1"
             value={displayNameDraft}
             onChange={(e) => setDisplayNameDraft(e.target.value)}
             placeholder="输入用户展示昵称"
@@ -223,6 +224,7 @@ function AdminUserDetailDrawerContent(props: {
           <AppButton
             variant="secondary"
             size="sm"
+            className="shrink-0 whitespace-nowrap"
             disabled={
               displayNameDraft.trim().length === 0 || displayNameDraft.trim() === u.displayName
             }
@@ -530,9 +532,11 @@ export function AdminUsersView(props: AdminUsersViewProps) {
     <div className="space-y-4">
       {/* 筛选工具条 */}
       <div className="oh-elevated-card flex flex-wrap items-center gap-2.5 rounded-2xl p-3.5">
-        <div className="min-w-[220px] flex-1">
+        <div className="w-full sm:min-w-[220px] sm:flex-1">
           <AppInput
             size="sm"
+            type="search"
+            enterKeyHint="search"
             value={searchInput}
             onChange={(e) => {
               setSearchInput(e.target.value);
@@ -559,7 +563,7 @@ export function AdminUsersView(props: AdminUsersViewProps) {
           />
         </div>
 
-        <div className="w-36">
+        <div className="w-[calc(50%-0.3125rem)] sm:w-36">
           <AppSelect
             size="sm"
             value={roleFilter}
@@ -572,7 +576,7 @@ export function AdminUsersView(props: AdminUsersViewProps) {
           />
         </div>
 
-        <div className="w-36">
+        <div className="w-[calc(50%-0.3125rem)] sm:w-36">
           <AppSelect
             size="sm"
             value={statusFilter}
@@ -604,7 +608,7 @@ export function AdminUsersView(props: AdminUsersViewProps) {
           />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto overscroll-x-contain">
               <table className="w-full min-w-[780px] border-collapse text-left text-[13px]">
                 <thead>
                   <tr className="border-b border-black/[0.06] bg-black/[0.02] text-[11.5px] font-semibold text-[#687082] dark:border-white/[0.07] dark:bg-white/[0.02] dark:text-[#8E96AB]">

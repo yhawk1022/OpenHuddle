@@ -25,6 +25,7 @@ import {
   ShieldAlert,
   Users,
 } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 import { BrandMark } from "../../../components/brand-mark.js";
@@ -35,10 +36,11 @@ import {
   IconButton,
   cn,
   toast,
+  usePrefersReducedMotion,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { adminQueryKeys } from "../../../lib/query-keys.js";
-import { navigateTo, useBrowserLocation } from "../../../lib/session-store.js";
+import { navigateBackOr, navigateTo, useBrowserLocation } from "../../../lib/session-store.js";
 import {
   AccountThemeMenu,
   OtpSignInScreen,
@@ -160,7 +162,7 @@ function AdminSidebarNav(props: {
       {/* 品牌与后台标识 */}
       <div
         data-tauri-drag-region=""
-        className="app-drag-region flex h-[64px] shrink-0 items-center justify-between gap-2 border-b border-im-border px-4"
+        className="app-drag-region flex min-h-[64px] shrink-0 items-center justify-between gap-2 border-b border-im-border px-4 pt-[env(safe-area-inset-top,0px)] md:pt-0"
       >
         <div className="flex min-w-0 items-center gap-2.5">
           <BrandMark size={28} />
@@ -199,7 +201,7 @@ function AdminSidebarNav(props: {
       </nav>
 
       {/* 底部返回工作台与当前管理员信息 */}
-      <div className="shrink-0 space-y-2.5 border-t border-im-border p-3">
+      <div className="shrink-0 space-y-2.5 border-t border-im-border p-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] md:pb-3">
         <AppButton
           variant="secondary"
           size="sm"
@@ -248,6 +250,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
   const location = useBrowserLocation();
   const queryClient = useQueryClient();
   const logoutMutation = useLogoutMutation();
+  const reducedMotion = usePrefersReducedMotion();
 
   const activeSection = useMemo(
     () => resolveSectionFromPath(location.pathname),
@@ -300,7 +303,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
     ADMIN_NAV_ITEMS.find((item) => item.id === activeSection) ?? ADMIN_NAV_ITEMS[0];
 
   return (
-    <div className="flex h-dvh w-screen overflow-hidden bg-app-frame text-im-fg md:p-2">
+    <div className="flex h-vvh w-full overflow-hidden bg-app-frame text-im-fg md:p-2">
       <div className="oh-shell-frame flex h-full w-full overflow-hidden md:rounded-[20px]">
         {/* 桌面端左侧导航栏 */}
         <aside className="hidden w-[248px] shrink-0 border-r border-im-border md:block">
@@ -308,7 +311,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
             activeSection={activeSection}
             currentUser={props.currentUser}
             onSelectSection={navigateToSection}
-            onBackToWorkspace={() => navigateTo("/")}
+            onBackToWorkspace={() => navigateBackOr("/")}
             onLogout={handleLogout}
           />
         </aside>
@@ -318,9 +321,9 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
           {/* 64px 轻磨砂顶栏 */}
           <header
             data-tauri-drag-region=""
-            className="oh-bar-frosted app-drag-region flex h-[64px] shrink-0 items-center justify-between gap-3 border-b border-im-border px-4 sm:px-6"
+            className="oh-bar-frosted app-drag-region flex h-[60px] shrink-0 items-center justify-between gap-2 border-b border-im-border px-3.5 sm:h-[64px] sm:gap-3 sm:px-6"
           >
-            <div className="flex min-w-0 items-center gap-2.5">
+            <div className="flex min-w-0 items-center gap-2">
               <div className="md:hidden">
                 <IconButton
                   size="sm"
@@ -332,7 +335,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
                 </IconButton>
               </div>
               <div className="min-w-0">
-                <h1 className="truncate text-[15.5px] font-semibold tracking-[-0.015em] text-im-fg">
+                <h1 className="truncate text-[15px] font-semibold tracking-[-0.015em] text-im-fg sm:text-[15.5px]">
                   {activeNavMeta?.label ?? "运营管理后台"}
                 </h1>
                 <p className="hidden truncate text-xs text-im-muted sm:block">
@@ -341,7 +344,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
               </div>
             </div>
 
-            <div className="app-no-drag flex shrink-0 items-center gap-1.5">
+            <div className="app-no-drag flex shrink-0 items-center gap-1 sm:gap-1.5">
               <AppTooltip side="bottom" content="刷新当前数据">
                 <IconButton
                   size="sm"
@@ -359,46 +362,57 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
               <AppButton
                 variant="secondary"
                 size="xs"
-                className="hidden sm:inline-flex"
+                className="inline-flex shrink-0 whitespace-nowrap"
                 leadingIcon={<ArrowLeft className="h-3.5 w-3.5" />}
-                onClick={() => navigateTo("/")}
+                onClick={() => navigateBackOr("/")}
               >
-                工作台
+                <span className="max-[359px]:hidden">工作台</span>
+                <span className="min-[360px]:hidden">返回</span>
               </AppButton>
             </div>
           </header>
 
           {/* 独立可滚动业务视图容器 */}
-          <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6">
+          <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3.5 py-4 pb-[max(1.25rem,env(safe-area-inset-bottom,0px))] sm:px-6 sm:py-5">
             <div className="mx-auto max-w-7xl">
-              {activeSection === "overview" ? (
-                <AdminOverviewView
-                  onNavigateSection={navigateToSection}
-                  onInspectUser={handleInspectUserFromDashboard}
-                  onInspectRoom={handleInspectRoomFromElsewhere}
-                />
-              ) : activeSection === "users" ? (
-                <AdminUsersView
-                  currentUserId={props.currentUser.id}
-                  initialSelectedUserId={initialUserId}
-                  onClearInitialSelection={() => setInitialUserId(null)}
-                />
-              ) : activeSection === "sessions" ? (
-                <AdminSessionsView />
-              ) : activeSection === "rooms" ? (
-                <AdminRoomsView
-                  initialSelectedRoomId={initialRoomId}
-                  onClearInitialSelection={() => setInitialRoomId(null)}
-                />
-              ) : activeSection === "agents" ? (
-                <AdminAgentsView />
-              ) : activeSection === "proposals" ? (
-                <AdminProposalsView onInspectRoom={handleInspectRoomFromElsewhere} />
-              ) : activeSection === "pairing-codes" ? (
-                <AdminPairingCodesView />
-              ) : (
-                <AdminAuditLogsView />
-              )}
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={activeSection}
+                  initial={reducedMotion ? false : { opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                  transition={reducedMotion ? { duration: 0 } : { duration: 0.15, ease: "easeOut" }}
+                >
+                  {activeSection === "overview" ? (
+                    <AdminOverviewView
+                      onNavigateSection={navigateToSection}
+                      onInspectUser={handleInspectUserFromDashboard}
+                      onInspectRoom={handleInspectRoomFromElsewhere}
+                    />
+                  ) : activeSection === "users" ? (
+                    <AdminUsersView
+                      currentUserId={props.currentUser.id}
+                      initialSelectedUserId={initialUserId}
+                      onClearInitialSelection={() => setInitialUserId(null)}
+                    />
+                  ) : activeSection === "sessions" ? (
+                    <AdminSessionsView />
+                  ) : activeSection === "rooms" ? (
+                    <AdminRoomsView
+                      initialSelectedRoomId={initialRoomId}
+                      onClearInitialSelection={() => setInitialRoomId(null)}
+                    />
+                  ) : activeSection === "agents" ? (
+                    <AdminAgentsView />
+                  ) : activeSection === "proposals" ? (
+                    <AdminProposalsView onInspectRoom={handleInspectRoomFromElsewhere} />
+                  ) : activeSection === "pairing-codes" ? (
+                    <AdminPairingCodesView />
+                  ) : (
+                    <AdminAuditLogsView />
+                  )}
+                </motion.div>
+              </AnimatePresence>
             </div>
           </main>
         </div>
@@ -439,7 +453,7 @@ export function AdminConsolePage() {
   // 后台入口与工作台共用认证表单，重试时保持用户输入。
   if (meQuery.isPending && !meQuery.isFetched) {
     return (
-      <main className="flex h-dvh flex-col items-center justify-center gap-2.5 bg-app-frame text-im-fg">
+      <main className="flex h-vvh w-full flex-col items-center justify-center gap-2.5 bg-app-frame text-im-fg">
         <Shield className="h-6 w-6 animate-pulse text-im-muted" />
         <span className="text-[15px] font-semibold tracking-[-0.015em]">正在核验管理员权限…</span>
       </main>
@@ -452,8 +466,8 @@ export function AdminConsolePage() {
 
   if (meQuery.data.user.role !== "admin") {
     return (
-      <main className="flex h-dvh w-screen items-center justify-center bg-app-frame p-6 text-im-fg">
-        <div className="oh-elevated-card max-w-md rounded-3xl p-7 text-center">
+      <main className="flex h-vvh w-full items-center justify-center bg-app-frame p-5 text-im-fg sm:p-6">
+        <div className="oh-elevated-card max-w-md rounded-3xl p-6 text-center sm:p-7">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#E5484D]/12 text-[#D70015] dark:bg-[#F05252]/15 dark:text-[#FF6961]">
             <ShieldAlert className="h-6 w-6" />
           </div>
@@ -470,7 +484,7 @@ export function AdminConsolePage() {
               variant="primary"
               size="md"
               leadingIcon={<ArrowLeft className="h-4 w-4" />}
-              onClick={() => navigateTo("/")}
+              onClick={() => navigateBackOr("/")}
             >
               返回聊天工作台
             </AppButton>

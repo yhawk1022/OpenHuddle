@@ -31,4 +31,9 @@ export {
   type AgentOnboardingModalProps,
   type OnboardingModalTab,
 } from "./components/agent-onboarding-modal.js";
-export { AuthScreen, OtpSignInScreen } from "./components/otp-sign-in-screen.js";
+export {
+  AuthScreen,
+  type AuthScreenProps,
+  OtpSignInScreen,
+  type PortalMode,
+} from "./components/otp-sign-in-screen.js";

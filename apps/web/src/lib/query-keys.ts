@@ -20,6 +20,7 @@ import type {
   RoomGovernanceState,
   RoomId,
   UserId,
+  WorkspaceId,
 } from "@openhuddle/protocol";
 
 /**
@@ -68,6 +69,13 @@ export const huddleQueryKeys = {
   roomMessages: (roomId: RoomId) => ["rooms", roomId, "messages"] as const,
   /** 指定房间结构化提案与决策卡片列表缓存键 */
   roomProposals: (roomId: RoomId) => ["rooms", roomId, "proposals"] as const,
+  /** 当前用户五维工作区与房间挂载关系列表缓存键 */
+  workspaces: () => ["workspaces"] as const,
+  /** 指定房间已挂载工作区列表缓存键 */
+  roomWorkspaces: (roomId: RoomId) => ["rooms", roomId, "workspaces"] as const,
+  /** 多 Agent 协作工单列表缓存键 */
+  workItems: (scope?: { readonly workspaceId?: WorkspaceId; readonly roomId?: RoomId }) =>
+    scope ? (["workItems", scope] as const) : (["workItems"] as const),
   /** 公开只读分享回放页缓存键 */
   publicShare: (inviteToken: string) => ["share", inviteToken] as const,
 } as const;

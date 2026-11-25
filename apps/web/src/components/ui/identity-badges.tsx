@@ -17,7 +17,12 @@ import {
   assertNever,
 } from "@openhuddle/protocol";
 import { Award, Bot, Cpu, FileText, Globe2, Hand, Info, ShieldCheck, Vote } from "lucide-react";
-import { getInitials, getPlatformVisualMeta, getReachVisualMeta } from "../../lib/format.js";
+import {
+  getInitials,
+  getPlatformVisualMeta,
+  getReachVisualMeta,
+  isAgentLiveReachable,
+} from "../../lib/format.js";
 import { AppTooltip, cn } from "../primitives/index.js";
 import { PlatformGlyph } from "./platform-icons.js";
 
@@ -145,28 +150,15 @@ function getAgentPastelSurfaceClass(platform: AgentPlatform, displayName: string
   }
 }
 
+const PLATFORM_AVATAR_RING_CLASS =
+  "ring-white/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] dark:ring-white/[0.09] dark:shadow-none";
+
 /**
- * 获取宿主平台专属克制外描边类名（保持向后兼容导出，统一为细腻纸感半透明描边）。
- *
- * @param platform - Agent 宿主平台枚举
- * @returns Tailwind `ring-*` 类名
+ * 获取宿主平台外描边类名（保留编译期枚举校验并统一返回双主题半透明描边）。
  */
 export function getPlatformRingClass(platform: AgentPlatform): string {
-  switch (platform) {
-    case "antigravity":
-    case "codex":
-    case "claude_code":
-    case "cursor":
-    case "deepseek":
-    case "openclaw":
-    case "gemini":
-    case "chatgpt":
-    case "hosted":
-    case "custom":
-      return "ring-white/80 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] dark:ring-white/[0.09] dark:shadow-none";
-    default:
-      return assertNever(platform);
-  }
+  void (platform satisfies AgentPlatform);
+  return PLATFORM_AVATAR_RING_CLASS;
 }
 
 /**
@@ -182,15 +174,7 @@ function renderPlatformGlyph(platform: AgentPlatform, displayName: string, glyph
 }
 
 /**
- * 渲染 Pachat 风格圆形（`rounded-full`）粉彩头像：支持 `22px`（`xs`）、`28px`（`sm`）、`36px`（`md`）、`40px`（`lg`），
- * 搭配清晰矢量平台印记/首字母与 `#34C759` 在线状态圆点。
- *
- * @remarks
- * - `online_sse` 与 `hosted_ready` 渲染 `#34C759` 鲜明绿点，外圈带画布同色描边确保明暗双主题利落切割。
- * - 状态指示圆点包裹 `AppTooltip`，悬停可查看当前实时唤醒通道详情。
- *
- * @param props - 实体类别、昵称、宿主平台、在线可达状态与尺寸档位
- * @returns 圆形暖粉彩头像组件
+ * 渲染圆形粉彩头像（支持 `xs | sm | md | lg` 四档尺寸与实时在线状态圆点）。
  */
 export function PlatformAvatar(props: PlatformAvatarProps) {
   const size = props.size ?? "md";
@@ -214,7 +198,7 @@ export function PlatformAvatar(props: PlatformAvatarProps) {
 
   const platform = props.platform ?? "custom";
   const reachMeta = props.reach !== undefined ? getReachVisualMeta(props.reach) : null;
-  const isOnline = props.reach === "online_sse" || props.reach === "hosted_ready";
+  const isOnline = isAgentLiveReachable(props.reach);
 
   return (
     <div className={cn("relative inline-flex shrink-0 select-none", props.className)}>
@@ -293,11 +277,7 @@ const SYNTHETIC_PLATFORMS: ReadonlyArray<AgentPlatform> = [
 ];
 
 /**
- * 渲染 Pachat / 微信风格的群聊组合头像：
- * 当成员数 `>= 2` 时展示 `rounded-xl` 柔和浅灰方框内的 2x2 迷你粉彩圆头像网格；单人或未满 2 人时回退为干净的粉彩圆形头像。
- *
- * @param props - 群名、可选成员数组或成员总数及尺寸
- * @returns 群聊组合头像节点
+ * 渲染群聊组合头像（成员数 `>= 2` 时渲染 2x2 迷你圆头像网格，否则渲染单圆头像）。
  */
 export function RoomCompositeAvatar(props: RoomCompositeAvatarProps) {
   const size = props.size ?? "md";
@@ -408,7 +388,7 @@ export function PlatformTagPill(props: PlatformTagPillProps) {
   return (
     <span
       className={cn(
-        "inline-flex select-none items-center gap-1 rounded-full font-medium leading-none",
+        "inline-flex shrink-0 select-none items-center gap-1 whitespace-nowrap rounded-full font-medium leading-none",
         props.compact
           ? "bg-black/[0.045] px-2 py-[3px] text-[11px] text-[#687082] dark:bg-white/[0.07] dark:text-[#B4BCD0]"
           : cn("border px-2 py-0.5 text-[11px]", meta.badgeClass),
@@ -632,13 +612,13 @@ export interface ReachStatusBadgeProps {
  */
 export function ReachStatusBadge(props: ReachStatusBadgeProps) {
   const meta = getReachVisualMeta(props.reach);
-  const isLive = props.reach === "online_sse";
+  const isLive = isAgentLiveReachable(props.reach);
 
   return (
     <AppTooltip content={meta.description} side="top">
       <span
         className={cn(
-          "inline-flex cursor-default select-none items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors",
+          "inline-flex shrink-0 cursor-default select-none items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors",
           meta.pillClass,
           props.className,
         )}

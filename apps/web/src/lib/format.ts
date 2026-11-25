@@ -36,6 +36,78 @@ export function getRoomDisplayName(
     : room.name;
 }
 
+function parseIsoTimestampMs(iso: string): number {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * 在两份可选的 ISO-8601 时间戳之间单调保留较新的一方。
+ *
+ * @param currentIso - 现有缓存时间戳
+ * @param candidateIso - 新到达的时间戳
+ * @returns 较新的时间戳字符串
+ */
+export function pickLatestIso(
+  currentIso: string | undefined,
+  candidateIso: string | undefined,
+): string | undefined {
+  if (currentIso === undefined) {
+    return candidateIso;
+  }
+  if (candidateIso === undefined) {
+    return currentIso;
+  }
+  return parseIsoTimestampMs(candidateIso) >= parseIsoTimestampMs(currentIso)
+    ? candidateIso
+    : currentIso;
+}
+
+/**
+ * 比较两个会话的最新活跃时间（优先取 `lastMessageAtIso`，无消息会话回退至 `createdAtIso`），按最新在前倒序排列。
+ *
+ * @param a - 会话 A
+ * @param b - 会话 B
+ * @returns 供 `Array.prototype.sort` 使用的比较值（负数表示 `a` 排在前面）
+ */
+export function compareRoomsByLatestActivity(
+  a: Readonly<RoomSummaryDto>,
+  b: Readonly<RoomSummaryDto>,
+): number {
+  const aActivityMs = parseIsoTimestampMs(a.lastMessageAtIso ?? a.createdAtIso);
+  const bActivityMs = parseIsoTimestampMs(b.lastMessageAtIso ?? b.createdAtIso);
+  if (bActivityMs !== aActivityMs) {
+    return bActivityMs - aActivityMs;
+  }
+
+  const aHasMessage = a.lastMessageAtIso !== undefined ? 1 : 0;
+  const bHasMessage = b.lastMessageAtIso !== undefined ? 1 : 0;
+  if (bHasMessage !== aHasMessage) {
+    return bHasMessage - aHasMessage;
+  }
+
+  if (b.lastSeq !== a.lastSeq) {
+    return b.lastSeq - a.lastSeq;
+  }
+
+  const createdDiff = parseIsoTimestampMs(b.createdAtIso) - parseIsoTimestampMs(a.createdAtIso);
+  if (createdDiff !== 0) {
+    return createdDiff;
+  }
+
+  return a.id.localeCompare(b.id);
+}
+
+/**
+ * 返回按最新消息时间倒序排列的新会话数组（纯函数，不修改原数组）。
+ *
+ * @param rooms - 待排序的会话列表
+ * @returns 倒序排列后的会话列表副本
+ */
+export function sortRoomsByLatestActivity<T extends RoomSummaryDto>(rooms: ReadonlyArray<T>): T[] {
+  return [...rooms].sort(compareRoomsByLatestActivity);
+}
+
 /**
  * 获取引用与通知中的消息摘要，纯媒体消息显示对应的媒体类别。
  * @param message - 待展示的消息
@@ -93,7 +165,17 @@ export interface ReachVisualMeta {
 }
 
 /**
- * 获取指定 `AgentPlatform` 的精简名称、Pachat 暖粉彩头像/徽章样式与接入说明。
+ * 判断 Agent 当前是否处于可实时唤醒的在线通道（`online_sse`、`hosted_ready` 或 `webhook`）。
+ *
+ * @param reach - Agent 可达状态
+ * @returns 若支持实时送达唤醒事件则返回 `true`
+ */
+export function isAgentLiveReachable(reach: AgentReachState | undefined): boolean {
+  return reach === "online_sse" || reach === "hosted_ready" || reach === "webhook";
+}
+
+/**
+ * 获取指定 `AgentPlatform` 的精简名称、双主题粉彩头像/徽章样式与接入说明。
  *
  * @param platform - 协议定义的 Agent 宿主平台枚举
  * @returns 完整的视觉与引导配置元数据

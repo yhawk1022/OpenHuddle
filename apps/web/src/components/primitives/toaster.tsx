@@ -1,45 +1,22 @@
 /**
  * @module web/components/primitives/toaster
- * @description 基于 `sonner` 的全局 Atelier Daylight & Obsidian Studio 轻提示宿主（`AppToaster`）及 `toast` 触发函数重导出。
+ * @description 基于 `sonner` 的全局轻提示宿主（`AppToaster`）及 `toast` 触发函数重导出。
  *
- * 架构职责与关键不变量（Invariants）：
- * 1. 自动追踪 `.dark` 主题类：通过 `useSyncExternalStore` + `MutationObserver` 实时监听 `<html>` 的 `.dark` 类切换，轻提示胶囊在暖瓷白与黑曜石表面之间零延迟同步换肤。
- * 2. 不遮挡底部聊天输入舱：默认定位在 `"top-center"`，确保桌面与移动端的底部输入区始终畅通。
+ * 关键不变量：
+ * 1. 统一消费 `theme-store` 的 `useThemeMode()`，与根节点明暗主题切换同步。
+ * 2. 默认停靠在 `"top-center"`，避免遮挡桌面与移动端底部聊天输入区。
  */
-import { useSyncExternalStore } from "react";
 import { type ExternalToast, Toaster, toast } from "sonner";
+import { useThemeMode } from "../../lib/theme-store.js";
 
 export { toast };
 export type { ExternalToast };
 
-function subscribeHtmlDarkClass(listener: () => void): () => void {
-  if (typeof document === "undefined" || typeof MutationObserver === "undefined") {
-    return () => {};
-  }
-  const observer = new MutationObserver(() => {
-    listener();
-  });
-  observer.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["class"],
-  });
-  return () => {
-    observer.disconnect();
-  };
-}
-
-function getHtmlThemeSnapshot(): "light" | "dark" {
-  if (typeof document !== "undefined") {
-    return document.documentElement.classList.contains("dark") ? "dark" : "light";
-  }
-  return "light";
-}
-
 /** `AppToaster` 入参属性 */
 export interface AppToasterProps {
-  /** 可选强制指定主题；省略时自动跟随 `document.documentElement` 的 `.dark` 类 */
+  /** 可选强制指定主题；省略时跟随全局 `useThemeMode()` */
   readonly theme?: "light" | "dark" | "system" | undefined;
-  /** 屏幕停靠方位（默认 `"top-center"`，避免遮挡 IM 底部输入区） */
+  /** 屏幕停靠方位（默认 `"top-center"`） */
   readonly position?:
     | "top-left"
     | "top-center"
@@ -51,18 +28,14 @@ export interface AppToasterProps {
 }
 
 /**
- * 渲染全局纯净圆角轻提示容器（在 `main.tsx` 挂载一次）。
+ * 渲染全局圆角轻提示容器（在 `main.tsx` 挂载一次）。
  *
  * @param props - 可选主题覆盖与停靠位置
- * @returns 配置好 Pachat 双主题样式的 Sonner `<Toaster />`
+ * @returns 配置好明暗双主题样式的 Sonner `<Toaster />`
  */
 export function AppToaster(props: AppToasterProps) {
   const { theme, position = "top-center" } = props;
-  const observedTheme = useSyncExternalStore<"light" | "dark">(
-    subscribeHtmlDarkClass,
-    getHtmlThemeSnapshot,
-    () => "light",
-  );
+  const observedTheme = useThemeMode();
 
   return (
     <Toaster
@@ -70,6 +43,11 @@ export function AppToaster(props: AppToasterProps) {
       position={position}
       richColors={false}
       offset={14}
+      mobileOffset={{
+        top: "max(16px, calc(env(safe-area-inset-top, 0px) + 8px))",
+        left: "16px",
+        right: "16px",
+      }}
       duration={2600}
       toastOptions={{
         classNames: {
