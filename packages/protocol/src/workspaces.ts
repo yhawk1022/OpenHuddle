@@ -460,7 +460,7 @@ export const WorkMcpTools = {
   },
   openhuddle_update_work_slice: {
     description:
-      "Renew a lease and report progress, or use action=raise_attention with question and 2–5 options to ask the owner.",
+      "Renew a lease and report progress. When blocked or unable to make further progress, pause with action=raise_attention, a question and 2–5 options for the owner.",
     input: HeartbeatWorkSliceBodySchema.extend({
       ...workSliceTarget,
       action: z.enum(["heartbeat", "raise_attention"]).default("heartbeat"),

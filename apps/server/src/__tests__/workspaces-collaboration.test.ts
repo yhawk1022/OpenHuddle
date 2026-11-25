@@ -522,7 +522,8 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
           })
         ).status,
       ).toBe(200);
-      const previousAttempts = expectedStage === "verifying" ? MAX_SLICE_ATTEMPTS : 1;
+      const previousAttempts =
+        expectedStage === "verifying" ? MAX_SLICE_ATTEMPTS : MAX_SLICE_ATTEMPTS + 1;
       const ask = (leaseVersion: number) =>
         request(`${verify}/attention`, reviewer.token, "POST", {
           leaseVersion,
@@ -537,7 +538,10 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
         const claim = await request(`${verify}/claim`, reviewer.token, "POST", {});
         expect(claim.status).toBe(200);
         const { claimedSlice } = (await claim.json()) as ClaimWorkSliceResponse;
-        expect([claimedSlice.attemptCount, claimedSlice.leaseVersion]).toEqual([attempt, attempt]);
+        expect([claimedSlice.attemptCount, claimedSlice.leaseVersion]).toEqual([
+          Math.min(attempt, MAX_SLICE_ATTEMPTS),
+          attempt,
+        ]);
         expect((await ask(attempt)).status).toBe(200);
         if (attempt < previousAttempts) expect((await answer()).status).toBe(200);
       }
@@ -625,7 +629,7 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
         expect(
           (
             await request(`${verify}/complete`, reviewer.token, "POST", {
-              leaseVersion: 2,
+              leaseVersion: previousAttempts + 1,
               verdict: "changes_requested",
               summary: "update game",
             })
@@ -634,6 +638,81 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
         expect((await request(evidence, reviewer.token)).status).toBe(404);
       }
     }
+  });
+
+  it("continues changing review evidence across rounds and pauses repeated deliveries until owner retry", async () => {
+    const owner = await loginHumanViaOtp(app, "rework@openhuddle.dev", "Owner");
+    const writer = await pairAgentForOwner(app, owner.sessionToken, "Writer", "codex");
+    const reviewer = await pairAgentForOwner(app, owner.sessionToken, "Reviewer", "claude_code");
+    async function submit(path: string, token: string, body: unknown, method = "POST") {
+      const res = await app.request(`/api/v1/${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(res.ok, `${method} ${path}: ${await res.clone().text()}`).toBe(true);
+      return res;
+    }
+    const ws = await submit("workspaces", owner.sessionToken, {
+      name: "Rework",
+      roots: [{ localPath: "~/project" }],
+      hostMode: "local_machine",
+      sandboxMode: "worktree_pool",
+    });
+    const { workspace } = (await ws.json()) as SingleWorkspaceResponse;
+    const creation = await submit("work-items", owner.sessionToken, {
+      workspaceId: workspace.id,
+      brief: "Iterate on a change",
+      topology: "verify_loop",
+      tier: "worktree_write",
+      primaryWorkerAgentId: writer.agent.id,
+      verifierAgentId: reviewer.agent.id,
+    });
+    const { item } = (await creation.json()) as SingleWorkItemResponse;
+    const work = `work-items/${item.id}`;
+    const write = `${work}/slices/${item.slices[0]?.sliceId}`;
+    const verify = `${work}/slices/${item.slices[1]?.sliceId}`;
+    let round = 0;
+    for (const code of ["one", "two", "three", "four", "two"]) {
+      round++;
+      await submit(`${write}/claim`, writer.token, {});
+      await submit(
+        `${write}/review-evidence`,
+        writer.token,
+        {
+          leaseVersion: round,
+          patch: `diff --git a/file b/file\n--- /dev/null\n+++ b/file\n@@ -0,0 +1 @@\n+${code}\n`,
+        },
+        "PUT",
+      );
+      await submit(`${write}/complete`, writer.token, {
+        leaseVersion: round,
+        summary: `Implementation report ${round}`,
+        changedFiles: ["file"],
+        diffAdded: 1,
+      });
+      await submit(`${verify}/claim`, reviewer.token, {});
+      const report = {
+        leaseVersion: round,
+        verdict: "changes_requested",
+        summary: `Review wording ${round}`,
+      };
+      const result = await submit(`${verify}/complete`, reviewer.token, report);
+      const { item: updated } = (await result.json()) as SingleWorkItemResponse;
+      expect(updated.stage).toBe(round === 5 ? "blocked" : "working");
+      expect(updated.review?.verifyLoopsUsed).toBe(round);
+      const replay = await submit(`${verify}/complete`, reviewer.token, report);
+      expect(((await replay.json()) as SingleWorkItemResponse).item.version).toBe(updated.version);
+    }
+    const resumed = await submit(`${work}/control`, owner.sessionToken, { action: "retry" });
+    expect(((await resumed.json()) as SingleWorkItemResponse).item.stage).toBe("verifying");
+    await submit(`${verify}/claim`, reviewer.token, {});
+    const passed = await submit(`${verify}/complete`, reviewer.token, {
+      leaseVersion: 6,
+      verdict: "passed",
+      summary: "Confirmed with new evidence from the owner",
+    });
+    expect(((await passed.json()) as SingleWorkItemResponse).item.stage).toBe("awaiting_review");
   });
 
   it("orchestrates a 3-agent swarm + independent verifier loop, rejects overlapping paths, fences attention/rework, and enforces human review", async () => {
@@ -678,12 +757,25 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
       body: JSON.stringify({
         name: "Backend Swarm Room",
         topic: "Multi-agent execution",
+        governance: { maxConsecutiveAgentTurns: 1, agentCooldownMs: 0 },
         rules: "",
         visibility: "invite_only",
         initialAgentIds: [codexWorker.agent.id, claudeWorker.agent.id, agyVerifier.agent.id],
       }),
     });
     const { room } = (await roomRes.json()) as { ok: true; room: RoomDetailDto };
+
+    const ordinaryChat = () =>
+      app.request(`/api/v1/rooms/${room.id}/messages`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${codexWorker.token}`,
+        },
+        body: JSON.stringify({ content: "Room update", ignoreUnread: true }),
+      });
+    expect((await ordinaryChat()).status).toBe(201);
+    expect((await ordinaryChat()).status).toBe(429);
 
     const agentEventsByTarget = new Map<string, SseEvent[]>();
     for (const ag of [codexWorker.agent, claudeWorker.agent, agyVerifier.agent]) {
@@ -772,15 +864,13 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
     }
     expect(verifySlice.leaseRole).toBe("verify");
 
-    expect(agentEventsByTarget.get(codexWorker.agent.id)?.some((e) => e.type === "wake")).toBe(
-      true,
-    );
-    expect(agentEventsByTarget.get(claudeWorker.agent.id)?.some((e) => e.type === "wake")).toBe(
-      true,
-    );
-    expect(agentEventsByTarget.get(agyVerifier.agent.id)?.some((e) => e.type === "wake")).toBe(
-      false,
-    );
+    for (const agent of [codexWorker, claudeWorker, agyVerifier]) {
+      const events = agentEventsByTarget.get(agent.agent.id) ?? [];
+      expect(events.some((e) => e.type === "work.updated" && e.workItemId === createdItem.id)).toBe(
+        true,
+      );
+      expect(events.some((e) => e.type === "wake")).toBe(false);
+    }
 
     // 3. claimableOnly work queue returns createdItem for codexWorker, but empty for agyVerifier (locked until barrier)
     const otherItem = await app.request("/api/v1/work-items", {
@@ -859,6 +949,20 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
     expect(hbItem.slices[0]?.liveSummary).toContain("oh_agt_[REDACTED]");
     expect(hbItem.slices[0]?.liveSummary).not.toContain("accidentalTokenLeak999888");
 
+    // Start the peer before this slice asks for human input.
+    const claim2Res = await app.request(
+      `/api/v1/work-items/${createdItem.id}/slices/${apiSlice.sliceId}/claim`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${claudeWorker.token}`,
+        },
+        body: JSON.stringify({}),
+      },
+    );
+    const claim2 = (await claim2Res.json()) as ClaimWorkSliceResponse;
+
     const askRes = await app.request(
       `/api/v1/work-items/${createdItem.id}/slices/${dbSlice.sliceId}/attention`,
       {
@@ -876,6 +980,29 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
     );
     expect(askRes.status).toBe(200);
     expect(((await askRes.json()) as SingleWorkItemResponse).item.stage).toBe("awaiting_answer");
+
+    // A peer can finish its active lease while the owner decides the first worker's question.
+    const complete2Res = await app.request(
+      `/api/v1/work-items/${createdItem.id}/slices/${apiSlice.sliceId}/complete`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${claudeWorker.token}`,
+        },
+        body: JSON.stringify({
+          leaseVersion: claim2.claimedSlice.leaseVersion,
+          summary: "Implemented workspaces service and routes",
+          changedFiles: ["apps/server/src/modules/workspaces/workspaces.service.ts"],
+          diffAdded: 210,
+          diffRemoved: 4,
+        }),
+      },
+    );
+    expect(complete2Res.status).toBe(200);
+    const paused = ((await complete2Res.json()) as SingleWorkItemResponse).item;
+    expect(paused.stage).toBe("awaiting_answer");
+    expect(paused.attention?.sliceId).toBe(dbSlice.sliceId);
 
     const answerRes = await app.request(`/api/v1/work-items/${createdItem.id}/attention/answer`, {
       method: "POST",
@@ -929,46 +1056,15 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
     );
     expect(complete1Res.status).toBe(200);
     const afterSlice1 = ((await complete1Res.json()) as SingleWorkItemResponse).item;
-    expect(afterSlice1.stage).toBe("working");
+    expect(afterSlice1.stage).toBe("verifying");
     expect(afterSlice1.slices[0]?.liveSummary).toContain("sk-[REDACTED]");
 
-    // 5. Claude claims & completes Slice 2 -> swarm barrier unlocks AGY Verifier and sends wake!
-    const claim2Res = await app.request(
-      `/api/v1/work-items/${createdItem.id}/slices/${apiSlice.sliceId}/claim`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${claudeWorker.token}`,
-        },
-        body: JSON.stringify({}),
-      },
-    );
-    const claim2 = (await claim2Res.json()) as ClaimWorkSliceResponse;
-
-    const complete2Res = await app.request(
-      `/api/v1/work-items/${createdItem.id}/slices/${apiSlice.sliceId}/complete`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${claudeWorker.token}`,
-        },
-        body: JSON.stringify({
-          leaseVersion: claim2.claimedSlice.leaseVersion,
-          summary: "Implemented workspaces service and routes",
-          changedFiles: ["apps/server/src/modules/workspaces/workspaces.service.ts"],
-          diffAdded: 210,
-          diffRemoved: 4,
-        }),
-      },
-    );
-    expect(complete2Res.status).toBe(200);
-    const afterBarrier = ((await complete2Res.json()) as SingleWorkItemResponse).item;
-    expect(afterBarrier.stage).toBe("verifying");
-    expect(agentEventsByTarget.get(agyVerifier.agent.id)?.some((e) => e.type === "wake")).toBe(
+    const verifierEvents = agentEventsByTarget.get(agyVerifier.agent.id) ?? [];
+    expect(verifierEvents.some((e) => e.type === "work.updated" && e.stage === "verifying")).toBe(
       true,
     );
+    expect(verifierEvents.some((e) => e.type === "wake")).toBe(false);
+    expect((await ordinaryChat()).status).toBe(429);
 
     // 6. AGY Verifier claims verify slice and passes verification -> lands at awaiting_review
     const claimVerifyRes = await app.request(
@@ -1489,7 +1585,7 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
     //    - Expire Slice C with exhausted attempts (attemptCount=3 -> transitions item to blocked)
     const wakesForW2: SseEvent[] = [];
     bus.subscribeAgent(w2.agent.id, (ev) => {
-      if (ev.type === "wake") wakesForW2.push(ev);
+      if (ev.type === "work.updated" && ev.workItemId === swarmItem.id) wakesForW2.push(ev);
     });
 
     await database.db.execute(sql`
@@ -1624,6 +1720,10 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
     execFileSync("git", ["add", "."], { cwd: tempRepoDir });
     execFileSync("git", ["commit", "-m", "initial commit"], { cwd: tempRepoDir });
 
+    const reviewQuestion = {
+      question: "哪种验收范围适用？",
+      options: ["只验证静态代码", "需要浏览器验收"],
+    };
     let holdUntilAbort = false;
     let enteredLongExecutor = false;
     let signalAbortedObserved = false;
@@ -1682,6 +1782,10 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
           };
         }
 
+        if (!execInput.prompt.includes("[Clarification]")) {
+          expect(execInput.prompt).toContain("Choose your own completion and stopping criteria");
+          return { attention: reviewQuestion };
+        }
         execInput.onOutputLine("Verifying unified diff and typecheck hook...");
         expect(execInput.prompt).toContain("src/runner-feature.ts");
         return {
@@ -1746,6 +1850,27 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
       expect(createRes.status).toBe(201);
       const createdItem = ((await createRes.json()) as SingleWorkItemResponse).item;
 
+      const auth = { authorization: `Bearer ${owner.sessionToken}` };
+      await expect
+        .poll(
+          async () => {
+            const response = await runnerApp.request(`/api/v1/work-items/${createdItem.id}`, {
+              headers: auth,
+            });
+            return ((await response.json()) as SingleWorkItemResponse).item;
+          },
+          { timeout: 10_000 },
+        )
+        .toMatchObject({ stage: "awaiting_answer", attention: reviewQuestion });
+      const answered = await runnerApp.request(
+        `/api/v1/work-items/${createdItem.id}/attention/answer`,
+        {
+          method: "POST",
+          headers: { ...auth, "content-type": "application/json" },
+          body: JSON.stringify({ choice: reviewQuestion.options[0] }),
+        },
+      );
+      expect(answered.status).toBe(200);
       let settledItem = createdItem;
       const deadline = Date.now() + 10_000;
       while (Date.now() < deadline && settledItem.stage !== "awaiting_review") {

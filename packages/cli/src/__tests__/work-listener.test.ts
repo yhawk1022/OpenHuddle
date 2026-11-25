@@ -1,3 +1,4 @@
+import { WorkAgentAttention } from "@openhuddle/core-governance";
 import type { OwnedAgentSummaryDto } from "@openhuddle/protocol";
 import { afterEach, expect, it, vi } from "vitest";
 import { OpenHuddleHttpClient } from "../http-client.js";
@@ -145,6 +146,38 @@ it("fetches a verification handoff by event id and requests attention with a scr
       question: expect.stringContaining("missing workspace"),
     });
     expect(attention?.body.question).not.toContain("0123456789abcdef");
+    expect(calls.some((c) => c.path.endsWith("/complete"))).toBe(false);
+  } finally {
+    await listener.stop();
+  }
+});
+
+it("reports the agent's stopping decision and choices against its lease without completing it", async () => {
+  const question = "Which dataset is authoritative?";
+  const options = ["March export", "April export"];
+  const { listener, calls } = setup(
+    (path) => {
+      if (path.endsWith(item.id)) return Response.json({ item });
+      if (path === "/workspaces") return Response.json({ workspaces: [workspace] });
+      if (path.endsWith("/claim")) return Response.json({ item, claimedSlice: claimed });
+      if (path.endsWith("/attention"))
+        return Response.json({ item: { ...item, stage: "awaiting_answer" } });
+      throw Error(`unexpected ${path}`);
+    },
+    async () => {
+      throw new WorkAgentAttention({ question, options });
+    },
+  );
+  try {
+    listener.updated(
+      JSON.stringify({ type: "work.updated", workItemId: item.id, stage: "working", version: 2 }),
+    );
+    await vi.waitFor(() =>
+      expect(calls.at(-1)).toMatchObject({
+        path: `/work-items/${item.id}/slices/${slice.sliceId}/attention`,
+        body: { leaseVersion: 1, question, options },
+      }),
+    );
     expect(calls.some((c) => c.path.endsWith("/complete"))).toBe(false);
   } finally {
     await listener.stop();

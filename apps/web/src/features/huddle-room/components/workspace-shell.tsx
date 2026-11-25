@@ -538,6 +538,17 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
 
   const isDetailReady = detailQuery.isSuccess;
 
+  // A resized composer or software keyboard changes the available message area.
+  useEffect(() => {
+    const timeline = scrollRef.current;
+    if (!isDetailReady || !timeline || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (nearBottomRef.current) scrollToBottom("auto");
+    });
+    observer.observe(timeline);
+    return () => observer.disconnect();
+  }, [isDetailReady, scrollToBottom]);
+
   // 原生桌面客户端快捷键与「直接打字聚焦输入框（Type-to-Chat）」响应链
   useEffect(() => {
     const handleStageKeyDown = (event: KeyboardEvent): void => {
@@ -1098,11 +1109,11 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         <div
           ref={scrollRef}
           onScroll={handleTimelineScroll}
-          className="h-full overflow-y-auto overscroll-contain px-4 sm:px-6"
+          className="oh-chat-timeline h-full overflow-y-auto overscroll-contain px-4 sm:px-6"
         >
           <div
             className={cn(
-              "mx-auto flex max-w-3xl flex-col",
+              "oh-chat-messages mx-auto flex max-w-3xl flex-col",
               topTimelinePaddingClass,
               bottomTimelinePaddingClass,
             )}
@@ -1290,7 +1301,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         </div>
 
         {/* 底部悬浮弹性栈：「回到底部」玻璃胶囊 + 瞬态实时运行脉冲条 + 液态玻璃输入舱 */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col">
+        <div className="oh-chat-dock pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col">
           <AnimatePresence>
             {showJumpToBottom ? (
               <motion.button
@@ -1305,7 +1316,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                   setUnseenCount(0);
                 }}
                 className={cn(
-                  "pointer-events-auto relative mr-4 mb-1.5 inline-flex cursor-pointer select-none items-center gap-1.5 self-end rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-[0.96] sm:mr-6",
+                  "oh-chat-jump pointer-events-auto relative mr-4 mb-1.5 inline-flex cursor-pointer select-none items-center gap-1.5 self-end rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-[0.96] sm:mr-6",
                   unseenCount > 0
                     ? "bg-[#181B22] text-white shadow-md hover:bg-[#252A35] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
                     : "liquid-glass-pill text-[#111318] dark:text-[#ECECEF]",
@@ -2861,7 +2872,10 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   };
 
   return (
-    <div className="flex h-vvh w-full flex-col overflow-hidden text-[#111318] md:flex-row md:gap-2.5 md:p-2.5 dark:text-[#F2F2F4]">
+    <div
+      data-mobile-main-nav={showMobileMainTabBar || undefined}
+      className="relative flex h-vvh w-full flex-col overflow-hidden text-[#111318] md:flex-row md:gap-2.5 md:p-2.5 dark:text-[#F2F2F4]"
+    >
       {/* 第 1 栏：72px 个人身份 + 会话/工作台切换舱 + 我的 Agents + `+ 接入 Agent` 悬浮液态玻璃导轨 */}
       <PersonalAgentRail
         currentUser={props.currentUser}

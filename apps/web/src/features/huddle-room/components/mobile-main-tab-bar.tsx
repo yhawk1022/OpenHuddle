@@ -8,7 +8,13 @@
  */
 import { ListTodo, MessageCircle, Users } from "lucide-react";
 import { useMotionValue, useSpring, useTransform } from "motion/react";
-import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   INSTANT_TRANSITION,
   cn,
@@ -49,6 +55,7 @@ function clampSlotWithRubberBand(rawSlot: number, maxIndex: number): number {
 
 export function MobileMainTabBar(props: MobileMainTabBarProps) {
   const reducedMotion = usePrefersReducedMotion();
+  const barRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
   const pointerStateRef = useRef<{
     pointerId: number;
@@ -60,6 +67,21 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
   const ignorePointerClick = useRef(false);
 
   const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
+
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    const shell = bar?.closest<HTMLElement>("[data-mobile-main-nav]");
+    if (!bar || !shell) return;
+    const measure = () =>
+      shell.style.setProperty("--oh-mobile-nav-height", `${bar.offsetHeight}px`);
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(bar, { box: "border-box" });
+    return () => {
+      observer?.disconnect();
+      shell.style.removeProperty("--oh-mobile-nav-height");
+    };
+  }, []);
 
   const activeIndex = tabToIndex(props.activeTab);
   const targetSlot = useMotionValue<number>(activeIndex);
@@ -205,10 +227,13 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
   ];
 
   return (
-    <div className="oh-mobile-main-nav relative z-30 flex shrink-0 justify-center bg-sidebar-surface px-5 pt-1.5 md:hidden">
+    <div
+      ref={barRef}
+      className="oh-mobile-main-nav pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center px-5 pt-1.5 md:hidden"
+    >
       <nav
         aria-label="移动端主导航"
-        className="app-no-drag pointer-events-auto relative liquid-glass-bar w-full max-w-[19.5rem] select-none rounded-full p-1"
+        className="app-no-drag pointer-events-auto relative liquid-glass-bar w-full max-w-[19.5rem] select-none overflow-clip rounded-full p-1"
       >
         <div
           ref={trackRef}

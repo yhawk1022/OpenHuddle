@@ -15,6 +15,13 @@ export {
 export { scrubReviewPatch, scrubWorkProvenance, scrubWorkText } from "./secret-redact.js";
 
 export {
+  WORK_AGENT_STOP_INSTRUCTION,
+  WorkAgentAttention,
+  checkAgentWorkOutput,
+  type AgentAttention,
+} from "./work-agent-attention.js";
+
+export {
   DEFAULT_SLICE_LEASE_TTL_MS,
   detectOwnedPathConflicts,
   evaluateHumanReviewDecision,
@@ -24,8 +31,8 @@ export {
   evaluateSliceHeartbeat,
   evaluateWorkspaceExecutionAccess,
   MAX_SLICE_ATTEMPTS,
-  MAX_VERIFY_REWORK_LOOPS,
   normalizeOwnedPathPrefix,
+  recentWorkSteerNotes,
   type OrchestrationItemState,
   type OrchestrationReviewState,
   type OrchestrationSliceState,

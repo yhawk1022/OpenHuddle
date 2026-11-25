@@ -146,7 +146,12 @@ describe("IME composition & editable element guards", () => {
       offsetTop: 0,
       scale: 1,
     });
-    Object.assign(win, { visualViewport: vv, scrollY: 48, navigator: { standalone } });
+    Object.assign(win, {
+      visualViewport: vv,
+      scrollY: 48,
+      innerWidth: 390,
+      navigator: { standalone },
+    });
 
     const cssVars = new Map<string, string>();
     const viewport = {
@@ -188,11 +193,31 @@ describe("IME composition & editable element guards", () => {
     expect(dataset.keyboardOpen).toBe("true");
     expect(win.scrollTo).toHaveBeenCalledWith(0, 0);
 
+    doc.activeElement = { tagName: "BUTTON" };
+    win.dispatchEvent(new Event("focusout"));
+    expect(dataset.keyboardOpen).toBe("true");
+
     vv.height = 844;
     vv.offsetTop = 0;
     vv.dispatchEvent(new Event("resize"));
     expect(cssVars.get("--oh-vvh")).toBe("844px");
     expect(cssVars.get("--oh-vv-offset-top")).toBe("0px");
+    expect(dataset.keyboardOpen).toBe("false");
+
+    // Android resizes both viewports; the short landscape keyboard may occupy less than 130px.
+    doc.activeElement = { tagName: "TEXTAREA", disabled: false };
+    vv.height = 510;
+    win.innerHeight = 510;
+    vv.dispatchEvent(new Event("resize"));
+    expect(dataset.keyboardOpen).toBe("true");
+    win.dispatchEvent(new Event("orientationchange"));
+    Object.assign(win, { innerWidth: 844, innerHeight: 292, screen: { height: 390 } });
+    vv.height = 292;
+    vv.dispatchEvent(new Event("resize"));
+    expect(dataset.keyboardOpen).toBe("true");
+    win.innerHeight = 390;
+    vv.height = 390;
+    vv.dispatchEvent(new Event("resize"));
     expect(dataset.keyboardOpen).toBe("false");
 
     stop();

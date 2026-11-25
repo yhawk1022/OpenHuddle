@@ -150,6 +150,31 @@ describe.skipIf(process.platform === "win32")("owner device work execution", () 
     setRoot(task, "~/projects/project/outside");
     await expect(executeWorkSlice(task)).rejects.toThrow("当前用户目录");
   });
+  it.each([
+    ["deepseek", "dsh"],
+    ["claude_code", "claude"],
+  ] as const)(
+    "accepts an explicit stop before %s tries to settle or apply files",
+    async (platform, binary) => {
+      const task = assignment();
+      task.workspace.sandboxMode = "in_place";
+      task.agent.platform = platform;
+      const question = "本轮缺少验收目标，要验证哪个版本？";
+      const options = ["验证移动版", "验证桌面版"];
+      const stopReceipt = `NEEDS_INPUT: ${JSON.stringify({ question, options })}`;
+      await installCli(
+        binary,
+        `
+      const prompt = require("node:fs").readFileSync(0, "utf8");
+      if (!prompt.includes("Choose your own completion and stopping criteria")) process.exit(8);
+      console.log(${JSON.stringify(stopReceipt)});
+    `,
+      );
+      await expect(executeWorkSlice(task)).rejects.toMatchObject({
+        attention: { question, options },
+      });
+    },
+  );
   it("captures actual in-place writes and never reports empty writes or a guessed verdict", async () => {
     const task = assignment();
     task.workspace.sandboxMode = "in_place";

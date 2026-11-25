@@ -769,10 +769,14 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
               <button
                 type="button"
                 onClick={closeCompactDetail}
+                aria-label={`返回${viewTitle}`}
                 className="app-no-drag -ml-1.5 inline-flex h-8 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full px-2.5 text-[14px] font-medium text-[#3B414E] transition hover:bg-black/[0.05] hover:text-[#111318] xl:hidden dark:text-[#C4C4CA] dark:hover:bg-white/[0.07] dark:hover:text-white"
               >
                 <ArrowLeft className="h-4 w-4 shrink-0" />
-                <span className="max-w-[11rem] truncate">{viewTitle}</span>
+                <span className="oh-workbench-back-label max-w-[11rem] truncate">{viewTitle}</span>
+                <span className="oh-workbench-editing-title hidden max-w-[50vw] truncate">
+                  {resolvedSelectedTask.title}
+                </span>
               </button>
             ) : null}
 
@@ -1034,7 +1038,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto">
+                <div className="oh-mobile-nav-list min-h-0 flex-1 overflow-y-auto">
                   <motion.div
                     key={`${selectedRepoFilter}:${attentionFilter}`}
                     initial={reducedMotion ? false : { opacity: 0, y: 4 }}
