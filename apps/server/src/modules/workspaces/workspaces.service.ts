@@ -21,8 +21,10 @@ import {
   evaluateSliceClaim,
   evaluateSliceCompletion,
   evaluateWorkspaceExecutionAccess,
+  scrubReviewPatch,
   scrubWorkText,
 } from "@openhuddle/core-governance";
+import { parseUnifiedGitDiff } from "@openhuddle/core-governance/workspace-diff";
 import {
   type AgentId,
   type AnswerWorkAttentionBody,
@@ -40,7 +42,10 @@ import {
   type HeartbeatWorkSliceBody,
   type ListWorkItemsQuery,
   type ListWorkspacesResponse,
+  MAX_REVIEW_EVIDENCE_BYTES,
+  type PutReviewEvidenceBody,
   type RaiseWorkAttentionBody,
+  type ReviewEvidenceResponse,
   type RoomId,
   type RoomWorkspacesResponse,
   type SseEvent,
@@ -690,6 +695,204 @@ export class WorkspacesService {
     const item = await this.mustFindWorkItem(workItemId);
     await this.assertWorkItemReadAccess(item, caller);
     return serializeWorkItemForViewer(item, caller);
+  }
+
+  public async getReviewEvidence(
+    caller: Readonly<AuthenticatedCaller>,
+    workItemId: WorkItemId,
+    sliceId: WorkSliceId,
+  ): Promise<ReviewEvidenceResponse> {
+    return this.repo.runInTransaction(async (txRepo) => {
+      const item = await this.lockAndLoadWorkItem(txRepo, workItemId);
+      if (caller.kind !== "human" || caller.userId !== item.workspaceOwnerUserId) {
+        const reviewer =
+          caller.kind === "agent" &&
+          item.slices.find(
+            (s) =>
+              s.leaseRole === "verify" &&
+              (s.assignedAgentId === caller.agentId || s.leaseOwnerAgentId === caller.agentId),
+          );
+        if (!reviewer || caller.kind !== "agent") {
+          throw new AppError({
+            code: "FORBIDDEN_WORKSPACE_ACCESS",
+            statusCode: 403,
+            message: "Only the workspace owner and authorized reviewers can read the full patch.",
+          });
+        }
+        await this.assertEvidenceAgentAccess(txRepo, item, caller, "verify");
+      }
+      const slice = this.mustFindSlice(item, sliceId);
+      const current =
+        slice.status === "ready" ||
+        (slice.status === "running" && (slice.leaseExpiresAtMs ?? 0) > this.nowFn());
+      const patch = current
+        ? await txRepo.findReviewEvidence(sliceId, slice.leaseVersion)
+        : undefined;
+      if (patch === undefined)
+        throw new AppError({
+          code: "NOT_FOUND",
+          statusCode: 404,
+          message: "No current review evidence for this slice.",
+        });
+      return { ok: true, leaseVersion: slice.leaseVersion, patch };
+    });
+  }
+
+  public async putReviewEvidence(
+    caller: Readonly<AuthenticatedCaller>,
+    workItemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: PutReviewEvidenceBody,
+  ): Promise<ReviewEvidenceResponse> {
+    const agent = this.assertAgentCaller(caller);
+    const patch = scrubReviewPatch(body.patch);
+    if (
+      !patch.length ||
+      Buffer.byteLength(patch) > MAX_REVIEW_EVIDENCE_BYTES ||
+      patch.includes("\0")
+    ) {
+      throw new AppError({
+        code: "VALIDATION_ERROR",
+        statusCode: 400,
+        message: "Review patch exceeds the text payload limit.",
+      });
+    }
+    if (!/^diff --git [^\n]+|^--- [^\n]+\n\+\+\+ [^\n]+/m.test(patch)) {
+      throw new AppError({
+        code: "VALIDATION_ERROR",
+        statusCode: 400,
+        message: "Review evidence must be a unified diff.",
+      });
+    }
+    const resumed = await this.repo.runInTransaction(async (txRepo) => {
+      const item = await this.lockAndLoadWorkItem(txRepo, workItemId);
+      const slice = this.mustFindSlice(item, sliceId);
+      if (slice.leaseRole !== "write" || slice.assignedAgentId !== agent.agentId) {
+        throw new AppError({
+          code: "FORBIDDEN_WORKSPACE_ACCESS",
+          statusCode: 403,
+          message: "Only the assigned writer may submit review evidence.",
+        });
+      }
+      await this.assertEvidenceAgentAccess(txRepo, item, agent, "write");
+      const active = slice.status === "running" && (slice.leaseExpiresAtMs ?? 0) > this.nowFn();
+      if (
+        slice.leaseVersion !== body.leaseVersion ||
+        slice.leaseOwnerAgentId !== agent.agentId ||
+        (!active && slice.status !== "ready")
+      ) {
+        throw new AppError({
+          code: "WORK_LEASE_EXPIRED",
+          statusCode: 409,
+          message: "Evidence requires the current running or completed write lease.",
+        });
+      }
+      const stored = await txRepo.findReviewEvidence(sliceId, body.leaseVersion);
+      if (stored === undefined) await txRepo.storeReviewEvidence(sliceId, body.leaseVersion, patch);
+      else if (stored !== patch)
+        throw new AppError({
+          code: "WORK_INVALID_TRANSITION",
+          statusCode: 409,
+          message: "A different patch already exists for this lease.",
+        });
+
+      const attention = item.attention;
+      if (
+        item.stage !== "awaiting_answer" ||
+        !attention ||
+        attention.answeredAtMs !== undefined ||
+        slice.status !== "ready"
+      )
+        return;
+      const missingFile = slice.changedFiles.find(
+        (file) =>
+          attention.question ===
+          `设备执行失败：文件 ${file} 的变更证据不完整，请在有完整工作树的设备上复核。`,
+      );
+      if (!missingFile) return;
+      if (!parseUnifiedGitDiff(patch, 200, 0).some((file) => file.path === missingFile)) {
+        throw new AppError({
+          code: "VALIDATION_ERROR",
+          statusCode: 400,
+          message: "Patch does not contain the missing review file.",
+        });
+      }
+      const verifier = item.slices.find(
+        (s) =>
+          s.sliceId === attention.sliceId &&
+          s.leaseRole === "verify" &&
+          s.status === "waiting" &&
+          s.leaseOwnerAgentId === attention.askedByAgentId,
+      );
+      if (!verifier || item.slices.some((s) => s.leaseRole !== "verify" && s.status !== "ready"))
+        return;
+      const trace = buildTraceEntry({
+        nowMs: this.nowFn(),
+        actorName: agent.displayName,
+        kind: "handoff",
+        sliceId: verifier.sliceId,
+        message: "已收到完整变更补丁，恢复独立复核。",
+      });
+      await txRepo.persistWorkItemState({
+        workItemId,
+        nextStage: "verifying",
+        nextSlices: item.slices.map((s) =>
+          s.sliceId === verifier.sliceId
+            ? {
+                ...s,
+                leaseOwnerAgentId: undefined,
+                leaseExpiresAtMs: undefined,
+                liveSummary: "Ready for independent verification.",
+              }
+            : s,
+        ),
+        nextAttention: null,
+        nextReview: item.review ?? null,
+        nextTrace: [...item.trace, trace],
+        dirtySliceIds: new Set([verifier.sliceId]),
+      });
+      return {
+        item: await this.mustReloadWorkItem(txRepo, workItemId),
+        verifier: verifier.assignedAgentId,
+        trace,
+      };
+    });
+    if (resumed) {
+      await this.publishTraceEvents(resumed.item, [resumed.trace]);
+      await this.fanOutPostCommitSignals({
+        item: resumed.item,
+        wakeAgentIds: [resumed.verifier],
+        actorCaller: caller,
+      });
+    }
+    return { ok: true, leaseVersion: body.leaseVersion, patch };
+  }
+
+  private async assertEvidenceAgentAccess(
+    txRepo: WorkspacesRepository,
+    item: HydratedWorkItemRecord,
+    agent: Extract<AuthenticatedCaller, { kind: "agent" }>,
+    role: "write" | "verify",
+  ): Promise<void> {
+    const isRoomMember =
+      !item.roomId || (await txRepo.isMemberInRoom(item.roomId, toActorMemberKey(agent)));
+    if (!isRoomMember)
+      throw new AppError({
+        code: "FORBIDDEN_NOT_ROOM_MEMBER",
+        statusCode: 403,
+        message: "Agent is no longer a member of this work item's room.",
+      });
+    const access = evaluateWorkspaceExecutionAccess({
+      workspaceOwnerUserId: item.workspaceOwnerUserId,
+      hostMode: item.workspaceHostMode,
+      sandboxMode: item.workspaceSandboxMode,
+      allowRoomCollaborators: item.workspaceAllowRoomCollaborators,
+      agentOwnerUserId: agent.ownerUserId,
+      isRoomMember,
+      requestedRole: role,
+      requestedTier: item.tier,
+    });
+    if (!access.ok) throw toAppError(access);
   }
 
   /**

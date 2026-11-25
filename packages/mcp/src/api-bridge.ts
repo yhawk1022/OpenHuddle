@@ -16,9 +16,11 @@ import {
   type HeartbeatWorkSliceBody,
   InboxResponseSchema,
   type JoinRoomBody,
+  type ListWorkMcpQuery,
   MeResponseSchema,
   type ProposalDraft,
   type ProposalId,
+  type PutReviewEvidenceBody,
   type RaiseWorkAttentionBody,
   type ReadCursorSeq,
   type RoomId,
@@ -26,8 +28,6 @@ import {
   UnreadConflictDetailsSchema,
   type WorkItemId,
   type WorkSliceId,
-  type WorkStage,
-  type WorkspaceId,
 } from "@openhuddle/protocol";
 
 /** 常规 REST API 调用默认超时时间（15 秒） */
@@ -314,12 +314,7 @@ export class OpenHuddleMcpApiBridge {
   /**
    * 列出可见的多 Agent 协作工单（支持 `claimableOnly` 过滤立即可认领的任务队列）。
    */
-  public async listWorkItems(query?: {
-    readonly workspaceId?: WorkspaceId;
-    readonly roomId?: RoomId;
-    readonly stage?: WorkStage;
-    readonly claimableOnly?: boolean;
-  }): Promise<McpBridgeResult> {
+  public async listWorkItems(query?: ListWorkMcpQuery): Promise<McpBridgeResult> {
     const search = new URLSearchParams();
     if (query?.workspaceId !== undefined) {
       search.set("workspaceId", query.workspaceId);
@@ -400,6 +395,28 @@ export class OpenHuddleMcpApiBridge {
   /**
    * 执行底层带鉴权与有界超时的 JSON 请求，并将业务拦截信封格式化为对 LLM 友好的多行诊断。
    */
+  public async putReviewEvidence(
+    workItemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: PutReviewEvidenceBody,
+  ): Promise<McpBridgeResult> {
+    return this.request(
+      "PUT",
+      `/api/v1/work-items/${encodeURIComponent(workItemId)}/slices/${encodeURIComponent(sliceId)}/review-evidence`,
+      body,
+    );
+  }
+
+  public async getReviewEvidence(
+    workItemId: WorkItemId,
+    sliceId: WorkSliceId,
+  ): Promise<McpBridgeResult> {
+    return this.request(
+      "GET",
+      `/api/v1/work-items/${encodeURIComponent(workItemId)}/slices/${encodeURIComponent(sliceId)}/review-evidence`,
+    );
+  }
+
   private async request(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     pathWithQuery: string,

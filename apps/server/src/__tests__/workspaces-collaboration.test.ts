@@ -223,6 +223,208 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
     expect(bobRoomWs.workspaces[0]?.roots[0]?.remoteSlug).toBe("github.com/openhuddle/openhuddle");
   });
 
+  it("delivers roomless work through the paired agent inbox without another grant", async () => {
+    const owner = await loginHumanViaOtp(app, "inbox@openhuddle.dev", "Owner");
+    const worker = await pairAgentForOwner(app, owner.sessionToken, "Worker", "codex");
+    const verifier = await pairAgentForOwner(app, owner.sessionToken, "Reviewer", "claude_code");
+    const headers = (token: string) => ({
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    });
+    const ws = await app.request("/api/v1/workspaces", {
+      method: "POST",
+      headers: headers(owner.sessionToken),
+      body: JSON.stringify({
+        name: "Inbox project",
+        kind: "folder",
+        roots: [{ localPath: "~/project" }],
+        hostMode: "local_machine",
+        sandboxMode: "in_place",
+      }),
+    });
+    const { workspace } = (await ws.json()) as SingleWorkspaceResponse;
+    const readInbox = async (token: string, waitSec = 0) => {
+      const res = await app.request(`/api/v1/inbox?waitSec=${waitSec}`, {
+        headers: headers(token),
+      });
+      expect(res.status).toBe(200);
+      return (await res.json()) as import("@openhuddle/protocol").InboxResponse;
+    };
+    const pending = readInbox(worker.token, 2);
+    const created = await app.request("/api/v1/work-items", {
+      method: "POST",
+      headers: headers(owner.sessionToken),
+      body: JSON.stringify({
+        workspaceId: workspace.id,
+        brief: "Roomless assignment",
+        topology: "verify_loop",
+        tier: "worktree_write",
+        primaryWorkerAgentId: worker.agent.id,
+        verifierAgentId: verifier.agent.id,
+      }),
+    });
+    expect(created.status).toBe(201);
+    const { item } = (await created.json()) as SingleWorkItemResponse;
+    const inbox = await pending;
+    expect(inbox.rooms).toEqual([]);
+    expect(inbox.workAssignments).toEqual([
+      expect.objectContaining({
+        workItemId: item.id,
+        sliceId: item.slices[0]?.sliceId,
+        leaseRole: "write",
+        leaseVersion: 0,
+      }),
+    ]);
+    expect((await readInbox(verifier.token)).workAssignments ?? []).toEqual([]);
+    expect((await readInbox(owner.sessionToken)).workAssignments).toBeUndefined();
+    const backlog = await readInbox(worker.token, 25);
+    expect(backlog.workAssignments).toEqual(inbox.workAssignments);
+  });
+
+  it("fences full review evidence, preserves manual questions and resumes only the missing-file review once", async () => {
+    const owner = await loginHumanViaOtp(app, "evidence@openhuddle.dev", "Owner");
+    const writer = await pairAgentForOwner(app, owner.sessionToken, "Writer", "codex");
+    const reviewer = await pairAgentForOwner(app, owner.sessionToken, "Reviewer", "claude_code");
+    const other = await pairAgentForOwner(app, owner.sessionToken, "Other", "codex");
+    function request(path: string, token: string, method = "GET", body?: unknown) {
+      return app.request(`/api/v1/${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    }
+    const ws = await request("workspaces", owner.sessionToken, "POST", {
+      name: "Evidence",
+      kind: "git_repo",
+      roots: [{ localPath: "~/project" }],
+      hostMode: "local_machine",
+      sandboxMode: "worktree_pool",
+    });
+    const { workspace } = (await ws.json()) as SingleWorkspaceResponse;
+    const patch = [
+      "diff --git a/game.js b/game.js",
+      "--- a/game.js",
+      "+++ b/game.js",
+      "@@ -0,0 +1,520 @@",
+      ...Array.from({ length: 515 }, (_, i) => `+const value${i} = ${i};`),
+      "+oh_agt_untrustedtesttoken",
+      "+DATABASE_URL=postgres://user:secret@db/app",
+      "+-----BEGIN PRIVATE KEY-----",
+      "+evidence-private-content",
+      "+-----END PRIVATE KEY-----",
+      "",
+    ].join("\n");
+    for (const [question, expectedStage] of [
+      ["设备执行失败：文件 game.js 的变更证据不完整，请在有完整工作树的设备上复核。", "verifying"],
+      ["请确认游戏名称", "awaiting_answer"],
+    ]) {
+      const task = await request("work-items", owner.sessionToken, "POST", {
+        workspaceId: workspace.id,
+        brief: "Review game",
+        topology: "verify_loop",
+        tier: "worktree_write",
+        primaryWorkerAgentId: writer.agent.id,
+        verifierAgentId: reviewer.agent.id,
+      });
+      const { item } = (await task.json()) as SingleWorkItemResponse;
+      const workPath = `work-items/${item.id}`;
+      const write = `${workPath}/slices/${item.slices[0]?.sliceId}`;
+      const verify = `${workPath}/slices/${item.slices[1]?.sliceId}`;
+      const evidence = `${write}/review-evidence`;
+      const upload = (token: string, body: unknown) => request(evidence, token, "PUT", body);
+      const valid = { leaseVersion: 1, patch };
+      expect((await upload(writer.token, valid)).status).toBe(409);
+      expect((await request(`${write}/claim`, writer.token, "POST", {})).status).toBe(200);
+      if (expectedStage === "awaiting_answer") {
+        expect((await upload(writer.token, valid)).status).toBe(200);
+        expect((await request(evidence, reviewer.token)).status).toBe(200);
+      }
+      expect((await upload(reviewer.token, valid)).status).toBe(403);
+      expect(
+        (await upload(writer.token, { leaseVersion: 1, patch: "文".repeat(140000) })).status,
+      ).toBe(400);
+      expect((await upload(writer.token, { ...valid, leaseVersion: 2 })).status).toBe(409);
+      expect(
+        (
+          await request(`${write}/complete`, writer.token, "POST", {
+            leaseVersion: 1,
+            summary: "Wrote game",
+            changedFiles: ["game.js"],
+          })
+        ).status,
+      ).toBe(200);
+      expect((await request(`${verify}/claim`, reviewer.token, "POST", {})).status).toBe(200);
+      expect(
+        (
+          await request(`${verify}/attention`, reviewer.token, "POST", {
+            leaseVersion: 1,
+            question,
+            options: ["已处理设备或工作区问题，重试", "补充说明后继续"],
+          })
+        ).status,
+      ).toBe(200);
+      const readEvidenceRequests = async (token: string) => {
+        const response = await request("inbox?waitSec=0", token);
+        const inbox = (await response.json()) as import("@openhuddle/protocol").InboxResponse;
+        return inbox.reviewEvidenceRequests ?? [];
+      };
+      if (expectedStage === "verifying") {
+        expect(await readEvidenceRequests(writer.token)).toEqual([
+          expect.objectContaining({
+            workItemId: item.id,
+            sliceId: item.slices[0]?.sliceId,
+          }),
+        ]);
+        expect(await readEvidenceRequests(reviewer.token)).toEqual([]);
+        expect(
+          (await upload(writer.token, { ...valid, patch: patch.replaceAll("game.js", "other.js") }))
+            .status,
+        ).toBe(400);
+        expect((await request(evidence, reviewer.token)).status).toBe(404);
+      }
+      const submits = await Promise.all([upload(writer.token, valid), upload(writer.token, valid)]);
+      expect(await readEvidenceRequests(writer.token)).toEqual([]);
+      expect(submits.map((r) => r.status)).toEqual([200, 200]);
+      expect((await upload(writer.token, { ...valid, patch: `${patch}+changed\n` })).status).toBe(
+        409,
+      );
+      expect((await request(evidence, other.token)).status).toBe(403);
+      expect((await request(evidence, owner.sessionToken)).status).toBe(200);
+      const read = await request(evidence, reviewer.token);
+      expect(await read.json()).toEqual({
+        ok: true,
+        leaseVersion: 1,
+        patch: patch
+          .replace("oh_agt_untrustedtesttoken", "oh_agt_[REDACTED]")
+          .replace("postgres://user:secret@db/app", "[REDACTED]")
+          .replace(
+            /\+(?:-----BEGIN PRIVATE KEY-----|evidence-private-content|-----END PRIVATE KEY-----)/g,
+            "+[REDACTED_PRIVATE_KEY]",
+          ),
+      });
+      const summary = await request(workPath, owner.sessionToken);
+      const { item: updated } = (await summary.json()) as SingleWorkItemResponse;
+      expect(updated.stage).toBe(expectedStage);
+      expect(JSON.stringify(updated)).not.toContain("diff --git");
+      expect(updated.trace.filter((t) => t.message.includes("收到完整变更补丁"))).toHaveLength(
+        expectedStage === "verifying" ? 1 : 0,
+      );
+      if (expectedStage === "verifying") {
+        expect((await request(`${verify}/claim`, reviewer.token, "POST", {})).status).toBe(200);
+        expect(
+          (
+            await request(`${verify}/complete`, reviewer.token, "POST", {
+              leaseVersion: 2,
+              verdict: "changes_requested",
+              summary: "update game",
+            })
+          ).status,
+        ).toBe(200);
+        expect((await request(evidence, reviewer.token)).status).toBe(404);
+      }
+    }
+  });
+
   it("orchestrates a 3-agent swarm + independent verifier loop, rejects overlapping paths, fences attention/rework, and enforces human review", async () => {
     const owner = await loginHumanViaOtp(app, "lead@openhuddle.dev", "Tech Lead");
     const codexWorker = await pairAgentForOwner(app, owner.sessionToken, "Codex DB", "codex");

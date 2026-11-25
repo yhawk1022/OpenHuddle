@@ -3,7 +3,7 @@
  * @description OpenHuddle 双模 MCP Server 实现（同时支持本地 `StdioServerTransport` 与远程 `WebStandardStreamableHTTPServerTransport`）。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. CLI 与 MCP 100% 能力对偶：全部 8 个核心工具入参均经由 `@openhuddle/protocol` Zod 契约校验，共享同一套乐观并发读锁与双层身份信任模型。
+ * 1. CLI 与 MCP 100% 能力对偶：全部 核心工具入参均经由 `@openhuddle/protocol` Zod 契约校验，共享同一套乐观并发读锁与双层身份信任模型。
  * 2. 双传输同构复用：`createOpenHuddleMcpServer` 构造纯协议无关的 `McpServer` 实例，既可通过 `startOpenHuddleMcpStdioServer` 挂载至本地宿主，也可通过 `handleOpenHuddleMcpHttpRequest` 零胶水嵌入 Hono Streamable HTTP 网关。
  * 3. `stdio` 通道纯净性：严禁向 `stdout` 写入任何调试文本（`biome.json` 已开启 `noConsoleLog: "error"`），防止污染 JSON-RPC 2.0 帧流。
  */
@@ -13,8 +13,6 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   CastProposalVoteBodySchema,
-  ClaimWorkSliceBodySchema,
-  CompleteWorkSliceBodySchema,
   HeartbeatWorkSliceBodySchema,
   JoinRoomBodySchema,
   ProposalDraftSchema,
@@ -24,12 +22,7 @@ import {
   RaiseWorkAttentionBodySchema,
   RoomIdSchema,
   SendMessageRequestSchema,
-  WorkItemIdSchema,
-  WorkSliceIdSchema,
-  WorkSliceProvenanceSchema,
-  WorkStageSchema,
-  WorkVerifyVerdictSchema,
-  WorkspaceIdSchema,
+  WorkMcpTools,
 } from "@openhuddle/protocol";
 import { z } from "zod";
 import { type McpBridgeResult, OpenHuddleMcpApiBridge } from "./api-bridge.js";
@@ -91,35 +84,11 @@ const CORE_TOOL_DESCRIPTORS: readonly OpenHuddleMcpToolDescriptor[] = [
     description:
       "Cast a structured vote (endorse, challenge, or abstain) with rationale on a proposal card.",
   },
-  {
-    name: "openhuddle_list_workspaces",
-    description:
-      "List 5D controlled workspaces owned by your human owner or bound to a specific Huddle room.",
-  },
-  {
-    name: "openhuddle_list_work",
-    description:
-      "List multi-agent collaborative work items and slices (set claimableOnly=true to poll your work queue).",
-  },
-  {
-    name: "openhuddle_claim_work_slice",
-    description:
-      "Claim a pending work slice or take over an expired lease, returning a monotonic leaseVersion fencing token.",
-  },
-  {
-    name: "openhuddle_update_work_slice",
-    description:
-      "Renew an active slice lease with live progress summary, or pause the slice to ask a structured clarification question.",
-  },
-  {
-    name: "openhuddle_complete_work_slice",
-    description:
-      "Complete an execution slice with diff/provenance or submit a verifier verdict (passed | changes_requested).",
-  },
+  ...Object.entries(WorkMcpTools).map(([name, { description }]) => ({ name, description })),
 ];
 
 /**
- * 获取 OpenHuddle 标准暴露的 8 个核心 MCP 工具元数据清单。
+ * 获取 OpenHuddle 标准暴露的 核心 MCP 工具元数据清单。
  *
  * @returns 只读 MCP 工具元数据列表
  */
@@ -167,7 +136,7 @@ function toValidationErrorResult(error: z.ZodError): CallToolResult {
 }
 
 /**
- * 创建并注册完备 8 大协作工具的 `McpServer` 实例。
+ * 创建并注册协作工具的 `McpServer` 实例。
  *
  * @remarks
  * 工具入参的 JSON Schema 采用无 `.transform()` 的原生 Zod 结构以保证 `zod-to-json-schema` 输出最清晰的字段定义；
@@ -463,223 +432,81 @@ export function createOpenHuddleMcpServer(config: Readonly<OpenHuddleMcpServerCo
     },
   );
 
-  // 9. openhuddle_list_workspaces
   server.registerTool(
     "openhuddle_list_workspaces",
     {
-      description:
-        "List 5D controlled workspaces owned by your human owner or bound to a specific Huddle room.",
-      inputSchema: {
-        roomId: z
-          .string()
-          .min(3)
-          .max(64)
-          .optional()
-          .describe("Optional Huddle room ID to inspect bound workspaces in that room."),
-      },
+      description: WorkMcpTools.openhuddle_list_workspaces.description,
+      inputSchema: WorkMcpTools.openhuddle_list_workspaces.input.shape,
     },
-    async (args): Promise<CallToolResult> => {
-      if (args.roomId !== undefined) {
-        const parsedRoom = RoomIdSchema.safeParse(args.roomId);
-        if (!parsedRoom.success) {
-          return toValidationErrorResult(parsedRoom.error);
-        }
-        return toMcpCallToolResult(await bridge.listWorkspaces(parsedRoom.data));
-      }
-      return toMcpCallToolResult(await bridge.listWorkspaces());
-    },
+    async ({ roomId }) => toMcpCallToolResult(await bridge.listWorkspaces(roomId)),
   );
-
-  // 10. openhuddle_list_work
   server.registerTool(
     "openhuddle_list_work",
     {
-      description:
-        "List multi-agent collaborative work items and slices (set claimableOnly=true to poll your work queue).",
-      inputSchema: {
-        workspaceId: z.string().min(3).max(64).optional().describe("Filter by workspace ID."),
-        roomId: z.string().min(3).max(64).optional().describe("Filter by Huddle room ID."),
-        stage: WorkStageSchema.optional().describe("Filter by work item lifecycle stage."),
-        claimableOnly: z
-          .boolean()
-          .optional()
-          .describe(
-            "When true, returns only work items containing slices claimable by you right now.",
-          ),
-      },
+      description: WorkMcpTools.openhuddle_list_work.description,
+      inputSchema: WorkMcpTools.openhuddle_list_work.input.shape,
     },
-    async (args): Promise<CallToolResult> => {
-      const wsId =
-        args.workspaceId !== undefined ? WorkspaceIdSchema.safeParse(args.workspaceId) : undefined;
-      if (wsId && !wsId.success) {
-        return toValidationErrorResult(wsId.error);
-      }
-      const rmId = args.roomId !== undefined ? RoomIdSchema.safeParse(args.roomId) : undefined;
-      if (rmId && !rmId.success) {
-        return toValidationErrorResult(rmId.error);
-      }
-      return toMcpCallToolResult(
-        await bridge.listWorkItems({
-          ...(wsId?.success ? { workspaceId: wsId.data } : {}),
-          ...(rmId?.success ? { roomId: rmId.data } : {}),
-          ...(args.stage !== undefined ? { stage: args.stage } : {}),
-          ...(args.claimableOnly !== undefined ? { claimableOnly: args.claimableOnly } : {}),
-        }),
-      );
-    },
+    async (args) => toMcpCallToolResult(await bridge.listWorkItems(args)),
   );
-
-  // 11. openhuddle_claim_work_slice
   server.registerTool(
     "openhuddle_claim_work_slice",
     {
-      description:
-        "Claim a pending work slice or take over an expired lease, returning a monotonic leaseVersion fencing token.",
-      inputSchema: {
-        workItemId: z.string().min(3).max(64).describe("Target work item ID."),
-        sliceId: z.string().min(3).max(64).describe("Target work slice ID."),
-        leaseTtlMs: z
-          .number()
-          .int()
-          .min(15_000)
-          .max(600_000)
-          .optional()
-          .describe("Lease duration in milliseconds (default 120000)."),
-        agentEnvironment: z
-          .string()
-          .min(1)
-          .max(120)
-          .optional()
-          .describe("Host environment label (e.g. Local Mac, Cloud Devbox, Remote MCP)."),
-      },
+      description: WorkMcpTools.openhuddle_claim_work_slice.description,
+      inputSchema: WorkMcpTools.openhuddle_claim_work_slice.input.shape,
     },
-    async (args): Promise<CallToolResult> => {
-      const itemId = WorkItemIdSchema.safeParse(args.workItemId);
-      if (!itemId.success) return toValidationErrorResult(itemId.error);
-      const slcId = WorkSliceIdSchema.safeParse(args.sliceId);
-      if (!slcId.success) return toValidationErrorResult(slcId.error);
-      const body = ClaimWorkSliceBodySchema.safeParse({
-        ...(args.leaseTtlMs !== undefined ? { leaseTtlMs: args.leaseTtlMs } : {}),
-        ...(args.agentEnvironment !== undefined ? { agentEnvironment: args.agentEnvironment } : {}),
-      });
-      if (!body.success) return toValidationErrorResult(body.error);
-      return toMcpCallToolResult(await bridge.claimWorkSlice(itemId.data, slcId.data, body.data));
-    },
+    async ({ workItemId, sliceId, ...body }) =>
+      toMcpCallToolResult(await bridge.claimWorkSlice(workItemId, sliceId, body)),
   );
-
-  // 12. openhuddle_update_work_slice
   server.registerTool(
     "openhuddle_update_work_slice",
     {
-      description:
-        "Renew an active slice lease with live progress summary, or pause the slice to ask a structured clarification question.",
-      inputSchema: {
-        workItemId: z.string().min(3).max(64).describe("Target work item ID."),
-        sliceId: z.string().min(3).max(64).describe("Target work slice ID."),
-        action: z
-          .enum(["heartbeat", "raise_attention"])
-          .default("heartbeat")
-          .describe("Whether to renew lease heartbeat or pause for human clarification."),
-        leaseVersion: z
-          .number()
-          .int()
-          .positive()
-          .describe("Current fencing leaseVersion returned by openhuddle_claim_work_slice."),
-        leaseTtlMs: z.number().int().min(15_000).max(600_000).optional(),
-        liveSummary: z.string().max(1_000).optional(),
-        diffAdded: z.number().int().nonnegative().optional(),
-        diffRemoved: z.number().int().nonnegative().optional(),
-        question: z
-          .string()
-          .min(1)
-          .max(600)
-          .optional()
-          .describe("Required when action=raise_attention: single concise question for the owner."),
-        options: z
-          .array(z.string().min(1).max(120))
-          .min(2)
-          .max(5)
-          .optional()
-          .describe("Required when action=raise_attention: 2 to 5 structured answer options."),
-      },
+      description: WorkMcpTools.openhuddle_update_work_slice.description,
+      inputSchema: WorkMcpTools.openhuddle_update_work_slice.input.shape,
     },
-    async (args): Promise<CallToolResult> => {
-      const itemId = WorkItemIdSchema.safeParse(args.workItemId);
-      if (!itemId.success) return toValidationErrorResult(itemId.error);
-      const slcId = WorkSliceIdSchema.safeParse(args.sliceId);
-      if (!slcId.success) return toValidationErrorResult(slcId.error);
-
-      if (args.action === "raise_attention") {
-        const body = RaiseWorkAttentionBodySchema.safeParse({
-          leaseVersion: args.leaseVersion,
-          question: args.question,
-          options: args.options,
-        });
-        if (!body.success) return toValidationErrorResult(body.error);
+    async ({ workItemId, sliceId, action, ...body }) => {
+      if (action === "raise_attention") {
+        const attention = RaiseWorkAttentionBodySchema.safeParse(body);
+        if (!attention.success) return toValidationErrorResult(attention.error);
         return toMcpCallToolResult(
-          await bridge.raiseWorkAttention(itemId.data, slcId.data, body.data),
+          await bridge.raiseWorkAttention(workItemId, sliceId, attention.data),
         );
       }
-
-      const hbBody = HeartbeatWorkSliceBodySchema.safeParse({
-        leaseVersion: args.leaseVersion,
-        ...(args.leaseTtlMs !== undefined ? { leaseTtlMs: args.leaseTtlMs } : {}),
-        ...(args.liveSummary !== undefined ? { liveSummary: args.liveSummary } : {}),
-        ...(args.diffAdded !== undefined ? { diffAdded: args.diffAdded } : {}),
-        ...(args.diffRemoved !== undefined ? { diffRemoved: args.diffRemoved } : {}),
-      });
-      if (!hbBody.success) return toValidationErrorResult(hbBody.error);
       return toMcpCallToolResult(
-        await bridge.heartbeatWorkSlice(itemId.data, slcId.data, hbBody.data),
+        await bridge.heartbeatWorkSlice(
+          workItemId,
+          sliceId,
+          HeartbeatWorkSliceBodySchema.parse(body),
+        ),
       );
     },
   );
-
-  // 13. openhuddle_complete_work_slice
   server.registerTool(
     "openhuddle_complete_work_slice",
     {
-      description:
-        "Complete an execution slice with diff/provenance or submit a verifier verdict (passed | changes_requested).",
-      inputSchema: {
-        workItemId: z.string().min(3).max(64).describe("Target work item ID."),
-        sliceId: z.string().min(3).max(64).describe("Target work slice ID."),
-        leaseVersion: z.number().int().positive().describe("Current fencing leaseVersion."),
-        summary: z.string().min(1).max(1_000).describe("Deliverable or verification summary."),
-        changedFiles: z.array(z.string().min(1).max(260)).max(200).optional(),
-        diffAdded: z.number().int().nonnegative().optional(),
-        diffRemoved: z.number().int().nonnegative().optional(),
-        worktreeBranch: z.string().min(1).max(160).optional(),
-        testCommand: z.string().min(1).max(400).optional(),
-        testPassed: z.boolean().optional(),
-        verdict: WorkVerifyVerdictSchema.optional().describe(
-          "For verify slices: passed (advance to human review) or changes_requested (reopen write slices).",
-        ),
-        provenance: WorkSliceProvenanceSchema.optional(),
-      },
+      description: WorkMcpTools.openhuddle_complete_work_slice.description,
+      inputSchema: WorkMcpTools.openhuddle_complete_work_slice.input.shape,
     },
-    async (args): Promise<CallToolResult> => {
-      const itemId = WorkItemIdSchema.safeParse(args.workItemId);
-      if (!itemId.success) return toValidationErrorResult(itemId.error);
-      const slcId = WorkSliceIdSchema.safeParse(args.sliceId);
-      if (!slcId.success) return toValidationErrorResult(slcId.error);
-      const body = CompleteWorkSliceBodySchema.safeParse({
-        leaseVersion: args.leaseVersion,
-        summary: args.summary,
-        ...(args.changedFiles !== undefined ? { changedFiles: args.changedFiles } : {}),
-        ...(args.diffAdded !== undefined ? { diffAdded: args.diffAdded } : {}),
-        ...(args.diffRemoved !== undefined ? { diffRemoved: args.diffRemoved } : {}),
-        ...(args.worktreeBranch !== undefined ? { worktreeBranch: args.worktreeBranch } : {}),
-        ...(args.testCommand !== undefined ? { testCommand: args.testCommand } : {}),
-        ...(args.testPassed !== undefined ? { testPassed: args.testPassed } : {}),
-        ...(args.verdict !== undefined ? { verdict: args.verdict } : {}),
-        ...(args.provenance !== undefined ? { provenance: args.provenance } : {}),
-      });
-      if (!body.success) return toValidationErrorResult(body.error);
-      return toMcpCallToolResult(
-        await bridge.completeWorkSlice(itemId.data, slcId.data, body.data),
-      );
+    async ({ workItemId, sliceId, ...body }) =>
+      toMcpCallToolResult(await bridge.completeWorkSlice(workItemId, sliceId, body)),
+  );
+
+  server.registerTool(
+    "openhuddle_put_review_evidence",
+    {
+      description: WorkMcpTools.openhuddle_put_review_evidence.description,
+      inputSchema: WorkMcpTools.openhuddle_put_review_evidence.input.shape,
     },
+    async ({ workItemId, sliceId, ...body }) =>
+      toMcpCallToolResult(await bridge.putReviewEvidence(workItemId, sliceId, body)),
+  );
+  server.registerTool(
+    "openhuddle_get_review_evidence",
+    {
+      description: WorkMcpTools.openhuddle_get_review_evidence.description,
+      inputSchema: WorkMcpTools.openhuddle_get_review_evidence.input.shape,
+    },
+    async ({ workItemId, sliceId }) =>
+      toMcpCallToolResult(await bridge.getReviewEvidence(workItemId, sliceId)),
   );
 
   return server;

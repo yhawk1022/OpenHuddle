@@ -18,6 +18,7 @@ import {
   WorkSliceIdSchema,
   WorkspaceIdSchema,
 } from "./ids.js";
+import { PutReviewEvidenceBodySchema } from "./review-evidence.js";
 
 /** 工作区目录组织形态 */
 export const WorkspaceKindSchema = z.enum(["git_repo", "multi_root", "folder"]);
@@ -434,6 +435,56 @@ export const CompleteWorkSliceBodySchema = z.object({
   traceEntries: z.array(WorkTraceEntrySchema).max(30).optional(),
 });
 export type CompleteWorkSliceBody = z.infer<typeof CompleteWorkSliceBodySchema>;
+
+/** Shared input contracts for both MCP transports. REST bodies retain their existing fencing and bounds. */
+const workSliceTarget = { workItemId: WorkItemIdSchema, sliceId: WorkSliceIdSchema };
+export const WorkMcpTools = {
+  openhuddle_list_workspaces: {
+    description: "List workspaces owned by your human owner or bound to the given room.",
+    input: z.object({ roomId: RoomIdSchema.optional() }),
+  },
+  openhuddle_list_work: {
+    description:
+      "List work items and slices. Set claimableOnly=true to discover your available work, including tasks without a room.",
+    input: z.object({
+      roomId: RoomIdSchema.optional(),
+      workspaceId: WorkspaceIdSchema.optional(),
+      stage: WorkStageSchema.optional(),
+      claimableOnly: z.boolean().optional(),
+    }),
+  },
+  openhuddle_claim_work_slice: {
+    description:
+      "Claim a slice and retain the returned leaseVersion for progress updates and completion.",
+    input: ClaimWorkSliceBodySchema.extend(workSliceTarget),
+  },
+  openhuddle_update_work_slice: {
+    description:
+      "Renew a lease and report progress, or use action=raise_attention with question and 2–5 options to ask the owner.",
+    input: HeartbeatWorkSliceBodySchema.extend({
+      ...workSliceTarget,
+      action: z.enum(["heartbeat", "raise_attention"]).default("heartbeat"),
+      question: RaiseWorkAttentionBodySchema.shape.question.optional(),
+      options: RaiseWorkAttentionBodySchema.shape.options.optional(),
+    }),
+  },
+  openhuddle_complete_work_slice: {
+    description:
+      "Submit execution results and diffs, or complete verification with a passed or changes_requested verdict.",
+    input: CompleteWorkSliceBodySchema.extend(workSliceTarget),
+  },
+  openhuddle_put_review_evidence: {
+    description:
+      "Attach the assigned writer's full unified diff (up to 400 KiB) with its current leaseVersion. Use this before completion if the regular diff preview is incomplete.",
+    input: PutReviewEvidenceBodySchema.extend(workSliceTarget),
+  },
+  openhuddle_get_review_evidence: {
+    description:
+      "Read a writer slice's complete patch and leaseVersion as an authorized reviewer when the work item preview is incomplete.",
+    input: z.object(workSliceTarget),
+  },
+} as const;
+export type ListWorkMcpQuery = z.infer<typeof WorkMcpTools.openhuddle_list_work.input>;
 
 /** `POST /api/v1/work-items/:workItemId/steer` 请求体 */
 export const SteerWorkItemBodySchema = z.object({

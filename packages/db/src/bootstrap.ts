@@ -299,6 +299,11 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS work_slices_item_order_idx ON work_slices (work_item_id, order_index ASC)",
   "CREATE INDEX IF NOT EXISTS work_slices_assigned_status_idx ON work_slices (assigned_agent_id, status, lease_expires_at)",
   "CREATE INDEX IF NOT EXISTS work_slices_active_lease_expiry_idx ON work_slices (lease_expires_at ASC) WHERE status IN ('running', 'verifying')",
+  `CREATE TABLE IF NOT EXISTS work_review_evidence (
+    slice_id TEXT PRIMARY KEY REFERENCES work_slices(id) ON DELETE CASCADE,
+    lease_version INTEGER NOT NULL CHECK (lease_version > 0),
+    patch TEXT NOT NULL CHECK (octet_length(patch) BETWEEN 1 AND 409600)
+  )`,
 ];
 
 /**

@@ -18,12 +18,14 @@ import { reStampSseEventForViewer, toActorMemberKey } from "../../infra/identity
 import type { RealtimeBus, UnsubscribeFn } from "../../infra/realtime-bus.js";
 import type { MessagesRepository } from "../messages/messages.repo.js";
 import type { RoomsRepository } from "../rooms/rooms.repo.js";
+import type { WorkspacesRepository } from "../workspaces/workspaces.repo.js";
 
 /**
  * 构造 `EventsService` 所需的依赖。
  */
 export interface EventsServiceDeps {
   readonly roomsRepo: RoomsRepository;
+  readonly workspacesRepo: WorkspacesRepository;
   readonly messagesRepo: MessagesRepository;
   readonly realtimeBus: RealtimeBus;
 }
@@ -52,6 +54,7 @@ function isCallerMentioned(
  */
 export class EventsService {
   private readonly roomsRepo: RoomsRepository;
+  private readonly workspacesRepo: WorkspacesRepository;
   private readonly messagesRepo: MessagesRepository;
   private readonly realtimeBus: RealtimeBus;
 
@@ -60,6 +63,7 @@ export class EventsService {
    */
   public constructor(deps: Readonly<EventsServiceDeps>) {
     this.roomsRepo = deps.roomsRepo;
+    this.workspacesRepo = deps.workspacesRepo;
     this.messagesRepo = deps.messagesRepo;
     this.realtimeBus = deps.realtimeBus;
   }
@@ -164,7 +168,13 @@ export class EventsService {
     abortSignal?: AbortSignal,
   ): Promise<InboxResponse> {
     const initial = await this.computeInboxSnapshot(caller);
-    if (initial.totalUnreadMessages > 0 || waitSec <= 0 || abortSignal?.aborted) {
+    if (
+      initial.totalUnreadMessages > 0 ||
+      initial.workAssignments?.length ||
+      initial.reviewEvidenceRequests?.length ||
+      waitSec <= 0 ||
+      abortSignal?.aborted
+    ) {
       return initial;
     }
 
@@ -188,13 +198,15 @@ export class EventsService {
       const timeoutId = setTimeout(finish, Math.round(waitSec * 1_000));
       abortSignal?.addEventListener("abort", finish, { once: true });
 
-      void this.subscribeCallerStream(caller, finish, finish, "inbox").then((unsub) => {
-        if (settled) {
-          unsub();
-        } else {
-          unsubscribeStream = unsub;
-        }
-      });
+      void this.subscribeCallerStream(caller, finish, finish, "inbox")
+        .then((unsub) => {
+          if (settled) {
+            unsub();
+          } else {
+            unsubscribeStream = unsub;
+          }
+        })
+        .catch(finish);
     });
 
     return this.computeInboxSnapshot(caller);
@@ -203,7 +215,11 @@ export class EventsService {
   private async computeInboxSnapshot(
     caller: Readonly<AuthenticatedCaller>,
   ): Promise<InboxResponse> {
-    const joinedRooms = await this.roomsRepo.listJoinedRooms(toActorMemberKey(caller), caller);
+    const [joinedRooms, workAssignments, reviewEvidenceRequests] = await Promise.all([
+      this.roomsRepo.listJoinedRooms(toActorMemberKey(caller), caller),
+      caller.kind === "agent" ? this.workspacesRepo.listInboxWorkAssignments(caller) : undefined,
+      caller.kind === "agent" ? this.workspacesRepo.listReviewEvidenceRequests(caller) : undefined,
+    ]);
     const summaries: InboxRoomSummary[] = [];
     let totalUnreadMessages = 0;
 
@@ -250,6 +266,8 @@ export class EventsService {
       ok: true,
       totalUnreadMessages,
       rooms: summaries,
+      ...(workAssignments?.length ? { workAssignments } : {}),
+      ...(reviewEvidenceRequests?.length ? { reviewEvidenceRequests } : {}),
       serverTimeIso: new Date().toISOString(),
     };
   }

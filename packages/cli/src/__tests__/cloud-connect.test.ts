@@ -783,17 +783,50 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       yield `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`;
       yield `${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })}\n`;
       yield `${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "openhuddle_list_rooms", arguments: {} } })}\n`;
+      const target = { workItemId: "wrk_stdio", sliceId: "slc_stdio" };
+      const calls = [
+        ["openhuddle_list_workspaces", { roomId: "rom_stdio" }],
+        ["openhuddle_list_work", { claimableOnly: true, stage: "working" }],
+        ["openhuddle_claim_work_slice", target],
+        ["openhuddle_update_work_slice", { ...target, leaseVersion: 2, liveSummary: "Working" }],
+        [
+          "openhuddle_update_work_slice",
+          {
+            ...target,
+            leaseVersion: 2,
+            action: "raise_attention",
+            question: "Review next?",
+            options: ["Yes", "No"],
+          },
+        ],
+        [
+          "openhuddle_complete_work_slice",
+          { ...target, leaseVersion: 2, summary: "Reviewed", verdict: "passed", diffFiles: [] },
+        ],
+        ["openhuddle_update_work_slice", { ...target, leaseVersion: 0 }],
+        ["openhuddle_put_review_evidence", { ...target, leaseVersion: 2, patch: "review-patch" }],
+        ["openhuddle_get_review_evidence", target],
+      ];
+      for (const [index, [name, args]] of calls.entries()) {
+        yield `${JSON.stringify({ jsonrpc: "2.0", id: index + 4, method: "tools/call", params: { name, arguments: args } })}\n`;
+      }
     }
 
     const lines: string[] = [];
+    const requests: Array<{ path: string; method: string; body?: unknown }> = [];
     const exit = await runCli(["mcp", "--token-file", tokenFile], {
       homeDir: tempHome,
-      fetchImpl: async (input) => {
+      fetchImpl: async (input, init) => {
         const url = new URL(String(input));
         if (url.pathname === "/api/v1/rooms") {
           return jsonResponse(200, { ok: true, rooms: [] });
         }
-        return jsonResponse(404, { ok: false });
+        requests.push({
+          path: url.pathname + url.search,
+          method: init?.method ?? "GET",
+          ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) } : {}),
+        });
+        return jsonResponse(200, { ok: true });
       },
       mcpInputStream: frames(),
       stdout: (l) => lines.push(l),
@@ -801,16 +834,60 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
     });
 
     expect(exit).toBe(0);
-    expect(lines).toHaveLength(3);
+    expect(lines).toHaveLength(12);
     const parsed = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
     expect((parsed[0]?.result as { serverInfo: { name: string } }).serverInfo.name).toBe(
       "@openhuddle/mcp",
     );
-    const tools = (parsed[1]?.result as { tools: { name: string }[] }).tools.map((t) => t.name);
+    const advertised = (
+      parsed[1]?.result as { tools: { name: string; inputSchema: Record<string, unknown> }[] }
+    ).tools;
+    expect(
+      advertised.find((tool) => tool.name === "openhuddle_complete_work_slice")?.inputSchema,
+    ).toMatchObject({
+      type: "object",
+      required: expect.arrayContaining(["workItemId", "sliceId", "leaseVersion", "summary"]),
+      properties: { diffFiles: { type: "array" } },
+    });
+    const tools = advertised.map((tool) => tool.name);
     expect(tools).toContain("openhuddle_send_message");
-    expect(tools).toHaveLength(8);
+    expect(tools).toEqual(
+      expect.arrayContaining([
+        "openhuddle_list_workspaces",
+        "openhuddle_list_work",
+        "openhuddle_claim_work_slice",
+        "openhuddle_update_work_slice",
+        "openhuddle_complete_work_slice",
+        "openhuddle_put_review_evidence",
+        "openhuddle_get_review_evidence",
+      ]),
+    );
     const callResult = parsed[2]?.result as { isError?: boolean; content: { text: string }[] };
     expect(callResult.isError).toBeUndefined();
     expect(callResult.content[0]?.text).toContain('"rooms": []');
+    expect(requests.map((r) => r.path)).toEqual([
+      "/api/v1/rooms/rom_stdio/workspaces",
+      "/api/v1/work-items?stage=working&claimableOnly=true",
+      ...["claim", "heartbeat", "attention", "complete", "review-evidence", "review-evidence"].map(
+        (action) => `/api/v1/work-items/wrk_stdio/slices/slc_stdio/${action}`,
+      ),
+    ]);
+    expect(requests.slice(0, 2).every((r) => r.method === "GET")).toBe(true);
+    expect(requests.slice(2).map((r) => r.method)).toEqual([
+      "POST",
+      "POST",
+      "POST",
+      "POST",
+      "PUT",
+      "GET",
+    ]);
+    expect(requests[3]?.body).toMatchObject({ leaseVersion: 2, liveSummary: "Working" });
+    expect(requests[4]?.body).toEqual({
+      leaseVersion: 2,
+      question: "Review next?",
+      options: ["Yes", "No"],
+    });
+    expect(requests[5]?.body).toMatchObject({ leaseVersion: 2, verdict: "passed", diffFiles: [] });
+    expect(parsed[9]?.result).toMatchObject({ isError: true });
   });
 });

@@ -10,7 +10,9 @@ import {
   capturePlainFolderSnapshot,
   collectWorkingTreeDiff,
   diffPlainFolderSnapshots,
+  hasCompleteDiffPreview,
 } from "@openhuddle/core-governance/workspace-diff";
+import { MAX_REVIEW_EVIDENCE_BYTES } from "@openhuddle/protocol";
 import type {
   AgentPlatform,
   CompleteWorkSliceBody,
@@ -18,18 +20,24 @@ import type {
   WorkSliceDto,
   WorkspaceDto,
 } from "@openhuddle/protocol";
+import { OpenHuddleApiError } from "./http-client.js";
 import { scrubSensitiveText } from "./secret-scrubber.js";
+import type { WakeExecutionTarget } from "./sse-listener.js";
 import { getOpenHuddleHome } from "./token-store.js";
 import { runWorkPrompt } from "./work-cli-process.js";
 import { appendTaskSessionEvent, recordRollingWorkspaceMemory } from "./work-provenance.js";
+import { isOwnedFile } from "./work-text-edits.js";
 
 export interface DeviceWorkInput {
   item: WorkItemDto;
   slice: WorkSliceDto;
   workspace: WorkspaceDto;
   agent: { platform: AgentPlatform; displayName: string };
+  runner?: WakeExecutionTarget | undefined;
   homeDir: string;
   signal: AbortSignal;
+  saveReviewEvidence?: (patch: string) => Promise<void>;
+  loadReviewEvidence?: (writer: WorkSliceDto) => Promise<string>;
 }
 
 const exec = promisify(execFile);
@@ -100,7 +108,12 @@ async function takeDirectoryLock(key: string, signal: AbortSignal): Promise<() =
   }
 }
 
-async function checkout(input: DeviceWorkInput, root: string, branch: string): Promise<string> {
+async function checkout(
+  input: DeviceWorkInput,
+  root: string,
+  branch: string,
+  existingOnly = false,
+): Promise<string> {
   const { item, signal } = input;
   const base = await git(root, ["rev-parse", "--show-toplevel"], signal).catch(() => "");
   if (!base || (await realpath(base)) !== root) {
@@ -130,53 +143,88 @@ async function checkout(input: DeviceWorkInput, root: string, branch: string): P
       throw new Error("已有工作树与工单分支不一致，请检查工作树后重试。");
     }
   } else {
+    if (existingOnly) throw new Error("原工单工作树已不存在。");
     await git(root, ["worktree", "add", "-b", branch, "--", dest, "HEAD"], signal);
   }
   return dest;
 }
 
-function reviewEvidence(item: WorkItemDto): string {
+async function reviewEvidence({ item, loadReviewEvidence }: DeviceWorkInput): Promise<string> {
   const ready = item.slices.filter((s) => s.leaseRole !== "verify" && s.status === "ready");
   if (!ready.length) throw new Error("复核需要已完成的执行分片。");
   const chunks: string[] = [];
-  for (const slice of ready) {
-    chunks.push(`Worker result: ${slice.liveSummary}`);
-    for (const file of slice.changedFiles) {
-      const diff = item.diffFiles.find((d) => d.path === file);
-      if (
-        !diff ||
-        diff.lines.filter((l) => l.kind === "add").length < diff.additions ||
-        diff.lines.filter((l) => l.kind === "del").length < diff.deletions ||
-        diff.lines.some((l) => l.content.length >= 4000)
-      ) {
-        throw new Error(`文件 ${file} 的变更证据不完整，请在有完整工作树的设备上复核。`);
+  for (const writer of ready) {
+    chunks.push(`Worker result: ${writer.liveSummary}`);
+    if (writer.leaseRole !== "write" && !writer.changedFiles.length) continue;
+    if (!writer.changedFiles.length) throw new Error("写入分片缺少可供独立审阅的代码变更。");
+    const files = item.diffFiles.filter((f) => writer.changedFiles.includes(f.path));
+    if (!hasCompleteDiffPreview(writer.changedFiles, files)) {
+      if (!loadReviewEvidence) throw new Error("缺少该写入分片的完整变更材料。");
+      try {
+        chunks.push(await loadReviewEvidence(writer));
+      } catch (err) {
+        if (!(err instanceof OpenHuddleApiError) || err.status !== 404) throw err;
+        const missingFile = writer.changedFiles.find((p) => !hasCompleteDiffPreview([p], files));
+        throw new Error(`文件 ${missingFile} 的变更证据不完整，请在有完整工作树的设备上复核。`);
       }
+      continue;
+    }
+    for (const file of files) {
+      chunks.push(
+        file.path,
+        ...file.lines.map(
+          (l) => ({ add: "+", del: "-", context: " ", hunk: "" })[l.kind] + l.content,
+        ),
+      );
     }
   }
-  if (!item.diffFiles.length && ready.some((s) => s.leaseRole === "write")) {
-    throw new Error("写入分片缺少可供独立审阅的代码变更，请补充完整的变更记录。");
-  }
-  for (const file of item.diffFiles) {
-    chunks.push(
-      file.path,
-      ...file.lines.map(
-        (l) => ({ add: "+", del: "-", context: " ", hunk: "" })[l.kind] + l.content,
-      ),
-    );
-  }
   const text = chunks.join("\n");
-  if (text.length > 120_000) throw new Error("变更超出静态审阅窗口，请在完整工作树上复核。");
+  if (Buffer.byteLength(text) > MAX_REVIEW_EVIDENCE_BYTES)
+    throw new Error("全部分片的变更材料超出本轮复核容量，请拆分任务。");
   return text;
 }
 
-function allowedFile(relPath: string, patterns: readonly string[]): boolean {
-  return patterns.some((pattern) => {
-    if (pattern === "**" || pattern === "." || pattern === "**/*") return true;
-    const clean = pattern.replace(/^\.\//, "");
-    if (clean.endsWith("/**")) return relPath.startsWith(clean.slice(0, -2));
-    if (clean.endsWith("/*")) return path.posix.dirname(relPath) === clean.slice(0, -2);
-    return relPath === clean;
-  });
+/** Rebuild missing evidence for a completed, pre-upgrade Git worktree without rerunning the agent. */
+export async function recoverReviewPatch(input: DeviceWorkInput): Promise<string> {
+  const { slice, item, workspace } = input;
+  if (
+    slice.status !== "ready" ||
+    slice.leaseRole !== "write" ||
+    !slice.worktreeBranch ||
+    !workspace.isOwnedByViewer ||
+    workspace.hostMode !== "local_machine" ||
+    workspace.id !== item.workspaceId ||
+    workspace.ownerUserId !== item.ownerUserId ||
+    workspace.sandboxMode !== "worktree_pool"
+  )
+    throw new Error("只能从已完成的本人写入工作树补交材料。");
+  const root = await projectRoot(input);
+  const cwd = await checkout(input, root, slice.worktreeBranch, true);
+  if (
+    slice.provenance?.workingDirectory &&
+    (await realpath(slice.provenance.workingDirectory)) !== (await realpath(cwd))
+  ) {
+    throw new Error("当前工作树与原执行回执路径不同。");
+  }
+  const diff = await collectWorkingTreeDiff(cwd, true);
+  const recorded = item.diffFiles.filter((f) => slice.changedFiles.includes(f.path));
+  const current = diff.diffFiles;
+  if (
+    !diff.reviewPatch ||
+    diff.changedFiles.length !== slice.changedFiles.length ||
+    !slice.changedFiles.every((f) => diff.changedFiles.includes(f)) ||
+    diff.diffAdded !== slice.diffAdded ||
+    diff.diffRemoved !== slice.diffRemoved ||
+    !recorded.every(
+      (f) =>
+        JSON.stringify(
+          current.find((n) => n.path === f.path)?.lines.map((l) => [l.kind, l.content]),
+        ) === JSON.stringify(f.lines.map((l) => [l.kind, l.content])),
+    )
+  ) {
+    throw new Error("工作树变更与原回执不匹配，无法补交完整材料。");
+  }
+  return diff.reviewPatch;
 }
 
 export async function executeWorkSlice(
@@ -194,6 +242,12 @@ export async function executeWorkSlice(
   ) {
     throw new Error("设备执行器仅处理主人派发到本人本机工作区的分片。");
   }
+  const work = {
+    itemId: item.id,
+    sliceId: slice.sliceId,
+    role: slice.leaseRole,
+    leaseVersion: slice.leaseVersion,
+  };
   const write = slice.leaseRole === "write";
   if (
     item.tier === "chat_only" ||
@@ -219,12 +273,14 @@ export async function executeWorkSlice(
   let result: Omit<CompleteWorkSliceBody, "leaseVersion">;
   let workingDirectory: string | undefined;
   if (slice.leaseRole === "verify") {
-    const evidence = reviewEvidence(item);
+    const evidence = await reviewEvidence(input);
     const temp = await mkdtemp(path.join(tmpdir(), "oh-work-review-"));
     let text: string;
     try {
       text = await runWorkPrompt({
         platform: agent.platform,
+        runner: input.runner,
+        work,
         homeDir,
         signal,
         cwd: temp,
@@ -273,9 +329,12 @@ export async function executeWorkSlice(
       const summary = scrubSensitiveText(
         await runWorkPrompt({
           platform: agent.platform,
+          runner: input.runner,
+          work,
           homeDir,
           signal,
           cwd,
+          ownedPaths: patterns,
           writable: write,
           prompt: [
             brief,
@@ -290,14 +349,28 @@ export async function executeWorkSlice(
       signal.throwIfAborted();
       if (!summary) throw new Error("执行 Agent 未返回结果。");
       const diff = pooled
-        ? await collectWorkingTreeDiff(cwd)
+        ? await collectWorkingTreeDiff(cwd, !!input.saveReviewEvidence)
         : before
-          ? diffPlainFolderSnapshots(before, await capturePlainFolderSnapshot(cwd))
+          ? diffPlainFolderSnapshots(
+              before,
+              await capturePlainFolderSnapshot(cwd),
+              !!input.saveReviewEvidence,
+            )
           : undefined;
       if (write && !diff?.diffFiles.length)
         throw new Error("执行后未检测到可审阅的文件变更，请检查任务与工作目录后重试。");
-      if (diff?.changedFiles.some((file) => !allowedFile(file, patterns))) {
+      if (diff?.changedFiles.some((file) => !isOwnedFile(file, patterns))) {
         throw new Error("隔离工作树包含分片范围外的变更，请审阅并清理后重试。");
+      }
+      if (
+        diff &&
+        input.saveReviewEvidence &&
+        item.topology !== "direct" &&
+        !hasCompleteDiffPreview(diff.changedFiles, diff.diffFiles)
+      ) {
+        if (!diff.reviewPatch)
+          throw new Error("变更材料不完整或超出单分片传输上限，请缩小分片范围后重试。");
+        await input.saveReviewEvidence(diff.reviewPatch);
       }
       result = {
         summary,
@@ -338,7 +411,7 @@ export async function executeWorkSlice(
   return {
     ...result,
     provenance: {
-      agentEnvironment: `device:${agent.platform}`,
+      agentEnvironment: `device:${input.runner?.kind === "custom" ? "custom" : (input.runner?.preset ?? agent.platform)}`,
       leaseRole: slice.leaseRole,
       sessionJsonlPath,
       rollingMemoryPath: memoryPath,

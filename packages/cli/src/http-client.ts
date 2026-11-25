@@ -18,6 +18,7 @@ import type {
   HeartbeatWorkSliceBody,
   InboxResponse,
   ListWorkItemsResponse,
+  ListWorkMcpQuery,
   ListWorkspacesResponse,
   MeResponse,
   MessageAttachmentUpload,
@@ -31,15 +32,18 @@ import type {
   ProposalCardDto,
   ProposalDraft,
   ProposalId,
+  PutReviewEvidenceBody,
   RaiseWorkAttentionBody,
   ReadCursorSeq,
   RedeemAgentConnectionBody,
+  ReviewEvidenceResponse,
   RoomDetailDto,
   RoomGovernanceState,
   RoomId,
   RoomMemberDto,
   RoomSummaryDto,
   RoomVisibility,
+  RoomWorkspacesResponse,
   SingleWorkItemResponse,
   UnreadConflictDetails,
   UpdateMeBody,
@@ -382,7 +386,19 @@ export class OpenHuddleHttpClient {
     return this.requestJson("GET", `/api/v1/work-items/${encodeURIComponent(itemId)}`, { signal });
   }
 
-  public listWorkspaces(signal: AbortSignal): Promise<ListWorkspacesResponse> {
+  public listWorkItems(query: ListWorkMcpQuery): Promise<ListWorkItemsResponse> {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined) search.set(key, String(value));
+    }
+    return this.requestJson("GET", `/api/v1/work-items${search.size ? `?${search}` : ""}`);
+  }
+
+  public listRoomWorkspaces(roomId: RoomId): Promise<RoomWorkspacesResponse> {
+    return this.requestJson("GET", `/api/v1/rooms/${encodeURIComponent(roomId)}/workspaces`);
+  }
+
+  public listWorkspaces(signal?: AbortSignal): Promise<ListWorkspacesResponse> {
     return this.requestJson("GET", "/api/v1/workspaces", { signal });
   }
 
@@ -390,7 +406,7 @@ export class OpenHuddleHttpClient {
     itemId: WorkItemId,
     sliceId: WorkSliceId,
     body: ClaimWorkSliceBody,
-    signal: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<ClaimWorkSliceResponse> {
     return this.requestJson("POST", `${this.sliceUrl(itemId, sliceId)}/claim`, { body, signal });
   }
@@ -399,7 +415,7 @@ export class OpenHuddleHttpClient {
     itemId: WorkItemId,
     sliceId: WorkSliceId,
     body: HeartbeatWorkSliceBody,
-    signal: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<SingleWorkItemResponse> {
     return this.requestJson("POST", `${this.sliceUrl(itemId, sliceId)}/heartbeat`, {
       body,
@@ -411,7 +427,7 @@ export class OpenHuddleHttpClient {
     itemId: WorkItemId,
     sliceId: WorkSliceId,
     body: CompleteWorkSliceBody,
-    signal: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<SingleWorkItemResponse> {
     return this.requestJson("POST", `${this.sliceUrl(itemId, sliceId)}/complete`, { body, signal });
   }
@@ -420,9 +436,29 @@ export class OpenHuddleHttpClient {
     itemId: WorkItemId,
     sliceId: WorkSliceId,
     body: RaiseWorkAttentionBody,
-    signal: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<SingleWorkItemResponse> {
     return this.requestJson("POST", `${this.sliceUrl(itemId, sliceId)}/attention`, {
+      body,
+      signal,
+    });
+  }
+
+  public getReviewEvidence(
+    itemId: WorkItemId,
+    sliceId: WorkSliceId,
+    signal: AbortSignal,
+  ): Promise<ReviewEvidenceResponse> {
+    return this.requestJson("GET", `${this.sliceUrl(itemId, sliceId)}/review-evidence`, { signal });
+  }
+
+  public putReviewEvidence(
+    itemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: PutReviewEvidenceBody,
+    signal: AbortSignal,
+  ): Promise<ReviewEvidenceResponse> {
+    return this.requestJson("PUT", `${this.sliceUrl(itemId, sliceId)}/review-evidence`, {
       body,
       signal,
     });
@@ -448,9 +484,11 @@ export class OpenHuddleHttpClient {
    * @param waitSec - 可选长轮询阻塞秒数（0..25）
    * @returns 收件箱未读与提及汇总
    */
-  public async getInbox(waitSec = 0): Promise<InboxResponse> {
+  public async getInbox(waitSec = 0, signal?: AbortSignal): Promise<InboxResponse> {
     const clampedWait = Math.max(0, Math.min(25, Math.trunc(waitSec)));
-    return this.requestJson<InboxResponse>("GET", `/api/v1/inbox?waitSec=${clampedWait}`);
+    return this.requestJson<InboxResponse>("GET", `/api/v1/inbox?waitSec=${clampedWait}`, {
+      signal,
+    });
   }
 
   /**
@@ -613,13 +651,13 @@ export class OpenHuddleHttpClient {
    * @throws {OpenHuddleApiError} 当网络不可达、JSON 损坏或服务端返回非 2xx 状态时抛出
    */
   private async requestJson<TResponse>(
-    method: "GET" | "POST" | "PATCH" | "DELETE",
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     pathWithQuery: string,
     options?: {
       readonly body?: unknown;
       readonly skipAuth?: boolean;
       readonly redirect?: "error";
-      readonly signal?: AbortSignal;
+      readonly signal?: AbortSignal | undefined;
     },
   ): Promise<TResponse> {
     const url = `${this.baseUrl}${pathWithQuery}`;

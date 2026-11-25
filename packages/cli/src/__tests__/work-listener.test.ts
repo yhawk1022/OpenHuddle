@@ -1,7 +1,7 @@
 import type { OwnedAgentSummaryDto } from "@openhuddle/protocol";
 import { afterEach, expect, it, vi } from "vitest";
 import { OpenHuddleHttpClient } from "../http-client.js";
-import { startSseListener } from "../sse-listener.js";
+import { type WakeExecutionTarget, startSseListener } from "../sse-listener.js";
 import { DeviceWorkListener, supportsDeviceWork } from "../work-listener.js";
 
 const agent = {
@@ -38,6 +38,7 @@ afterEach(() => vi.useRealTimers());
 function setup(
   route: (path: string, body: Record<string, unknown>) => Response,
   execute: NonNullable<ConstructorParameters<typeof DeviceWorkListener>[0]["execute"]>,
+  recover?: ConstructorParameters<typeof DeviceWorkListener>[0]["recover"],
 ) {
   const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
   const client = new OpenHuddleHttpClient({
@@ -54,8 +55,10 @@ function setup(
     listener: new DeviceWorkListener({
       client,
       log: () => {},
-      agent,
+      resolveAgent: async () => agent,
+      runner: { kind: "preset", preset: "claude_code" },
       execute,
+      ...(recover ? { recover } : {}),
     }),
   };
 }
@@ -99,6 +102,9 @@ it("recovers roomless work, ignores peer and premature verifier slices, and coal
     listener.updated(event);
     await vi.waitFor(() => expect(completed).toBe(true));
     expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ agent, runner: { kind: "preset", preset: "claude_code" } }),
+    );
     expect(
       calls.filter((c) => c.path.endsWith("/claim")).map((c) => c.body.expectedLeaseVersion),
     ).toEqual([0]);
@@ -178,10 +184,9 @@ it("aborts device execution when its lease heartbeat is rejected and never posts
 });
 
 it("leaves loopback dispatch to the server and declines foreign workspaces", async () => {
-  expect(supportsDeviceWork("http://[::1]:3000", "codex")).toBe(false);
-  expect(supportsDeviceWork("http://localhost:3000", "codex")).toBe(false);
-  expect(supportsDeviceWork("https://huddle.example", "codex")).toBe(true);
-  expect(supportsDeviceWork("https://huddle.example", "claude_code")).toBe(false);
+  expect(supportsDeviceWork("http://[::1]:3000")).toBe(false);
+  expect(supportsDeviceWork("http://localhost:3000")).toBe(false);
+  expect(supportsDeviceWork("https://huddle.example")).toBe(true);
   const execute = vi.fn();
   const { listener, calls } = setup((path) => {
     if (path.includes("claimableOnly")) return Response.json({ items: [item] });
@@ -199,9 +204,16 @@ it("leaves loopback dispatch to the server and declines foreign workspaces", asy
   }
 });
 
-it.each(["codex", "deepseek"] as const)(
-  "advertises only a matching remote preset and consumes work frames separately from chat (%s token)",
-  async (platform) => {
+const remoteTargets: WakeExecutionTarget[] = [
+  ...(["codex", "deepseek", "gemini", "antigravity", "claude_code"] as const).map((preset) => ({
+    kind: "preset" as const,
+    preset,
+  })),
+  { kind: "custom", command: "device-work-adapter" },
+];
+it.each(remoteTargets)(
+  "uses the configured remote runner %o for a Cursor identity and consumes roomless work events",
+  async (target) => {
     const paths: string[] = [];
     let advertisesWork = false;
     const stop = new AbortController();
@@ -209,7 +221,7 @@ it.each(["codex", "deepseek"] as const)(
       serverUrl: "https://huddle.example",
       token: "test",
       tokenFilePath: "/tmp/test.token",
-      target: { kind: "preset", preset: "deepseek" },
+      target,
       signal: stop.signal,
       maxReconnectAttempts: 0,
       catchUpInboxOnConnect: false,
@@ -220,7 +232,7 @@ it.each(["codex", "deepseek"] as const)(
         if (path.endsWith("/me"))
           return Response.json({
             callerKind: "agent",
-            agent: { ...agent, platform },
+            agent: { ...agent, platform: "cursor" },
             owner: { id: agent.ownerUserId },
           });
         if (path.endsWith("/events")) {
@@ -239,7 +251,6 @@ it.each(["codex", "deepseek"] as const)(
                     `event: work.updated\ndata: ${JSON.stringify(event)}\n\n`,
                   ),
                 );
-                if (platform === "codex") stream.close();
               },
             }),
           );
@@ -252,8 +263,140 @@ it.each(["codex", "deepseek"] as const)(
         throw Error(`unexpected ${path}`);
       },
     });
-    expect(advertisesWork).toBe(platform === "deepseek");
-    expect(paths.some((p) => p.endsWith(item.id))).toBe(platform === "deepseek");
+    expect(advertisesWork).toBe(true);
+    expect(paths.some((p) => p.endsWith(item.id))).toBe(true);
     expect(paths.some((p) => p.includes("/rooms/"))).toBe(false);
+  },
+);
+
+it("sends full review evidence with the claimed writer lease before reporting completion", async () => {
+  const { listener, calls } = setup(
+    (path, body) => {
+      if (path.includes("claimableOnly")) return Response.json({ items: [item] });
+      if (path === "/workspaces") return Response.json({ workspaces: [workspace] });
+      if (path.endsWith("/claim")) return Response.json({ item, claimedSlice: claimed });
+      if (path.endsWith("/review-evidence")) return Response.json({ ok: true, ...body });
+      if (path.endsWith("/complete")) return Response.json({ item });
+      throw Error(`unexpected ${path}`);
+    },
+    async ({ saveReviewEvidence }) => {
+      if (!saveReviewEvidence) throw Error("missing evidence transport");
+      await saveReviewEvidence("actual worker patch");
+      return result;
+    },
+  );
+  try {
+    listener.connected();
+    await vi.waitFor(() => expect(calls.at(-1)?.path.endsWith("/complete")).toBe(true));
+    expect(calls.at(-2)).toMatchObject({
+      path: `/work-items/${item.id}/slices/${slice.sliceId}/review-evidence`,
+      body: { leaseVersion: 1, patch: "actual worker patch" },
+    });
+  } finally {
+    await listener.stop();
+  }
+});
+
+it.each([1, 2])(
+  "checks the independent writer lease when retrieving evidence for verification (stored v%s)",
+  async (storedVersion) => {
+    const verify = { ...claimed, sliceId: "slc_verify", leaseRole: "verify" };
+    const writer = { ...slice, workItemId: item.id, status: "ready", leaseVersion: 2 };
+    const verifyItem = {
+      ...item,
+      stage: "verifying",
+      slices: [writer, { ...verify, status: "waiting", leaseVersion: 0 }],
+    };
+    const { listener, calls } = setup(
+      (path) => {
+        if (path.includes("claimableOnly")) return Response.json({ items: [verifyItem] });
+        if (path === "/workspaces") return Response.json({ workspaces: [workspace] });
+        if (path.endsWith("/claim"))
+          return Response.json({ item: verifyItem, claimedSlice: verify });
+        if (path.endsWith(`/${slice.sliceId}/review-evidence`))
+          return Response.json({
+            ok: true,
+            leaseVersion: storedVersion,
+            patch: "actual worker patch",
+          });
+        if (path.endsWith("/attention") || path.endsWith("/complete"))
+          return Response.json({ item: verifyItem });
+        throw Error(`unexpected ${path}`);
+      },
+      async ({ loadReviewEvidence, item: claimedItem }) => {
+        const ready = claimedItem.slices.find((s) => s.status === "ready");
+        if (!ready || !loadReviewEvidence) throw Error("missing worker evidence");
+        expect(await loadReviewEvidence(ready)).toBe("actual worker patch");
+        return { ...result, verdict: "passed" };
+      },
+    );
+    try {
+      listener.connected();
+      const target = storedVersion === writer.leaseVersion ? "/complete" : "/attention";
+      await vi.waitFor(() => expect(calls.at(-1)?.path.endsWith(target)).toBe(true));
+      if (target === "/attention") expect(calls.at(-1)?.body.question).toContain("不匹配");
+    } finally {
+      await listener.stop();
+    }
+  },
+);
+
+it.each(["initial-inbox", "attention-event"] as const)(
+  "recovers the original device patch on %s without claiming or executing the slice",
+  async (trigger) => {
+    const previousLease = 3;
+    const request = { workItemId: item.id, sliceId: slice.sliceId };
+    const recover = vi.fn(async () => "recovered Git patch");
+    const execute = vi.fn();
+    const { listener, calls } = setup(
+      (path, body) => {
+        if (path.startsWith("/inbox")) return Response.json({ reviewEvidenceRequests: [request] });
+        if (path.endsWith(item.id))
+          return Response.json({
+            item: {
+              ...item,
+              stage: "awaiting_answer",
+              slices: [
+                {
+                  ...slice,
+                  status: "ready",
+                  leaseOwnerAgentId: agent.id,
+                  leaseVersion: previousLease,
+                },
+              ],
+            },
+          });
+        if (path === "/workspaces")
+          return Response.json({ workspaces: [{ ...workspace, sandboxMode: "worktree_pool" }] });
+        if (path.endsWith("/review-evidence")) return Response.json({ ok: true, ...body });
+        throw Error(`unexpected ${path}`);
+      },
+      execute,
+      recover,
+    );
+    try {
+      if (trigger === "initial-inbox") listener.enqueueEvidenceRequests([request]);
+      else
+        listener.updated(
+          JSON.stringify({
+            type: "work.updated",
+            workItemId: item.id,
+            stage: "awaiting_answer",
+            version: 5,
+          }),
+        );
+      await vi.waitFor(() =>
+        expect(calls.some((c) => c.path.endsWith("/review-evidence"))).toBe(true),
+      );
+      expect(calls.at(-1)?.body).toEqual({
+        leaseVersion: previousLease,
+        patch: "recovered Git patch",
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(recover).toHaveBeenCalledOnce();
+      expect(calls.some((c) => c.path.endsWith("/claim"))).toBe(false);
+    } finally {
+      await listener.stop();
+    }
   },
 );

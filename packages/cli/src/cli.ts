@@ -17,6 +17,8 @@ import type {
   AgentId,
   AgentPlatform,
   CastProposalVoteBody,
+  InboxResponse,
+  InboxWorkAssignment,
   MessageDto,
   MessageMention,
   MessageSeq,
@@ -31,6 +33,7 @@ import type {
   RoomVisibility,
   UpdateMeBody,
   UserId,
+  WorkItemId,
 } from "@openhuddle/protocol";
 import {
   type DaemonControlReport,
@@ -41,6 +44,7 @@ import {
   spawnDetachedDaemonWorker,
   stopDaemonService,
 } from "./daemon-manager.js";
+import { recoverReviewPatch } from "./execute-work-slice.js";
 import { isPresetCliBinaryAvailable } from "./host-env.js";
 import { OpenHuddleApiError, OpenHuddleHttpClient, formatOpenHuddleError } from "./http-client.js";
 import { runCliMcpStdioServer } from "./mcp-stdio.js";
@@ -109,6 +113,10 @@ async function waitForRealtimeAgent(
     return undefined;
   }
   return undefined;
+}
+
+function formatWorkAssignment(work: InboxWorkAssignment): string {
+  return `  - [${work.leaseRole}] ${work.title} (workItemId=${work.workItemId} sliceId=${work.sliceId} leaseVersion=${work.leaseVersion})`;
 }
 
 /**
@@ -569,7 +577,8 @@ function buildHelpText(): string {
     "  whoami                        Inspect authenticated agent, human owner & sibling agents",
     "  profile [--name <n>] [--intro <text>] [--checkin-interval <min>]",
     "                                Update agent display name, intro, or check-in cadence",
-    "  inbox [--wait <0..25>]        Fetch pending mentions, owner commands & unread summary",
+    "  inbox [--wait <0..25>]        Fetch unread messages and assigned work",
+    "  repair-evidence <item> <slice>  Resubmit a completed worktree for independent review",
     "  wait [--room <id>] [--timeout <1..300>]",
     "                                Block on SSE / long-polling until woken, then read new messages",
     "  rooms                         List joined Huddle rooms and governance states",
@@ -1090,6 +1099,52 @@ export async function runCli(
     };
 
     switch (parsed.command) {
+      case "repair-evidence": {
+        const [itemId, sliceId] = parsed.positionals;
+        if (!itemId?.startsWith("wrk_") || !sliceId?.startsWith("slc_"))
+          throw new Error("Usage: openhuddle repair-evidence <workItemId> <sliceId>");
+        const [{ item }, me, { workspaces }] = await Promise.all([
+          client.getWorkItem(itemId as WorkItemId, AbortSignal.timeout(15_000)),
+          client.getMe(),
+          client.listWorkspaces(),
+        ]);
+        const slice = item.slices.find((s) => s.sliceId === sliceId);
+        const workspace = workspaces.find((w) => w.id === item.workspaceId);
+        if (
+          !slice ||
+          !workspace ||
+          me.callerKind !== "agent" ||
+          me.agent.id !== slice.assignedAgent.agentId
+        ) {
+          throw new Error("请在原写入 Agent 的设备上使用原有身份补交。");
+        }
+        const patch = await recoverReviewPatch({
+          item,
+          slice,
+          workspace,
+          agent: me.agent,
+          homeDir: baseHome,
+          signal: AbortSignal.timeout(30_000),
+        });
+        await client.putReviewEvidence(
+          item.id,
+          slice.sliceId,
+          {
+            leaseVersion: slice.leaseVersion,
+            patch,
+          },
+          AbortSignal.timeout(15_000),
+        );
+        if (parsed.json)
+          emitJson({
+            ok: true,
+            workItemId: item.id,
+            sliceId: slice.sliceId,
+            leaseVersion: slice.leaseVersion,
+          });
+        else writeOut("已按原分片版本补交完整复核材料。");
+        return 0;
+      }
       case "whoami": {
         const me = await client.getMe();
         if (parsed.json) {
@@ -1168,6 +1223,12 @@ export async function runCli(
             const badgeText = badges.length > 0 ? ` [${badges.join(", ")}]` : "";
             lines.push(
               `  - ${room.roomName} (${room.roomId}): unread=${room.unreadCount} (${room.yourLastReadSeq}->${room.lastSeq}) gov=${room.governanceStatus}${badgeText}`,
+            );
+          }
+          if (inbox.workAssignments?.length) {
+            lines.push(
+              "Assigned workspace tasks:",
+              ...inbox.workAssignments.map(formatWorkAssignment),
             );
           }
           writeOut(lines.join("\n"));
@@ -1448,11 +1509,18 @@ export async function runCli(
           )
           .map((r) => r.roomId);
 
+        const assignedWork = (inbox: InboxResponse) =>
+          (inbox.workAssignments ?? []).filter(
+            (work) => explicitRoomFilter === undefined || work.roomId === explicitRoomFilter,
+          );
+        let workAssignments = assignedWork(initialInbox);
         let triggeredReason = "timeout";
         let collected =
           unreadRoomsNow.length > 0 ? await collectUnreadMessages(unreadRoomsNow) : [];
 
-        if (collected.length > 0) {
+        if (workAssignments.length > 0) {
+          triggeredReason = "work.assigned";
+        } else if (collected.length > 0) {
           triggeredReason = "unread_present";
         } else {
           // 2. 建立带超时的 SSE 监听（若上游网关不支持流式 SSE 则自动回退至 /api/v1/inbox 长轮询）
@@ -1463,6 +1531,20 @@ export async function runCli(
           const deadlineMs = Date.now() + timeoutSec * 1_000;
           const timer = setTimeout(() => waitController.abort(), timeoutSec * 1_000);
           let wokenRoomId: RoomId | undefined;
+
+          const handlePolledInbox = (inbox: InboxResponse) => {
+            workAssignments = assignedWork(inbox);
+            const matched = inbox.rooms.find(
+              (r) =>
+                r.unreadCount > 0 &&
+                (explicitRoomFilter === undefined || r.roomId === explicitRoomFilter),
+            );
+            if (matched) {
+              wokenRoomId = matched.roomId;
+              triggeredReason = matched.hasOwnerCommand ? "owner_command" : "inbox_poll";
+            }
+            if (workAssignments.length) triggeredReason = "work.assigned";
+          };
 
           try {
             const sseRes = await fetchFn(`${effectiveServerUrl}/api/v1/events`, {
@@ -1476,6 +1558,14 @@ export async function runCli(
             });
             if (sseRes.ok && sseRes.body !== null) {
               for await (const frame of readSseFrames(sseRes.body, waitController.signal)) {
+                if (frame.event === "work.updated" || frame.event === "connected") {
+                  workAssignments = assignedWork(await client.getInbox(0));
+                  if (workAssignments.length > 0) {
+                    triggeredReason = "work.assigned";
+                    waitController.abort();
+                    break;
+                  }
+                }
                 const wake = parseWakeEventFrame(frame);
                 if (
                   wake !== undefined &&
@@ -1512,16 +1602,7 @@ export async function runCli(
                 1,
                 Math.min(25, Math.ceil((deadlineMs - Date.now()) / 1_000)),
               );
-              const polled = await client.getInbox(remainingSec);
-              const matched = polled.rooms.find(
-                (r) =>
-                  r.unreadCount > 0 &&
-                  (explicitRoomFilter === undefined || r.roomId === explicitRoomFilter),
-              );
-              if (matched !== undefined) {
-                wokenRoomId = matched.roomId;
-                triggeredReason = matched.hasOwnerCommand ? "owner_command" : "inbox_poll";
-              }
+              handlePolledInbox(await client.getInbox(remainingSec));
             }
           } catch {
             // AbortError 代表超时或已捕获事件正常中断；若尚未到截止时间则用长轮询兜底
@@ -1532,18 +1613,9 @@ export async function runCli(
               !context.listenerSignal?.aborted
             ) {
               try {
-                const polled = await client.getInbox(
-                  Math.max(1, Math.min(25, Math.ceil(remainingMs / 1_000))),
+                handlePolledInbox(
+                  await client.getInbox(Math.max(1, Math.min(25, Math.ceil(remainingMs / 1_000)))),
                 );
-                const matched = polled.rooms.find(
-                  (r) =>
-                    r.unreadCount > 0 &&
-                    (explicitRoomFilter === undefined || r.roomId === explicitRoomFilter),
-                );
-                if (matched !== undefined) {
-                  wokenRoomId = matched.roomId;
-                  triggeredReason = matched.hasOwnerCommand ? "owner_command" : "inbox_poll";
-                }
               } catch {
                 // 忽略兜底轮询中断
               }
@@ -1566,14 +1638,18 @@ export async function runCli(
         if (parsed.json) {
           emitJson({
             ok: true,
-            woken: collected.length > 0,
+            woken: collected.length > 0 || workAssignments.length > 0,
+            ...(workAssignments.length ? { workAssignments } : {}),
             reason: triggeredReason,
             rooms: collected,
           });
-        } else if (collected.length === 0) {
+        } else if (collected.length === 0 && workAssignments.length === 0) {
           writeOut(`No new messages within ${timeoutSec}s.`);
         } else {
-          const lines: string[] = [`Woken (${triggeredReason}):`];
+          const lines: string[] = [
+            `Woken (${triggeredReason}):`,
+            ...workAssignments.map(formatWorkAssignment),
+          ];
           for (const batch of collected) {
             lines.push(`Room ${batch.roomId}:`);
             for (const msg of batch.messages) {

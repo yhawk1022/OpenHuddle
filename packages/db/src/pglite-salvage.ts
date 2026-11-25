@@ -38,6 +38,7 @@ const SALVAGE_TABLE_ORDER: readonly string[] = [
   "workspace_room_bindings",
   "work_items",
   "work_slices",
+  "work_review_evidence",
 ];
 
 const JSONB_COLUMN_NAMES: ReadonlySet<string> = new Set([

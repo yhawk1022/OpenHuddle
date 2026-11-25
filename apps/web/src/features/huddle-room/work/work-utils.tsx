@@ -9,6 +9,7 @@
 import { type OwnedAgentSummaryDto, type WorkSliceRole, assertNever } from "@openhuddle/protocol";
 import { CheckCircle2, Circle, CircleAlert, Loader2 } from "lucide-react";
 import { cn, toast } from "../../../components/primitives/index.js";
+import { defaultAgentReplyMode } from "../../auth-pairing/connect-instructions.js";
 import type { WorkStage, WorkTopology } from "./work-types.js";
 
 /**
@@ -45,10 +46,11 @@ export function getClaimListenerHint(
 ): { message: string; showInstallGuide: boolean } | undefined {
   if (!agent || agent.workspaceListenerConnected === true) return undefined;
 
-  if (agent.platform !== "codex" && agent.platform !== "deepseek") {
+  if (defaultAgentReplyMode(agent.platform) === "on_demand") {
     return {
-      message: "请在此 Agent 中使用 OpenHuddle MCP 认领分片并提交执行结果。",
-      showInstallGuide: false,
+      message:
+        "可在该 Agent 中通过 OpenHuddle MCP 认领分片。自动领单需要在其设备上启用支持工单的后台监听。",
+      showInstallGuide: true,
     };
   }
   const connection =

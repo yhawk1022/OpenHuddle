@@ -533,3 +533,12 @@ export const workSlicesTable = pgTable(
     ),
   ],
 );
+
+/** Latest full patch for a slice; excluded from normal work-item hydration. */
+export const workReviewEvidenceTable = pgTable("work_review_evidence", {
+  sliceId: text("slice_id")
+    .primaryKey()
+    .references(() => workSlicesTable.id, { onDelete: "cascade" }),
+  leaseVersion: integer("lease_version").notNull(),
+  patch: text("patch").notNull(),
+});

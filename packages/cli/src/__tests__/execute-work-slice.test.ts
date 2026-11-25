@@ -139,7 +139,7 @@ describe.skipIf(process.platform === "win32")("owner device work execution", () 
     task.item.diffFiles = written.diffFiles ?? [];
     expect(await executeWorkSlice(task)).toMatchObject({ verdict: "passed", changedFiles: [] });
     task.item.diffFiles = [];
-    await expect(executeWorkSlice(task)).rejects.toThrow("证据不完整");
+    await expect(executeWorkSlice(task)).rejects.toThrow(/不完整|缺少.*完整/);
   });
   it("leaves the original folder untouched when pooling cannot be honored, and rejects escaped and missing roots", async () => {
     const task = assignment();
@@ -180,5 +180,64 @@ describe.skipIf(process.platform === "win32")("owner device work execution", () 
     task.slice = { ...task.slice, leaseRole: "verify" };
     await installCli("dsh", "console.log('probably OK');");
     await expect(executeWorkSlice(task)).rejects.toThrow("未返回明确的结论和证据");
+  });
+  it.each([
+    ["claude_code", "claude"],
+    ["gemini", "gemini"],
+    ["antigravity", "agy"],
+  ] as const)(
+    "applies and independently verifies a real file for %s with its local tools disabled",
+    async (platform, binary) => {
+      const task = assignment();
+      task.workspace.sandboxMode = "in_place";
+      // The account may use a different public agent platform and a known local preset.
+      task.agent.platform = "cursor";
+      task.runner = { kind: "preset", preset: platform };
+      await writeFile(path.join(repo, "keep.txt"), "before\n");
+      await installCli(
+        binary,
+        `
+      const fs=require("node:fs");
+      const args=process.argv.slice(2);
+      const has=(...xs)=>xs.every(x=>args.includes(x));
+      const platform=${JSON.stringify(platform)};
+      if (fs.existsSync("keep.txt")) throw Error("model was started in the real workspace");
+      if (platform==="claude_code" && !(has("--safe-mode","--strict-mcp-config") && args[args.indexOf("--tools")+1]==="")) process.exit(7);
+      if (platform==="gemini" && !(has("--policy","--admin-policy","--skip-trust") && fs.readFileSync(args[args.indexOf("--admin-policy")+1],"utf8").includes('decision = "deny"'))) process.exit(7);
+      if (platform==="antigravity" && !(has("--sandbox","--input-format","stream-json") && JSON.parse(args[args.indexOf("--settings")+1]).permissions.deny.includes("command(*)"))) process.exit(7);
+      const raw=fs.readFileSync(0,"utf8");const prompt=platform==="antigravity"?JSON.parse(raw).message.content:raw;
+      const text=prompt.includes("independent static review") ? "Reviewed keep.txt and artifact.txt.\\nVERDICT: PASSED" :
+        JSON.stringify({summary:"Created artifact.txt",files:[{path:"artifact.txt",content:"proof\\n"},{path:"keep.txt",content:"updated\\n"}]});
+      console.log(platform==="antigravity" ? JSON.stringify({event:"result",result:{status:"SUCCESS",response:text}}) : text);
+    `,
+      );
+      const written = await executeWorkSlice(task);
+      expect(written.changedFiles).toEqual(["artifact.txt", "keep.txt"]);
+      expect(await readFile(path.join(repo, "keep.txt"), "utf8")).toBe("updated\n");
+      expect(written.provenance?.agentEnvironment).toBe(`device:${platform}`);
+      task.item.slices = [
+        {
+          ...task.slice,
+          status: "ready",
+          changedFiles: written.changedFiles,
+          liveSummary: written.summary,
+        },
+      ];
+      task.item.diffFiles = written.diffFiles ?? [];
+      task.slice = { ...task.slice, leaseRole: "verify" };
+      expect(await executeWorkSlice(task)).toMatchObject({ verdict: "passed" });
+    },
+  );
+  it("validates all proposed edits before changing any file", async () => {
+    const task = assignment();
+    task.workspace.sandboxMode = "in_place";
+    task.runner = { kind: "preset", preset: "gemini" };
+    await writeFile(path.join(repo, "keep.txt"), "unchanged");
+    await installCli(
+      "gemini",
+      'console.log(JSON.stringify({summary:"edit",files:[{path:"keep.txt",content:"changed"},{path:".git/config",content:"forbidden"}]}))',
+    );
+    await expect(executeWorkSlice(task)).rejects.toThrow("无效的文件变更");
+    expect(await readFile(path.join(repo, "keep.txt"), "utf8")).toBe("unchanged");
   });
 });

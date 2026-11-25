@@ -51,6 +51,7 @@ import {
   toSoloWorkTaskView,
 } from "../features/huddle-room/work/work-server-sync.js";
 import {
+  getClaimListenerHint,
   parsePromptTopologyDirective,
   stripAgentOwnerPrefix,
 } from "../features/huddle-room/work/work-utils.js";
@@ -283,6 +284,24 @@ describe("solo workbench store & unified diff lifecycle", () => {
     expect(pickWorkbenchAgent([offline, chatOnly, connected], offline.id)).toBe(offline);
     expect(pickWorkbenchAgent([offline, chatOnly], undefined, offline.id)).toBe(chatOnly);
     expect(() => pickWorkbenchAgent([connected], offline.id)).toThrow("重新选择");
+  });
+
+  it("distinguishes a declared work listener from an on-demand connection across identities", () => {
+    for (const platform of ["codex", "deepseek", "claude_code", "gemini", "antigravity"] as const) {
+      expect(
+        getClaimListenerHint({ platform, reach: "online_sse", workspaceListenerConnected: false })
+          ?.message,
+      ).toContain("更新 OpenHuddle CLI");
+    }
+    for (const platform of ["custom", "cursor", "openclaw", "chatgpt", "hosted"] as const) {
+      expect(
+        getClaimListenerHint({ platform, reach: "online_sse", workspaceListenerConnected: true }),
+      ).toBeUndefined();
+      expect(
+        getClaimListenerHint({ platform, reach: "polling", workspaceListenerConnected: false })
+          ?.message,
+      ).toContain("OpenHuddle MCP");
+    }
   });
 
   it("shows which agent can claim each stage of an existing roomless work item", () => {

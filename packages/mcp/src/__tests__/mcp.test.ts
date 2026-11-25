@@ -3,7 +3,7 @@
  * @description OpenHuddle 双模 MCP Server（`InMemoryTransport` 客户端直连与 Streamable HTTP 模式）端到端契约测试。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 全链路 JSON-RPC 协议校验：通过真实 `@modelcontextprotocol/sdk` `Client` 驱动工具枚举与调用，验证全部 8 个 MCP 工具的 JSON Schema 生成与执行闭环。
+ * 1. 全链路 JSON-RPC 协议校验：通过真实 `@modelcontextprotocol/sdk` `Client` 驱动工具枚举与调用，验证MCP 工具的 JSON Schema 生成与执行闭环。
  * 2. 乐观并发读锁与 409 错误透传：验证 `openhuddle_read_room` 自动缓存游标供 `openhuddle_send_message` 消费，并在命中 `409` 时向大模型返回 `isError: true` 及漏读详情。
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -45,8 +45,8 @@ function extractFirstTextBlock(result: Readonly<Record<string, unknown>>): strin
   return first?.type === "text" && typeof first.text === "string" ? first.text : "";
 }
 
-describe("@openhuddle/mcp — Dual-Mode MCP Server & 8 Core Tools", () => {
-  it("registers all 8 core OpenHuddle tools with non-empty JSON Schemas and executes full workflow against mocked fetch", async () => {
+describe("@openhuddle/mcp — Dual-Mode MCP Server", () => {
+  it("registers the OpenHuddle tools with non-empty JSON Schemas and executes full workflow against mocked fetch", async () => {
     const recordedRequests: Array<{
       readonly method: string;
       readonly url: string;
@@ -348,6 +348,10 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server & 8 Core Tools", () => {
         });
       }
 
+      if (url.pathname.endsWith("/review-evidence") && ["GET", "PUT"].includes(method)) {
+        return jsonHttpResponse(200, { ok: true, leaseVersion: 1, patch: "review-patch" });
+      }
+
       if (
         url.pathname === "/api/v1/work-items/wrk_mcp_01/slices/slc_mcp_01/complete" &&
         method === "POST"
@@ -393,6 +397,8 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server & 8 Core Tools", () => {
         "openhuddle_claim_work_slice",
         "openhuddle_update_work_slice",
         "openhuddle_complete_work_slice",
+        "openhuddle_put_review_evidence",
+        "openhuddle_get_review_evidence",
       ]);
 
       // 1. whoami
@@ -530,6 +536,32 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server & 8 Core Tools", () => {
       });
       expect(hbRes.isError).toBeFalsy();
 
+      const diffFiles = [
+        {
+          path: "packages/db/src/schema.ts",
+          additions: 1,
+          deletions: 0,
+          lines: [{ kind: "add", newLine: 1, content: "export const version = 2;" }],
+        },
+      ];
+      const evidenceTarget = { workItemId: "wrk_mcp_01", sliceId: "slc_mcp_01" };
+      expect(
+        (
+          await mcpClient.callTool({
+            name: "openhuddle_put_review_evidence",
+            arguments: { ...evidenceTarget, leaseVersion: 1, patch: "review-patch" },
+          })
+        ).isError,
+      ).toBeFalsy();
+      const reviewEvidence = await mcpClient.callTool({
+        name: "openhuddle_get_review_evidence",
+        arguments: evidenceTarget,
+      });
+      expect(extractFirstTextBlock(reviewEvidence)).toContain("review-patch");
+      expect(
+        recordedRequests.filter((r) => r.url.endsWith("/review-evidence")).map((r) => r.method),
+      ).toEqual(["PUT", "GET"]);
+
       const doneRes = await mcpClient.callTool({
         name: "openhuddle_complete_work_slice",
         arguments: {
@@ -540,8 +572,12 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server & 8 Core Tools", () => {
           changedFiles: ["packages/db/src/schema.ts"],
           diffAdded: 42,
           diffRemoved: 1,
+          diffFiles,
         },
       });
+      expect(
+        recordedRequests.find((request) => request.url.endsWith("/complete"))?.body,
+      ).toMatchObject({ diffFiles });
       expect(doneRes.isError).toBeFalsy();
       expect(extractFirstTextBlock(doneRes)).toContain("verifying");
     } finally {

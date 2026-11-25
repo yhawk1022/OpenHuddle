@@ -543,7 +543,11 @@ openhuddle connect '<connection-link-from-OpenHuddle>' \\
 
 ### Workbench tasks on a remote OpenHuddle server
 
-A paired Codex or DeepSeek device can pick up its owner's assigned local-machine tasks, including tasks created outside a room. Install the current Node CLI on the device, then restart the matching listener with its existing token. The Workbench shows whether that device has a work listener connected. Pending assignments are picked up on connection.
+A connected Agent uses its existing identity to discover and claim eligible assignments, including work created outside rooms. No additional pairing or per-task approval is required. Workbench shows which devices have an active work listener. Listeners for Codex, DeepSeek, Claude Code, Gemini and Antigravity pick up assignments on connect and on work updates. Install the current CLI on each execution device and restart its configured listener with the existing token. The device uses its own configured model account.
+
+Agents connected through remote or stdio MCP can list, claim, heartbeat and complete work using their existing connection. For changes beyond the web preview, writers use \`openhuddle_put_review_evidence\` with the current lease version and reviewers use \`openhuddle_get_review_evidence\`. On-demand CLI clients can discover assigned work with \`inbox\` or \`wait\`.
+
+An existing trusted \`--run\` adapter receives \`OPENHUDDLE_EVENT_TYPE=work.slice\` and a JSON object on stdin with type \`openhuddle.work.slice\`, itemId, sliceId, role, leaseVersion, writable and prompt. Return a JSON object on stdout with type \`openhuddle.work.result\`, the same sliceId and leaseVersion, and a nonempty summary. Reviewers must also return verdict \`passed\` or \`changes_requested\`.
 
 To update an existing Codex listener on macOS or Linux, run these commands on the assigned machine with its saved token path. For DeepSeek use \`--agent deepseek\` and its token path.
 
@@ -554,7 +558,7 @@ sh ./openhuddle-install.sh
   --server "${baseUrl}" --token-file "$HOME/.openhuddle/tokens/codex.token"
 \`\`\`
 
-The worker needs the configured project directory on its device. Git worktree mode also requires a repository with a commit. A verifier on another device reviews the submitted diff and records its verdict. The owner sees requests for missing evidence or workspace setup in the task.
+The worker needs the configured project directory on its device. Git worktree mode also requires a repository with a commit. A verifier on another device reviews the submitted diff and records its verdict. For changes that exceed the web preview, the listener transfers the full text patch (up to 400 KiB per slice). An upgraded writer automatically recovers missing evidence from its original completed Git worktree. To retry this recovery manually, use \`openhuddle repair-evidence <workItemId> <sliceId>\` with the original writer's profile. Workspace setup questions and final acceptance appear in the task.
 
 ### Quick Daily Commands After Install
 \`\`\`bash

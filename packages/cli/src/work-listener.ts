@@ -1,16 +1,17 @@
 import { homedir } from "node:os";
 import type {
-  AgentPlatform,
   CompleteWorkSliceBody,
   OwnedAgentSummaryDto,
   WorkItemDto,
   WorkItemId,
   WorkSliceDto,
+  WorkSliceId,
   WorkspaceDto,
 } from "@openhuddle/protocol";
-import { executeWorkSlice } from "./execute-work-slice.js";
+import { executeWorkSlice, recoverReviewPatch } from "./execute-work-slice.js";
 import { OpenHuddleApiError, type OpenHuddleHttpClient } from "./http-client.js";
 import { scrubSensitiveText } from "./secret-scrubber.js";
+import type { WakeExecutionTarget } from "./sse-listener.js";
 
 const LEASE_MS = 90_000;
 const HEARTBEAT_MS = 20_000;
@@ -19,16 +20,17 @@ const CATCH_UP_MS = 60_000;
 
 interface WorkListenerOptions {
   readonly client: OpenHuddleHttpClient;
-  readonly agent: OwnedAgentSummaryDto;
+  readonly resolveAgent: (signal: AbortSignal) => Promise<OwnedAgentSummaryDto>;
+  readonly runner: WakeExecutionTarget;
   readonly log: (line: string) => void;
   readonly homeDir?: string | undefined;
   readonly execute?: typeof executeWorkSlice;
+  readonly recover?: typeof recoverReviewPatch;
 }
 
 type WorkUpdate = Pick<WorkItemDto, "id" | "stage" | "version">;
 
-export function supportsDeviceWork(serverUrl: string, platform: AgentPlatform): boolean {
-  if (platform !== "codex" && platform !== "deepseek") return false;
+export function supportsDeviceWork(serverUrl: string): boolean {
   // Loopback servers already run the in-process LocalWorkspaceRunner.
   const host = new URL(serverUrl).hostname.toLowerCase();
   return !["localhost", "127.0.0.1", "[::1]"].includes(host);
@@ -43,6 +45,8 @@ export class DeviceWorkListener {
   private readonly lifetime = new AbortController();
   private readonly pendingIds = new Set<WorkItemId>();
   private needsCatchUp = false;
+  private needsEvidenceInbox = false;
+  private readonly pendingEvidence = new Map<WorkSliceId, WorkItemId>();
   private pump: Promise<void> | undefined;
   private pollTimer: ReturnType<typeof setInterval> | undefined;
   private active: { item: WorkUpdate; controller: AbortController } | undefined;
@@ -84,10 +88,21 @@ export class DeviceWorkListener {
       if (event.stage === this.active.item.stage) return;
       this.active.controller.abort(new Error("Work item changed stage"));
     }
+    if (event.stage === "awaiting_answer") {
+      this.needsEvidenceInbox = true;
+      this.schedule();
+    }
     if (event.stage === "working" || event.stage === "verifying") {
       this.pendingIds.add(itemId);
       this.schedule();
     }
+  }
+
+  public enqueueEvidenceRequests(
+    requests: readonly { workItemId: WorkItemId; sliceId: WorkSliceId }[],
+  ): void {
+    for (const request of requests) this.pendingEvidence.set(request.sliceId, request.workItemId);
+    if (requests.length) this.schedule();
   }
 
   public async stop(): Promise<void> {
@@ -106,7 +121,7 @@ export class DeviceWorkListener {
     if (this.pump || this.lifetime.signal.aborted) return;
     this.pump = this.drain().finally(() => {
       this.pump = undefined;
-      if (this.needsCatchUp || this.pendingIds.size) this.schedule();
+      if (this.hasPending()) this.schedule();
     });
   }
 
@@ -114,9 +129,35 @@ export class DeviceWorkListener {
     return AbortSignal.any([parent, AbortSignal.timeout(REQUEST_MS)]);
   }
 
+  private hasPending(): boolean {
+    return (
+      this.needsCatchUp ||
+      this.needsEvidenceInbox ||
+      this.pendingIds.size > 0 ||
+      this.pendingEvidence.size > 0
+    );
+  }
+
   private async drain(): Promise<void> {
-    while (!this.lifetime.signal.aborted && (this.needsCatchUp || this.pendingIds.size)) {
+    while (!this.lifetime.signal.aborted && this.hasPending()) {
       try {
+        if (this.needsEvidenceInbox) {
+          this.needsEvidenceInbox = false;
+          const inbox = await this.options.client.getInbox(0, this.requestSignal());
+          this.enqueueEvidenceRequests(inbox.reviewEvidenceRequests ?? []);
+          continue;
+        }
+        const recovery = this.pendingEvidence.entries().next().value;
+        if (recovery) {
+          const [sliceId, itemId] = recovery;
+          this.pendingEvidence.delete(sliceId);
+          try {
+            await this.recoverEvidence(itemId, sliceId);
+          } catch (err) {
+            this.options.log(`[openhuddle:work:evidence] ${itemId}/${sliceId}: ${diagnostic(err)}`);
+          }
+          continue;
+        }
         const itemId = this.pendingIds.values().next().value;
         let items: WorkItemDto[];
         if (itemId) {
@@ -128,7 +169,7 @@ export class DeviceWorkListener {
           ({ items } = await this.options.client.listClaimableWork(this.requestSignal()));
         }
         if (!items.length) continue;
-        const agent = this.options.agent;
+        const agent = await this.options.resolveAgent(this.requestSignal());
         let workspaces: WorkspaceDto[] | undefined;
         for (const item of items) {
           if (item.ownerUserId !== agent.ownerUserId) continue;
@@ -166,6 +207,48 @@ export class DeviceWorkListener {
     }
   }
 
+  private async recoverEvidence(itemId: WorkItemId, sliceId: WorkSliceId): Promise<void> {
+    const { client } = this.options;
+    const { item } = await client.getWorkItem(itemId, this.requestSignal());
+    if (item.stage !== "awaiting_answer") return;
+    const writer = item.slices.find((slice) => slice.sliceId === sliceId);
+    if (!writer || writer.status !== "ready" || writer.leaseRole !== "write") return;
+    const agent = await this.options.resolveAgent(this.requestSignal());
+    if (
+      agent.ownerUserId !== item.ownerUserId ||
+      writer.leaseOwnerAgentId !== agent.id ||
+      writer.assignedAgent.agentId !== agent.id
+    )
+      return;
+    const { workspaces } = await client.listWorkspaces(this.requestSignal());
+    const workspace = workspaces.find((ws) => ws.id === item.workspaceId);
+    if (
+      !workspace?.isOwnedByViewer ||
+      workspace.ownerUserId !== agent.ownerUserId ||
+      workspace.hostMode !== "local_machine" ||
+      workspace.sandboxMode !== "worktree_pool"
+    )
+      return;
+    const patch = await (this.options.recover ?? recoverReviewPatch)({
+      item,
+      slice: writer,
+      agent,
+      workspace,
+      runner: this.options.runner,
+      homeDir: this.options.homeDir ?? homedir(),
+      signal: this.lifetime.signal,
+    });
+    await client.putReviewEvidence(
+      itemId,
+      sliceId,
+      { leaseVersion: writer.leaseVersion, patch },
+      this.requestSignal(),
+    );
+    this.options.log(
+      `[openhuddle:work:evidence] recovered ${itemId}/${sliceId} v${writer.leaseVersion}`,
+    );
+  }
+
   private async runSlice(
     item: WorkItemDto,
     slice: WorkSliceDto,
@@ -179,7 +262,7 @@ export class DeviceWorkListener {
       {
         expectedLeaseVersion: slice.leaseVersion,
         leaseTtlMs: LEASE_MS,
-        agentEnvironment: `device:${agent.platform}`,
+        agentEnvironment: `device:${this.options.runner.kind === "preset" ? this.options.runner.preset : "custom"}`,
       },
       this.requestSignal(),
     );
@@ -225,6 +308,38 @@ export class DeviceWorkListener {
           slice: claimedSlice,
           workspace,
           agent,
+          runner: this.options.runner,
+          saveReviewEvidence: async (patch) => {
+            await client.putReviewEvidence(
+              item.id,
+              slice.sliceId,
+              { leaseVersion, patch },
+              this.requestSignal(signal),
+            );
+          },
+          loadReviewEvidence: async (writer) => {
+            if (
+              writer.workItemId !== item.id ||
+              writer.leaseRole === "verify" ||
+              writer.status !== "ready"
+            ) {
+              throw new Error("只可读取本工单已完成执行分片的复核材料。");
+            }
+            const evidence = await client.getReviewEvidence(
+              item.id,
+              writer.sliceId,
+              this.requestSignal(signal),
+            );
+            if (
+              evidence.leaseVersion !== writer.leaseVersion ||
+              typeof evidence.patch !== "string"
+            ) {
+              throw new Error(
+                `分片 ${writer.sliceId} 的复核材料与执行租约 v${writer.leaseVersion} 不匹配。`,
+              );
+            }
+            return evidence.patch;
+          },
           homeDir: this.options.homeDir ?? homedir(),
           signal,
         });

@@ -543,7 +543,17 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
         if (url.pathname === "/api/v1/inbox") {
           return jsonResponse(200, {
             ok: true,
-            totalUnreadMessages: 2,
+            totalUnreadMessages: 0,
+            workAssignments: [
+              {
+                workItemId: "wrk_pending",
+                sliceId: "slc_1",
+                workspaceId: "wsp_1",
+                title: "Queue test",
+                leaseRole: "write",
+                leaseVersion: 0,
+              },
+            ],
             rooms: [],
             serverTimeIso: "2026-11-12T06:15:00.000Z",
           });
@@ -663,10 +673,25 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
         ),
       ).toBe(0);
 
+      const waitOutput: string[] = [];
+      expect(
+        await runCli(["wait", "--json", "--token-file", tokenPath], {
+          homeDir: tempHome,
+          fetchImpl: mockApiFetch,
+          stdout: (line) => waitOutput.push(line),
+        }),
+      ).toBe(0);
+      expect(JSON.parse(waitOutput.join(""))).toMatchObject({
+        woken: true,
+        reason: "work.assigned",
+        rooms: [],
+        workAssignments: [{ sliceId: "slc_1" }],
+      });
       expect(capturedCalls).toEqual([
         "GET /api/v1/inbox?waitSec=5",
         "POST /api/v1/rooms/rom_1/proposals",
         "POST /api/v1/proposals/prp_001/votes",
+        "GET /api/v1/inbox?waitSec=0",
       ]);
       expect(jsonOutputs).toHaveLength(3);
     });

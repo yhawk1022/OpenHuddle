@@ -42,6 +42,7 @@ export {
   usersTable,
   workItemsTable,
   workSlicesTable,
+  workReviewEvidenceTable,
   workspaceRoomBindingsTable,
   workspacesTable,
 } from "./schema.js";

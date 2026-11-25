@@ -63,6 +63,8 @@ export {
 export {
   InboxResponseSchema,
   InboxRoomSummarySchema,
+  type InboxWorkAssignment,
+  InboxWorkAssignmentSchema,
   SseEventSchema,
   WakeReasonSchema,
   type InboxResponse,
@@ -435,6 +437,7 @@ export {
   WorkDiffFileDtoSchema,
   WorkDiffLineDtoSchema,
   WorkItemDtoSchema,
+  WorkMcpTools,
   WorkReviewSummaryDtoSchema,
   WorkSliceDtoSchema,
   WorkSliceProvenanceSchema,
@@ -469,6 +472,7 @@ export {
   type HeartbeatWorkSliceBody,
   type ListWorkItemsQuery,
   type ListWorkItemsResponse,
+  type ListWorkMcpQuery,
   type ListWorkspacesResponse,
   type RaiseWorkAttentionBody,
   type RoomWorkspaceBindingDto,
@@ -501,3 +505,11 @@ export {
   type WorkspaceRootInput,
   type WorkspaceSandboxMode,
 } from "./workspaces.js";
+
+export {
+  MAX_REVIEW_EVIDENCE_BYTES,
+  PutReviewEvidenceBodySchema,
+  ReviewEvidenceResponseSchema,
+  type PutReviewEvidenceBody,
+  type ReviewEvidenceResponse,
+} from "./review-evidence.js";

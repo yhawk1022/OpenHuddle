@@ -229,6 +229,7 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
   });
   const eventsService = new EventsService({
     roomsRepo,
+    workspacesRepo,
     messagesRepo,
     realtimeBus: deps.realtimeBus,
   });

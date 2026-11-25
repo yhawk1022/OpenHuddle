@@ -1308,6 +1308,7 @@ export async function spawnWakeCommandProcess(
       env: {
         ...process.env,
         ...wakeEnv,
+        OPENHUDDLE_EVENT_TYPE: "wake",
       },
     });
 
@@ -1710,13 +1711,16 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     log(`[openhuddle:wake:error] room=${roomId} ${detail}`);
   });
 
-  const workPreset =
-    options.target.kind === "preset" &&
-    options.onWake === undefined &&
-    supportsDeviceWork(options.serverUrl, options.target.preset)
-      ? options.target.preset
-      : undefined;
-  let workListener: DeviceWorkListener | undefined;
+  const consumeWork = options.onWake === undefined && supportsDeviceWork(options.serverUrl);
+  const workListener = consumeWork
+    ? new DeviceWorkListener({
+        client,
+        log,
+        runner: options.target,
+        homeDir: options.homeDir,
+        resolveAgent: async (signal) => (await resolveSelfIdentity(signal)).agent,
+      })
+    : undefined;
   const pendingCatchUps = new Set<Promise<void>>();
   const triggerInitialInboxCatchUp = (): void => {
     if (options.onWake !== undefined || options.catchUpInboxOnConnect === false) {
@@ -1725,6 +1729,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     const task = (async (): Promise<void> => {
       try {
         const inbox = await client.getInbox(0);
+        workListener?.enqueueEvidenceRequests(inbox.reviewEvidenceRequests ?? []);
         for (const room of inbox.rooms) {
           if (
             room.unreadCount > 0 &&
@@ -1772,14 +1777,6 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     };
     resetIdleTimer();
     try {
-      if (workPreset && !workListener) {
-        const { agent } = await resolveSelfIdentity(
-          AbortSignal.any([connection.signal, AbortSignal.timeout(10_000)]),
-        );
-        if (agent.platform === workPreset) {
-          workListener = new DeviceWorkListener({ client, log, agent, homeDir: options.homeDir });
-        }
-      }
       const requestInit: RequestInit = {
         method: "GET",
         headers: {
@@ -1800,11 +1797,11 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       resetIdleTimer();
       log(`[openhuddle:listen] Connected to ${eventsUrl}`);
       triggerInitialInboxCatchUp();
-      workListener?.connected();
 
       for await (const frame of readSseFrames(response.body, connection.signal)) {
         reconnectAttempt = 0;
         resetIdleTimer();
+        if (frame.event === "connected") workListener?.connected();
         if (frame.event === "work.updated") workListener?.updated(frame.data);
         const wake = parseWakeEventFrame(frame);
         if (wake !== undefined) {

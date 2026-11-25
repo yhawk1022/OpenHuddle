@@ -10,8 +10,12 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { WorkDiffFileDto, WorkDiffLineDto } from "@openhuddle/protocol";
-import { scrubWorkText } from "./secret-redact.js";
+import {
+  MAX_REVIEW_EVIDENCE_BYTES,
+  type WorkDiffFileDto,
+  type WorkDiffLineDto,
+} from "@openhuddle/protocol";
+import { scrubReviewPatch, scrubWorkText } from "./secret-redact.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,10 +24,30 @@ const MAX_LINES_PER_FILE = 450;
 const MAX_UNTRACKED_FILE_BYTES = 128 * 1024;
 
 export interface WorkingTreeDiffSnapshot {
+  readonly reviewPatch?: string | undefined;
   readonly changedFiles: readonly string[];
   readonly diffAdded: number;
   readonly diffRemoved: number;
   readonly diffFiles: readonly WorkDiffFileDto[];
+}
+
+/** A web preview can omit files, lines or the tail of a long line. */
+export function hasCompleteDiffPreview(
+  paths: readonly string[],
+  files: readonly WorkDiffFileDto[],
+): boolean {
+  return (
+    paths.length > 0 &&
+    paths.every((path) => {
+      const diff = files.find((f) => f.path === path);
+      return (
+        diff?.lines.some((l) => l.kind === "hunk") &&
+        diff.lines.filter((l) => l.kind === "add").length === diff.additions &&
+        diff.lines.filter((l) => l.kind === "del").length === diff.deletions &&
+        diff.lines.every((l) => l.content.length < 4000)
+      );
+    })
+  );
 }
 
 /**
@@ -155,7 +179,10 @@ export async function isGitWorkingTree(dirPath: string): Promise<boolean> {
 /**
  * 采集指定 Git 工作树相对于 `HEAD` 的全部已修改与新增文件 Diff 快照。
  */
-export async function collectWorkingTreeDiff(workingDir: string): Promise<WorkingTreeDiffSnapshot> {
+export async function collectWorkingTreeDiff(
+  workingDir: string,
+  includeReviewPatch = false,
+): Promise<WorkingTreeDiffSnapshot> {
   if (!(await isGitWorkingTree(workingDir))) {
     return { changedFiles: [], diffAdded: 0, diffRemoved: 0, diffFiles: [] };
   }
@@ -237,7 +264,7 @@ export async function collectWorkingTreeDiff(workingDir: string): Promise<Workin
     }
   }
 
-  for (const relPath of untrackedPaths.slice(0, 15)) {
+  for (const relPath of untrackedPaths.slice(0, includeReviewPatch ? 200 : 15)) {
     const absFile = path.resolve(workingDir, relPath);
     try {
       const fileStat = await stat(absFile);
@@ -271,7 +298,11 @@ export async function collectWorkingTreeDiff(workingDir: string): Promise<Workin
         typeof err === "object" && err !== null && "stdout" in err
           ? String((err as { readonly stdout?: unknown }).stdout ?? "")
           : "";
-      if (out.length > 0 && !out.includes("Binary files ")) {
+      if (
+        (err as { code?: unknown })?.code === 1 &&
+        out.length > 0 &&
+        !out.includes("Binary files ")
+      ) {
         combinedRawDiff += `\n${out}`;
       }
     }
@@ -282,7 +313,19 @@ export async function collectWorkingTreeDiff(workingDir: string): Promise<Workin
   const diffRemoved = diffFiles.reduce((acc, f) => acc + f.deletions, 0);
   const changedFiles = [...new Set(allStatusPaths)].slice(0, 200);
 
+  let reviewPatch: string | undefined;
+  if (
+    includeReviewPatch &&
+    allStatusPaths.length <= 200 &&
+    Buffer.byteLength(combinedRawDiff) <= MAX_REVIEW_EVIDENCE_BYTES &&
+    !hasCompleteDiffPreview(changedFiles, diffFiles)
+  ) {
+    const paths = new Set(parseUnifiedGitDiff(combinedRawDiff, 200, 0).map((file) => file.path));
+    if (changedFiles.every((p) => paths.has(p)))
+      reviewPatch = scrubReviewPatch(combinedRawDiff.trimStart());
+  }
   return {
+    ...(reviewPatch ? { reviewPatch } : {}),
     changedFiles,
     diffAdded,
     diffRemoved,
@@ -366,6 +409,8 @@ function buildTextFileDiffDto(
   filePath: string,
   beforeText: string | undefined,
   afterText: string | undefined,
+  maxLines = MAX_LINES_PER_FILE,
+  maxLineLength = 4_000,
 ): WorkDiffFileDto | undefined {
   if (beforeText === afterText) {
     return undefined;
@@ -416,12 +461,12 @@ function buildTextFileDiffDto(
     },
   ];
 
-  for (let i = ctxStart; i < prefixLen && lines.length < MAX_LINES_PER_FILE; i += 1) {
+  for (let i = ctxStart; i < prefixLen && lines.length < maxLines; i += 1) {
     lines.push({
       kind: "context",
       oldLine: i + 1,
       newLine: i + 1,
-      content: scrubWorkText(oldLines[i] ?? "").slice(0, 4_000),
+      content: scrubWorkText(oldLines[i] ?? "").slice(0, maxLineLength),
     });
   }
 
@@ -430,33 +475,33 @@ function buildTextFileDiffDto(
 
   for (let i = prefixLen; i < oldSuffix; i += 1) {
     deletions += 1;
-    if (lines.length < MAX_LINES_PER_FILE) {
+    if (lines.length < maxLines) {
       lines.push({
         kind: "del",
         oldLine: i + 1,
-        content: scrubWorkText(oldLines[i] ?? "").slice(0, 4_000),
+        content: scrubWorkText(oldLines[i] ?? "").slice(0, maxLineLength),
       });
     }
   }
 
   for (let i = prefixLen; i < newSuffix; i += 1) {
     additions += 1;
-    if (lines.length < MAX_LINES_PER_FILE) {
+    if (lines.length < maxLines) {
       lines.push({
         kind: "add",
         newLine: i + 1,
-        content: scrubWorkText(newLines[i] ?? "").slice(0, 4_000),
+        content: scrubWorkText(newLines[i] ?? "").slice(0, maxLineLength),
       });
     }
   }
 
   const trailingLen = Math.min(oldCtxEnd - oldSuffix, newCtxEnd - newSuffix);
-  for (let offset = 0; offset < trailingLen && lines.length < MAX_LINES_PER_FILE; offset += 1) {
+  for (let offset = 0; offset < trailingLen && lines.length < maxLines; offset += 1) {
     lines.push({
       kind: "context",
       oldLine: oldSuffix + offset + 1,
       newLine: newSuffix + offset + 1,
-      content: scrubWorkText(newLines[newSuffix + offset] ?? "").slice(0, 4_000),
+      content: scrubWorkText(newLines[newSuffix + offset] ?? "").slice(0, maxLineLength),
     });
   }
 
@@ -474,24 +519,50 @@ function buildTextFileDiffDto(
 export function diffPlainFolderSnapshots(
   before: PlainFolderSnapshot,
   after: PlainFolderSnapshot,
+  includeReviewPatch = false,
 ): WorkingTreeDiffSnapshot {
   const allPaths = [...new Set([...before.keys(), ...after.keys()])].sort((a, b) =>
     a.localeCompare(b),
   );
   const diffFiles: WorkDiffFileDto[] = [];
 
-  for (const relPath of allPaths) {
-    if (diffFiles.length >= MAX_DIFF_FILES) {
-      break;
-    }
+  const changedFiles = allPaths.filter((p) => before.get(p) !== after.get(p));
+  for (const relPath of changedFiles.slice(0, MAX_DIFF_FILES)) {
     const dto = buildTextFileDiffDto(relPath, before.get(relPath), after.get(relPath));
-    if (dto !== undefined) {
-      diffFiles.push(dto);
+    if (dto) diffFiles.push(dto);
+  }
+  const patchParts: string[] = [];
+  if (includeReviewPatch && !hasCompleteDiffPreview(changedFiles, diffFiles)) {
+    let bytes = 0;
+    for (const file of changedFiles) {
+      const full = buildTextFileDiffDto(
+        file,
+        before.get(file),
+        after.get(file),
+        Number.POSITIVE_INFINITY,
+        Number.POSITIVE_INFINITY,
+      );
+      if (!full) continue;
+      const text = [
+        `diff --git a/${file} b/${file}`,
+        before.has(file) ? `--- a/${file}` : "--- /dev/null",
+        after.has(file) ? `+++ b/${file}` : "+++ /dev/null",
+        ...full.lines.map(
+          (l) => ({ hunk: "", add: "+", del: "-", context: " " })[l.kind] + l.content,
+        ),
+        "",
+      ].join("\n");
+      bytes += Buffer.byteLength(text);
+      if (bytes > MAX_REVIEW_EVIDENCE_BYTES) {
+        patchParts.length = 0;
+        break;
+      }
+      patchParts.push(text);
     }
   }
-
   return {
-    changedFiles: diffFiles.map((f) => f.path),
+    ...(patchParts.length ? { reviewPatch: scrubReviewPatch(patchParts.join("")) } : {}),
+    changedFiles,
     diffAdded: diffFiles.reduce((sum, f) => sum + f.additions, 0),
     diffRemoved: diffFiles.reduce((sum, f) => sum + f.deletions, 0),
     diffFiles,

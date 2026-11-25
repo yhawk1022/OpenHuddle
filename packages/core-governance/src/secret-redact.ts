@@ -36,6 +36,27 @@ export function scrubWorkText(input: string): string {
   return out;
 }
 
+/** Redact patch payloads without collapsing hunk lines or changing their diff prefixes. */
+export function scrubReviewPatch(patch: string): string {
+  let insidePrivateKey = false;
+  return patch
+    .split("\n")
+    .map((line) => {
+      if (line.startsWith("diff --git ")) insidePrivateKey = false;
+      if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(line)) insidePrivateKey = true;
+      if (insidePrivateKey) {
+        if (/-----END [A-Z0-9 ]*PRIVATE KEY-----/.test(line)) insidePrivateKey = false;
+        const prefix = /^[ +-]/.test(line) ? line[0] : "";
+        return `${prefix}[REDACTED_PRIVATE_KEY]`;
+      }
+      return scrubWorkText(line).replace(
+        /^([ +-][ \t]*(?:export[ \t]+)?(?:[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|PRIVATE_KEY)|DATABASE_URL)[ \t]*=[ \t]*).+$/i,
+        "$1[REDACTED]",
+      );
+    })
+    .join("\n");
+}
+
 /**
  * 净化分片上报的仓外溯源回执字段。
  */

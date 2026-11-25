@@ -20,7 +20,10 @@ import {
   ListWorkItemsQuerySchema,
   ListWorkItemsResponseSchema,
   ListWorkspacesResponseSchema,
+  MAX_REVIEW_EVIDENCE_BYTES,
+  PutReviewEvidenceBodySchema,
   RaiseWorkAttentionBodySchema,
+  ReviewEvidenceResponseSchema,
   RoomIdSchema,
   RoomWorkspacesResponseSchema,
   SingleWorkItemResponseSchema,
@@ -31,7 +34,9 @@ import {
   WorkSliceIdSchema,
   WorkspaceIdSchema,
 } from "@openhuddle/protocol";
+import { bodyLimit } from "hono/body-limit";
 import { createRequireAuthMiddleware } from "../../infra/auth-middleware.js";
+import { AppError } from "../../infra/errors.js";
 import { createOpenApiRouter } from "../../infra/openapi-router.js";
 import type { AuthService } from "../auth/auth.service.js";
 import type { WorkspacesService } from "./workspaces.service.js";
@@ -333,6 +338,45 @@ const raiseWorkAttentionRoute = createRoute({
   },
 });
 
+const evidenceRoute = {
+  path: "/work-items/{workItemId}/slices/{sliceId}/review-evidence",
+  responses: {
+    200: {
+      description: "Current full review evidence",
+      content: { "application/json": { schema: ReviewEvidenceResponseSchema } },
+    },
+  },
+} as const;
+const getReviewEvidenceRoute = createRoute({
+  ...evidenceRoute,
+  tags: ["Collaborative Work"],
+  method: "get",
+  request: { params: WorkSliceParamsSchema },
+});
+const putReviewEvidenceRoute = createRoute({
+  ...evidenceRoute,
+  tags: ["Collaborative Work"],
+  method: "put",
+  // Each input byte may be encoded as a six-byte JSON escape.
+  middleware: bodyLimit({
+    maxSize: MAX_REVIEW_EVIDENCE_BYTES * 6 + 1024,
+    onError: () => {
+      throw new AppError({
+        code: "VALIDATION_ERROR",
+        statusCode: 413,
+        message: "Review evidence request exceeds the upload limit.",
+      });
+    },
+  }),
+  request: {
+    params: WorkSliceParamsSchema,
+    body: {
+      required: true,
+      content: { "application/json": { schema: PutReviewEvidenceBodySchema } },
+    },
+  },
+});
+
 const completeWorkSliceRoute = createRoute({
   method: "post",
   path: "/work-items/{workItemId}/slices/{sliceId}/complete",
@@ -572,6 +616,27 @@ export function createWorkspacesRouter(deps: {
       c.req.valid("json"),
     );
     return c.json({ ok: true as const, item }, 200);
+  });
+
+  router.openapi(getReviewEvidenceRoute, async (c) => {
+    const { workItemId, sliceId } = c.req.valid("param");
+    return c.json(
+      await deps.workspacesService.getReviewEvidence(c.get("caller"), workItemId, sliceId),
+      200,
+    );
+  });
+
+  router.openapi(putReviewEvidenceRoute, async (c) => {
+    const { workItemId, sliceId } = c.req.valid("param");
+    return c.json(
+      await deps.workspacesService.putReviewEvidence(
+        c.get("caller"),
+        workItemId,
+        sliceId,
+        c.req.valid("json"),
+      ),
+      200,
+    );
   });
 
   router.openapi(completeWorkSliceRoute, async (c) => {

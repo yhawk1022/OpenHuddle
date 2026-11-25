@@ -16,6 +16,7 @@ import {
   messagesTable,
   roomsTable,
   workItemsTable,
+  workReviewEvidenceTable,
   workSlicesTable,
   workspaceRoomBindingsTable,
   workspacesTable,
@@ -25,6 +26,7 @@ import {
   type AgentId,
   AgentPlatformSchema,
   type AuthenticatedCaller,
+  type InboxWorkAssignment,
   type MessageSeq,
   type MessageType,
   type OperationKey,
@@ -1072,6 +1074,37 @@ export class WorkspacesRepository {
     );
   }
 
+  public async findReviewEvidence(
+    sliceId: WorkSliceId,
+    leaseVersion: number,
+  ): Promise<string | undefined> {
+    const [row] = await this.db
+      .select({ patch: workReviewEvidenceTable.patch })
+      .from(workReviewEvidenceTable)
+      .where(
+        and(
+          eq(workReviewEvidenceTable.sliceId, sliceId),
+          eq(workReviewEvidenceTable.leaseVersion, leaseVersion),
+        ),
+      );
+    return row?.patch;
+  }
+
+  /** Caller holds the work-item row lock and validated the slice and current lease. */
+  public async storeReviewEvidence(
+    sliceId: WorkSliceId,
+    leaseVersion: number,
+    patch: string,
+  ): Promise<void> {
+    await this.db
+      .insert(workReviewEvidenceTable)
+      .values({ sliceId, leaseVersion, patch })
+      .onConflictDoUpdate({
+        target: workReviewEvidenceTable.sliceId,
+        set: { leaseVersion, patch },
+      });
+  }
+
   public async findHydratedWorkItemByOwnerOpKey(
     ownerUserId: UserId,
     opKey: OperationKey,
@@ -1123,6 +1156,68 @@ export class WorkspacesRepository {
     return this.listFilteredWorkItems(visibilityExpr, params);
   }
 
+  /** A small projection keeps inbox polling independent of the size of a work item's trace/diff. */
+  public async listInboxWorkAssignments(
+    agent: Extract<AuthenticatedCaller, { kind: "agent" }>,
+  ): Promise<InboxWorkAssignment[]> {
+    const data = await this.db.execute(sql`
+      SELECT wi.id AS "workItemId", s.id AS "sliceId", wi.workspace_id AS "workspaceId",
+             wi.room_id AS "roomId", s.title, s.lease_role AS "leaseRole", s.lease_version AS "leaseVersion"
+      FROM work_slices s JOIN work_items wi ON wi.id = s.work_item_id
+      JOIN workspaces w ON w.id = wi.workspace_id
+      WHERE s.assigned_agent_id = ${agent.agentId} AND s.status = 'waiting'
+        AND ${this.workVisibleToAgent(agent)} AND ${this.sliceReadyForStage()}
+      ORDER BY wi.created_at ASC, wi.id ASC, s.order_index ASC LIMIT 20
+    `);
+    const rows = extractSqlRows<Omit<InboxWorkAssignment, "roomId"> & { roomId: RoomId | null }>(
+      data,
+    );
+    return rows.map(({ roomId, ...row }) => ({ ...row, ...(roomId ? { roomId } : {}) }));
+  }
+
+  /** Only the original writer can recover evidence from its previously completed local worktree. */
+  public async listReviewEvidenceRequests(agent: Extract<AuthenticatedCaller, { kind: "agent" }>) {
+    const data = await this.db.execute(sql`
+      SELECT wi.id AS "workItemId", s.id AS "sliceId"
+      FROM work_items wi JOIN workspaces w ON w.id = wi.workspace_id
+      JOIN work_slices s ON s.work_item_id = wi.id
+      JOIN work_slices v ON v.work_item_id = wi.id AND v.id = (wi.attention_json->>'sliceId')
+      WHERE wi.stage = 'awaiting_answer' AND wi.attention_json->>'answeredAtMs' IS NULL
+        AND wi.owner_user_id = ${agent.ownerUserId} AND w.owner_user_id = ${agent.ownerUserId}
+        AND w.host_mode = 'local_machine' AND w.sandbox_mode = 'worktree_pool'
+        AND s.lease_role = 'write' AND s.status = 'ready' AND s.lease_version > 0
+        AND s.assigned_agent_id = ${agent.agentId} AND s.lease_owner_agent_id = ${agent.agentId}
+        AND v.lease_role = 'verify' AND v.status = 'waiting'
+        AND v.lease_owner_agent_id = (wi.attention_json->>'askedByAgentId')
+        AND (wi.room_id IS NULL OR EXISTS (SELECT 1 FROM room_members rm
+          WHERE rm.room_id = wi.room_id AND rm.agent_id = ${agent.agentId}))
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(s.changed_files_json) files(path)
+          WHERE (wi.attention_json->>'question') =
+            ('设备执行失败：文件 ' || files.path || ' 的变更证据不完整，请在有完整工作树的设备上复核。'))
+        AND NOT EXISTS (SELECT 1 FROM work_review_evidence e
+          WHERE e.slice_id = s.id AND e.lease_version = s.lease_version)
+      ORDER BY wi.updated_at ASC, s.id ASC LIMIT 20
+    `);
+    return [...extractSqlRows<{ workItemId: WorkItemId; sliceId: WorkSliceId }>(data)];
+  }
+
+  private workVisibleToAgent(agent: { agentId: AgentId; ownerUserId: UserId }) {
+    return sql`wi.stage IN ('working', 'verifying') AND wi.tier <> 'chat_only'
+      AND (wi.room_id IS NULL OR EXISTS (
+        SELECT 1 FROM room_members rm WHERE rm.room_id = wi.room_id AND rm.agent_id = ${agent.agentId}
+      ))
+      AND (w.owner_user_id = ${agent.ownerUserId} OR (
+        w.host_mode = 'shared_container' AND w.allow_room_collaborators
+        AND wi.room_id IS NOT NULL AND wi.tier <> 'full_owner_delegate'
+      ))`;
+  }
+
+  private sliceReadyForStage() {
+    return sql`(s.lease_role = 'verify') = (wi.stage = 'verifying')
+          AND (s.lease_role <> 'write' OR w.sandbox_mode <> 'read_only')
+          AND s.attempt_count < ${MAX_SLICE_ATTEMPTS}`;
+  }
+
   private listFilteredWorkItems(base: ReturnType<typeof sql>, options: WorkListOptions = {}) {
     const stage = options.stage ? sql`AND wi.stage = ${options.stage}` : sql``;
     const agent = options.claimableBy;
@@ -1130,19 +1225,9 @@ export class WorkspacesRepository {
 
     // Apply dispatch eligibility before LIMIT so other workers' newer tasks cannot hide this queue.
     const where = sql`${base} ${stage}
-      AND wi.stage IN ('working', 'verifying') AND wi.tier <> 'chat_only'
-      AND (wi.room_id IS NULL OR EXISTS (
-        SELECT 1 FROM room_members rm WHERE rm.room_id = wi.room_id AND rm.agent_id = ${agent.agentId}
-      ))
-      AND (w.owner_user_id = ${agent.ownerUserId} OR (
-        w.host_mode = 'shared_container' AND w.allow_room_collaborators
-        AND wi.room_id IS NOT NULL AND wi.tier <> 'full_owner_delegate'
-      ))
+      AND ${this.workVisibleToAgent(agent)}
       AND EXISTS (
-        SELECT 1 FROM work_slices s WHERE s.work_item_id = wi.id
-          AND (s.lease_role = 'verify') = (wi.stage = 'verifying')
-          AND (s.lease_role <> 'write' OR w.sandbox_mode <> 'read_only')
-          AND s.attempt_count < ${MAX_SLICE_ATTEMPTS}
+        SELECT 1 FROM work_slices s WHERE s.work_item_id = wi.id AND ${this.sliceReadyForStage()}
           AND (
             (s.assigned_agent_id = ${agent.agentId} AND s.status = 'waiting')
             OR (s.status IN ('running', 'verifying')

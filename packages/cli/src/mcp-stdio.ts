@@ -4,7 +4,7 @@
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 单文件零依赖可分发性：仅基于 Node.js 原生流与 `OpenHuddleHttpClient` 实现标准 MCP 协议（`2024-11-05` / `2025-03-26` 行分隔 JSON-RPC 2.0），确保单文件 `openhuddle.mjs` 体积轻量且无需 `npm install` 即可挂载至 Cursor、Claude Desktop、Antigravity 等宿主。
- * 2. 与 `@openhuddle/mcp` 100% 工具名与契约同构：完整暴露 8 个核心协作工具，并在本地自动维护房间已读游标 `lastReadSeq`。
+ * 2. 与 `@openhuddle/mcp` 100% 工具名与契约同构：暴露聊天与工单协作工具，并在本地自动维护房间已读游标 `lastReadSeq`。
  * 3. `stdout` 严格纯净性：所有协议外诊断仅允许写往 `stderr`，`stdout` 仅输出合法的单行 JSON-RPC 响应帧。
  */
 import { randomUUID } from "node:crypto";
@@ -21,6 +21,12 @@ import type {
   ReadCursorSeq,
   RoomId,
 } from "@openhuddle/protocol";
+import {
+  HeartbeatWorkSliceBodySchema,
+  RaiseWorkAttentionBodySchema,
+  WorkMcpTools,
+} from "@openhuddle/protocol";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { type OpenHuddleHttpClient, formatOpenHuddleError } from "./http-client.js";
 import { getRoomLastReadSeq, updateRoomLastReadSeq } from "./token-store.js";
 
@@ -204,7 +210,16 @@ const MCP_TOOLS_DEFINITION = [
       required: ["proposalId", "stance", "rationale"],
     },
   },
+  ...Object.entries(WorkMcpTools).map(([name, { description, input }]) => ({
+    name,
+    description,
+    inputSchema: zodToJsonSchema(input, { $refStrategy: "none" }),
+  })),
 ] as const;
+
+function workToolResult(data: unknown) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+}
 
 function isJsonRpcMessage(value: unknown): value is JsonRpcIncomingMessage {
   if (typeof value !== "object" || value === null) {
@@ -392,6 +407,63 @@ export async function runCliMcpStdioServer(options: Readonly<CliMcpStdioOptions>
           };
           const voted = await options.client.voteProposal(proposalId, voteBody);
           return { content: [{ type: "text", text: JSON.stringify(voted, null, 2) }] };
+        }
+        case "openhuddle_list_workspaces": {
+          const { roomId } = WorkMcpTools[toolName].input.parse(args);
+          return workToolResult(
+            roomId
+              ? await options.client.listRoomWorkspaces(roomId)
+              : await options.client.listWorkspaces(),
+          );
+        }
+        case "openhuddle_list_work": {
+          return workToolResult(
+            await options.client.listWorkItems(WorkMcpTools[toolName].input.parse(args)),
+          );
+        }
+        case "openhuddle_claim_work_slice": {
+          const { workItemId, sliceId, ...body } = WorkMcpTools[toolName].input.parse(args);
+          return workToolResult(await options.client.claimWorkSlice(workItemId, sliceId, body));
+        }
+        case "openhuddle_update_work_slice": {
+          const { workItemId, sliceId, action, ...body } = WorkMcpTools[toolName].input.parse(args);
+          if (action === "raise_attention") {
+            return workToolResult(
+              await options.client.raiseWorkAttention(
+                workItemId,
+                sliceId,
+                RaiseWorkAttentionBodySchema.parse(body),
+              ),
+            );
+          }
+          return workToolResult(
+            await options.client.renewWorkSlice(
+              workItemId,
+              sliceId,
+              HeartbeatWorkSliceBodySchema.parse(body),
+            ),
+          );
+        }
+        case "openhuddle_complete_work_slice": {
+          const { workItemId, sliceId, ...body } = WorkMcpTools[toolName].input.parse(args);
+          return workToolResult(await options.client.completeWorkSlice(workItemId, sliceId, body));
+        }
+        case "openhuddle_put_review_evidence": {
+          const { workItemId, sliceId, ...body } = WorkMcpTools[toolName].input.parse(args);
+          return workToolResult(
+            await options.client.putReviewEvidence(
+              workItemId,
+              sliceId,
+              body,
+              AbortSignal.timeout(30000),
+            ),
+          );
+        }
+        case "openhuddle_get_review_evidence": {
+          const { workItemId, sliceId } = WorkMcpTools[toolName].input.parse(args);
+          return workToolResult(
+            await options.client.getReviewEvidence(workItemId, sliceId, AbortSignal.timeout(30000)),
+          );
         }
         default:
           return {

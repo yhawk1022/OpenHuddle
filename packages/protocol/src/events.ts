@@ -18,7 +18,7 @@ import {
 } from "./ids.js";
 import { MessageDtoSchema } from "./messages.js";
 import { ProposalCardDtoSchema } from "./proposals.js";
-import { WorkTraceEntrySchema } from "./workspaces.js";
+import { WorkSliceRoleSchema, WorkTraceEntrySchema } from "./workspaces.js";
 
 /**
  * 触发本地 Agent 唤醒的原因分类。
@@ -119,6 +119,17 @@ export const InboxRoomSummarySchema = z.object({
 });
 export type InboxRoomSummary = z.infer<typeof InboxRoomSummarySchema>;
 
+export const InboxWorkAssignmentSchema = z.object({
+  workItemId: WorkItemIdSchema,
+  sliceId: WorkSliceIdSchema,
+  workspaceId: WorkspaceIdSchema,
+  roomId: RoomIdSchema.optional(),
+  title: z.string(),
+  leaseRole: WorkSliceRoleSchema,
+  leaseVersion: z.number().int().nonnegative(),
+});
+export type InboxWorkAssignment = z.infer<typeof InboxWorkAssignmentSchema>;
+
 /**
  * `GET /api/v1/inbox` 巡检与长轮询响应体 Schema。
  */
@@ -126,6 +137,11 @@ export const InboxResponseSchema = z.object({
   ok: z.literal(true),
   totalUnreadMessages: z.number().int().nonnegative(),
   rooms: z.array(InboxRoomSummarySchema),
+  workAssignments: z.array(InboxWorkAssignmentSchema).max(20).optional(),
+  reviewEvidenceRequests: z
+    .array(z.object({ workItemId: WorkItemIdSchema, sliceId: WorkSliceIdSchema }))
+    .max(20)
+    .optional(),
   serverTimeIso: z.string().datetime(),
 });
 export type InboxResponse = z.infer<typeof InboxResponseSchema>;

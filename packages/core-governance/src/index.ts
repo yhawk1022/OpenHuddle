@@ -12,7 +12,7 @@ export {
   type PreSendPolicyDecision,
 } from "./state-machine.js";
 
-export { scrubWorkProvenance, scrubWorkText } from "./secret-redact.js";
+export { scrubReviewPatch, scrubWorkProvenance, scrubWorkText } from "./secret-redact.js";
 
 export {
   DEFAULT_SLICE_LEASE_TTL_MS,
