@@ -41,6 +41,7 @@ import {
 import { OpenHuddleApiError, OpenHuddleHttpClient } from "./http-client.js";
 import { REPLY_IMAGE_NAME, readReplyImage, requestsReplyImage } from "./reply-image.js";
 import { normalizeServerUrl, updateRoomLastReadSeq } from "./token-store.js";
+import { DeviceWorkListener, supportsDeviceWork } from "./work-listener.js";
 
 /** 默认初始 SSE 重连等待毫秒数（1 秒） */
 export const DEFAULT_SSE_BASE_DELAY_MS = 1_000;
@@ -1384,14 +1385,16 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       }
     | undefined;
 
-  const resolveSelfIdentity = async (): Promise<{
+  const resolveSelfIdentity = async (
+    signal?: AbortSignal,
+  ): Promise<{
     readonly agent: OwnedAgentSummaryDto;
     readonly owner: HumanUserDto;
   }> => {
     if (cachedSelfIdentity !== undefined) {
       return cachedSelfIdentity;
     }
-    const me = await client.getMe();
+    const me = await client.getMe(signal);
     if (me.callerKind !== "agent") {
       throw new Error("SSE wake listener requires an oh_agt_ agent token, not a human session.");
     }
@@ -1707,6 +1710,13 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     log(`[openhuddle:wake:error] room=${roomId} ${detail}`);
   });
 
+  const workPreset =
+    options.target.kind === "preset" &&
+    options.onWake === undefined &&
+    supportsDeviceWork(options.serverUrl, options.target.preset)
+      ? options.target.preset
+      : undefined;
+  let workListener: DeviceWorkListener | undefined;
   const pendingCatchUps = new Set<Promise<void>>();
   const triggerInitialInboxCatchUp = (): void => {
     if (options.onWake !== undefined || options.catchUpInboxOnConnect === false) {
@@ -1762,12 +1772,21 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     };
     resetIdleTimer();
     try {
+      if (workPreset && !workListener) {
+        const { agent } = await resolveSelfIdentity(
+          AbortSignal.any([connection.signal, AbortSignal.timeout(10_000)]),
+        );
+        if (agent.platform === workPreset) {
+          workListener = new DeviceWorkListener({ client, log, agent, homeDir: options.homeDir });
+        }
+      }
       const requestInit: RequestInit = {
         method: "GET",
         headers: {
           Authorization: `Bearer ${options.token}`,
           Accept: "text/event-stream",
           "Cache-Control": "no-cache",
+          ...(workListener ? { "X-OpenHuddle-Work-Listener": "1" } : {}),
         },
         signal: connection.signal,
       };
@@ -1781,10 +1800,12 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       resetIdleTimer();
       log(`[openhuddle:listen] Connected to ${eventsUrl}`);
       triggerInitialInboxCatchUp();
+      workListener?.connected();
 
       for await (const frame of readSseFrames(response.body, connection.signal)) {
         reconnectAttempt = 0;
         resetIdleTimer();
+        if (frame.event === "work.updated") workListener?.updated(frame.data);
         const wake = parseWakeEventFrame(frame);
         if (wake !== undefined) {
           queue.enqueue(wake);
@@ -1822,6 +1843,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     await sleepFn(delayMs, options.signal);
   }
 
+  await workListener?.stop();
   if (pendingCatchUps.size > 0) {
     await Promise.allSettled([...pendingCatchUps]);
   }

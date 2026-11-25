@@ -127,6 +127,13 @@ export function toAgentWorkspaceView(dto: Readonly<WorkspaceDto>): AgentWorkspac
   };
 }
 
+const genericQueueSummaries = new Set([
+  "",
+  "Queued for worker claim.",
+  "Waiting for execution slices to complete.",
+  "Ready for independent verification.",
+]);
+
 function mapSlices(item: Readonly<WorkItemDto>, nowMs: number): ReadonlyArray<WorkSliceNode> {
   return item.slices.map((s) => {
     const startMs = s.startedAtIso ? Date.parse(s.startedAtIso) : Date.parse(item.createdAtIso);
@@ -137,9 +144,18 @@ function mapSlices(item: Readonly<WorkItemDto>, nowMs: number): ReadonlyArray<Wo
       sliceId: s.sliceId,
       title: s.title,
       worker: toWorkAgentRef(s.assignedAgent),
+      leaseRole: s.leaseRole,
+      ...(s.worktreeBranch !== undefined ? { worktreeBranch: s.worktreeBranch } : {}),
       ownedPaths: s.ownedPaths,
       status: s.status,
-      liveSummary: s.liveSummary,
+      liveSummary:
+        s.status === "waiting" &&
+        genericQueueSummaries.has(s.liveSummary) &&
+        (item.stage === "working" || item.stage === "verifying")
+          ? s.leaseRole === "verify" && item.stage === "working"
+            ? "所有执行分片完成后开始复核"
+            : `等待 ${s.assignedAgent.displayName} 认领${s.leaseRole === "verify" ? "复核" : "执行"}分片`
+          : s.liveSummary,
       elapsedSec,
       ...(s.diffAdded > 0 ? { diffAdded: s.diffAdded } : {}),
       ...(s.diffRemoved > 0 ? { diffRemoved: s.diffRemoved } : {}),
@@ -417,6 +433,28 @@ function buildSwarmDisjointSlices(params: {
   ];
 }
 
+/** 有实时监听连接的设备在自动分配时优先，同类候选保留配置和原有顺序。 */
+export function pickWorkbenchAgent(
+  candidates: ReadonlyArray<OwnedAgentSummaryDto>,
+  preferredId?: AgentId,
+  defaultId?: AgentId,
+): OwnedAgentSummaryDto | undefined {
+  if (preferredId !== undefined) {
+    const preferred = candidates.find((agent) => agent.id === preferredId);
+    if (!preferred) throw new Error("所选 Agent 无法参与此工单，请重新选择。");
+    return preferred;
+  }
+  const configured = candidates.find((agent) => agent.id === defaultId);
+  if (configured?.workspaceListenerConnected) return configured;
+  const workListener = candidates.find((agent) => agent.workspaceListenerConnected);
+  if (workListener) return workListener;
+  if (configured?.reach === "online_sse") return configured;
+  const listening = candidates.find((agent) => agent.reach === "online_sse");
+  if (listening) return listening;
+  if (configured && configured.reach !== "offline") return configured;
+  return candidates.find((agent) => agent.reach !== "offline") ?? configured ?? candidates[0];
+}
+
 /**
  * 在真实后端工作区上创建并派发多 Agent 协作任务（立即唤醒本机执行器或远端已连入 Agent）。
  */
@@ -444,34 +482,25 @@ export async function dispatchWorkbenchTaskOnServer(input: {
   const firstLine = cleanBrief.split(/\r?\n/)[0]?.trim() ?? "工作区任务";
   const title = firstLine.length > 64 ? `${firstLine.slice(0, 64)}…` : firstLine;
 
-  const primaryWorkerId =
-    (input.preferredWorkerId && input.ownedAgents.some((a) => a.id === input.preferredWorkerId)
-      ? input.preferredWorkerId
-      : undefined) ??
-    (input.workspace.defaultWorkerId &&
-    input.ownedAgents.some((a) => a.id === input.workspace?.defaultWorkerId)
-      ? input.workspace.defaultWorkerId
-      : undefined) ??
-    input.ownedAgents[0]?.id;
-
+  const primaryWorkerId = pickWorkbenchAgent(
+    input.ownedAgents,
+    input.preferredWorkerId,
+    input.workspace.defaultWorkerId,
+  )?.id;
   if (!primaryWorkerId) {
     throw new Error("未找到可用的执行 Agent");
   }
 
-  const distinctPeerAgent = input.ownedAgents.find((a) => a.id !== primaryWorkerId);
+  const peers = input.ownedAgents.filter((agent) => agent.id !== primaryWorkerId);
+  const distinctPeerAgent = pickWorkbenchAgent(peers);
   const verifierAgentId =
     effectiveTopology === "direct"
       ? undefined
-      : ((input.preferredVerifierId &&
-        input.ownedAgents.some((a) => a.id === input.preferredVerifierId)
-          ? input.preferredVerifierId
-          : undefined) ??
-        (input.workspace.defaultVerifierId &&
-        input.ownedAgents.some((a) => a.id === input.workspace?.defaultVerifierId)
-          ? input.workspace.defaultVerifierId
-          : undefined) ??
-        distinctPeerAgent?.id ??
-        primaryWorkerId);
+      : input.preferredVerifierId !== undefined
+        ? pickWorkbenchAgent(input.ownedAgents, input.preferredVerifierId)?.id
+        : (input.ownedAgents.find((agent) => agent.id === input.workspace?.defaultVerifierId)?.id ??
+          distinctPeerAgent?.id ??
+          primaryWorkerId);
 
   const isReadOnly = input.workspace.sandboxMode === "read_only";
   const tier = isReadOnly ? ("workspace_read" as const) : ("worktree_write" as const);

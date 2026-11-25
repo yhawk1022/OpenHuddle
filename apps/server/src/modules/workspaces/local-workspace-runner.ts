@@ -32,6 +32,14 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { scrubWorkText } from "@openhuddle/core-governance";
+import {
+  type PlainFolderSnapshot,
+  type WorkingTreeDiffSnapshot,
+  capturePlainFolderSnapshot,
+  collectWorkingTreeDiff,
+  diffPlainFolderSnapshots,
+  isGitWorkingTree,
+} from "@openhuddle/core-governance/workspace-diff";
 import type {
   AgentExecutionTier,
   AgentPlatform,
@@ -43,14 +51,6 @@ import type {
   WorkspaceRootEntry,
 } from "@openhuddle/protocol";
 import type { Logger } from "pino";
-import {
-  type PlainFolderSnapshot,
-  type WorkingTreeDiffSnapshot,
-  capturePlainFolderSnapshot,
-  collectWorkingTreeDiff,
-  diffPlainFolderSnapshots,
-  isGitWorkingTree,
-} from "./git-diff-parser.js";
 import { assertSafeLocalWorkspacePath } from "./workspace-fs-guard.js";
 import type { HydratedWorkItemRecord, HydratedWorkspaceRecord } from "./workspaces.mapper.js";
 import type { WorkspacesRepository } from "./workspaces.repo.js";

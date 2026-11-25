@@ -208,6 +208,7 @@ export const WorkSliceProvenanceSchema = z.object({
   leaseRole: WorkSliceRoleSchema,
   sessionJsonlPath: z.string().trim().min(1).max(512),
   rollingMemoryPath: z.string().trim().min(1).max(512),
+  workingDirectory: z.string().trim().min(1).max(1024).optional(),
   gitNotesAttached: z.boolean(),
 });
 export type WorkSliceProvenance = z.infer<typeof WorkSliceProvenanceSchema>;
@@ -386,6 +387,8 @@ export type ListWorkItemsQuery = z.infer<typeof ListWorkItemsQuerySchema>;
 
 /** `POST /api/v1/work-items/:workItemId/slices/:sliceId/claim` 请求体 */
 export const ClaimWorkSliceBodySchema = z.object({
+  /** Listeners claim the observed generation once, even when two devices share an Agent. */
+  expectedLeaseVersion: z.number().int().nonnegative().optional(),
   leaseTtlMs: z.number().int().min(15_000).max(600_000).default(120_000),
   agentEnvironment: z.string().trim().min(1).max(120).optional(),
 });

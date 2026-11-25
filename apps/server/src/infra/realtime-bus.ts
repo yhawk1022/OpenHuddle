@@ -13,7 +13,7 @@ export type UnsubscribeFn = () => void;
 
 /** Agent 唤醒订阅分为持久 SSE 和一次性收件箱等待，只有 SSE 计作实时在线。 */
 export interface AgentEventSubscriptionOptions {
-  readonly transport?: "sse" | "inbox";
+  readonly transport?: "sse" | "inbox" | "work_sse";
   readonly onEvict?: () => void;
 }
 
@@ -73,6 +73,8 @@ export interface RealtimeBus {
    * 获取指定 Agent 当前挂载的活跃实时 SSE 连接数量（用于实时计算 `online_sse` 在线状态灯）。
    */
   getActiveAgentConnectionCount(agentId: AgentId): number;
+  /** Undefined when connections on other server instances cannot be observed. */
+  hasWorkspaceListener(agentId: AgentId): boolean | undefined;
 
   /**
    * 当某个 Agent 被删除或轮换凭据时，断开当前实例中该 Agent 的事件连接。
@@ -218,6 +220,13 @@ export class InMemoryRealtimeBus implements RealtimeBus {
       if (subscription.transport !== "inbox") connections += 1;
     }
     return connections;
+  }
+
+  public hasWorkspaceListener(agentId: AgentId): boolean {
+    for (const subscription of this.agentSubscribers.get(agentId)?.values() ?? []) {
+      if (subscription.transport === "work_sse") return true;
+    }
+    return false;
   }
 
   /** {@inheritDoc RealtimeBus.evictAgentSubscribers} */

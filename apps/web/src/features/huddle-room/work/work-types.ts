@@ -8,8 +8,16 @@
  *    - 内层一纵一横编排拓扑：`direct`（1 跳直执）、`verify_loop`（纵向执行+异构审查）、`swarm`（横向独占路径分片并发+合流核验）。
  * 2. 零 `any` 与可辨识联合：时间线里程碑卡片全部以 `cardKind` 作为判别式，配合 `assertNever` 穷尽检查。
  */
-import type { AgentId, AgentPlatform, RoomId } from "@openhuddle/protocol";
+import type {
+  AgentId,
+  AgentPlatform,
+  RoomId,
+  WorkSliceProvenance,
+  WorkSliceRole,
+} from "@openhuddle/protocol";
 import type { AgentExecutionTier } from "../../../lib/agent-capability-prefs.js";
+
+export type { WorkSliceProvenance } from "@openhuddle/protocol";
 
 /**
  * 多 Agent 房间任务编排拓扑（同一平面上的三种执行阵型）。
@@ -51,28 +59,14 @@ export interface WorkAgentRef {
 }
 
 /**
- * 单个 Agent 分片在各自宿主环境下的三层本地溯源回执（对齐 ADR-0010）。
- */
-export interface WorkSliceProvenance {
-  /** Agent 自身所在宿主环境名称（如 `本机 Mac`、`云开发机`、`网页端 MCP`） */
-  readonly agentEnvironment: string;
-  /** 本次分片持有的沙箱租约角色 */
-  readonly leaseRole: "write" | "verify" | "read";
-  /** 100% 仓外落盘的已脱敏原子事件流路径 */
-  readonly sessionJsonlPath: string;
-  /** 定长滚动压缩（≤ 200 行）热记忆路径 */
-  readonly rollingMemoryPath: string;
-  /** 是否已在 Git 沙箱挂载 `refs/notes/openhuddle` 零污染溯源记录 */
-  readonly gitNotesAttached: boolean;
-}
-
-/**
  * 蜂群或单工单下的单个并行执行分片（Swarm Slice / Worker Run Node）。
  */
 export interface WorkSliceNode {
   readonly sliceId: string;
   readonly title: string;
   readonly worker: WorkAgentRef;
+  readonly leaseRole?: WorkSliceRole;
+  readonly worktreeBranch?: string;
   /** 独占文件或目录前缀（防并行 Worktree 写冲突） */
   readonly ownedPaths: ReadonlyArray<string>;
   readonly status: "waiting" | "running" | "verifying" | "ready" | "blocked";

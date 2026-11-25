@@ -1406,7 +1406,9 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                           rawPrompt: content,
                           topology: workDispatch.topology,
                           workspace: boundWorkspace,
-                          ownedAgents: props.ownedAgents,
+                          ownedAgents: props.ownedAgents.filter((agent) =>
+                            memberByAgentId.has(agent.id),
+                          ),
                           ...(workDispatch.executorAgentId !== undefined
                             ? { preferredWorkerId: workDispatch.executorAgentId }
                             : {}),

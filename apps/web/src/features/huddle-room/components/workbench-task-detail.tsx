@@ -2,7 +2,12 @@
  * @module web/features/huddle-room/workbench-task-detail
  * @description 个人工作台右侧详情、实时执行追踪流（Live Trace）与 Unified Diff 代码审阅面板。
  */
-import type { RoomId, WorkTraceEntry, WorkTraceKind } from "@openhuddle/protocol";
+import type {
+  OwnedAgentSummaryDto,
+  RoomId,
+  WorkTraceEntry,
+  WorkTraceKind,
+} from "@openhuddle/protocol";
 import {
   ArrowUpRight,
   Check,
@@ -42,6 +47,7 @@ import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { HighlightedTokenLine } from "../../../components/ui/syntax-code.js";
 import { inferSyntaxLanguageFromPath, tokenizeCodeLines } from "../../../lib/syntax-highlight.js";
 import { isImeComposing } from "../../../lib/viewport-sync.js";
+import { isLoopbackOrigin } from "../../auth-pairing/connect-instructions.js";
 import {
   type AgentWorkspace,
   type SoloDiffFile,
@@ -59,6 +65,8 @@ import {
   WorkStageGlyph,
   copyTextWithFeedback,
   formatElapsedCompact,
+  getClaimListenerHint,
+  getSliceWaitLabel,
   stripAgentOwnerPrefix,
 } from "../work/work-utils.js";
 
@@ -72,12 +80,19 @@ function sanitizeWorktreeSegment(raw: string): string {
   return cleaned.length > 0 ? cleaned.slice(0, 72) : "default";
 }
 
-function resolveWorktreePath(ws: AgentWorkspace | undefined, branch: string): string {
-  const basePath = ws?.localPath ?? "~/Developer/OpenHuddle";
-  if (!ws || ws.sandboxMode !== "worktree_pool" || !branch.includes("/")) {
-    return basePath;
+function resolveLocalRunnerPath(ws: AgentWorkspace, branch: string): string {
+  if (ws.sandboxMode !== "worktree_pool" || !branch.includes("/")) {
+    return ws.localPath;
   }
   return `~/.openhuddle/worktrees/${sanitizeWorktreeSegment(ws.id)}/${sanitizeWorktreeSegment(branch)}`;
+}
+
+// Worktree paths are opened on the executing device. Quote for PowerShell on Windows and POSIX shells elsewhere.
+export function quoteWorkbenchPath(path: string): string {
+  if (/^(?:[A-Za-z]:[\\/]|\\\\)/.test(path)) return `'${path.replaceAll("'", "''")}'`;
+  const homeRelative = path.startsWith("~/");
+  const literal = homeRelative ? path.slice(1) : path;
+  return `${homeRelative ? '"$HOME"' : ""}'${literal.replaceAll("'", `'"'"'`)}'`;
 }
 
 function formatTraceClock(isoString: string): string {
@@ -146,12 +161,15 @@ function getTraceKindMeta(kind: WorkTraceKind): {
   }
 }
 
-function getSliceStatusBadge(status: WorkSliceNode["status"]): {
+function getSliceStatusBadge(
+  slice: WorkSliceNode,
+  stage: SoloWorkTaskView["stage"],
+): {
   readonly label: string;
   readonly className: string;
   readonly pulsing: boolean;
 } {
-  switch (status) {
+  switch (slice.status) {
     case "running":
       return {
         label: "执行中",
@@ -166,7 +184,7 @@ function getSliceStatusBadge(status: WorkSliceNode["status"]): {
       };
     case "waiting":
       return {
-        label: "排队中",
+        label: getSliceWaitLabel(stage, slice.leaseRole),
         className: "text-[#B45309] dark:text-[#FBBF24]",
         pulsing: false,
       };
@@ -188,6 +206,7 @@ function getSliceStatusBadge(status: WorkSliceNode["status"]): {
 /** `WorkbenchTaskDetailPane` 组件属性 */
 export interface WorkbenchTaskDetailPaneProps {
   readonly task: SoloWorkTaskView;
+  readonly ownedAgents: ReadonlyArray<OwnedAgentSummaryDto>;
   readonly workspace?: AgentWorkspace | undefined;
   readonly ownerDisplayName: string;
   readonly isEscalating: boolean;
@@ -201,6 +220,10 @@ export interface WorkbenchTaskDetailPaneProps {
  */
 export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
   const { task } = props;
+  const isLocalWorkspace =
+    props.workspace?.host.mode === "local_machine" &&
+    typeof window !== "undefined" &&
+    isLoopbackOrigin(window.location.origin);
   const isRunning = isSoloRunningStage(task.stage);
   const hasDiff = task.diffFiles.length > 0;
   const reducedMotion = usePrefersReducedMotion();
@@ -311,39 +334,66 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
       ? stripAgentOwnerPrefix(task.verifier.displayName, props.ownerDisplayName)
       : null;
 
-  const resolvedLocalPath = resolveWorktreePath(props.workspace, task.worktreeBranch);
+  const executionDirectories = task.slices.filter(
+    (slice) => slice.provenance?.workingDirectory && slice.provenance.leaseRole !== "verify",
+  );
+  const executionSlice =
+    executionDirectories.find((slice) => slice.worker.agentId === task.primaryWorker.agentId) ??
+    executionDirectories[0];
+  const displayedBranch = executionSlice?.worktreeBranch ?? task.worktreeBranch;
+  const resolvedLocalPath =
+    executionSlice?.provenance?.workingDirectory ??
+    (isLocalWorkspace && props.workspace
+      ? resolveLocalRunnerPath(props.workspace, displayedBranch)
+      : undefined);
   // 原地目录与只读围栏直接作用于所选目录，不存在独立分支；仅隔离工作树模式展示分支名
   const showsWorktreeBranch =
     props.workspace === undefined || props.workspace.sandboxMode === "worktree_pool";
 
   const openLocalMenuItems: ReadonlyArray<AppDropdownEntry> = useMemo(
     () => [
-      {
-        id: "open-cursor",
-        label: "在 Cursor 中打开",
-        icon: <ExternalLink className="h-3.5 w-3.5" />,
-        onSelect: () =>
-          copyTextWithFeedback(`cursor "${resolvedLocalPath}"`, "已复制 Cursor 打开命令"),
-      },
-      {
-        id: "open-vscode",
-        label: "在 VS Code 中打开",
-        icon: <ExternalLink className="h-3.5 w-3.5" />,
-        onSelect: () =>
-          copyTextWithFeedback(`code "${resolvedLocalPath}"`, "已复制 VS Code 打开命令"),
-      },
-      {
-        id: "copy-cd",
-        label: "复制终端进入命令 (cd)",
-        icon: <Terminal className="h-3.5 w-3.5" />,
-        onSelect: () => copyTextWithFeedback(`cd "${resolvedLocalPath}"`, "已复制终端进入命令"),
-      },
-      {
-        id: "copy-path",
-        label: "复制本地目录路径",
-        icon: <Copy className="h-3.5 w-3.5" />,
-        onSelect: () => copyTextWithFeedback(resolvedLocalPath, "已复制本地目录路径"),
-      },
+      ...(resolvedLocalPath
+        ? [
+            {
+              id: "open-cursor",
+              label: "在 Cursor 中打开",
+              icon: <ExternalLink className="h-3.5 w-3.5" />,
+              onSelect: () =>
+                copyTextWithFeedback(
+                  `cursor ${quoteWorkbenchPath(resolvedLocalPath)}`,
+                  "已复制 Cursor 打开命令",
+                ),
+            },
+            {
+              id: "open-vscode",
+              label: "在 VS Code 中打开",
+              icon: <ExternalLink className="h-3.5 w-3.5" />,
+              onSelect: () =>
+                copyTextWithFeedback(
+                  `code ${quoteWorkbenchPath(resolvedLocalPath)}`,
+                  "已复制 VS Code 打开命令",
+                ),
+            },
+            {
+              id: "copy-cd",
+              label: /^(?:[A-Za-z]:[\\/]|\\\\)/.test(resolvedLocalPath)
+                ? "复制 PowerShell 进入命令"
+                : "复制终端进入命令 (cd)",
+              icon: <Terminal className="h-3.5 w-3.5" />,
+              onSelect: () =>
+                copyTextWithFeedback(
+                  `cd ${quoteWorkbenchPath(resolvedLocalPath)}`,
+                  "已复制终端进入命令",
+                ),
+            },
+            {
+              id: "copy-path",
+              label: "复制本地目录路径",
+              icon: <Copy className="h-3.5 w-3.5" />,
+              onSelect: () => copyTextWithFeedback(resolvedLocalPath, "已复制本地目录路径"),
+            },
+          ]
+        : []),
       ...(props.workspace !== undefined
         ? [
             {
@@ -400,27 +450,30 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
               {showsWorktreeBranch ? (
                 <button
                   type="button"
-                  onClick={() => copyTextWithFeedback(task.worktreeBranch, "已复制分支名")}
+                  onClick={() => copyTextWithFeedback(displayedBranch, "已复制分支名")}
                   className="inline-flex max-w-[180px] min-w-0 shrink-0 cursor-pointer items-center gap-1 font-mono text-[11.5px] text-[#4B5565] transition hover:text-[#111318] dark:text-[#A1A1AA] dark:hover:text-white"
                 >
                   <GitBranch className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{task.worktreeBranch}</span>
+                  <span className="truncate">{displayedBranch}</span>
                   <Copy className="h-2.5 w-2.5 shrink-0 opacity-60" />
                 </button>
               ) : null}
-              <AppDropdownMenu
-                align="start"
-                items={openLocalMenuItems}
-                trigger={
-                  <button
-                    type="button"
-                    className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 whitespace-nowrap text-[12px] text-[#4B5565] transition hover:text-[#111318] dark:text-[#A1A1AA] dark:hover:text-white"
-                  >
-                    <span>打开本地</span>
-                    <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
-                  </button>
-                }
-              />
+              {openLocalMenuItems.length > 0 ? (
+                <AppDropdownMenu
+                  align="start"
+                  items={openLocalMenuItems}
+                  trigger={
+                    <button
+                      type="button"
+                      title={resolvedLocalPath}
+                      className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 whitespace-nowrap text-[12px] text-[#4B5565] transition hover:text-[#111318] dark:text-[#A1A1AA] dark:hover:text-white"
+                    >
+                      <span>{resolvedLocalPath ? "打开执行目录" : "工作区设置"}</span>
+                      <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+                    </button>
+                  }
+                />
+              ) : null}
               <span className="shrink-0 whitespace-nowrap">
                 {workerShort} 执行
                 {verifierShort !== null ? ` · ${verifierShort} 复核` : ""}
@@ -805,7 +858,18 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
               {/* 1. 分片执行管线卡片 */}
               <div className="divide-y divide-black/[0.05] overflow-hidden rounded-[14px] border border-black/[0.06] bg-white/75 dark:divide-white/[0.06] dark:border-white/[0.075] dark:bg-white/[0.03]">
                 {task.slices.map((slice) => {
-                  const statusMeta = getSliceStatusBadge(slice.status);
+                  const statusMeta = getSliceStatusBadge(slice, task.stage);
+                  const waitingForClaim =
+                    slice.leaseRole !== undefined &&
+                    slice.status === "waiting" &&
+                    ((task.stage === "working" && slice.leaseRole !== "verify") ||
+                      (task.stage === "verifying" && slice.leaseRole === "verify"));
+                  const listenerHint =
+                    waitingForClaim && !isLocalWorkspace
+                      ? getClaimListenerHint(
+                          props.ownedAgents.find((agent) => agent.id === slice.worker.agentId),
+                        )
+                      : undefined;
                   return (
                     <div key={slice.sliceId} className="px-3.5 py-3">
                       <div className="flex items-center justify-between gap-3">
@@ -833,13 +897,27 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                                 <span>{statusMeta.label}</span>
                               </span>
                             </div>
-                            <p className="mt-0.5 truncate text-[12px] text-[#687082] dark:text-[#8E8E96]">
-                              {stripAgentOwnerPrefix(
-                                slice.worker.displayName,
-                                props.ownerDisplayName,
-                              )}{" "}
-                              · {slice.liveSummary}
+                            <p className="mt-0.5 break-words text-[12px] text-[#687082] dark:text-[#8E8E96]">
+                              {waitingForClaim
+                                ? null
+                                : `${stripAgentOwnerPrefix(slice.worker.displayName, props.ownerDisplayName)} · `}
+                              {slice.liveSummary}
                             </p>
+                            {listenerHint ? (
+                              <p className="mt-1 text-[12px] text-[#687082] dark:text-[#8E8E96]">
+                                {listenerHint.message}
+                                {listenerHint.showInstallGuide ? (
+                                  <a
+                                    className="ml-1 underline"
+                                    href="/install.md"
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    安装指引
+                                  </a>
+                                ) : null}
+                              </p>
+                            ) : null}
                           </div>
                         </div>
 

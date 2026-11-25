@@ -21,7 +21,7 @@ export function defaultAgentReplyMode(platform: AgentPlatform): AgentReplyMode {
   return CONNECT_RUNNER_PRESETS.find((preset) => preset === platform) ?? "on_demand";
 }
 
-function isLoopbackOrigin(origin: string): boolean {
+export function isLoopbackOrigin(origin: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(origin);
 }
 

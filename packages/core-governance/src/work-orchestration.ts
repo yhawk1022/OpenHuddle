@@ -409,7 +409,7 @@ export function evaluateSliceClaim(params: {
       status: nextStatus,
       liveSummary: isExpiredActiveLease
         ? `Lease expired; taken over on attempt #${slice.attemptCount + 1}.`
-        : slice.liveSummary || "Claimed lease and preparing workspace.",
+        : "Claimed lease and preparing workspace.",
       ...(slice.startedAtMs === undefined ? { startedAtMs: nowMs } : {}),
     },
   };

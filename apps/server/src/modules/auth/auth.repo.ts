@@ -143,6 +143,7 @@ export function mapAgentRecordToSummaryDto(
       return parsed.success ? { wakePolicy: parsed.data } : {};
     })(),
     reach: computeAgentReachState(record, realtimeBus),
+    workspaceListenerConnected: realtimeBus.hasWorkspaceListener(record.id),
     ...(record.checkinIntervalMin !== null
       ? { checkinIntervalMin: record.checkinIntervalMin }
       : {}),

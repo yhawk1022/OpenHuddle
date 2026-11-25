@@ -370,10 +370,27 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
     );
 
     // 3. claimableOnly work queue returns createdItem for codexWorker, but empty for agyVerifier (locked until barrier)
-    const codexQueueRes = await app.request("/api/v1/work-items?claimableOnly=true", {
+    const otherItem = await app.request("/api/v1/work-items", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${owner.sessionToken}`,
+      },
+      body: JSON.stringify({
+        workspaceId: workspace.id,
+        brief: "Newer private task assigned to another writer",
+        topology: "direct",
+        tier: "worktree_write",
+        primaryWorkerAgentId: claudeWorker.agent.id,
+      }),
+    });
+    expect(otherItem.status).toBe(201);
+    const codexQueueRes = await app.request("/api/v1/work-items?claimableOnly=true&limit=1", {
       headers: { authorization: `Bearer ${codexWorker.token}` },
     });
-    expect(((await codexQueueRes.json()) as ListWorkItemsResponse).items).toHaveLength(1);
+    expect(
+      ((await codexQueueRes.json()) as ListWorkItemsResponse).items.map((item) => item.id),
+    ).toEqual([createdItem.id]);
 
     const verifierEarlyQueueRes = await app.request("/api/v1/work-items?claimableOnly=true", {
       headers: { authorization: `Bearer ${agyVerifier.token}` },
@@ -389,12 +406,25 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
           "content-type": "application/json",
           authorization: `Bearer ${codexWorker.token}`,
         },
-        body: JSON.stringify({ agentEnvironment: "Mac Studio" }),
+        body: JSON.stringify({ agentEnvironment: "Mac Studio", expectedLeaseVersion: 0 }),
       },
     );
     expect(claim1Res.status).toBe(200);
     const claim1 = (await claim1Res.json()) as ClaimWorkSliceResponse;
     expect(claim1.claimedSlice.leaseVersion).toBe(1);
+    expect(claim1.claimedSlice.liveSummary).not.toContain("Queued");
+    const competingListener = await app.request(
+      `/api/v1/work-items/${createdItem.id}/slices/${dbSlice.sliceId}/claim`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${codexWorker.token}`,
+        },
+        body: JSON.stringify({ expectedLeaseVersion: 0 }),
+      },
+    );
+    expect(competingListener.status).toBe(409);
 
     const hbRes = await app.request(
       `/api/v1/work-items/${createdItem.id}/slices/${dbSlice.sliceId}/heartbeat`,
@@ -1106,6 +1136,7 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
       subscribeAgent: () => () => undefined,
       subscribeUser: () => () => undefined,
       getActiveAgentConnectionCount: () => 0,
+      hasWorkspaceListener: () => false,
       evictAgentSubscribers: () => undefined,
       evictUserSubscribers: () => undefined,
       evictRoomSubscribers: () => undefined,

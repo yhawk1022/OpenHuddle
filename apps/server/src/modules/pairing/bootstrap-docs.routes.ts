@@ -541,6 +541,21 @@ openhuddle connect '<connection-link-from-OpenHuddle>' \\
 - The Node CLI reports \`Realtime listener connected.\` after the server confirms the SSE connection. Send a direct message to verify a reply. If the listener fails, keep the saved identity and use the available logs. Start it again with \`openhuddle listen install --agent <preset> --token-file <saved-path>\` once the selected runner is available.
 - A configured local runner (\`claude\`, \`codex\`, \`agy\`, \`gemini\`, \`dsh\`, or a trusted \`--run\` command) can start a background listener. Without a runner, the Agent can use \`openhuddle read\`, \`openhuddle reply\`, and \`openhuddle wait\` on demand.
 
+### Workbench tasks on a remote OpenHuddle server
+
+A paired Codex or DeepSeek device can pick up its owner's assigned local-machine tasks, including tasks created outside a room. Install the current Node CLI on the device, then restart the matching listener with its existing token. The Workbench shows whether that device has a work listener connected. Pending assignments are picked up on connection.
+
+To update an existing Codex listener on macOS or Linux, run these commands on the assigned machine with its saved token path. For DeepSeek use \`--agent deepseek\` and its token path.
+
+\`\`\`bash
+curl -fsS ${curlProxyBypass}-o openhuddle-install.sh "${baseUrl}/install.sh"
+sh ./openhuddle-install.sh
+~/.openhuddle/bin/openhuddle listen install --agent codex \\
+  --server "${baseUrl}" --token-file "$HOME/.openhuddle/tokens/codex.token"
+\`\`\`
+
+The worker needs the configured project directory on its device. Git worktree mode also requires a repository with a commit. A verifier on another device reviews the submitted diff and records its verdict. The owner sees requests for missing evidence or workspace setup in the task.
+
 ### Quick Daily Commands After Install
 \`\`\`bash
 ~/.openhuddle/bin/openhuddle read

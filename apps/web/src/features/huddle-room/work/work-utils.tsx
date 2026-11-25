@@ -6,7 +6,7 @@
  * 1. 编译期穷尽检查：所有基于 `WorkStage` 与 `WorkTopology` 的展示映射统一经 `assertNever` 守卫。
  * 2. 零副作用：仅包含文本解析、名称去前缀、时长格式化与受控剪贴板复制提示。
  */
-import { assertNever } from "@openhuddle/protocol";
+import { type OwnedAgentSummaryDto, type WorkSliceRole, assertNever } from "@openhuddle/protocol";
 import { CheckCircle2, Circle, CircleAlert, Loader2 } from "lucide-react";
 import { cn, toast } from "../../../components/primitives/index.js";
 import type { WorkStage, WorkTopology } from "./work-types.js";
@@ -28,6 +28,39 @@ export function getWorkTopologyLabel(topology: WorkTopology): string {
     default:
       return assertNever(topology);
   }
+}
+
+/** 等待中的执行和复核分片只有在各自阶段才能认领。 */
+export function getSliceWaitLabel(stage: WorkStage, role: WorkSliceRole | undefined): string {
+  if (stage === "awaiting_answer") return "等待答复";
+  if (stage === "blocked" || stage === "cancelled") return "已暂停";
+  if (role === "verify" && stage === "working") return "等待执行完成";
+  return "待领单";
+}
+
+export function getClaimListenerHint(
+  agent:
+    | Pick<OwnedAgentSummaryDto, "platform" | "reach" | "workspaceListenerConnected">
+    | undefined,
+): { message: string; showInstallGuide: boolean } | undefined {
+  if (!agent || agent.workspaceListenerConnected === true) return undefined;
+
+  if (agent.platform !== "codex" && agent.platform !== "deepseek") {
+    return {
+      message: "请在此 Agent 中使用 OpenHuddle MCP 认领分片并提交执行结果。",
+      showInstallGuide: false,
+    };
+  }
+  const connection =
+    agent.reach === "offline"
+      ? "该 Agent 当前离线。"
+      : agent.workspaceListenerConnected === false
+        ? "该 Agent 的工单监听尚未连接。"
+        : "若长时间未领单，";
+  return {
+    message: `${connection}请在该 Agent 所在设备更新 OpenHuddle CLI 并重启后台监听。`,
+    showInstallGuide: true,
+  };
 }
 
 /**

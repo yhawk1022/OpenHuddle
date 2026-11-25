@@ -6,9 +6,10 @@
  * 1. 全局防死锁加锁顺序：凡需同时追加房间时间线里程碑消息与更新工单的事务，必须严格按 `rooms FOR UPDATE -> work_items FOR UPDATE` 顺序取锁，与消息和提案仓储完全对齐。
  * 2. 批量水合零 1+N：工单列表查询通过 `WHERE work_item_id IN (...)` 一次性拉取全部分片，并批量合并在线 Agent 最新昵称快照。
  */
-import type {
-  OrchestrationReviewState,
-  OrchestrationSliceState,
+import {
+  MAX_SLICE_ATTEMPTS,
+  type OrchestrationReviewState,
+  type OrchestrationSliceState,
 } from "@openhuddle/core-governance";
 import {
   type OpenHuddleDb,
@@ -119,6 +120,18 @@ interface RawWorkItemJoinedRow {
   readonly version: number;
   readonly createdAt: Date | string;
   readonly updatedAt: Date | string;
+}
+
+interface WorkListOptions {
+  readonly stage?: WorkStage | undefined;
+  readonly limit?: number | undefined;
+  readonly claimableBy?:
+    | {
+        readonly agentId: AgentId;
+        readonly ownerUserId: UserId;
+        readonly nowMs: number;
+      }
+    | undefined;
 }
 
 /**
@@ -1079,35 +1092,26 @@ export class WorkspacesRepository {
 
   public async listHydratedWorkItemsByRoom(
     roomId: RoomId,
-    options?: {
-      readonly stage?: WorkStage | undefined;
-      readonly activeOnly?: boolean | undefined;
-      readonly limit?: number | undefined;
-    },
+    options?: WorkListOptions,
   ): Promise<readonly HydratedWorkItemRecord[]> {
     const base = sql`wi.room_id = ${roomId}`;
-    return this.queryHydratedWorkItems(this.appendStageFilter(base, options), options?.limit);
+    return this.listFilteredWorkItems(base, options);
   }
 
   public async listHydratedWorkItemsByWorkspace(
     workspaceId: WorkspaceId,
-    options?: {
-      readonly stage?: WorkStage | undefined;
-      readonly activeOnly?: boolean | undefined;
-      readonly limit?: number | undefined;
-    },
+    options?: WorkListOptions,
   ): Promise<readonly HydratedWorkItemRecord[]> {
     const base = sql`wi.workspace_id = ${workspaceId}`;
-    return this.queryHydratedWorkItems(this.appendStageFilter(base, options), options?.limit);
+    return this.listFilteredWorkItems(base, options);
   }
 
-  public async listHydratedWorkItemsVisibleToOwnerAndRooms(params: {
-    readonly ownerUserId: UserId;
-    readonly joinedRoomIds: readonly RoomId[];
-    readonly stage?: WorkStage | undefined;
-    readonly activeOnly?: boolean | undefined;
-    readonly limit?: number | undefined;
-  }): Promise<readonly HydratedWorkItemRecord[]> {
+  public async listHydratedWorkItemsVisibleToOwnerAndRooms(
+    params: WorkListOptions & {
+      readonly ownerUserId: UserId;
+      readonly joinedRoomIds: readonly RoomId[];
+    },
+  ): Promise<readonly HydratedWorkItemRecord[]> {
     const visibilityExpr =
       params.joinedRoomIds.length > 0
         ? sql`(wi.owner_user_id = ${params.ownerUserId} OR wi.room_id IN (${sql.join(
@@ -1116,31 +1120,42 @@ export class WorkspacesRepository {
           )}))`
         : sql`wi.owner_user_id = ${params.ownerUserId}`;
 
-    return this.queryHydratedWorkItems(
-      this.appendStageFilter(visibilityExpr, params),
-      params.limit,
-    );
+    return this.listFilteredWorkItems(visibilityExpr, params);
   }
 
-  private appendStageFilter(
-    base: ReturnType<typeof sql>,
-    options?: {
-      readonly stage?: WorkStage | undefined;
-      readonly activeOnly?: boolean | undefined;
-    },
-  ): ReturnType<typeof sql> {
-    if (options?.stage !== undefined) {
-      return sql`${base} AND wi.stage = ${options.stage}`;
-    }
-    if (options?.activeOnly === true) {
-      return sql`${base} AND wi.stage IN ('working', 'verifying')`;
-    }
-    return base;
+  private listFilteredWorkItems(base: ReturnType<typeof sql>, options: WorkListOptions = {}) {
+    const stage = options.stage ? sql`AND wi.stage = ${options.stage}` : sql``;
+    const agent = options.claimableBy;
+    if (!agent) return this.queryHydratedWorkItems(sql`${base} ${stage}`, options.limit);
+
+    // Apply dispatch eligibility before LIMIT so other workers' newer tasks cannot hide this queue.
+    const where = sql`${base} ${stage}
+      AND wi.stage IN ('working', 'verifying') AND wi.tier <> 'chat_only'
+      AND (wi.room_id IS NULL OR EXISTS (
+        SELECT 1 FROM room_members rm WHERE rm.room_id = wi.room_id AND rm.agent_id = ${agent.agentId}
+      ))
+      AND (w.owner_user_id = ${agent.ownerUserId} OR (
+        w.host_mode = 'shared_container' AND w.allow_room_collaborators
+        AND wi.room_id IS NOT NULL AND wi.tier <> 'full_owner_delegate'
+      ))
+      AND EXISTS (
+        SELECT 1 FROM work_slices s WHERE s.work_item_id = wi.id
+          AND (s.lease_role = 'verify') = (wi.stage = 'verifying')
+          AND (s.lease_role <> 'write' OR w.sandbox_mode <> 'read_only')
+          AND s.attempt_count < ${MAX_SLICE_ATTEMPTS}
+          AND (
+            (s.assigned_agent_id = ${agent.agentId} AND s.status = 'waiting')
+            OR (s.status IN ('running', 'verifying')
+                AND s.lease_expires_at <= ${new Date(agent.nowMs).toISOString()}::timestamptz)
+          )
+      )`;
+    return this.queryHydratedWorkItems(where, options.limit, sql`wi.created_at ASC, wi.id ASC`);
   }
 
   private async queryHydratedWorkItems(
     whereClause: ReturnType<typeof sql>,
     limit = 50,
+    orderBy = sql`wi.updated_at DESC, wi.created_at DESC`,
   ): Promise<readonly HydratedWorkItemRecord[]> {
     const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit)));
     const itemResult = await this.db.execute(sql`
@@ -1176,7 +1191,7 @@ export class WorkspacesRepository {
       FROM work_items wi
       JOIN workspaces w ON wi.workspace_id = w.id
       WHERE ${whereClause}
-      ORDER BY wi.updated_at DESC, wi.created_at DESC
+      ORDER BY ${orderBy}
       LIMIT ${safeLimit}
     `);
 

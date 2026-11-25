@@ -268,7 +268,17 @@ export function serializeWorkItemForViewer(
     ...(s.worktreeBranch !== undefined ? { worktreeBranch: s.worktreeBranch } : {}),
     steerNotes: [...s.steerNotes],
     ...(s.failureCode !== undefined ? { failureCode: s.failureCode } : {}),
-    ...(s.provenance !== undefined ? { provenance: s.provenance } : {}),
+    ...(s.provenance !== undefined
+      ? {
+          provenance: {
+            ...s.provenance,
+            workingDirectory:
+              record.agentSnapshots[s.assignedAgentId]?.ownerUserId === viewerOwnerId
+                ? s.provenance.workingDirectory
+                : undefined,
+          },
+        }
+      : {}),
     ...(s.startedAtMs !== undefined ? { startedAtIso: new Date(s.startedAtMs).toISOString() } : {}),
     ...(s.completedAtMs !== undefined
       ? { completedAtIso: new Date(s.completedAtMs).toISOString() }

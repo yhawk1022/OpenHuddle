@@ -125,6 +125,7 @@ export function createEventsRouter(deps: {
         caller,
         (event) => publishEvent(event),
         () => stream.abort(),
+        c.req.header("X-OpenHuddle-Work-Listener") === "1" ? "work_sse" : "sse",
       );
       try {
         // 挂载后再验证一次，覆盖旧凭据在首次鉴权与订阅之间被轮换的窗口。

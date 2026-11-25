@@ -1,5 +1,5 @@
 /**
- * @module server/modules/workspaces/git-diff-parser
+ * @module core-governance/workspace-diff
  * @description 真实工作目录 `git diff` 采集与 Unified Diff 结构化解析器（零 Shell 拼接）。
  *
  * 关键不变量：
@@ -10,8 +10,8 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { scrubWorkText } from "@openhuddle/core-governance";
 import type { WorkDiffFileDto, WorkDiffLineDto } from "@openhuddle/protocol";
+import { scrubWorkText } from "./secret-redact.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -162,7 +162,7 @@ export async function collectWorkingTreeDiff(workingDir: string): Promise<Workin
 
   let statusOut = "";
   try {
-    const res = await execFileAsync("git", ["status", "--porcelain", "-uall"], {
+    const res = await execFileAsync("git", ["status", "--porcelain", "-z", "-uall"], {
       cwd: workingDir,
       timeout: 6_000,
       maxBuffer: 2 * 1024 * 1024,
@@ -174,19 +174,16 @@ export async function collectWorkingTreeDiff(workingDir: string): Promise<Workin
 
   const untrackedPaths: string[] = [];
   const allStatusPaths: string[] = [];
-  for (const rawLine of statusOut.split(/\r?\n/)) {
-    if (rawLine.length < 4) continue;
-    const code = rawLine.slice(0, 2);
-    const rawRel = rawLine
-      .slice(3)
-      .trim()
-      .replace(/^"+|"+$/g, "");
-    const finalRel = rawRel.includes(" -> ") ? (rawRel.split(" -> ").pop() ?? rawRel) : rawRel;
-    if (!finalRel) continue;
-    allStatusPaths.push(finalRel);
-    if (code === "??") {
-      untrackedPaths.push(finalRel);
-    }
+  const entries = statusOut.split("\0");
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry || entry.length < 4) continue;
+    const code = entry.slice(0, 2);
+    const file = entry.slice(3);
+    allStatusPaths.push(file);
+    if (code === "??") untrackedPaths.push(file);
+    // With -z, a rename/copy record has its original path in the next field.
+    if (/[RC]/.test(code)) i++;
   }
 
   if (allStatusPaths.length === 0) {
@@ -195,20 +192,45 @@ export async function collectWorkingTreeDiff(workingDir: string): Promise<Workin
 
   let combinedRawDiff = "";
   try {
-    const trackedDiff = await execFileAsync("git", ["diff", "--no-color", "-U3", "HEAD"], {
-      cwd: workingDir,
-      timeout: 8_000,
-      maxBuffer: 4 * 1024 * 1024,
-    });
+    const trackedDiff = await execFileAsync(
+      "git",
+      [
+        "-c",
+        "core.quotepath=false",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "-U3",
+        "HEAD",
+      ],
+      {
+        cwd: workingDir,
+        timeout: 8_000,
+        maxBuffer: 4 * 1024 * 1024,
+      },
+    );
     combinedRawDiff += trackedDiff.stdout;
   } catch {
     // 空提交仓库尚无 HEAD 时回退到暂存/工作区直接 diff
     try {
-      const fallbackDiff = await execFileAsync("git", ["diff", "--no-color", "-U3"], {
-        cwd: workingDir,
-        timeout: 6_000,
-        maxBuffer: 4 * 1024 * 1024,
-      });
+      const fallbackDiff = await execFileAsync(
+        "git",
+        [
+          "-c",
+          "core.quotepath=false",
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-color",
+          "-U3",
+        ],
+        {
+          cwd: workingDir,
+          timeout: 6_000,
+          maxBuffer: 4 * 1024 * 1024,
+        },
+      );
       combinedRawDiff += fallbackDiff.stdout;
     } catch {
       // 忽略异常继续采集未追踪文件
@@ -225,7 +247,19 @@ export async function collectWorkingTreeDiff(workingDir: string): Promise<Workin
       // `git diff --no-index` 发现差异时退出码为 1，需在 catch 中读取 stdout
       await execFileAsync(
         "git",
-        ["diff", "--no-color", "-U3", "--no-index", "--", "/dev/null", relPath],
+        [
+          "-c",
+          "core.quotepath=false",
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-color",
+          "-U3",
+          "--no-index",
+          "--",
+          "/dev/null",
+          relPath,
+        ],
         {
           cwd: workingDir,
           timeout: 4_000,
@@ -246,10 +280,7 @@ export async function collectWorkingTreeDiff(workingDir: string): Promise<Workin
   const diffFiles = parseUnifiedGitDiff(combinedRawDiff);
   const diffAdded = diffFiles.reduce((acc, f) => acc + f.additions, 0);
   const diffRemoved = diffFiles.reduce((acc, f) => acc + f.deletions, 0);
-  const changedFiles =
-    diffFiles.length > 0
-      ? diffFiles.map((f) => f.path)
-      : [...new Set(allStatusPaths)].slice(0, MAX_DIFF_FILES);
+  const changedFiles = [...new Set(allStatusPaths)].slice(0, 200);
 
   return {
     changedFiles,
@@ -390,7 +421,7 @@ function buildTextFileDiffDto(
       kind: "context",
       oldLine: i + 1,
       newLine: i + 1,
-      content: scrubWorkText(oldLines[i] ?? ""),
+      content: scrubWorkText(oldLines[i] ?? "").slice(0, 4_000),
     });
   }
 
@@ -403,7 +434,7 @@ function buildTextFileDiffDto(
       lines.push({
         kind: "del",
         oldLine: i + 1,
-        content: scrubWorkText(oldLines[i] ?? ""),
+        content: scrubWorkText(oldLines[i] ?? "").slice(0, 4_000),
       });
     }
   }
@@ -414,7 +445,7 @@ function buildTextFileDiffDto(
       lines.push({
         kind: "add",
         newLine: i + 1,
-        content: scrubWorkText(newLines[i] ?? ""),
+        content: scrubWorkText(newLines[i] ?? "").slice(0, 4_000),
       });
     }
   }
@@ -425,7 +456,7 @@ function buildTextFileDiffDto(
       kind: "context",
       oldLine: oldSuffix + offset + 1,
       newLine: newSuffix + offset + 1,
-      content: scrubWorkText(newLines[newSuffix + offset] ?? ""),
+      content: scrubWorkText(newLines[newSuffix + offset] ?? "").slice(0, 4_000),
     });
   }
 

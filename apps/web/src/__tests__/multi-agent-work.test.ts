@@ -10,11 +10,16 @@ import type {
   RoomMemberDto,
   UserId,
 } from "@openhuddle/protocol";
+import { WorkItemDtoSchema } from "@openhuddle/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AppTooltipProvider } from "../components/primitives/index.js";
 import { MarkdownContent } from "../components/ui/markdown-content.js";
+import {
+  WorkbenchTaskDetailPane,
+  quoteWorkbenchPath,
+} from "../features/huddle-room/components/workbench-task-detail.js";
 import {
   answerRoomWorkAttention,
   bindRoomWorkItemToSoloTask,
@@ -41,6 +46,10 @@ import {
   resetSoloWorkbenchShowcase,
   upsertAgentWorkspace,
 } from "../features/huddle-room/work/solo-workbench-store.js";
+import {
+  pickWorkbenchAgent,
+  toSoloWorkTaskView,
+} from "../features/huddle-room/work/work-server-sync.js";
 import {
   parsePromptTopologyDirective,
   stripAgentOwnerPrefix,
@@ -227,7 +236,7 @@ describe("room multi-agent work orchestration store", () => {
 });
 
 describe("solo workbench store & unified diff lifecycle", () => {
-  const OWNED_AGENTS: ReadonlyArray<OwnedAgentSummaryDto> = [
+  const OWNED_AGENTS = [
     {
       id: MY_AGY_ID,
       ownerUserId: ME_ID,
@@ -248,10 +257,155 @@ describe("solo workbench store & unified diff lifecycle", () => {
       allowExternalDm: false,
       createdAtIso: "2026-11-24T00:00:00.000Z",
     },
-  ];
+  ] as const satisfies ReadonlyArray<OwnedAgentSummaryDto>;
 
   beforeEach(() => {
     clearSoloWorkbenchTasks();
+  });
+
+  it("prefers a work listener for automatic assignments and preserves explicit choices", () => {
+    const candidate = (
+      id: AgentId,
+      reach: OwnedAgentSummaryDto["reach"],
+      work?: boolean,
+    ): OwnedAgentSummaryDto => ({
+      ...OWNED_AGENTS[0],
+      id,
+      reach,
+      ...(work !== undefined ? { workspaceListenerConnected: work } : {}),
+    });
+    const connected = candidate(MY_CODEX_ID, "online_sse", true);
+    const chatOnly = candidate(MY_AGY_ID, "online_sse", false);
+    const offline = candidate(EXTERNAL_CLAUDE_ID, "offline");
+    expect(pickWorkbenchAgent([offline, chatOnly, connected], undefined, chatOnly.id)).toBe(
+      connected,
+    );
+    expect(pickWorkbenchAgent([offline, chatOnly, connected], offline.id)).toBe(offline);
+    expect(pickWorkbenchAgent([offline, chatOnly], undefined, offline.id)).toBe(chatOnly);
+    expect(() => pickWorkbenchAgent([connected], offline.id)).toThrow("重新选择");
+  });
+
+  it("shows which agent can claim each stage of an existing roomless work item", () => {
+    const primaryWorker = {
+      agentId: MY_CODEX_ID,
+      displayName: "Codex",
+      platform: "codex",
+      ownerUserId: ME_ID,
+      ownerDisplayName: "庞彦",
+      isOwnedByViewer: true,
+    };
+    const verifier = {
+      ...primaryWorker,
+      agentId: MY_AGY_ID,
+      displayName: "DeepSeek",
+      platform: "deepseek",
+    };
+    const common = {
+      workItemId: "wrk_test_no_room",
+      status: "waiting",
+      attemptCount: 0,
+      leaseVersion: 0,
+      ownedPaths: ["**"],
+      diffAdded: 0,
+      diffRemoved: 0,
+      changedFiles: [],
+      steerNotes: [],
+    };
+    const item = WorkItemDtoSchema.parse({
+      id: common.workItemId,
+      workspaceId: "wsp_test",
+      workspaceName: "示例项目",
+      ownerUserId: ME_ID,
+      anchorMessageSeq: 0,
+      title: "修改文档",
+      brief: "修改文档",
+      topology: "verify_loop",
+      tier: "worktree_write",
+      stage: "working",
+      worktreeBranch: "oh/task-example",
+      primaryWorker,
+      verifier,
+      slices: [
+        {
+          ...common,
+          sliceId: "slc_write",
+          orderIndex: 0,
+          title: "执行",
+          leaseRole: "write",
+          assignedAgent: primaryWorker,
+          liveSummary: "Queued for worker claim.",
+        },
+        {
+          ...common,
+          sliceId: "slc_verify",
+          orderIndex: 1,
+          title: "复核",
+          leaseRole: "verify",
+          assignedAgent: verifier,
+          liveSummary: "Waiting for execution slices to complete.",
+        },
+      ],
+      version: 1,
+      createdAtIso: "2026-11-24T00:00:00.000Z",
+      updatedAtIso: "2026-11-24T00:00:00.000Z",
+    });
+    const view = toSoloWorkTaskView(item, Date.parse(item.createdAtIso));
+    const renderDetail = (task: typeof view) =>
+      renderToStaticMarkup(
+        createElement(
+          AppTooltipProvider,
+          null,
+          createElement(WorkbenchTaskDetailPane, {
+            task,
+            ownedAgents: OWNED_AGENTS.map((agent) => ({
+              ...agent,
+              workspaceListenerConnected: false,
+            })),
+            ownerDisplayName: "庞彦",
+            isEscalating: false,
+            onEscalate() {},
+            onOpenEscalatedRoom() {},
+            onConfigureWorkspace() {},
+          }),
+        ),
+      );
+    const html = renderDetail(view);
+    expect(html).toContain("等待 Codex 认领执行分片");
+    expect(html).toContain("所有执行分片完成后开始复核");
+    expect(html).toContain("工单监听尚未连接");
+    expect(html.match(/href="\/install.md"/g)).toHaveLength(1);
+    expect(html).not.toContain("打开执行目录");
+    const reported = {
+      agentEnvironment: "CLI",
+      sessionJsonlPath: "sessions/test.jsonl",
+      rollingMemoryPath: "memory.md",
+      gitNotesAttached: false,
+    };
+    const worktree = "/worktrees/hash-51b8c2";
+    const completed = {
+      ...view,
+      slices: view.slices
+        .map((slice) => ({
+          ...slice,
+          provenance: {
+            ...reported,
+            leaseRole: slice.leaseRole ?? "write",
+            workingDirectory: slice.leaseRole === "verify" ? "/tmp/review" : worktree,
+          },
+        }))
+        .reverse(),
+    };
+    expect(renderDetail(completed)).toContain(`title="${worktree}"`);
+    expect(
+      toSoloWorkTaskView({ ...item, stage: "verifying" }, Date.parse(item.updatedAtIso)).slices[1]
+        ?.liveSummary,
+    ).toBe("等待 DeepSeek 认领复核分片");
+  });
+
+  it("quotes the execution directory for the shell on the reporting device", () => {
+    expect(quoteWorkbenchPath("~/folder with spaces")).toBe(`"$HOME"'/folder with spaces'`);
+    expect(quoteWorkbenchPath("/projects/O'Brien")).toBe(`'/projects/O'"'"'Brien'`);
+    expect(quoteWorkbenchPath("C:\\projects\\O'Brien")).toBe("'C:\\projects\\O''Brien'");
   });
 
   it("seeds 3-column showcase tasks with unified diffs and transitions through attention, review, and escalation", () => {

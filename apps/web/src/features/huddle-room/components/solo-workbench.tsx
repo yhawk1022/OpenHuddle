@@ -43,6 +43,7 @@ import {
   usePrefersReducedMotion,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
+import { getReachVisualMeta } from "../../../lib/format.js";
 import { navigateBackOr, navigateTo, useBrowserLocation } from "../../../lib/session-store.js";
 import { isImeComposing } from "../../../lib/viewport-sync.js";
 import {
@@ -118,7 +119,7 @@ function formatTaskSecondaryLine(task: SoloWorkTaskView): string {
         : `${task.repoName} · 正在处理`;
     }
     case "verifying":
-      return `${task.repoName} · 正在复核代码与测试`;
+      return `${task.repoName} · ${task.slices.find((s) => s.leaseRole === "verify")?.liveSummary ?? "正在复核代码与测试"}`;
     case "done":
       return `${task.repoName} · 已签收`;
     case "cancelled":
@@ -213,14 +214,16 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
 
   const [promptText, setPromptText] = useState<string>("");
   const [isDispatching, setIsDispatching] = useState<boolean>(false);
+  const initialWorkspace =
+    props.repos.find((repo) => repo.id === props.initialWorkspaceId) ?? props.repos[0];
   const [dispatchRepoId, setDispatchRepoId] = useState<string>(
-    () => props.initialWorkspaceId ?? props.repos[0]?.id ?? "",
+    () => props.initialWorkspaceId ?? initialWorkspace?.id ?? "",
   );
   const [dispatchTopology, setDispatchTopology] = useState<WorkTopology>(
-    () => props.repos[0]?.defaultTopology ?? "verify_loop",
+    () => initialWorkspace?.defaultTopology ?? "verify_loop",
   );
   const [preferredWorkerId, setPreferredWorkerId] = useState<AgentId | "auto">(
-    () => props.repos[0]?.defaultWorkerId ?? "auto",
+    () => initialWorkspace?.defaultWorkerId ?? "auto",
   );
 
   const [workspaceModalState, setWorkspaceModalState] = useState<AgentWorkspace | "create" | null>(
@@ -413,7 +416,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
       { value: "auto", label: "自动分配" },
       ...props.ownedAgents.map((a) => ({
         value: a.id,
-        label: stripAgentOwnerPrefix(a.displayName, props.currentUser.displayName),
+        label: `${stripAgentOwnerPrefix(a.displayName, props.currentUser.displayName)} · ${a.workspaceListenerConnected ? "工单监听已连接" : getReachVisualMeta(a.reach).shortLabel}`,
       })),
     ],
     [props.currentUser.displayName, props.ownedAgents],
@@ -1147,6 +1150,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                   >
                     <WorkbenchTaskDetailPane
                       task={resolvedSelectedTask}
+                      ownedAgents={props.ownedAgents}
                       workspace={resolvedTaskWorkspace}
                       ownerDisplayName={props.currentUser.displayName}
                       isEscalating={props.escalatingTaskId === resolvedSelectedTask.id}

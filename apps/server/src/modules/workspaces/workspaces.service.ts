@@ -358,19 +358,15 @@ export class WorkspacesService {
       this.autoSeededOwners.add(ownerUserId);
     }
 
-    const [roomBindings, hostOnline] = await Promise.all([
+    const [roomBindings, ownerAgentIds] = await Promise.all([
       this.repo.listRoomBindingsByOwner(ownerUserId),
-      this.hasConnectedOwnerAgent(ownerUserId),
+      this.repo.listAgentIdsByOwner(ownerUserId),
     ]);
 
     return {
       ok: true,
       workspaces: records.map((ws) =>
-        serializeWorkspaceForViewer(
-          ws,
-          caller,
-          this.resolveWorkspaceOnline(ws.hostMode, hostOnline),
-        ),
+        serializeWorkspaceForViewer(ws, caller, this.resolveWorkspaceOnline(ws, ownerAgentIds)),
       ),
       roomBindings: [...roomBindings],
     };
@@ -440,7 +436,7 @@ export class WorkspacesService {
 
     const created = await this.mustFindWorkspace(id);
     this.autoSeededOwners.add(human.userId);
-    const hostOnline = await this.hasConnectedOwnerAgent(human.userId);
+    const ownerAgentIds = await this.repo.listAgentIdsByOwner(human.userId);
 
     await this.realtimeBus.publishToUser(human.userId, {
       type: "workspace.updated",
@@ -450,7 +446,7 @@ export class WorkspacesService {
     return serializeWorkspaceForViewer(
       created,
       caller,
-      this.resolveWorkspaceOnline(created.hostMode, hostOnline),
+      this.resolveWorkspaceOnline(created, ownerAgentIds),
     );
   }
 
@@ -540,16 +536,16 @@ export class WorkspacesService {
     });
 
     const updated = await this.mustFindWorkspace(workspaceId);
-    const [boundRooms, hostOnline] = await Promise.all([
+    const [boundRooms, ownerAgentIds] = await Promise.all([
       this.repo.listBoundRoomIdsForWorkspace(workspaceId),
-      this.hasConnectedOwnerAgent(human.userId),
+      this.repo.listAgentIdsByOwner(human.userId),
     ]);
 
     await this.publishWorkspaceUpdated(workspaceId, human.userId, boundRooms);
     return serializeWorkspaceForViewer(
       updated,
       caller,
-      this.resolveWorkspaceOnline(updated.hostMode, hostOnline),
+      this.resolveWorkspaceOnline(updated, ownerAgentIds),
     );
   }
 
@@ -626,17 +622,15 @@ export class WorkspacesService {
     await this.assertRoomMemberAccess(roomId, caller);
     const { workspaces, bindings } = await this.repo.listBoundWorkspacesForRoom(roomId);
 
-    const ownerOnlineCache = new Map<UserId, boolean>();
+    const ownerAgents = new Map<UserId, readonly AgentId[]>();
     const dtos: WorkspaceDto[] = [];
     for (const ws of workspaces) {
-      let online = ownerOnlineCache.get(ws.ownerUserId);
-      if (online === undefined) {
-        online = await this.hasConnectedOwnerAgent(ws.ownerUserId);
-        ownerOnlineCache.set(ws.ownerUserId, online);
+      let agentIds = ownerAgents.get(ws.ownerUserId);
+      if (agentIds === undefined) {
+        agentIds = await this.repo.listAgentIdsByOwner(ws.ownerUserId);
+        ownerAgents.set(ws.ownerUserId, agentIds);
       }
-      dtos.push(
-        serializeWorkspaceForViewer(ws, caller, this.resolveWorkspaceOnline(ws.hostMode, online)),
-      );
+      dtos.push(serializeWorkspaceForViewer(ws, caller, this.resolveWorkspaceOnline(ws, agentIds)));
     }
 
     return {
@@ -659,12 +653,14 @@ export class WorkspacesService {
 
     const filterOpts = {
       stage: query.stage,
-      activeOnly: query.claimableOnly === true,
+      claimableBy:
+        query.claimableOnly && caller.kind === "agent"
+          ? { agentId: caller.agentId, ownerUserId: caller.ownerUserId, nowMs: this.nowFn() }
+          : undefined,
       limit: query.limit,
     };
 
     let records: readonly HydratedWorkItemRecord[];
-    let preloadedJoinedRooms: readonly RoomId[] | undefined;
 
     if (query.roomId !== undefined) {
       await this.assertRoomMemberAccess(query.roomId, caller);
@@ -674,59 +670,10 @@ export class WorkspacesService {
       await this.assertWorkspaceReadAccess(ws, caller);
       records = await this.repo.listHydratedWorkItemsByWorkspace(query.workspaceId, filterOpts);
     } else {
-      preloadedJoinedRooms = await this.repo.listJoinedRoomIds(toActorMemberKey(caller));
       records = await this.repo.listHydratedWorkItemsVisibleToOwnerAndRooms({
         ownerUserId: getViewerOwnerUserId(caller),
-        joinedRoomIds: preloadedJoinedRooms,
+        joinedRoomIds: await this.repo.listJoinedRoomIds(toActorMemberKey(caller)),
         ...filterOpts,
-      });
-    }
-
-    if (query.claimableOnly === true && caller.kind === "agent") {
-      const nowMs = this.nowFn();
-      const joinedSet = new Set(
-        preloadedJoinedRooms ?? (await this.repo.listJoinedRoomIds(toActorMemberKey(caller))),
-      );
-      records = records.filter((item) => {
-        const inRoom = item.roomId === undefined || joinedSet.has(item.roomId);
-        if (!inRoom) {
-          return false;
-        }
-        const canTakeOverPeer =
-          caller.ownerUserId === item.workspaceOwnerUserId ||
-          (item.workspaceHostMode === "shared_container" &&
-            item.workspaceAllowRoomCollaborators &&
-            item.roomId !== undefined);
-        return item.slices.some((slice) => {
-          // 排除已由自身持有的活跃租约，确保 claimableOnly 仅返回待认领或已超时待接管的工作项
-          const alreadyHeldByCaller =
-            (slice.status === "running" || slice.status === "verifying") &&
-            slice.leaseOwnerAgentId === caller.agentId &&
-            slice.leaseExpiresAtMs !== undefined &&
-            slice.leaseExpiresAtMs > nowMs;
-          if (alreadyHeldByCaller) {
-            return false;
-          }
-
-          const access = evaluateWorkspaceExecutionAccess({
-            workspaceOwnerUserId: item.workspaceOwnerUserId,
-            hostMode: item.workspaceHostMode,
-            sandboxMode: item.workspaceSandboxMode,
-            allowRoomCollaborators: item.workspaceAllowRoomCollaborators,
-            agentOwnerUserId: caller.ownerUserId,
-            isRoomMember: inRoom,
-            requestedRole: slice.leaseRole,
-            requestedTier: item.tier,
-          });
-          if (!access.ok) return false;
-          return evaluateSliceClaim({
-            itemStage: item.stage,
-            slice,
-            callerAgentId: caller.agentId,
-            canTakeOverExpiredPeerSlice: canTakeOverPeer,
-            nowMs,
-          }).ok;
-        });
       });
     }
 
@@ -1090,6 +1037,17 @@ export class WorkspacesService {
       });
       if (!claimDecision.ok) {
         throw toAppError(claimDecision);
+      }
+
+      if (
+        body.expectedLeaseVersion !== undefined &&
+        (body.expectedLeaseVersion !== targetSlice.leaseVersion || claimDecision.idempotentReplay)
+      ) {
+        throw new AppError({
+          code: "WORK_LEASE_EXPIRED",
+          statusCode: 409,
+          message: "Another listener has already claimed this slice generation.",
+        });
       }
 
       const nextSlice: OrchestrationSliceState =
@@ -2127,14 +2085,21 @@ export class WorkspacesService {
     }
   }
 
-  private resolveWorkspaceOnline(hostMode: WorkspaceHostMode, hasConnectedAgent: boolean): boolean {
-    if (hostMode === "shared_container") {
-      return true;
+  private resolveWorkspaceOnline(
+    workspace: HydratedWorkspaceRecord,
+    ownerAgentIds: readonly AgentId[],
+  ): boolean {
+    if (workspace.hostMode === "local_machine") {
+      if (this.isLoopbackHost) return true;
+      const candidates = workspace.defaultWorkerAgentId
+        ? [workspace.defaultWorkerAgentId]
+        : ownerAgentIds;
+      return candidates.some((id) => this.realtimeBus.hasWorkspaceListener(id) === true);
     }
-    if (hostMode === "local_machine" && this.isLoopbackHost) {
-      return true;
-    }
-    return hasConnectedAgent;
+    return (
+      workspace.hostMode === "shared_container" ||
+      ownerAgentIds.some((id) => this.realtimeBus.getActiveAgentConnectionCount(id) > 0)
+    );
   }
 
   private async ensureDefaultLocalWorkspace(ownerUserId: UserId, rootDir: string): Promise<void> {
@@ -2245,11 +2210,6 @@ export class WorkspacesService {
       }
     }
     await this.settleRealtimePublishes(tasks, "work.trace");
-  }
-
-  private async hasConnectedOwnerAgent(ownerUserId: UserId): Promise<boolean> {
-    const agentIds = await this.repo.listAgentIdsByOwner(ownerUserId);
-    return agentIds.some((id) => this.realtimeBus.getActiveAgentConnectionCount(id) > 0);
   }
 
   private async mustFindWorkspace(workspaceId: WorkspaceId): Promise<HydratedWorkspaceRecord> {

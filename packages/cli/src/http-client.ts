@@ -11,8 +11,14 @@ import type {
   AgentPlatform,
   ApiErrorEnvelope,
   CastProposalVoteBody,
+  ClaimWorkSliceBody,
+  ClaimWorkSliceResponse,
+  CompleteWorkSliceBody,
   ErrorCode,
+  HeartbeatWorkSliceBody,
   InboxResponse,
+  ListWorkItemsResponse,
+  ListWorkspacesResponse,
   MeResponse,
   MessageAttachmentUpload,
   MessageDto,
@@ -25,6 +31,7 @@ import type {
   ProposalCardDto,
   ProposalDraft,
   ProposalId,
+  RaiseWorkAttentionBody,
   ReadCursorSeq,
   RedeemAgentConnectionBody,
   RoomDetailDto,
@@ -33,8 +40,11 @@ import type {
   RoomMemberDto,
   RoomSummaryDto,
   RoomVisibility,
+  SingleWorkItemResponse,
   UnreadConflictDetails,
   UpdateMeBody,
+  WorkItemId,
+  WorkSliceId,
 } from "@openhuddle/protocol";
 import { normalizeServerUrl } from "./token-store.js";
 
@@ -362,6 +372,64 @@ export class OpenHuddleHttpClient {
    */
   public async getMe(signal?: AbortSignal): Promise<MeResponse> {
     return this.requestJson<MeResponse>("GET", "/api/v1/me", signal ? { signal } : undefined);
+  }
+
+  public listClaimableWork(signal: AbortSignal): Promise<ListWorkItemsResponse> {
+    return this.requestJson("GET", "/api/v1/work-items?claimableOnly=true&limit=100", { signal });
+  }
+
+  public getWorkItem(itemId: WorkItemId, signal: AbortSignal): Promise<SingleWorkItemResponse> {
+    return this.requestJson("GET", `/api/v1/work-items/${encodeURIComponent(itemId)}`, { signal });
+  }
+
+  public listWorkspaces(signal: AbortSignal): Promise<ListWorkspacesResponse> {
+    return this.requestJson("GET", "/api/v1/workspaces", { signal });
+  }
+
+  public claimWorkSlice(
+    itemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: ClaimWorkSliceBody,
+    signal: AbortSignal,
+  ): Promise<ClaimWorkSliceResponse> {
+    return this.requestJson("POST", `${this.sliceUrl(itemId, sliceId)}/claim`, { body, signal });
+  }
+
+  public renewWorkSlice(
+    itemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: HeartbeatWorkSliceBody,
+    signal: AbortSignal,
+  ): Promise<SingleWorkItemResponse> {
+    return this.requestJson("POST", `${this.sliceUrl(itemId, sliceId)}/heartbeat`, {
+      body,
+      signal,
+    });
+  }
+
+  public completeWorkSlice(
+    itemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: CompleteWorkSliceBody,
+    signal: AbortSignal,
+  ): Promise<SingleWorkItemResponse> {
+    return this.requestJson("POST", `${this.sliceUrl(itemId, sliceId)}/complete`, { body, signal });
+  }
+
+  public raiseWorkAttention(
+    itemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: RaiseWorkAttentionBody,
+    signal: AbortSignal,
+  ): Promise<SingleWorkItemResponse> {
+    return this.requestJson("POST", `${this.sliceUrl(itemId, sliceId)}/attention`, {
+      body,
+      signal,
+    });
+  }
+
+  private sliceUrl(itemId: WorkItemId, sliceId: WorkSliceId): string {
+    return `/api/v1/work-items/${encodeURIComponent(itemId)}/slices/${encodeURIComponent(sliceId)}`;
   }
 
   /**

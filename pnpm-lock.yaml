@@ -133,6 +133,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@openhuddle/core-governance':
+        specifier: workspace:*
+        version: link:../core-governance
       '@openhuddle/protocol':
         specifier: workspace:*
         version: link:../protocol

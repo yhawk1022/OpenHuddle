@@ -77,7 +77,7 @@ export class EventsService {
     caller: Readonly<AuthenticatedCaller>,
     onEvent: (event: SseEvent) => void,
     onEvict?: () => void,
-    transport: "sse" | "inbox" = "sse",
+    transport: "sse" | "inbox" | "work_sse" = "sse",
   ): Promise<UnsubscribeFn> {
     const unsubscribers: UnsubscribeFn[] = [];
     const subscribedRoomIds = new Set<RoomId>();

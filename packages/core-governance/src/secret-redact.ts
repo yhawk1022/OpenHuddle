@@ -47,6 +47,9 @@ export function scrubWorkProvenance(
     leaseRole: provenance.leaseRole,
     sessionJsonlPath: scrubWorkText(provenance.sessionJsonlPath),
     rollingMemoryPath: scrubWorkText(provenance.rollingMemoryPath),
+    ...(provenance.workingDirectory
+      ? { workingDirectory: scrubWorkText(provenance.workingDirectory) }
+      : {}),
     gitNotesAttached: provenance.gitNotesAttached,
   };
 }
