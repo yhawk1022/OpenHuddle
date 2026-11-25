@@ -77,6 +77,47 @@ import { WorkbenchTraceEvents } from "./workbench-trace-events.js";
 
 type DetailSectionTab = "changes" | "steps";
 
+export function observeWorkbenchTraceScroll(
+  container: HTMLElement,
+  content: HTMLElement,
+): () => void {
+  let atBottom = true;
+  const maxScrollTop = () => container.scrollHeight - container.clientHeight;
+  let observedMax = maxScrollTop();
+  const rememberPosition = () => {
+    // The browser can deliver a resize-induced scroll before the resize observer.
+    // Its new scroll range says nothing about whether the reader left the last event.
+    if (maxScrollTop() === observedMax) atBottom = observedMax - container.scrollTop <= 4;
+  };
+  const followLatest = () => {
+    observedMax = maxScrollTop();
+    if (atBottom && !container.querySelector("details[open]")) {
+      container.scrollTop = observedMax;
+    }
+  };
+
+  followLatest();
+  container.addEventListener("scroll", rememberPosition, { passive: true });
+  let observer: ResizeObserver | MutationObserver;
+  if (typeof ResizeObserver !== "undefined") {
+    observer = new ResizeObserver(followLatest);
+    observer.observe(container);
+    observer.observe(content);
+  } else {
+    // The viewport synchronizer writes the current keyboard and viewport size to <html>.
+    observer = new MutationObserver(followLatest);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["style", "data-keyboard-open"],
+    });
+    observer.observe(content, { childList: true, subtree: true, characterData: true });
+  }
+  return () => {
+    container.removeEventListener("scroll", rememberPosition);
+    observer.disconnect();
+  };
+}
+
 function WorkbenchTraceScrollArea({
   followLiveTrace,
   children,
@@ -92,36 +133,7 @@ function WorkbenchTraceScrollArea({
     const content = contentRef.current;
     if (!followLiveTrace || !container || !content) return;
 
-    let atBottom = true;
-    const rememberPosition = () => {
-      atBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 4;
-    };
-    const followLatest = () => {
-      if (atBottom && !container.querySelector("details[open]")) {
-        container.scrollTop = container.scrollHeight;
-      }
-    };
-
-    followLatest();
-    container.addEventListener("scroll", rememberPosition, { passive: true });
-    let observer: ResizeObserver | MutationObserver;
-    if (typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(followLatest);
-      observer.observe(container);
-      observer.observe(content);
-    } else {
-      // The viewport synchronizer writes the current keyboard and viewport size to <html>.
-      observer = new MutationObserver(followLatest);
-      observer.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["style", "data-keyboard-open"],
-      });
-      observer.observe(content, { childList: true, subtree: true, characterData: true });
-    }
-    return () => {
-      container.removeEventListener("scroll", rememberPosition);
-      observer.disconnect();
-    };
+    return observeWorkbenchTraceScroll(container, content);
   }, [followLiveTrace]);
 
   return (

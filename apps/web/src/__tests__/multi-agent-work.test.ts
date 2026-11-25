@@ -13,11 +13,12 @@ import type {
 import { WorkItemDtoSchema } from "@openhuddle/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppTooltipProvider } from "../components/primitives/index.js";
 import { MarkdownContent } from "../components/ui/markdown-content.js";
 import {
   WorkbenchTaskDetailPane,
+  observeWorkbenchTraceScroll,
   quoteWorkbenchPath,
 } from "../features/huddle-room/components/workbench-task-detail.js";
 import {
@@ -481,6 +482,48 @@ describe("solo workbench store & unified diff lifecycle", () => {
       expect(collapsed).not.toContain(raw);
       expect(html).toContain(raw);
     }
+  });
+
+  it("keeps the last trace visible when a keyboard resize dispatches scroll first", ({
+    onTestFinished,
+  }) => {
+    let notifyResize = () => {};
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    vi.stubGlobal(
+      "ResizeObserver",
+      vi.fn((callback: () => void) => {
+        notifyResize = callback;
+        return { observe, disconnect };
+      }),
+    );
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
+
+    const container = Object.assign(new EventTarget(), {
+      scrollHeight: 1221,
+      clientHeight: 267,
+      scrollTop: 0,
+      querySelector: () => null,
+    });
+    const content = {} as HTMLElement;
+    const stop = observeWorkbenchTraceScroll(container as unknown as HTMLElement, content);
+    expect(observe.mock.calls).toEqual([[container], [content]]);
+    expect(container.scrollTop).toBe(954);
+
+    container.clientHeight = 203;
+    container.dispatchEvent(new Event("scroll"));
+    notifyResize();
+    expect(container.scrollTop).toBe(1018);
+
+    container.scrollTop = 200;
+    container.dispatchEvent(new Event("scroll"));
+    container.clientHeight = 267;
+    notifyResize();
+    expect(container.scrollTop).toBe(200);
+    stop();
+    expect(disconnect).toHaveBeenCalledOnce();
   });
 
   it("quotes the execution directory for the shell on the reporting device", () => {
