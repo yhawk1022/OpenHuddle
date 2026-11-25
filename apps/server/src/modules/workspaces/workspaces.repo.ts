@@ -50,7 +50,7 @@ import {
   type WorkspaceSandboxMode,
   WorkspaceSandboxModeSchema,
 } from "@openhuddle/protocol";
-import { and, eq, sql } from "drizzle-orm";
+import { type SQL, and, eq, sql } from "drizzle-orm";
 import { extractSqlRows } from "../../infra/sql-rows.js";
 import { type HydratedRawMessageRecord, MessagesRepository } from "../messages/messages.repo.js";
 import {
@@ -1074,6 +1074,34 @@ export class WorkspacesRepository {
     );
   }
 
+  /** The old listener emitted these fixed options on process failure. Lock the aggregate before
+   * clearing its prompt, following the same lock order as human answers and manual retries. */
+  public async lockInterruptedDevicePrompts(batchLimit: number) {
+    const result = await this.db.execute(sql`
+      SELECT wi.id AS "workItemId", s.id AS "sliceId"
+      FROM work_items wi
+      JOIN work_slices s ON s.id = wi.attention_json->>'sliceId' AND s.work_item_id = wi.id
+      JOIN workspaces w ON w.id = wi.workspace_id
+      JOIN agents a ON a.id = s.assigned_agent_id
+      WHERE wi.stage = 'awaiting_answer'
+        AND wi.attention_json->>'question' LIKE '设备执行失败：Agent CLI 退出（null）：%'
+        AND wi.attention_json->'options' = '["已处理设备或工作区问题，重试", "补充说明后继续"]'::jsonb
+        AND wi.attention_json->>'answeredChoice' IS NULL AND wi.attention_json->>'answeredAtMs' IS NULL
+        AND s.status = 'waiting' AND s.lease_version > 0
+        AND s.attempt_count > 0 AND s.attempt_count < ${MAX_SLICE_ATTEMPTS}
+        AND s.lease_owner_agent_id = s.assigned_agent_id AND s.assigned_agent_id = wi.attention_json->>'askedByAgentId'
+        AND ${this.workExecutionAllowed(sql`a.id`, sql`a.owner_user_id`)}
+        AND (s.lease_role <> 'write' OR w.sandbox_mode <> 'read_only')
+        AND (s.lease_role <> 'verify' OR NOT EXISTS (
+          SELECT 1 FROM work_slices writer WHERE writer.work_item_id = wi.id
+            AND writer.lease_role <> 'verify' AND writer.status <> 'ready'
+        ))
+      ORDER BY wi.updated_at, wi.id LIMIT ${Math.max(1, Math.min(100, Math.trunc(batchLimit)))}
+      FOR UPDATE OF wi SKIP LOCKED
+    `);
+    return extractSqlRows<{ workItemId: WorkItemId; sliceId: WorkSliceId }>(result);
+  }
+
   public async findReviewEvidence(
     sliceId: WorkSliceId,
     leaseVersion: number,
@@ -1202,11 +1230,16 @@ export class WorkspacesRepository {
   }
 
   private workVisibleToAgent(agent: { agentId: AgentId; ownerUserId: UserId }) {
-    return sql`wi.stage IN ('working', 'verifying') AND wi.tier <> 'chat_only'
+    return sql`wi.stage IN ('working', 'verifying')
+      AND ${this.workExecutionAllowed(sql`${agent.agentId}`, sql`${agent.ownerUserId}`)}`;
+  }
+
+  private workExecutionAllowed(agentId: SQL, ownerUserId: SQL) {
+    return sql`wi.tier <> 'chat_only'
       AND (wi.room_id IS NULL OR EXISTS (
-        SELECT 1 FROM room_members rm WHERE rm.room_id = wi.room_id AND rm.agent_id = ${agent.agentId}
+        SELECT 1 FROM room_members rm WHERE rm.room_id = wi.room_id AND rm.agent_id = ${agentId}
       ))
-      AND (w.owner_user_id = ${agent.ownerUserId} OR (
+      AND (w.owner_user_id = ${ownerUserId} OR (
         w.host_mode = 'shared_container' AND w.allow_room_collaborators
         AND wi.room_id IS NOT NULL AND wi.tier <> 'full_owner_delegate'
       ))`;

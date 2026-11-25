@@ -282,6 +282,174 @@ describe("@openhuddle/server — 5D Workspaces & Multi-Agent Collaborative Work"
     expect(backlog.workAssignments).toEqual(inbox.workAssignments);
   });
 
+  it("recovers only pending legacy device interruptions within the assigned agent's access and retry budget", async () => {
+    const owner = await loginHumanViaOtp(app, "interrupted@openhuddle.dev", "Owner");
+    const writer = await pairAgentForOwner(app, owner.sessionToken, "Writer", "codex");
+    const verifier = await pairAgentForOwner(app, owner.sessionToken, "Verifier", "claude_code");
+    const service = new WorkspacesService({
+      repo: new WorkspacesRepository(database.db),
+      realtimeBus: bus,
+    });
+    const options = ["已处理设备或工作区问题，重试", "补充说明后继续"];
+    const interrupted =
+      "设备执行失败：Agent CLI 退出（null）：… --remote-debugging-port=0 about:blank' in /Users/example/.openhuddle/worktrees/device/game exited 134 in 0ms:";
+    const request = (path: string, token: string, body?: unknown) =>
+      app.request(`/api/v1/${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    const { workspace } = (await (
+      await request("workspaces", owner.sessionToken, {
+        name: "Device",
+        kind: "git_repo",
+        roots: [{ localPath: "~/game" }],
+        hostMode: "local_machine",
+        sandboxMode: "worktree_pool",
+      })
+    ).json()) as SingleWorkspaceResponse;
+    async function createTask() {
+      const response = await request("work-items", owner.sessionToken, {
+        workspaceId: workspace.id,
+        brief: "Update game",
+        topology: "verify_loop",
+        tier: "worktree_write",
+        primaryWorkerAgentId: writer.agent.id,
+        verifierAgentId: verifier.agent.id,
+      });
+      expect(response.status).toBe(201);
+      const { item } = (await response.json()) as SingleWorkItemResponse;
+      const path = `work-items/${item.id}`;
+      return {
+        item,
+        path,
+        write: `${path}/slices/${item.slices[0]?.sliceId}`,
+        verify: `${path}/slices/${item.slices[1]?.sliceId}`,
+      };
+    }
+    const read = async (path: string) =>
+      ((await (await request(path, owner.sessionToken)).json()) as SingleWorkItemResponse).item;
+    async function claim(path: string, agent: PairAgentResponse, version: number) {
+      const response = await request(`${path}/claim`, agent.token, {
+        expectedLeaseVersion: version - 1,
+      });
+      expect(response.status).toBe(200);
+      expect(((await response.json()) as ClaimWorkSliceResponse).claimedSlice.leaseVersion).toBe(
+        version,
+      );
+    }
+    const manual = [];
+    for (const [question, choices] of [
+      [interrupted.replace("（null）", "（1）"), options],
+      [`是否重试？${interrupted}`, options],
+      [interrupted, ["发布到测试环境", "等待审计"]],
+    ] as const) {
+      const task = await createTask();
+      await claim(task.write, writer, 1);
+      expect(
+        (
+          await request(`${task.write}/attention`, writer.token, {
+            leaseVersion: 1,
+            question,
+            options: choices,
+          })
+        ).status,
+      ).toBe(200);
+      manual.push(task.path);
+    }
+
+    const task = await createTask();
+    const completeWrite = (version: number) =>
+      request(`${task.write}/complete`, writer.token, {
+        leaseVersion: version,
+        summary: "Updated game",
+      });
+    const interrupt = (path: string, agent: PairAgentResponse, version: number) =>
+      request(`${path}/attention`, agent.token, {
+        leaseVersion: version,
+        question: interrupted,
+        options,
+      });
+    await claim(task.write, writer, 1);
+    expect((await completeWrite(1)).status).toBe(200);
+    await claim(task.verify, verifier, 1);
+    expect(
+      (
+        await request(`${task.verify}/complete`, verifier.token, {
+          leaseVersion: 1,
+          verdict: "changes_requested",
+          summary: "Fix game",
+        })
+      ).status,
+    ).toBe(200);
+    await claim(task.write, writer, 2);
+    expect((await interrupt(task.write, verifier, 2)).status).toBeGreaterThanOrEqual(400);
+    expect((await interrupt(task.write, writer, 2)).status).toBe(200);
+    const writeId = task.item.slices[0]?.sliceId;
+    await database.db.execute(
+      sql`UPDATE work_slices SET assigned_agent_id = ${verifier.agent.id} WHERE id = ${writeId}`,
+    );
+    expect((await service.sweepExpiredLeases()).reclaimedCount).toBe(0);
+    await database.db.execute(
+      sql`UPDATE work_slices SET assigned_agent_id = ${writer.agent.id} WHERE id = ${writeId}`,
+    );
+    await database.db.execute(
+      sql`UPDATE workspaces SET sandbox_mode = 'read_only' WHERE id = ${workspace.id}`,
+    );
+    expect((await service.sweepExpiredLeases()).reclaimedCount).toBe(0);
+    await database.db.execute(
+      sql`UPDATE workspaces SET sandbox_mode = 'worktree_pool' WHERE id = ${workspace.id}`,
+    );
+
+    const events: SseEvent[] = [];
+    const verifierEvents: SseEvent[] = [];
+    bus.subscribeAgent(writer.agent.id, (event) => {
+      events.push(event);
+    });
+    bus.subscribeAgent(verifier.agent.id, (event) => {
+      verifierEvents.push(event);
+    });
+    const sweeps = await Promise.all([service.sweepExpiredLeases(), service.sweepExpiredLeases()]);
+    expect(sweeps[0].reclaimedCount + sweeps[1].reclaimedCount).toBe(1);
+    expect(
+      events.filter(
+        (e) => e.type === "work.updated" && e.workItemId === task.item.id && e.stage === "working",
+      ),
+    ).toHaveLength(1);
+    expect(verifierEvents).toHaveLength(0);
+    const restored = await read(task.path);
+    expect(restored.stage).toBe("working");
+    expect(restored.attention).toBeUndefined();
+    expect(restored.slices[0]).toMatchObject({
+      status: "waiting",
+      attemptCount: 1,
+      leaseVersion: 2,
+    });
+    expect(restored.slices[0]?.leaseOwnerAgentId).toBeUndefined();
+    expect(restored.slices[0]?.leaseExpiresAtIso).toBeUndefined();
+    expect(restored.trace.filter((entry) => entry.message.includes("分片重新排队"))).toHaveLength(
+      1,
+    );
+    expect(restored.trace.some((entry) => entry.message.includes(interrupted))).toBe(true);
+    for (const path of manual) expect((await read(path)).stage).toBe("awaiting_answer");
+    await claim(task.write, writer, 3);
+    expect((await completeWrite(3)).status).toBe(200);
+    await claim(task.verify, verifier, 2);
+    expect((await interrupt(task.verify, verifier, 2)).status).toBe(200);
+    expect((await service.sweepExpiredLeases()).reclaimedCount).toBe(1);
+    expect((await read(task.path)).stage).toBe("verifying");
+    await claim(task.verify, verifier, 3);
+    expect((await interrupt(task.verify, verifier, 3)).status).toBe(200);
+    expect((await service.sweepExpiredLeases()).reclaimedCount).toBe(1);
+    await claim(task.verify, verifier, 4);
+    expect((await interrupt(task.verify, verifier, 4)).status).toBe(200);
+    expect((await service.sweepExpiredLeases()).reclaimedCount).toBe(0);
+    const exhausted = await read(task.path);
+    expect(exhausted.stage).toBe("awaiting_answer");
+    expect(exhausted.attention?.question).toBe(interrupted);
+    expect(exhausted.slices[1]?.attemptCount).toBe(MAX_SLICE_ATTEMPTS);
+  });
+
   it("fences full review evidence, preserves manual questions and resumes only the missing-file review once", async () => {
     const owner = await loginHumanViaOtp(app, "evidence@openhuddle.dev", "Owner");
     const writer = await pairAgentForOwner(app, owner.sessionToken, "Writer", "codex");

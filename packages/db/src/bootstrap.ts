@@ -271,6 +271,7 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS work_items_workspace_updated_idx ON work_items (workspace_id, updated_at DESC)",
   "CREATE INDEX IF NOT EXISTS work_items_room_anchor_idx ON work_items (room_id, anchor_message_seq ASC)",
   "CREATE INDEX IF NOT EXISTS work_items_owner_stage_idx ON work_items (owner_user_id, stage)",
+  "CREATE INDEX IF NOT EXISTS work_items_pending_attention_updated_idx ON work_items (updated_at, id) WHERE stage = 'awaiting_answer'",
   `CREATE TABLE IF NOT EXISTS work_slices (
     id TEXT PRIMARY KEY,
     work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,

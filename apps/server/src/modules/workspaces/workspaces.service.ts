@@ -1316,7 +1316,7 @@ export class WorkspacesService {
       item: updated.refreshed,
       wakeAgentIds: [],
       actorCaller: caller,
-      notifyParticipantAgents: !updated.idempotentReplay,
+      notifyAllParticipantAgents: !updated.idempotentReplay,
     });
 
     const dto = serializeWorkItemForViewer(updated.refreshed, caller);
@@ -1396,7 +1396,7 @@ export class WorkspacesService {
       wakeAgentIds: [],
       actorCaller: caller,
       // 瞬态心跳仅刷新人类 UI 与房间视图，避免对蜂群内所有兄弟 Agent 产生 N 倍 pg_notify 写放大
-      notifyParticipantAgents: false,
+      notifyAllParticipantAgents: false,
     });
     return serializeWorkItemForViewer(updated, caller);
   }
@@ -2188,11 +2188,68 @@ export class WorkspacesService {
       });
     }
 
+    const interruptedCount = await this.requeueInterruptedDevicePrompts(batchLimit, nowMs);
     return {
-      scannedCount: txResult.scannedCount,
-      reclaimedCount: txResult.reclaimedCount,
+      scannedCount: txResult.scannedCount + interruptedCount,
+      reclaimedCount: txResult.reclaimedCount + interruptedCount,
       blockedCount: txResult.blockedCount,
     };
+  }
+
+  private async requeueInterruptedDevicePrompts(
+    batchLimit: number,
+    nowMs: number,
+  ): Promise<number> {
+    const recovered = await this.repo.runInTransaction(async (txRepo) => {
+      const candidates = await txRepo.lockInterruptedDevicePrompts(batchLimit);
+      const updates = [];
+      for (const { workItemId, sliceId } of candidates) {
+        const item = await this.mustReloadWorkItem(txRepo, workItemId);
+        const slice = this.mustFindSlice(item, sliceId);
+        const trace = buildTraceEntry({
+          nowMs,
+          actorName: "OpenHuddle",
+          kind: "handoff",
+          sliceId,
+          message: "设备上的 Agent 进程已中断，分片重新排队。",
+          detail: `本次租约 v${slice.leaseVersion}，已使用 ${slice.attemptCount}/${MAX_SLICE_ATTEMPTS} 次执行机会。`,
+        });
+        await txRepo.persistWorkItemState({
+          workItemId,
+          nextStage: slice.leaseRole === "verify" ? "verifying" : "working",
+          nextSlices: item.slices.map((s) =>
+            s.sliceId === sliceId
+              ? {
+                  ...s,
+                  leaseOwnerAgentId: undefined,
+                  leaseExpiresAtMs: undefined,
+                  liveSummary: trace.message,
+                }
+              : s,
+          ),
+          nextAttention: null,
+          nextReview: item.review ?? null,
+          nextTrace: [...item.trace, trace],
+          dirtySliceIds: new Set([sliceId]),
+        });
+        updates.push({
+          item: await this.mustReloadWorkItem(txRepo, workItemId),
+          agentId: slice.assignedAgentId,
+          trace,
+        });
+      }
+      return updates;
+    });
+    for (const { item, agentId, trace } of recovered) {
+      await this.publishTraceEvents(item, [trace]);
+      await this.fanOutPostCommitSignals({
+        item,
+        wakeAgentIds: [agentId],
+        actorCaller: PUBLIC_NEUTRAL_VIEWER,
+        notifyAllParticipantAgents: false,
+      });
+    }
+    return recovered.length;
   }
 
   private buildSliceSpecs(
@@ -2603,7 +2660,7 @@ export class WorkspacesService {
     readonly roomMilestoneMessage?: HydratedRawMessageRecord | undefined;
     readonly wakeAgentIds: readonly AgentId[];
     readonly actorCaller: Readonly<AuthenticatedCaller>;
-    readonly notifyParticipantAgents?: boolean | undefined;
+    readonly notifyAllParticipantAgents?: boolean | undefined;
   }): Promise<void> {
     const { item, roomMilestoneMessage, wakeAgentIds, actorCaller } = params;
     const tasks: Array<Promise<void>> = [];
@@ -2636,11 +2693,12 @@ export class WorkspacesService {
       tasks.push(this.realtimeBus.publishToRoom(item.roomId, workEvent));
     }
 
-    if (params.notifyParticipantAgents !== false) {
-      const participantAgentIds = new Set<AgentId>(item.slices.map((s) => s.assignedAgentId));
-      for (const agentId of participantAgentIds) {
-        tasks.push(this.realtimeBus.publishToAgent(agentId, workEvent));
-      }
+    const workUpdateRecipients =
+      params.notifyAllParticipantAgents === false
+        ? wakeAgentIds
+        : item.slices.map((s) => s.assignedAgentId);
+    for (const agentId of new Set(workUpdateRecipients)) {
+      tasks.push(this.realtimeBus.publishToAgent(agentId, workEvent));
     }
 
     if (wakeAgentIds.length > 0 && item.roomId !== undefined) {

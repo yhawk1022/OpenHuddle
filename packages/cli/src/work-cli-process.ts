@@ -28,6 +28,13 @@ export interface WorkPromptInput {
   readonly prompt: string;
 }
 
+/** An externally terminated CLI can retry under the server's existing lease budget. */
+export class WorkProcessInterruptedError extends Error {
+  constructor(signal: NodeJS.Signals) {
+    super(`设备执行进程收到 ${signal} 信号，租约到期后将按现有次数限制重试。`);
+  }
+}
+
 // Model input goes through stdin. Kill the entire CLI process group when a lease is lost.
 async function runPromptProcess(
   executable: string,
@@ -73,9 +80,11 @@ async function runPromptProcess(
       stderr = (stderr + chunk).slice(-2_000);
     });
     child.once("error", reject);
-    child.once("close", (code) => {
+    child.once("close", (code, terminationSignal) => {
       stop.removeEventListener("abort", terminate);
       if (stop.aborted) reject(new Error("设备执行已中止或超时"));
+      else if (code === null && terminationSignal)
+        reject(new WorkProcessInterruptedError(terminationSignal));
       else if (code !== 0)
         reject(
           new Error(

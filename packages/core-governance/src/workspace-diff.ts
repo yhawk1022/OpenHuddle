@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 /**
  * @module core-governance/workspace-diff
  * @description 真实工作目录 `git diff` 采集与 Unified Diff 结构化解析器（零 Shell 拼接）。
@@ -6,7 +7,7 @@
  * 1. 同时覆盖已追踪文件变更（`git diff HEAD`）与新增未追踪文本文件（`git diff --no-index`），确保新建文件也能在工作台审阅面板完整展示。
  * 2. 对单文件行数与总文件数施加硬上限保护，防止巨型锁文件或构建产物撑爆 JSONB 与前端渲染树。
  */
-import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -22,6 +23,9 @@ const execFileAsync = promisify(execFile);
 const MAX_DIFF_FILES = 30;
 const MAX_LINES_PER_FILE = 450;
 const MAX_UNTRACKED_FILE_BYTES = 128 * 1024;
+const EMPTY_GIT_BLOB_IDS = ["sha1", "sha256"].map((algorithm) =>
+  createHash(algorithm).update("blob 0\0").digest("hex"),
+);
 
 export interface WorkingTreeDiffSnapshot {
   readonly reviewPatch?: string | undefined;
@@ -148,7 +152,12 @@ export function parseUnifiedGitDiff(
       }
     }
 
-    if (parsedLines.length > 0 || additions > 0 || deletions > 0) {
+    const creationId = /^new file mode 100(?:644|755)\nindex 0+\.\.([0-9a-f]{7,64})$/m.exec(
+      chunk,
+    )?.[1];
+    const emptyCreation =
+      creationId !== undefined && EMPTY_GIT_BLOB_IDS.some((id) => id.startsWith(creationId));
+    if (parsedLines.length > 0 || additions > 0 || deletions > 0 || emptyCreation) {
       files.push({
         path: filePath.slice(0, 260),
         additions,
@@ -318,7 +327,8 @@ export async function collectWorkingTreeDiff(
     includeReviewPatch &&
     allStatusPaths.length <= 200 &&
     Buffer.byteLength(combinedRawDiff) <= MAX_REVIEW_EVIDENCE_BYTES &&
-    !hasCompleteDiffPreview(changedFiles, diffFiles)
+    (/^new file mode 100(?:644|755)$/m.test(combinedRawDiff) ||
+      !hasCompleteDiffPreview(changedFiles, diffFiles))
   ) {
     const paths = new Set(parseUnifiedGitDiff(combinedRawDiff, 200, 0).map((file) => file.path));
     if (changedFiles.every((p) => paths.has(p)))
@@ -516,6 +526,27 @@ function buildTextFileDiffDto(
 /**
  * 对比非 Git 普通文件夹执行前后的文本快照，输出与 `collectWorkingTreeDiff` 同构的 Unified Diff 结果。
  */
+function newFolderFilePatch(file: string, text: string): string {
+  const hash = createHash("sha1")
+    .update(`blob ${Buffer.byteLength(text)}\0`)
+    .update(text)
+    .digest("hex");
+  const header = [
+    `diff --git a/${file} b/${file}`,
+    "new file mode 100644",
+    `index 0000000..${hash}`,
+  ];
+  if (text.length > 0) {
+    const lines = text.split("\n");
+    const endsWithNewline = text.endsWith("\n");
+    if (endsWithNewline) lines.pop();
+    header.push("--- /dev/null", `+++ b/${file}\t`, `@@ -0,0 +1,${lines.length} @@`);
+    for (const line of lines) header.push(`+${line}`);
+    if (!endsWithNewline) header.push("\\ No newline at end of file");
+  }
+  return `${header.join("\n")}\n`;
+}
+
 export function diffPlainFolderSnapshots(
   before: PlainFolderSnapshot,
   after: PlainFolderSnapshot,
@@ -532,7 +563,11 @@ export function diffPlainFolderSnapshots(
     if (dto) diffFiles.push(dto);
   }
   const patchParts: string[] = [];
-  if (includeReviewPatch && !hasCompleteDiffPreview(changedFiles, diffFiles)) {
+  if (
+    includeReviewPatch &&
+    (changedFiles.some((file) => !before.has(file)) ||
+      !hasCompleteDiffPreview(changedFiles, diffFiles))
+  ) {
     let bytes = 0;
     for (const file of changedFiles) {
       const full = buildTextFileDiffDto(
@@ -543,15 +578,19 @@ export function diffPlainFolderSnapshots(
         Number.POSITIVE_INFINITY,
       );
       if (!full) continue;
-      const text = [
-        `diff --git a/${file} b/${file}`,
-        before.has(file) ? `--- a/${file}` : "--- /dev/null",
-        after.has(file) ? `+++ b/${file}` : "+++ /dev/null",
-        ...full.lines.map(
-          (l) => ({ hunk: "", add: "+", del: "-", context: " " })[l.kind] + l.content,
-        ),
-        "",
-      ].join("\n");
+      const created = after.get(file);
+      const text =
+        created !== undefined && !before.has(file)
+          ? newFolderFilePatch(file, created)
+          : [
+              `diff --git a/${file} b/${file}`,
+              before.has(file) ? `--- a/${file}` : "--- /dev/null",
+              after.has(file) ? `+++ b/${file}` : "+++ /dev/null",
+              ...full.lines.map(
+                (l) => ({ hunk: "", add: "+", del: "-", context: " " })[l.kind] + l.content,
+              ),
+              "",
+            ].join("\n");
       bytes += Buffer.byteLength(text);
       if (bytes > MAX_REVIEW_EVIDENCE_BYTES) {
         patchParts.length = 0;

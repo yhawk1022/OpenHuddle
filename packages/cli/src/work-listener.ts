@@ -13,6 +13,8 @@ import { OpenHuddleApiError, type OpenHuddleHttpClient } from "./http-client.js"
 import { scrubSensitiveText } from "./secret-scrubber.js";
 import type { WakeExecutionTarget } from "./sse-listener.js";
 
+import { WorkProcessInterruptedError } from "./work-cli-process.js";
+
 const LEASE_MS = 90_000;
 const HEARTBEAT_MS = 20_000;
 const REQUEST_MS = 10_000;
@@ -344,6 +346,10 @@ export class DeviceWorkListener {
           signal,
         });
       } catch (err) {
+        if (err instanceof WorkProcessInterruptedError) {
+          this.options.log(`[openhuddle:work:interrupted] ${label}: ${err.message}`);
+          return;
+        }
         if (!signal.aborted) {
           await client.raiseWorkAttention(
             item.id,

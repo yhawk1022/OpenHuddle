@@ -2,6 +2,7 @@ import type { OwnedAgentSummaryDto } from "@openhuddle/protocol";
 import { afterEach, expect, it, vi } from "vitest";
 import { OpenHuddleHttpClient } from "../http-client.js";
 import { type WakeExecutionTarget, startSseListener } from "../sse-listener.js";
+import { WorkProcessInterruptedError } from "../work-cli-process.js";
 import { DeviceWorkListener, supportsDeviceWork } from "../work-listener.js";
 
 const agent = {
@@ -148,6 +149,29 @@ it("fetches a verification handoff by event id and requests attention with a scr
   } finally {
     await listener.stop();
   }
+});
+
+it("leaves an externally interrupted device turn for bounded lease recovery", async () => {
+  const executed = vi.fn(async () => {
+    throw new WorkProcessInterruptedError("SIGTERM");
+  });
+  const { listener, calls } = setup((path) => {
+    if (path.endsWith(item.id)) return Response.json({ item });
+    if (path === "/workspaces") return Response.json({ workspaces: [workspace] });
+    if (path.endsWith("/claim")) return Response.json({ item, claimedSlice: claimed });
+    throw Error(`unexpected ${path}`);
+  }, executed);
+  try {
+    listener.updated(
+      JSON.stringify({ type: "work.updated", workItemId: item.id, stage: "working", version: 2 }),
+    );
+    await vi.waitFor(() => expect(executed).toHaveBeenCalledOnce());
+  } finally {
+    await listener.stop();
+  }
+  expect(calls.some((c) => c.path.endsWith("/attention") || c.path.endsWith("/complete"))).toBe(
+    false,
+  );
 });
 
 it("aborts device execution when its lease heartbeat is rejected and never posts a stale result", async () => {

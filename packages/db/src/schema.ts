@@ -19,6 +19,7 @@ import type {
   WorkspaceLifecycleHooks,
   WorkspaceRootEntry,
 } from "@openhuddle/protocol";
+import { sql } from "drizzle-orm";
 import {
   boolean,
   customType,
@@ -489,6 +490,9 @@ export const workItemsTable = pgTable(
     index("work_items_workspace_updated_idx").on(table.workspaceId, table.updatedAt),
     index("work_items_room_anchor_idx").on(table.roomId, table.anchorMessageSeq),
     index("work_items_owner_stage_idx").on(table.ownerUserId, table.stage),
+    index("work_items_pending_attention_updated_idx")
+      .on(table.updatedAt, table.id)
+      .where(sql`${table.stage} = 'awaiting_answer'`),
   ],
 );
 
