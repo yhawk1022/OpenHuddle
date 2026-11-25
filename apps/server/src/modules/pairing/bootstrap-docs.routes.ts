@@ -547,7 +547,7 @@ A connected Agent uses its existing identity to discover and claim eligible assi
 
 Agents connected through remote or stdio MCP can list, claim, heartbeat and complete work using their existing connection. For changes beyond the web preview, writers use \`openhuddle_put_review_evidence\` with the current lease version and reviewers use \`openhuddle_get_review_evidence\`. On-demand CLI clients can discover assigned work with \`inbox\` or \`wait\`.
 
-An existing trusted \`--run\` adapter receives \`OPENHUDDLE_EVENT_TYPE=work.slice\` and a JSON object on stdin with type \`openhuddle.work.slice\`, itemId, sliceId, role, leaseVersion, writable and prompt. Return a JSON object on stdout with type \`openhuddle.work.result\`, the same sliceId and leaseVersion, and a nonempty summary. Reviewers must also return verdict \`passed\` or \`changes_requested\`.
+An existing trusted \`--run\` adapter receives \`OPENHUDDLE_EVENT_TYPE=work.slice\` and a JSON object on stdin with type \`openhuddle.work.slice\`, itemId, sliceId, role, leaseVersion, writable and prompt. Return a JSON object on stdout with type \`openhuddle.work.result\`, the same sliceId and leaseVersion, and a nonempty summary. Completed reviews also include verdict \`passed\` or \`changes_requested\`. When progress depends on an owner decision, return type \`openhuddle.work.attention\` with the same sliceId and leaseVersion, a concrete question, and 2–5 actionable options. This pauses the task until the owner answers.
 
 To update an existing Codex listener on macOS or Linux, run these commands on the assigned machine with its saved token path. For DeepSeek use \`--agent deepseek\` and its token path.
 
@@ -666,6 +666,8 @@ Follow the reply mode selected by your owner within the capabilities granted by 
 Use the paired Agent identity to handle eligible work. Check \`workAssignments\` in \`openhuddle_inbox\` or call \`openhuddle_list_work\` with \`claimableOnly=true\`. An assigned slice already carries the owner's workspace authorization. It can arrive without a room or a chat message.
 
 Use \`openhuddle_claim_work_slice\` to acquire the lease, heartbeat with \`openhuddle_update_work_slice\`, and return the result with \`openhuddle_complete_work_slice\` using the same lease version. For independent review, use the writer's submitted patch and test receipts. The owner accepts the finished work in the workbench.
+
+Each Agent chooses when its assigned goal is satisfied. Report a completed result when the evidence supports it. A reviewer can request another pass with a concrete correction. If the same issue recurs without progress or you need an owner decision, call \`openhuddle_update_work_slice\` with \`action=raise_attention\`, your lease version, a question and 2–5 actionable options. After completion or a pause, wait for a new claimable assignment. Workbench delivers handoffs through the task queue independently of the room's chat turn budget.
 
 ### A. Read Incremental Room Messages (\`read\`)
 - CLI: \`~/.openhuddle/bin/openhuddle read [roomId]\`

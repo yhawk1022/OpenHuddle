@@ -755,7 +755,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
             animate={{ opacity: 1, x: 0 }}
             exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: -6 }}
             transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
-            className="min-h-0 flex-1 overflow-y-auto overscroll-y-none px-3 pb-3"
+            className="oh-mobile-nav-list min-h-0 flex-1 overflow-y-auto overscroll-y-none px-3 pb-3"
           >
             {props.isLoadingRooms ? (
               <div className="space-y-1.5 px-1 py-1">
@@ -1126,7 +1126,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
             animate={{ opacity: 1, x: 0 }}
             exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: 6 }}
             transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
-            className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-y-none px-3 pb-3"
+            className="oh-mobile-nav-list min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-y-none px-3 pb-3"
           >
             {/* A. 新的朋友（收到的待处理申请） */}
             {incomingRequests.length > 0 ? (

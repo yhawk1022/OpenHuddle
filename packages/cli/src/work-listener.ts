@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { WorkAgentAttention } from "@openhuddle/core-governance";
 import type {
   CompleteWorkSliceBody,
   OwnedAgentSummaryDto,
@@ -356,8 +357,12 @@ export class DeviceWorkListener {
             slice.sliceId,
             {
               leaseVersion,
-              question: `设备执行失败：${diagnostic(err)}`,
-              options: ["已处理设备或工作区问题，重试", "补充说明后继续"],
+              ...(err instanceof WorkAgentAttention
+                ? err.attention
+                : {
+                    question: `设备执行失败：${diagnostic(err)}`,
+                    options: ["已处理设备或工作区问题，重试", "补充说明后继续"],
+                  }),
             },
             this.requestSignal(signal),
           );

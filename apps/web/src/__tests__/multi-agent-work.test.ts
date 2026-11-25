@@ -13,11 +13,12 @@ import type {
 import { WorkItemDtoSchema } from "@openhuddle/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppTooltipProvider } from "../components/primitives/index.js";
 import { MarkdownContent } from "../components/ui/markdown-content.js";
 import {
   WorkbenchTaskDetailPane,
+  observeWorkbenchTraceScroll,
   quoteWorkbenchPath,
 } from "../features/huddle-room/components/workbench-task-detail.js";
 import {
@@ -260,6 +261,26 @@ describe("solo workbench store & unified diff lifecycle", () => {
     },
   ] as const satisfies ReadonlyArray<OwnedAgentSummaryDto>;
 
+  const renderDetail = (task: ReturnType<typeof toSoloWorkTaskView>) =>
+    renderToStaticMarkup(
+      createElement(
+        AppTooltipProvider,
+        null,
+        createElement(WorkbenchTaskDetailPane, {
+          task,
+          ownedAgents: OWNED_AGENTS.map((agent) => ({
+            ...agent,
+            workspaceListenerConnected: false,
+          })),
+          ownerDisplayName: "庞彦",
+          isEscalating: false,
+          onEscalate() {},
+          onOpenEscalatedRoom() {},
+          onConfigureWorkspace() {},
+        }),
+      ),
+    );
+
   beforeEach(() => {
     clearSoloWorkbenchTasks();
   });
@@ -369,25 +390,6 @@ describe("solo workbench store & unified diff lifecycle", () => {
       updatedAtIso: "2026-11-24T00:00:00.000Z",
     });
     const view = toSoloWorkTaskView(item, Date.parse(item.createdAtIso));
-    const renderDetail = (task: typeof view) =>
-      renderToStaticMarkup(
-        createElement(
-          AppTooltipProvider,
-          null,
-          createElement(WorkbenchTaskDetailPane, {
-            task,
-            ownedAgents: OWNED_AGENTS.map((agent) => ({
-              ...agent,
-              workspaceListenerConnected: false,
-            })),
-            ownerDisplayName: "庞彦",
-            isEscalating: false,
-            onEscalate() {},
-            onOpenEscalatedRoom() {},
-            onConfigureWorkspace() {},
-          }),
-        ),
-      );
     const html = renderDetail(view);
     expect(html).toContain("等待 Codex 认领执行分片");
     expect(html).toContain("所有执行分片完成后开始复核");
@@ -419,6 +421,109 @@ describe("solo workbench store & unified diff lifecycle", () => {
       toSoloWorkTaskView({ ...item, stage: "verifying" }, Date.parse(item.updatedAtIso)).slices[1]
         ?.liveSummary,
     ).toBe("等待 DeepSeek 认领复核分片");
+  });
+
+  it("summarizes consecutive runner output and keeps prompt text inside closed disclosures", () => {
+    resetSoloWorkbenchShowcase(OWNED_AGENTS, "庞彦");
+    const task = dispatchSoloWorkTask({
+      rawPrompt: "检查布局",
+      topology: "direct",
+      repoId: "repo_openhuddle",
+      ownedAgents: OWNED_AGENTS,
+      ownerDisplayName: "庞彦",
+    });
+    const first = {
+      id: "a",
+      kind: "output",
+      actorName: "Codex",
+      message: "You are the implementing agent.",
+      detail: "Original terminal output",
+      timestampIso: "2026-11-24T00:00:00.000Z",
+    } as const;
+    const html = renderDetail({
+      ...task,
+      slices: task.slices.map((slice) => ({
+        ...slice,
+        liveSummary: "Raw worker instructions",
+        steerNotes: ["[Verifier #1] Original review instructions"],
+      })),
+      trace: [
+        first,
+        { ...first, id: "b", message: "Second chunk of stdout" },
+        { ...first, id: "c", actorName: "Reviewer", message: "Reviewer output" },
+        {
+          ...first,
+          id: "d",
+          kind: "review",
+          message: "复核未通过，打回修复：Original rework request",
+        },
+      ],
+    });
+    expect(html).not.toMatch(/<details[^>]*\bopen/);
+    const collapsed = html.replace(
+      /<details\b[^>]*>\s*(<summary\b[\s\S]*?<\/summary>)[\s\S]*?<\/details>/g,
+      "$1",
+    );
+    expect(collapsed).toContain('aria-label="补充说明"');
+    expect(collapsed).toContain("<textarea");
+    expect(collapsed).toContain('enterKeyHint="enter"');
+    expect(collapsed).toContain("收到了 2 条执行输出");
+    expect(collapsed).toContain("收到了执行输出");
+    expect(collapsed).toContain("已退回修改");
+    for (const raw of [
+      "You are the implementing agent.",
+      "Original terminal output",
+      "Second chunk of stdout",
+      "Reviewer output",
+      "Original rework request",
+      "Raw worker instructions",
+      "[Verifier #1] Original review instructions",
+    ]) {
+      expect(collapsed).not.toContain(raw);
+      expect(html).toContain(raw);
+    }
+  });
+
+  it("keeps the last trace visible when a keyboard resize dispatches scroll first", ({
+    onTestFinished,
+  }) => {
+    let notifyResize = () => {};
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    vi.stubGlobal(
+      "ResizeObserver",
+      vi.fn((callback: () => void) => {
+        notifyResize = callback;
+        return { observe, disconnect };
+      }),
+    );
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
+
+    const container = Object.assign(new EventTarget(), {
+      scrollHeight: 1221,
+      clientHeight: 267,
+      scrollTop: 0,
+      querySelector: () => null,
+    });
+    const content = {} as HTMLElement;
+    const stop = observeWorkbenchTraceScroll(container as unknown as HTMLElement, content);
+    expect(observe.mock.calls).toEqual([[container], [content]]);
+    expect(container.scrollTop).toBe(954);
+
+    container.clientHeight = 203;
+    container.dispatchEvent(new Event("scroll"));
+    notifyResize();
+    expect(container.scrollTop).toBe(1018);
+
+    container.scrollTop = 200;
+    container.dispatchEvent(new Event("scroll"));
+    container.clientHeight = 267;
+    notifyResize();
+    expect(container.scrollTop).toBe(200);
+    stop();
+    expect(disconnect).toHaveBeenCalledOnce();
   });
 
   it("quotes the execution directory for the shell on the reporting device", () => {

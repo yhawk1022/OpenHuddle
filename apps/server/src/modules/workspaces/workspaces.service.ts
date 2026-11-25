@@ -5,9 +5,9 @@
  * 核心流程与安全不变量：
  * 1. Owner-First 宿主边界（ADR-0010）：私人本机与个人云开发机工作区严禁跨主人派发或认领执行租约；唯有开启 `allowRoomCollaborators` 的 `shared_container` 允许同群外部 Agent 在单写者租约下协作。
  * 2. 死锁免疫锁顺序：同时写房间消息流与工单状态时，严格遵循 `rooms FOR UPDATE -> work_items FOR UPDATE`。
- * 3. 事务后实时投递（Post-Commit Only）：所有 `work.updated`、`workspace.updated`、`message.created` 与下一棒 Agent `wake` 信号一律在数据库事务提交后异步扇出。
+ * 3. 事务后实时投递（Post-Commit Only）：所有 `work.updated`、`workspace.updated`、`message.created` 与工单接棒信号一律在数据库事务提交后异步扇出。
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -21,6 +21,7 @@ import {
   evaluateSliceClaim,
   evaluateSliceCompletion,
   evaluateWorkspaceExecutionAccess,
+  recentWorkSteerNotes,
   scrubReviewPatch,
   scrubWorkText,
 } from "@openhuddle/core-governance";
@@ -247,6 +248,37 @@ function mergeDiffFilesByPath(
     byPath.set(file.path, file);
   }
   return [...byPath.values()].slice(0, 48);
+}
+
+/** Only delivered artifacts and test results count as progress; lease and trace metadata change on every retry. */
+function reviewEvidenceKey(
+  item: HydratedWorkItemRecord,
+  patchDigests: ReadonlyMap<WorkSliceId, string>,
+  receipt: Readonly<CompleteWorkSliceBody>,
+): string {
+  const previews = new Map(item.diffFiles.map((file) => [file.path, file]));
+  const deliveries = item.slices
+    .filter((slice) => slice.leaseRole !== "verify")
+    .map((slice) => ({
+      slice: slice.sliceId,
+      evidence:
+        patchDigests.get(slice.sliceId) ??
+        [...slice.changedFiles].sort().map((path) => previews.get(path) ?? path),
+      additions: slice.diffAdded,
+      deletions: slice.diffRemoved,
+      // For read-only work, the analysis itself is the deliverable.
+      analysis: slice.leaseRole === "read" ? slice.liveSummary : undefined,
+    }));
+  const testCommand = receipt.testCommand ?? item.review?.testCommand;
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        deliveries,
+        testCommand,
+        testPassed: testCommand ? (receipt.testPassed ?? item.review?.testPassed) : undefined,
+      }),
+    )
+    .digest("hex");
 }
 
 function inspectLocalDirectoryDefaults(rootDir: string): {
@@ -870,7 +902,6 @@ export class WorkspacesService {
       await this.fanOutPostCommitSignals({
         item: resumed.item,
         wakeAgentIds: [resumed.verifier],
-        actorCaller: caller,
       });
     }
     return { ok: true, leaseVersion: body.leaseVersion, patch };
@@ -1159,7 +1190,6 @@ export class WorkspacesService {
       item: txResult.hydrated,
       roomMilestoneMessage: txResult.anchorMessage,
       wakeAgentIds: initialWakeAgents,
-      actorCaller: caller,
     });
 
     return serializeWorkItemForViewer(txResult.hydrated, caller);
@@ -1315,7 +1345,6 @@ export class WorkspacesService {
     await this.fanOutPostCommitSignals({
       item: updated.refreshed,
       wakeAgentIds: [],
-      actorCaller: caller,
       notifyAllParticipantAgents: !updated.idempotentReplay,
     });
 
@@ -1394,7 +1423,6 @@ export class WorkspacesService {
     await this.fanOutPostCommitSignals({
       item: updated,
       wakeAgentIds: [],
-      actorCaller: caller,
       // 瞬态心跳仅刷新人类 UI 与房间视图，避免对蜂群内所有兄弟 Agent 产生 N 倍 pg_notify 写放大
       notifyAllParticipantAgents: false,
     });
@@ -1527,7 +1555,6 @@ export class WorkspacesService {
     await this.fanOutPostCommitSignals({
       item: updated.reloaded,
       wakeAgentIds: [],
-      actorCaller: caller,
     });
     return serializeWorkItemForViewer(updated.reloaded, caller);
   }
@@ -1548,6 +1575,12 @@ export class WorkspacesService {
       const item = await this.lockAndLoadWorkItem(txRepo, workItemId);
       const targetSlice = this.mustFindSlice(item, sliceId);
 
+      const reviewingChanges =
+        targetSlice.leaseRole === "verify" &&
+        targetSlice.leaseOwnerAgentId === agentCaller.agentId &&
+        targetSlice.leaseVersion === body.leaseVersion &&
+        (body.verdict === "changes_requested" ||
+          (body.verdict === undefined && body.testPassed === false));
       const completion = evaluateSliceCompletion({
         item: toOrchestrationItemState(item),
         targetSliceId: sliceId,
@@ -1560,6 +1593,9 @@ export class WorkspacesService {
         worktreeBranch: body.worktreeBranch,
         testCommand: body.testCommand,
         testPassed: body.testPassed,
+        reworkEvidenceKey: reviewingChanges
+          ? reviewEvidenceKey(item, await txRepo.listReviewPatchDigests(item.id), body)
+          : undefined,
         verdict: body.verdict,
         provenance: body.provenance,
         nowMs,
@@ -1593,9 +1629,11 @@ export class WorkspacesService {
         kind: targetSlice.leaseRole === "verify" ? "review" : "handoff",
         message:
           targetSlice.leaseRole === "verify"
-            ? body.verdict === "changes_requested"
-              ? `复核未通过，打回修复：${body.summary}`
-              : `复核通过，等待人工签收：${body.summary}`
+            ? completion.nextStage === "blocked"
+              ? "复核发现交付证据重复，已暂停自动返工，等待人工处理。"
+              : completion.nextStage === "working"
+                ? `复核未通过，打回修复：${body.summary}`
+                : `复核通过，等待人工签收：${body.summary}`
             : `已完成分片「${targetSlice.title}」：${body.summary}`,
         sliceId,
       });
@@ -1636,7 +1674,6 @@ export class WorkspacesService {
       await this.fanOutPostCommitSignals({
         item: txOutcome.item,
         wakeAgentIds: txOutcome.wakeAgentIds,
-        actorCaller: caller,
       });
     }
     return serializeWorkItemForViewer(txOutcome.item, caller);
@@ -1677,7 +1714,7 @@ export class WorkspacesService {
         wakeSet.add(s.assignedAgentId);
         return {
           ...s,
-          steerNotes: [...s.steerNotes, scrubbedNote],
+          steerNotes: recentWorkSteerNotes([...s.steerNotes, scrubbedNote]),
         };
       });
 
@@ -1714,7 +1751,6 @@ export class WorkspacesService {
     await this.fanOutPostCommitSignals({
       item: txOutcome.item,
       wakeAgentIds: txOutcome.wakeAgentIds,
-      actorCaller: caller,
     });
     return serializeWorkItemForViewer(txOutcome.item, caller);
   }
@@ -1761,11 +1797,12 @@ export class WorkspacesService {
         return {
           ...rest,
           status: "waiting" as const,
+          attemptCount: Math.min(s.attemptCount, MAX_SLICE_ATTEMPTS - 1),
           liveSummary: `Human answered: ${scrubbedChoice}`,
-          steerNotes: [
+          steerNotes: recentWorkSteerNotes([
             ...s.steerNotes,
             `[Clarification] ${attention.question} -> ${scrubbedChoice}`,
-          ],
+          ]),
         };
       });
 
@@ -1794,7 +1831,6 @@ export class WorkspacesService {
     await this.fanOutPostCommitSignals({
       item: txOutcome.item,
       wakeAgentIds: txOutcome.wakeAgentIds,
-      actorCaller: caller,
     });
     return serializeWorkItemForViewer(txOutcome.item, caller);
   }
@@ -1883,7 +1919,6 @@ export class WorkspacesService {
       item: txOutcome.item,
       roomMilestoneMessage: txOutcome.milestoneMessage,
       wakeAgentIds: txOutcome.wakeAgentIds,
-      actorCaller: caller,
     });
     return serializeWorkItemForViewer(txOutcome.item, caller);
   }
@@ -1956,13 +1991,9 @@ export class WorkspacesService {
       }
 
       if (body.action === "retry") {
-        const wakeSet = new Set<AgentId>();
         const retriedSlices = item.slices.map((s) => {
           if (s.status === "ready" && item.stage !== "cancelled") {
             return s;
-          }
-          if (s.leaseRole !== "verify") {
-            wakeSet.add(s.assignedAgentId);
           }
           const {
             leaseOwnerAgentId: _owner,
@@ -1978,6 +2009,14 @@ export class WorkspacesService {
             liveSummary: "Reset for retry by human owner.",
           };
         });
+        const pendingSlices = retriedSlices.filter((slice) => slice.status === "waiting");
+        const verifierOnly =
+          pendingSlices.length > 0 && pendingSlices.every((slice) => slice.leaseRole === "verify");
+        const wakeSet = new Set(
+          pendingSlices
+            .filter((slice) => verifierOnly || slice.leaseRole !== "verify")
+            .map((slice) => slice.assignedAgentId),
+        );
         const retryTrace = buildTraceEntry({
           nowMs: this.nowFn(),
           actorName: human.displayName,
@@ -1987,10 +2026,12 @@ export class WorkspacesService {
 
         await txRepo.persistWorkItemState({
           workItemId,
-          nextStage: "working",
+          nextStage: verifierOnly ? "verifying" : "working",
           nextSlices: retriedSlices,
           nextAttention: null,
-          nextReview: item.review ?? null,
+          nextReview: item.review
+            ? { ...item.review, rejectedEvidenceKeys: [], lastReworkLeaseVersion: undefined }
+            : null,
           nextTrace: [...item.trace, retryTrace],
         });
         const reloaded = await this.mustReloadWorkItem(txRepo, workItemId);
@@ -2054,7 +2095,6 @@ export class WorkspacesService {
       item: txOutcome.item,
       roomMilestoneMessage: txOutcome.milestoneMessage,
       wakeAgentIds: txOutcome.wakeAgentIds,
-      actorCaller: caller,
     });
     return serializeWorkItemForViewer(txOutcome.item, caller);
   }
@@ -2184,7 +2224,6 @@ export class WorkspacesService {
       await this.fanOutPostCommitSignals({
         item: entry.item,
         wakeAgentIds: entry.wakeAgentIds,
-        actorCaller: PUBLIC_NEUTRAL_VIEWER,
       });
     }
 
@@ -2245,7 +2284,6 @@ export class WorkspacesService {
       await this.fanOutPostCommitSignals({
         item,
         wakeAgentIds: [agentId],
-        actorCaller: PUBLIC_NEUTRAL_VIEWER,
         notifyAllParticipantAgents: false,
       });
     }
@@ -2659,10 +2697,9 @@ export class WorkspacesService {
     readonly item: Readonly<HydratedWorkItemRecord>;
     readonly roomMilestoneMessage?: HydratedRawMessageRecord | undefined;
     readonly wakeAgentIds: readonly AgentId[];
-    readonly actorCaller: Readonly<AuthenticatedCaller>;
     readonly notifyAllParticipantAgents?: boolean | undefined;
   }): Promise<void> {
-    const { item, roomMilestoneMessage, wakeAgentIds, actorCaller } = params;
+    const { item, roomMilestoneMessage, wakeAgentIds } = params;
     const tasks: Array<Promise<void>> = [];
 
     if (roomMilestoneMessage !== undefined && item.roomId !== undefined) {
@@ -2701,29 +2738,8 @@ export class WorkspacesService {
       tasks.push(this.realtimeBus.publishToAgent(agentId, workEvent));
     }
 
-    if (wakeAgentIds.length > 0 && item.roomId !== undefined) {
-      const roomId = item.roomId;
-      const roomBasic = await this.repo.findRoomBasic(roomId).catch(() => undefined);
-      const latestRoomSeq =
-        roomBasic && roomBasic.lastSeq >= 1 ? asMessageSeq(roomBasic.lastSeq) : undefined;
-
-      if (latestRoomSeq !== undefined) {
-        for (const targetAgentId of new Set(wakeAgentIds)) {
-          const snap = item.agentSnapshots[targetAgentId];
-          const isDirectOwnerCommand =
-            actorCaller.kind === "human" && snap?.ownerUserId === actorCaller.userId;
-          tasks.push(
-            this.realtimeBus.publishToAgent(targetAgentId, {
-              type: "wake",
-              roomId,
-              latestSeq: latestRoomSeq,
-              reason: isDirectOwnerCommand ? "owner_command" : "direct_mention",
-            }),
-          );
-        }
-      }
-    }
-
+    // work.updated wakes the device work queue (and long-poll inbox). A room wake here
+    // would start a second, unrelated chat reply for the same handoff.
     await this.settleRealtimePublishes(tasks, "work.updated");
 
     for (const listener of this.postCommitListeners) {

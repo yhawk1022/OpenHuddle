@@ -1102,6 +1102,17 @@ export class WorkspacesRepository {
     return extractSqlRows<{ workItemId: WorkItemId; sliceId: WorkSliceId }>(result);
   }
 
+  public async listReviewPatchDigests(workItemId: WorkItemId): Promise<Map<WorkSliceId, string>> {
+    const result = await this.db.execute(sql`
+      SELECT s.id AS "sliceId", encode(sha256(convert_to(e.patch, 'UTF8')), 'hex') AS digest
+      FROM work_slices s
+      JOIN work_review_evidence e ON e.slice_id = s.id AND e.lease_version = s.lease_version
+      WHERE s.work_item_id = ${workItemId} AND s.lease_role <> 'verify' AND s.status = 'ready'
+    `);
+    const rows = extractSqlRows<{ sliceId: WorkSliceId; digest: string }>(result);
+    return new Map(rows.map((r) => [r.sliceId, r.digest]));
+  }
+
   public async findReviewEvidence(
     sliceId: WorkSliceId,
     leaseVersion: number,

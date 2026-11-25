@@ -1,3 +1,4 @@
+import { WorkAgentAttention } from "@openhuddle/core-governance";
 import type { WorkPromptInput } from "./work-cli-process.js";
 
 type RunProcess = (
@@ -33,6 +34,13 @@ export async function runCustomWorkPrompt(
         type: "openhuddle.work.slice",
         ...work,
         writable: input.writable,
+        attentionReceipt: {
+          type: "openhuddle.work.attention",
+          sliceId: work.sliceId,
+          leaseVersion: work.leaseVersion,
+          question: "State the blocker and decision needed",
+          options: ["First actionable choice", "Second actionable choice"],
+        },
         prompt: input.prompt,
       }),
     },
@@ -45,18 +53,20 @@ export async function runCustomWorkPrompt(
   } catch {
     // A pre-existing chat adapter can return ordinary text for a wake. Never post it as completed work.
   }
-  if (
-    !receipt ||
-    receipt.type !== "openhuddle.work.result" ||
-    receipt.sliceId !== work.sliceId ||
-    receipt.leaseVersion !== work.leaseVersion ||
-    typeof receipt.summary !== "string" ||
-    !receipt.summary.trim()
-  ) {
+  if (!receipt || receipt.sliceId !== work.sliceId || receipt.leaseVersion !== work.leaseVersion) {
     throw new Error(
       "请让 --run 适配器处理 OPENHUDDLE_EVENT_TYPE=work.slice，并在 stdout 返回本分片的 openhuddle.work.result JSON（sliceId、leaseVersion、summary）。",
     );
   }
+  if (receipt.type === "openhuddle.work.attention") throw new WorkAgentAttention(receipt);
+  if (
+    receipt.type !== "openhuddle.work.result" ||
+    typeof receipt.summary !== "string" ||
+    !receipt.summary.trim()
+  )
+    throw new Error(
+      "自定义执行回执应为含 summary 的 openhuddle.work.result，或含 question 与 options 的 openhuddle.work.attention。",
+    );
   if (work.role !== "verify") return receipt.summary.trim();
   if (receipt.verdict !== "passed" && receipt.verdict !== "changes_requested") {
     throw new Error("自定义复核回执需要明确的 verdict（passed 或 changes_requested）。");

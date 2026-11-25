@@ -6,7 +6,7 @@
  * 1. 纯确定性（Zero-I/O）：所有时间推进均通过显式注入的 `nowMs` 计算，便于在微秒级单测中验证超时接管与防护令牌拒绝。
  * 2. 路径互斥（Disjoint Write Paths）：并发 `write` 分片若存在目录包含或通配重合，在建单阶段即拒绝，从根源消除共享工作树合并踩踏。
  * 3. 版本防护（Lease Fencing，ADR-0009）：每次认领或超时接管均使 `leaseVersion + 1`；旧执行器携带过期版本号回报心跳或结果时一律返回 `WORK_LEASE_EXPIRED`。
- * 4. 有界自愈与人工终审（ADR-0002）：单分片最多尝试 `MAX_SLICE_ATTEMPTS` 次，`write -> verify` 自动打回最多循环 `MAX_VERIFY_REWORK_LOOPS` 轮；终态 `done` 仅能由人类审批触发。
+ * 4. 有界自愈与人工终审（ADR-0002）：失联租约最多尝试 `MAX_SLICE_ATTEMPTS` 次；返工若重复交付相同证据则暂停；终态 `done` 仅能由人类审批触发。
  */
 import type {
   AgentExecutionTier,
@@ -31,8 +31,13 @@ export const DEFAULT_SLICE_LEASE_TTL_MS = 120_000;
 /** 单个分片允许的最大崩溃/超时重试次数 */
 export const MAX_SLICE_ATTEMPTS = 3;
 
-/** `verify_loop` / `swarm` 自动打回返工的最大轮数，超限后挂起交由人类裁决 */
-export const MAX_VERIFY_REWORK_LOOPS = 3;
+/** Recent rejected deliveries, retained to detect repeats and oscillation without limiting productive turns. */
+const REWORK_EVIDENCE_HISTORY = 32;
+
+/** Keep both persisted and legacy notes within the work-slice wire format. */
+export function recentWorkSteerNotes(notes: readonly string[]): string[] {
+  return notes.slice(-50).map((note) => note.slice(0, 1_000));
+}
 
 /** 编排核统一返回的业务拒绝结构 */
 export interface WorkDomainRejection {
@@ -114,6 +119,8 @@ export interface OrchestrationReviewState {
   readonly worktreeBranch?: string | undefined;
   readonly verifierNote?: string | undefined;
   readonly verifyLoopsUsed: number;
+  readonly rejectedEvidenceKeys?: readonly string[] | undefined;
+  readonly lastReworkLeaseVersion?: number | undefined;
   readonly reviewedByUserId?: UserId | undefined;
   readonly reviewDecisionNote?: string | undefined;
   readonly reviewedAtMs?: number | undefined;
@@ -563,6 +570,8 @@ function aggregateReviewSummary(
   const effectiveTestPassed = overrides?.testPassed ?? prev?.testPassed;
 
   return {
+    rejectedEvidenceKeys: prev?.rejectedEvidenceKeys,
+    lastReworkLeaseVersion: prev?.lastReworkLeaseVersion,
     filesChanged: changedFiles.length,
     additions,
     deletions,
@@ -577,7 +586,7 @@ function aggregateReviewSummary(
 }
 
 /**
- * 处理分片完成提交：执行蜂群屏障合流（Swarm Barrier）、`write -> verify` 自动交接与有界打回重做。
+ * 合并执行分片，处理独立复核和返工交接，在交付证据反复时暂停。
  */
 export function evaluateSliceCompletion(params: {
   readonly item: Readonly<OrchestrationItemState>;
@@ -592,6 +601,8 @@ export function evaluateSliceCompletion(params: {
   readonly testCommand?: string | undefined;
   readonly testPassed?: boolean | undefined;
   readonly verdict?: WorkVerifyVerdict | undefined;
+  /** Server-derived fingerprint of the delivery reviewed under this lease. */
+  readonly reworkEvidenceKey?: string | undefined;
   readonly provenance?: WorkSliceProvenance | undefined;
   readonly nowMs: number;
 }):
@@ -618,9 +629,11 @@ export function evaluateSliceCompletion(params: {
 
   // 幂等重放保护（ADR-0009 §3.3）：若分片已由当前 Agent 在相同 leaseVersion 下提交完成，网络超时重试直接成功返回
   if (
-    target.status === "ready" &&
-    target.leaseOwnerAgentId === params.callerAgentId &&
-    target.leaseVersion === params.leaseVersion
+    target.leaseVersion === params.leaseVersion &&
+    ((target.status === "ready" && target.leaseOwnerAgentId === params.callerAgentId) ||
+      (target.leaseRole === "verify" &&
+        target.assignedAgentId === params.callerAgentId &&
+        item.review?.lastReworkLeaseVersion === params.leaseVersion))
   ) {
     return {
       ok: true,
@@ -673,7 +686,7 @@ export function evaluateSliceCompletion(params: {
     if (!allExecDone) {
       return {
         ok: true,
-        nextStage: "working",
+        nextStage: item.stage,
         nextSlices: updatedSlices,
         ...(item.review !== undefined ? { nextReview: item.review } : {}),
         wakeAgentIds: [],
@@ -753,14 +766,29 @@ export function evaluateSliceCompletion(params: {
     };
   }
 
-  // 打回重做熔断：超过上限时转入 blocked，防止主从 Agent 陷入无限拉锯消耗配额
-  if (nextLoopsUsed >= MAX_VERIFY_REWORK_LOOPS) {
+  const evidenceKey = params.reworkEvidenceKey;
+  if (!evidenceKey) {
+    return {
+      ok: false,
+      code: "WORK_INVALID_TRANSITION",
+      message: "Missing delivery fingerprint for rework.",
+    };
+  }
+  const previousKeys = item.review?.rejectedEvidenceKeys ?? [];
+  const reworkReview = {
+    ...nextReview,
+    rejectedEvidenceKeys: [...previousKeys, evidenceKey].slice(-REWORK_EVIDENCE_HISTORY),
+    lastReworkLeaseVersion: params.leaseVersion,
+  };
+  if (previousKeys.includes(evidenceKey)) {
     const blockedSlices = item.slices.map((s) =>
       s.sliceId === targetSliceId
         ? {
             ...completedSlice,
             status: "blocked" as const,
-            failureCode: "VERIFY_LOOP_LIMIT_EXCEEDED",
+            failureCode: "REPEATED_REVIEW_EVIDENCE",
+            liveSummary:
+              "本轮交付与先前退回的工作及验证结果相同，已暂停返工，等待补充证据或调整任务。",
           }
         : s,
     );
@@ -768,13 +796,14 @@ export function evaluateSliceCompletion(params: {
       ok: true,
       nextStage: "blocked",
       nextSlices: blockedSlices,
-      nextReview,
+      nextReview: reworkReview,
       wakeAgentIds: [],
     };
   }
 
   // 自动返工交接（verify -> write）：重开所有写分片，注入核验反馈并保留单调递增的 leaseVersion 基数
   const wakeSet = new Set<AgentId>();
+  const hasWriter = item.slices.some((s) => s.leaseRole === "write");
   const reopenedSlices = item.slices.map((s) => {
     if (s.sliceId === targetSliceId) {
       const {
@@ -787,10 +816,10 @@ export function evaluateSliceCompletion(params: {
         ...restV,
         status: "waiting" as const,
         attemptCount: 0,
-        liveSummary: `Requested rework (#${nextLoopsUsed}): ${scrubbedSummary}`,
+        liveSummary: `Requested rework (#${nextLoopsUsed}): ${scrubbedSummary}`.slice(0, 1000),
       };
     }
-    if (s.leaseRole === "write") {
+    if (s.leaseRole === "write" || (!hasWriter && s.leaseRole === "read")) {
       wakeSet.add(s.assignedAgentId);
       const {
         leaseOwnerAgentId: _wOwner,
@@ -803,7 +832,10 @@ export function evaluateSliceCompletion(params: {
         status: "waiting" as const,
         attemptCount: 0,
         liveSummary: `Reopened after verifier review (#${nextLoopsUsed}).`,
-        steerNotes: [...s.steerNotes, `[Verifier #${nextLoopsUsed}] ${scrubbedSummary}`],
+        steerNotes: recentWorkSteerNotes([
+          ...s.steerNotes,
+          `[Verifier #${nextLoopsUsed}] ${scrubbedSummary}`,
+        ]),
       };
     }
     return s;
@@ -813,7 +845,7 @@ export function evaluateSliceCompletion(params: {
     ok: true,
     nextStage: "working",
     nextSlices: reopenedSlices,
-    nextReview,
+    nextReview: reworkReview,
     wakeAgentIds: [...wakeSet],
   };
 }
@@ -852,6 +884,9 @@ export function evaluateHumanReviewDecision(params: {
   const baseReview = item.review ?? aggregateReviewSummary(item, item.slices);
   const nextReview: OrchestrationReviewState = {
     ...baseReview,
+    ...(decision === "request_changes"
+      ? { rejectedEvidenceKeys: [], lastReworkLeaseVersion: undefined }
+      : {}),
     reviewedByUserId: reviewerUserId,
     ...(scrubbedNote !== undefined ? { reviewDecisionNote: scrubbedNote } : {}),
     reviewedAtMs: nowMs,
@@ -870,8 +905,9 @@ export function evaluateHumanReviewDecision(params: {
   const feedbackText =
     scrubbedNote && scrubbedNote.length > 0 ? scrubbedNote : "Human requested changes.";
   const wakeSet = new Set<AgentId>();
+  const hasWriter = item.slices.some((s) => s.leaseRole === "write");
   const reopenedSlices = item.slices.map((s) => {
-    if (s.leaseRole === "write") {
+    if (s.leaseRole === "write" || (!hasWriter && s.leaseRole === "read")) {
       wakeSet.add(s.assignedAgentId);
       const {
         leaseOwnerAgentId: _owner,
@@ -885,7 +921,7 @@ export function evaluateHumanReviewDecision(params: {
         status: "waiting" as const,
         attemptCount: 0,
         liveSummary: "Reopened by human review.",
-        steerNotes: [...s.steerNotes, `[Owner Review] ${feedbackText}`],
+        steerNotes: recentWorkSteerNotes([...s.steerNotes, `[Owner Review] ${feedbackText}`]),
       };
     }
     if (s.leaseRole === "verify") {

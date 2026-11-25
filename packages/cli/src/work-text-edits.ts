@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { checkAgentWorkOutput } from "@openhuddle/core-governance";
 import { capturePlainFolderSnapshot } from "@openhuddle/core-governance/workspace-diff";
 import { containsSensitiveSecret } from "./secret-scrubber.js";
 import type { WorkPromptInput } from "./work-cli-process.js";
@@ -99,12 +100,13 @@ export async function runTextWorkspaceTurn(
     input.prompt,
     "You are working through a file broker. Use only the project text provided below; shell, file tools, web and MCP are unavailable.",
     input.writable
-      ? 'Implement the assignment by returning ONLY a JSON object {"summary":"...","files":[{"path":"relative/path","content":"full updated file text"}]}. To delete a visible file set content to null. Only edit listed or new ordinary project files. Do not claim to have run tests.'
+      ? 'For a completed assignment return ONLY a JSON object {"summary":"...","files":[{"path":"relative/path","content":"full updated file text"}]}. To delete a visible file set content to null. Only edit listed or new ordinary project files. Do not claim to have run tests. If blocked, return the NEEDS_INPUT line instead of file edits.'
       : "Use the supplied evidence to answer in plain text. Distinguish static checks from tests executed.",
     `Project text files: ${JSON.stringify(Object.fromEntries(visible))}`,
   ].join("\n\n");
   const reply = (await ask(prompt)).trim();
   input.signal.throwIfAborted();
+  checkAgentWorkOutput(reply);
   if (!input.writable) return reply;
   let body: unknown;
   try {

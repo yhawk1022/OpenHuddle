@@ -2,7 +2,6 @@ import type { AgentId, UserId, WorkSliceId } from "@openhuddle/protocol";
 import { describe, expect, it } from "vitest";
 import {
   MAX_SLICE_ATTEMPTS,
-  MAX_VERIFY_REWORK_LOOPS,
   type OrchestrationItemState,
   type OrchestrationSliceState,
   detectOwnedPathConflicts,
@@ -46,6 +45,33 @@ function makeSlice(
 }
 
 describe("@openhuddle/core-governance — work orchestration & durable leases", () => {
+  it("reopens read-only deliveries after owner feedback and retains the latest fifty instructions", () => {
+    const slice = makeSlice({
+      sliceId: SLICE_1,
+      leaseRole: "read",
+      status: "ready",
+      steerNotes: Array.from({ length: 50 }, (_, i) => `instruction ${i}`),
+    });
+    const result = evaluateHumanReviewDecision({
+      item: {
+        topology: "direct",
+        worktreeBranch: "oh/analysis",
+        stage: "awaiting_review",
+        slices: [slice],
+      },
+      reviewerUserId: OWNER_A,
+      decision: "request_changes",
+      note: "x".repeat(1000),
+      nowMs: 2_000,
+    });
+    expect(result).toMatchObject({ ok: true, nextStage: "working", wakeAgentIds: [WORKER_1] });
+    if (!result.ok) throw Error("Expected owner feedback to reopen the delivery");
+    const notes = result.nextSlices[0]?.steerNotes;
+    expect(notes).toHaveLength(50);
+    expect(notes?.[0]).toBe("instruction 1");
+    expect(notes?.at(-1)).toHaveLength(1000);
+  });
+
   it("detects overlapping write paths while allowing disjoint swarm paths and verify slices", () => {
     const clean = detectOwnedPathConflicts([
       { index: 0, title: "DB", leaseRole: "write", ownedPaths: ["packages/db/**"] },
@@ -180,7 +206,7 @@ describe("@openhuddle/core-governance — work orchestration & durable leases", 
     );
   });
 
-  it("synchronizes parallel swarm slices, hands off to verifier, handles bounded rework, and requires human approval", () => {
+  it("synchronizes swarm slices, hands off to verification, pauses repeated deliveries, and requires human approval", () => {
     const t0 = 1_700_000_000_000;
     const s1 = makeSlice({
       sliceId: SLICE_1,
@@ -294,6 +320,7 @@ describe("@openhuddle/core-governance — work orchestration & durable leases", 
       diffAdded: 0,
       diffRemoved: 0,
       verdict: "changes_requested",
+      reworkEvidenceKey: "evidence-a",
       testCommand: "pnpm test",
       testPassed: false,
       nowMs: t0 + 15_000,
@@ -306,26 +333,43 @@ describe("@openhuddle/core-governance — work orchestration & durable leases", 
     // Monotonic fencing version is preserved across rework so stale completions cannot replay
     expect(reworkStep.nextSlices[0]?.leaseVersion).toBe(1);
 
-    // 4. Exceeding MAX_VERIFY_REWORK_LOOPS trips circuit breaker into blocked
-    const nearLimitItem: OrchestrationItemState = {
-      ...itemDuringVerify,
-      review: { ...baseReview, verifyLoopsUsed: MAX_VERIFY_REWORK_LOOPS - 1 },
+    // A later review can keep returning genuinely new work even beyond the old cap.
+    const previous = {
+      ...baseReview,
+      verifyLoopsUsed: 8,
+      rejectedEvidenceKeys: ["evidence-a", "evidence-b"],
     };
-    const tripped = evaluateSliceCompletion({
-      item: nearLimitItem,
+    const latest = {
+      item: { ...itemDuringVerify, review: previous },
       targetSliceId: SLICE_VERIFY,
       callerAgentId: VERIFIER,
       leaseVersion: vClaim.nextSlice.leaseVersion,
-      summary: "Still failing",
+      summary: "Different wording for an unresolved defect",
       changedFiles: [],
       diffAdded: 0,
       diffRemoved: 0,
-      verdict: "changes_requested",
+      verdict: "changes_requested" as const,
       nowMs: t0 + 16_000,
+    };
+    expect(evaluateSliceCompletion({ ...latest, reworkEvidenceKey: "new-code" })).toMatchObject({
+      ok: true,
+      nextStage: "working",
+      nextReview: { verifyLoopsUsed: 9 },
     });
-    expect(tripped.ok).toBe(true);
-    if (!tripped.ok) return;
-    expect(tripped.nextStage).toBe("blocked");
+    const tripped = evaluateSliceCompletion({ ...latest, reworkEvidenceKey: "evidence-a" });
+    expect(tripped).toMatchObject({ ok: true, nextStage: "blocked", wakeAgentIds: [] });
+    if (!tripped.ok) throw Error("Expected a fenced no-progress stop");
+    expect(
+      evaluateSliceCompletion({
+        ...latest,
+        item: {
+          ...itemDuringVerify,
+          stage: tripped.nextStage,
+          slices: tripped.nextSlices,
+          review: tripped.nextReview,
+        },
+      }),
+    ).toMatchObject({ ok: true, idempotentReplay: true, wakeAgentIds: [] });
 
     // 5. Passing verification lands at awaiting_review; human approval moves to done
     const passVerify = evaluateSliceCompletion({
