@@ -441,7 +441,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
       {/* 1. 56px/60px 顶栏：左侧点击本人头像与昵称展开账号/安全/主题菜单；右侧为清爽的搜索与 `+` 快捷发起菜单 */}
       <div
         data-tauri-drag-region=""
-        className="app-drag-region flex h-[56px] shrink-0 items-center justify-between gap-2 px-3.5 md:h-[60px]"
+        className="oh-mobile-header app-drag-region flex h-[56px] shrink-0 items-center justify-between gap-2 px-3.5 md:h-[60px]"
       >
         <AppDropdownMenu
           align="start"
@@ -556,6 +556,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
               variant={searchExpanded ? "soft" : "ghost"}
               label={searchExpanded ? "收起搜索" : "展开搜索"}
               aria-expanded={searchExpanded}
+              className="max-md:size-11 max-md:after:hidden"
               onClick={toggleSearch}
             >
               {searchExpanded ? <X className="h-4 w-4" /> : <Search className="h-4 w-4" />}
@@ -573,7 +574,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                 size="md"
                 variant={quickMenuOpen ? "soft" : "secondary"}
                 label="发起聊天或添加好友"
-                className="md:border-transparent md:bg-transparent md:shadow-none"
+                className="max-md:size-11 max-md:after:hidden md:border-transparent md:bg-transparent md:shadow-none"
               >
                 <Plus className="h-4 w-4" />
               </IconButton>
@@ -719,7 +720,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
             animate={{ opacity: 1, x: 0 }}
             exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: -6 }}
             transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
-            className="min-h-0 flex-1 overflow-y-auto px-3 pb-24 md:pb-3"
+            className="min-h-0 flex-1 overflow-y-auto px-3 pb-3"
           >
             {props.rooms.length > 0 ? (
               <fieldset className="mb-2.5 flex min-w-0 flex-wrap items-center gap-1.5 px-0.5 md:mb-2 md:gap-1">
@@ -1125,7 +1126,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
             animate={{ opacity: 1, x: 0 }}
             exit={reducedMotion ? { opacity: 0 } : { opacity: 0, x: 6 }}
             transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
-            className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-24 md:pb-3"
+            className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-3"
           >
             {/* A. 新的朋友（收到的待处理申请） */}
             {incomingRequests.length > 0 ? (

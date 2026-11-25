@@ -482,6 +482,29 @@ body::before {
   app-region: no-drag;
 }
 
+@media (max-width: 767px) {
+  /* Give WebKit a solid pinned header to sample for its status-bar edge effect. */
+  html[data-ios-standalone="true"] .oh-mobile-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background-color: var(--oh-sidebar-surface);
+  }
+}
+
+/* In contained iOS Home Screen windows, the reported bottom inset can be zero. */
+.oh-mobile-main-nav {
+  padding-bottom: max(10px, calc(env(safe-area-inset-bottom, 0px) + 6px));
+}
+
+html[data-ios-standalone="true"] .oh-mobile-main-nav {
+  padding-bottom: max(36px, calc(env(safe-area-inset-bottom, 0px) + 6px));
+}
+
+html[data-keyboard-open="true"] .oh-mobile-main-nav {
+  display: none;
+}
+
 /* 移动端刘海屏 / Home Indicator 安全区 */
 .pt-safe {
   padding-top: env(safe-area-inset-top, 0px);

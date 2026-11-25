@@ -124,6 +124,7 @@ export function startVisualViewportSync(): () => void {
 
   const root = document.documentElement;
   if ("standalone" in window.navigator && window.navigator.standalone) {
+    root.dataset.iosStandalone = "true";
     // WebKit can clip the bottom of an installed app when cover extends it under the status bar.
     const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
     if (viewport?.content.includes("viewport-fit=cover")) {

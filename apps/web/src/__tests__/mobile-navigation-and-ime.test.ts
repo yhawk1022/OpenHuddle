@@ -170,6 +170,7 @@ describe("IME composition & editable element guards", () => {
     vi.stubGlobal("document", doc);
 
     const stop = startVisualViewportSync();
+    expect(dataset.iosStandalone).toBe(standalone ? "true" : undefined);
     expect(viewport.content).toBe(
       `width=device-width, viewport-fit=${standalone ? "contain" : "cover"}, interactive-widget=resizes-content`,
     );

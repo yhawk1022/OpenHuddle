@@ -762,7 +762,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
       <main className="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-sidebar-surface pt-[env(safe-area-inset-top,0px)] md:oh-stage-frame md:rounded-[22px] md:pt-0">
         <header
           data-tauri-drag-region=""
-          className="app-drag-region flex h-[56px] min-w-0 shrink-0 items-center justify-between gap-2 px-3.5 md:h-[52px] md:border-b md:border-black/[0.06] md:px-4 md:dark:border-white/[0.07]"
+          className="oh-mobile-header app-drag-region flex h-[56px] min-w-0 shrink-0 items-center justify-between gap-2 px-3.5 md:h-[52px] md:border-b md:border-black/[0.06] md:px-4 md:dark:border-white/[0.07]"
         >
           <div className="flex min-w-0 items-center gap-2">
             {compactDetailOpen && resolvedSelectedTask !== null ? (
@@ -1084,7 +1084,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                         </div>
                       </div>
                     ) : (
-                      <div className="pb-24 md:pb-4">
+                      <div className="pb-4">
                         {needsYouTasks.length > 0 ? (
                           <TaskListGroup
                             heading="待确认"

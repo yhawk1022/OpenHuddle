@@ -3,7 +3,7 @@
  * @description 移动端（`< md`）iOS 26 风格悬浮液态玻璃底部主导航胶囊（`聊天 · 通讯录 · 工作台`）。
  *
  * 交互与光学特性：
- * 1. 按住滑动选择（Press & Scrub）：支持手指按住胶囊任意位置水平连续拖动，液态玻璃滑块微幅浮起放大（`scale` + 镜面高光增强），实时跟随手指并在跨越分栏边界时顺滑切换页面，松手后按物理弹簧精准吸附归位；同时完整兼容普通轻点与键盘无障碍操作。
+ * 1. 轻点直接切页；长按后横拖预览目标，松手确认。普通滑动、纵向滚动和系统取消均保留当前页。
  * 2. 严守 Liquid Glass 单层模糊铁律：仅外层悬浮导航胶囊挂载 `relative liquid-glass-bar`（折射下方滚过的列表内容），内部滑动水滴采用高透光度晶面高光与柔影，绝不嵌套二次 `backdrop-blur`。
  */
 import { ListTodo, MessageCircle, Users } from "lucide-react";
@@ -17,6 +17,9 @@ import {
 } from "../../../components/primitives/index.js";
 
 export type MobileMainTabValue = "chats" | "contacts" | "workbench";
+
+const HOLD_TO_SCRUB_MS = 250;
+const TAP_SLOP_PX = 8;
 
 const TAB_ORDER: ReadonlyArray<MobileMainTabValue> = ["chats", "contacts", "workbench"];
 
@@ -50,10 +53,11 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
   const pointerStateRef = useRef<{
     pointerId: number;
     startX: number;
-    dragged: boolean;
-    lastTriggeredTab: MobileMainTabValue;
+    startY: number;
+    startedAt: number;
+    mode: "pending" | "scrubbing" | "cancelled";
   } | null>(null);
-  const suppressClickUntilRef = useRef<number>(0);
+  const ignorePointerClick = useRef(false);
 
   const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
 
@@ -98,96 +102,70 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
   };
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    // 仅响应主指针（触控手指或鼠标左键）
-    if (event.pointerType === "mouse" && event.button !== 0) {
-      return;
-    }
-    const el = trackRef.current;
-    if (!el) {
-      return;
-    }
-    try {
-      el.setPointerCapture(event.pointerId);
-    } catch {
-      // 某些测试环境未实现 setPointerCapture，安全降级
-    }
-    const { clampedSlot, nearestIndex } = resolveSlotFromClientX(event.clientX);
-    const touchedTab = TAB_ORDER[nearestIndex] ?? props.activeTab;
+    if (!event.isPrimary || event.button !== 0) return;
+    ignorePointerClick.current = false;
     pointerStateRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
-      dragged: false,
-      lastTriggeredTab: props.activeTab,
+      startY: event.clientY,
+      startedAt: event.timeStamp,
+      mode: "pending",
     };
-    setIsScrubbing(true);
-    if (!reducedMotion) {
-      targetSlot.set(clampedSlot);
-    }
-    if (touchedTab !== props.activeTab) {
-      pointerStateRef.current.lastTriggeredTab = touchedTab;
-      props.onSelectTab(touchedTab);
-    }
+  };
+
+  const resetPill = (): void => {
+    targetSlot.set(activeIndex);
+    if (reducedMotion) smoothSlot.jump(activeIndex);
+    setIsScrubbing(false);
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const state = pointerStateRef.current;
-    if (!state || state.pointerId !== event.pointerId) {
-      return;
-    }
-    if (Math.abs(event.clientX - state.startX) > 4) {
-      state.dragged = true;
+    if (!state || state.pointerId !== event.pointerId || state.mode === "cancelled") return;
+    const dx = Math.abs(event.clientX - state.startX);
+    const dy = Math.abs(event.clientY - state.startY);
+    if (state.mode === "pending") {
+      if (Math.max(dx, dy) <= TAP_SLOP_PX) return;
+      ignorePointerClick.current = true;
+      if (dy >= dx || event.timeStamp - state.startedAt < HOLD_TO_SCRUB_MS) {
+        state.mode = "cancelled";
+        return;
+      }
+      state.mode = "scrubbing";
+      setIsScrubbing(true);
+      event.currentTarget.setPointerCapture(event.pointerId);
     }
     const { clampedSlot, nearestIndex } = resolveSlotFromClientX(event.clientX);
-    if (!reducedMotion) {
-      targetSlot.set(clampedSlot);
-    } else {
-      smoothSlot.jump(nearestIndex);
-    }
-    const hoveredTab = TAB_ORDER[nearestIndex];
-    if (hoveredTab !== undefined && hoveredTab !== state.lastTriggeredTab) {
-      state.lastTriggeredTab = hoveredTab;
-      if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-        navigator.vibrate(5);
-      }
-      props.onSelectTab(hoveredTab);
-    }
+    targetSlot.set(clampedSlot);
+    if (reducedMotion) smoothSlot.jump(nearestIndex);
   };
 
   const finishPointerInteraction = (event: ReactPointerEvent<HTMLDivElement>): void => {
     const state = pointerStateRef.current;
-    if (!state || state.pointerId !== event.pointerId) {
+    if (!state || state.pointerId !== event.pointerId) return;
+    pointerStateRef.current = null;
+    resetPill();
+    if (event.type !== "pointerup") {
+      ignorePointerClick.current = true;
       return;
     }
-    const el = trackRef.current;
-    if (el) {
-      try {
-        if (el.hasPointerCapture(event.pointerId)) {
-          el.releasePointerCapture(event.pointerId);
-        }
-      } catch {
-        // 忽略释放异常
-      }
+    if (
+      Math.max(Math.abs(event.clientX - state.startX), Math.abs(event.clientY - state.startY)) >
+      TAP_SLOP_PX
+    ) {
+      ignorePointerClick.current = true;
     }
-    const { nearestIndex } = resolveSlotFromClientX(event.clientX);
-    const finalTab =
-      event.type === "pointercancel"
-        ? state.lastTriggeredTab
-        : (TAB_ORDER[nearestIndex] ?? state.lastTriggeredTab);
-    const finalIndex = tabToIndex(finalTab);
-
-    if (state.dragged) {
-      suppressClickUntilRef.current = Date.now() + 260;
-    }
-    pointerStateRef.current = null;
-    setIsScrubbing(false);
-
-    targetSlot.set(finalIndex);
-    if (reducedMotion) {
-      smoothSlot.jump(finalIndex);
-    }
-    if (finalTab !== props.activeTab) {
-      props.onSelectTab(finalTab);
-    }
+    if (state.mode !== "scrubbing") return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (
+      event.clientY < bounds.top ||
+      event.clientY > bounds.bottom ||
+      event.clientX < bounds.left ||
+      event.clientX > bounds.right
+    )
+      return;
+    const tab = TAB_ORDER[resolveSlotFromClientX(event.clientX).nearestIndex];
+    if (tab && tab !== props.activeTab) props.onSelectTab(tab);
   };
 
   const items: ReadonlyArray<{
@@ -227,7 +205,7 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
   ];
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center bg-gradient-to-t from-[var(--oh-stage-scrim)]/80 via-[var(--oh-stage-scrim-mid)]/30 to-transparent px-5 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] md:hidden">
+    <div className="oh-mobile-main-nav relative z-30 flex shrink-0 justify-center bg-sidebar-surface px-5 pt-1.5 md:hidden">
       <nav
         aria-label="移动端主导航"
         className="app-no-drag pointer-events-auto relative liquid-glass-bar w-full max-w-[19.5rem] select-none rounded-full p-1"
@@ -238,7 +216,10 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
           onPointerMove={handlePointerMove}
           onPointerUp={finishPointerInteraction}
           onPointerCancel={finishPointerInteraction}
-          className="relative grid grid-cols-3 touch-none items-center"
+          onLostPointerCapture={(event) => {
+            if (event.target === event.currentTarget) finishPointerInteraction(event);
+          }}
+          className="relative grid grid-cols-3 touch-pan-y touch-pinch-zoom items-center"
         >
           {/* iOS 26 液态玻璃滑动水滴滑块：按住拖动时微幅浮起并增强晶面折射高光（零嵌套 backdrop-blur） */}
           <motion.span
@@ -272,8 +253,8 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
                 key={item.value}
                 type="button"
                 aria-current={active ? "page" : undefined}
-                onClick={() => {
-                  if (Date.now() < suppressClickUntilRef.current) {
+                onClick={(event) => {
+                  if (event.detail !== 0 && ignorePointerClick.current) {
                     return;
                   }
                   if (item.value !== props.activeTab) {
