@@ -341,6 +341,22 @@
     -webkit-user-select: none;
     user-select: none;
   }
+
+  .oh-message-menu-trigger:active {
+    outline: 2px solid var(--oh-im-border-strong);
+    outline-offset: -2px;
+  }
+
+  .oh-message-actions {
+    max-height: var(--radix-context-menu-content-available-height);
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+
+  .oh-message-actions [role="menuitem"] {
+    min-height: 44px;
+    font-size: 15px;
+  }
 }
 
 .oh-floating-menu {
