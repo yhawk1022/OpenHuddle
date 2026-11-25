@@ -12,6 +12,12 @@ import type {
   MessageMention,
   ProposalDraft,
   RoomGovernanceState,
+  WorkDiffFileDto,
+  WorkSliceProvenance,
+  WorkTraceEntry,
+  WorkspaceContextAssets,
+  WorkspaceLifecycleHooks,
+  WorkspaceRootEntry,
 } from "@openhuddle/protocol";
 import {
   boolean,
@@ -49,7 +55,10 @@ export const usersTable = pgTable(
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex("users_email_unique_idx").on(table.email)],
+  (table) => [
+    uniqueIndex("users_email_unique_idx").on(table.email),
+    index("users_created_at_idx").on(table.createdAt),
+  ],
 );
 
 /**
@@ -93,7 +102,11 @@ export const userSessionsTable = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex("user_sessions_token_hash_unique_idx").on(table.tokenHash)],
+  (table) => [
+    uniqueIndex("user_sessions_token_hash_unique_idx").on(table.tokenHash),
+    index("user_sessions_user_id_idx").on(table.userId),
+    index("user_sessions_expires_at_idx").on(table.expiresAt),
+  ],
 );
 
 /**
@@ -202,6 +215,7 @@ export const roomsTable = pgTable(
   (table) => [
     uniqueIndex("rooms_invite_token_unique_idx").on(table.inviteToken),
     uniqueIndex("rooms_direct_pair_key_unique_idx").on(table.directPairKey),
+    index("rooms_created_at_idx").on(table.createdAt),
   ],
 );
 
@@ -224,7 +238,11 @@ export const roomMembersTable = pgTable(
     lastReadSeq: integer("last_read_seq").notNull().default(0),
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.roomId, table.memberKey] })],
+  (table) => [
+    primaryKey({ columns: [table.roomId, table.memberKey] }),
+    index("room_members_member_key_idx").on(table.memberKey),
+    index("room_members_agent_id_idx").on(table.agentId),
+  ],
 );
 
 /**
@@ -259,6 +277,7 @@ export const messagesTable = pgTable(
   (table) => [
     primaryKey({ columns: [table.roomId, table.seq] }),
     uniqueIndex("messages_room_op_key_unique_idx").on(table.roomId, table.opKey),
+    index("messages_created_at_idx").on(table.createdAt),
   ],
 );
 
@@ -289,23 +308,27 @@ export const messageAttachmentsTable = pgTable(
 /**
  * 结构化提案与人类决策拍板表（`proposals`）。
  */
-export const proposalsTable = pgTable("proposals", {
-  id: text("id").primaryKey(),
-  roomId: text("room_id")
-    .notNull()
-    .references(() => roomsTable.id, { onDelete: "cascade" }),
-  originMessageSeq: integer("origin_message_seq").notNull(),
-  status: text("status").notNull().default("open"),
-  draftJson: jsonb("draft_json").$type<ProposalDraft>().notNull(),
-  decidedOptionKey: text("decided_option_key"),
-  decisionNote: text("decision_note"),
-  decidedByUserId: text("decided_by_user_id").references(() => usersTable.id, {
-    onDelete: "set null",
-  }),
-  decidedAt: timestamp("decided_at", { withTimezone: true }),
-  mandateJson: jsonb("mandate_json").$type<DecisionMandate>(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const proposalsTable = pgTable(
+  "proposals",
+  {
+    id: text("id").primaryKey(),
+    roomId: text("room_id")
+      .notNull()
+      .references(() => roomsTable.id, { onDelete: "cascade" }),
+    originMessageSeq: integer("origin_message_seq").notNull(),
+    status: text("status").notNull().default("open"),
+    draftJson: jsonb("draft_json").$type<ProposalDraft>().notNull(),
+    decidedOptionKey: text("decided_option_key"),
+    decisionNote: text("decision_note"),
+    decidedByUserId: text("decided_by_user_id").references(() => usersTable.id, {
+      onDelete: "set null",
+    }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    mandateJson: jsonb("mandate_json").$type<DecisionMandate>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("proposals_room_origin_seq_idx").on(table.roomId, table.originMessageSeq)],
+);
 
 /**
  * 提案结构化投票表（`proposal_votes`）。
@@ -337,15 +360,176 @@ export const proposalVotesTable = pgTable(
  * 运营与治理管理后台操作审计日志表（`admin_audit_logs`）。
  * 保留操作发生时的管理员邮箱与昵称快照，即使后续人员变动或账号注销仍可完整溯源。
  */
-export const adminAuditLogsTable = pgTable("admin_audit_logs", {
-  id: text("id").primaryKey(),
-  actorUserId: text("actor_user_id").references(() => usersTable.id, { onDelete: "set null" }),
-  actorEmail: text("actor_email").notNull(),
-  actorDisplayName: text("actor_display_name").notNull(),
-  action: text("action").notNull(),
-  targetType: text("target_type").notNull(),
-  targetId: text("target_id").notNull(),
-  summary: text("summary").notNull(),
-  metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const adminAuditLogsTable = pgTable(
+  "admin_audit_logs",
+  {
+    id: text("id").primaryKey(),
+    actorUserId: text("actor_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+    actorEmail: text("actor_email").notNull(),
+    actorDisplayName: text("actor_display_name").notNull(),
+    action: text("action").notNull(),
+    targetType: text("target_type").notNull(),
+    targetId: text("target_id").notNull(),
+    summary: text("summary").notNull(),
+    metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("admin_audit_logs_created_at_idx").on(table.createdAt),
+    index("admin_audit_logs_target_idx").on(table.targetType, table.targetId),
+  ],
+);
+
+/**
+ * 五维受控工作区表（`workspaces`，ADR-0010）。
+ * 本机路径仅存储于 `roots_json` 内，在跨主人查询时由服务层按查看者身份动态剥离。
+ */
+export const workspacesTable = pgTable(
+  "workspaces",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    kind: text("kind").notNull().default("git_repo"),
+    rootsJson: jsonb("roots_json").$type<readonly WorkspaceRootEntry[]>().notNull(),
+    hostMode: text("host_mode").notNull().default("local_machine"),
+    hostLabel: text("host_label").notNull(),
+    sandboxMode: text("sandbox_mode").notNull().default("worktree_pool"),
+    allowRoomCollaborators: boolean("allow_room_collaborators").notNull().default(false),
+    prewarmedWorktrees: integer("prewarmed_worktrees").notNull().default(3),
+    hooksJson: jsonb("hooks_json").$type<WorkspaceLifecycleHooks>().notNull(),
+    contextJson: jsonb("context_json").$type<WorkspaceContextAssets>().notNull(),
+    defaultTopology: text("default_topology").notNull().default("verify_loop"),
+    defaultWorkerAgentId: text("default_worker_agent_id").references(() => agentsTable.id, {
+      onDelete: "set null",
+    }),
+    defaultVerifierAgentId: text("default_verifier_agent_id").references(() => agentsTable.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("workspaces_owner_updated_idx").on(table.ownerUserId, table.updatedAt)],
+);
+
+/**
+ * 房间与成员默认工作区绑定表（`workspace_room_bindings`）。
+ * 以 `(room_id, owner_user_id)` 为复合主键，支持联邦群聊中每位人类主人挂载各自工作区。
+ */
+export const workspaceRoomBindingsTable = pgTable(
+  "workspace_room_bindings",
+  {
+    roomId: text("room_id")
+      .notNull()
+      .references(() => roomsTable.id, { onDelete: "cascade" }),
+    ownerUserId: text("owner_user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspacesTable.id, { onDelete: "cascade" }),
+    boundAt: timestamp("bound_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.roomId, table.ownerUserId] }),
+    index("workspace_room_bindings_workspace_idx").on(table.workspaceId),
+  ],
+);
+
+/**
+ * 多 Agent 协作工单聚合根表（`work_items`）。
+ * `agent_snapshots_json` 保存参与工单的 Agent 快照，确保后续删除 Agent 仍可无损回放历史工单。
+ */
+export const workItemsTable = pgTable(
+  "work_items",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspacesTable.id, { onDelete: "cascade" }),
+    ownerUserId: text("owner_user_id")
+      .notNull()
+      .references(() => usersTable.id, { onDelete: "cascade" }),
+    roomId: text("room_id").references(() => roomsTable.id, { onDelete: "set null" }),
+    anchorMessageSeq: integer("anchor_message_seq").notNull().default(0),
+    title: text("title").notNull(),
+    brief: text("brief").notNull(),
+    topology: text("topology").notNull().default("verify_loop"),
+    tier: text("tier").notNull().default("sandbox_branch_write"),
+    stage: text("stage").notNull().default("working"),
+    worktreeBranch: text("worktree_branch").notNull(),
+    coordinatorAgentId: text("coordinator_agent_id").references(() => agentsTable.id, {
+      onDelete: "set null",
+    }),
+    primaryWorkerAgentId: text("primary_worker_agent_id")
+      .notNull()
+      .references(() => agentsTable.id, { onDelete: "cascade" }),
+    verifierAgentId: text("verifier_agent_id").references(() => agentsTable.id, {
+      onDelete: "set null",
+    }),
+    attentionJson: jsonb("attention_json").$type<Record<string, unknown>>(),
+    reviewJson: jsonb("review_json").$type<Record<string, unknown>>(),
+    traceJson: jsonb("trace_json").$type<readonly WorkTraceEntry[]>().notNull().default([]),
+    diffFilesJson: jsonb("diff_files_json")
+      .$type<readonly WorkDiffFileDto[]>()
+      .notNull()
+      .default([]),
+    agentSnapshotsJson: jsonb("agent_snapshots_json")
+      .$type<Readonly<Record<string, Record<string, unknown>>>>()
+      .notNull(),
+    opKey: text("op_key"),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("work_items_owner_op_key_unique_idx").on(table.ownerUserId, table.opKey),
+    index("work_items_workspace_updated_idx").on(table.workspaceId, table.updatedAt),
+    index("work_items_room_anchor_idx").on(table.roomId, table.anchorMessageSeq),
+    index("work_items_owner_stage_idx").on(table.ownerUserId, table.stage),
+  ],
+);
+
+/**
+ * 工单并行执行分片与核验节点表（`work_slices`，ADR-0009 持久租约）。
+ */
+export const workSlicesTable = pgTable(
+  "work_slices",
+  {
+    id: text("id").primaryKey(),
+    workItemId: text("work_item_id")
+      .notNull()
+      .references(() => workItemsTable.id, { onDelete: "cascade" }),
+    orderIndex: integer("order_index").notNull(),
+    title: text("title").notNull(),
+    leaseRole: text("lease_role").notNull().default("write"),
+    assignedAgentId: text("assigned_agent_id").notNull(),
+    leaseOwnerAgentId: text("lease_owner_agent_id"),
+    leaseVersion: integer("lease_version").notNull().default(0),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    ownedPathsJson: jsonb("owned_paths_json").$type<readonly string[]>().notNull(),
+    status: text("status").notNull().default("waiting"),
+    liveSummary: text("live_summary").notNull().default(""),
+    diffAdded: integer("diff_added").notNull().default(0),
+    diffRemoved: integer("diff_removed").notNull().default(0),
+    changedFilesJson: jsonb("changed_files_json").$type<readonly string[]>().notNull(),
+    worktreeBranch: text("worktree_branch"),
+    steerNotesJson: jsonb("steer_notes_json").$type<readonly string[]>().notNull(),
+    failureCode: text("failure_code"),
+    provenanceJson: jsonb("provenance_json").$type<WorkSliceProvenance>(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("work_slices_item_order_idx").on(table.workItemId, table.orderIndex),
+    index("work_slices_assigned_status_idx").on(
+      table.assignedAgentId,
+      table.status,
+      table.leaseExpiresAt,
+    ),
+  ],
+);

@@ -137,6 +137,8 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     PRIMARY KEY (room_id, member_key)
   )`,
   "ALTER TABLE room_members ADD COLUMN IF NOT EXISTS remark TEXT",
+  "CREATE INDEX IF NOT EXISTS room_members_member_key_idx ON room_members (member_key)",
+  "CREATE INDEX IF NOT EXISTS room_members_agent_id_idx ON room_members (agent_id)",
   `CREATE TABLE IF NOT EXISTS messages (
     room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL,
@@ -177,6 +179,7 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
   "ALTER TABLE proposals ADD COLUMN IF NOT EXISTS mandate_json JSONB",
+  "CREATE INDEX IF NOT EXISTS proposals_room_origin_seq_idx ON proposals (room_id, origin_message_seq)",
   `CREATE TABLE IF NOT EXISTS proposal_votes (
     proposal_id TEXT NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
     voter_key TEXT NOT NULL,
@@ -208,6 +211,107 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS user_sessions_user_id_idx ON user_sessions (user_id)",
   "CREATE INDEX IF NOT EXISTS user_sessions_expires_at_idx ON user_sessions (expires_at)",
   "CREATE INDEX IF NOT EXISTS rooms_created_at_idx ON rooms (created_at DESC)",
+  `CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'git_repo',
+    roots_json JSONB NOT NULL,
+    host_mode TEXT NOT NULL DEFAULT 'local_machine',
+    host_label TEXT NOT NULL,
+    sandbox_mode TEXT NOT NULL DEFAULT 'worktree_pool',
+    allow_room_collaborators BOOLEAN NOT NULL DEFAULT FALSE,
+    prewarmed_worktrees INTEGER NOT NULL DEFAULT 3,
+    hooks_json JSONB NOT NULL,
+    context_json JSONB NOT NULL,
+    default_topology TEXT NOT NULL DEFAULT 'verify_loop',
+    default_worker_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    default_verifier_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  "CREATE INDEX IF NOT EXISTS workspaces_owner_updated_idx ON workspaces (owner_user_id, updated_at DESC)",
+  `CREATE TABLE IF NOT EXISTS workspace_room_bindings (
+    room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    bound_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (room_id, owner_user_id)
+  )`,
+  "CREATE INDEX IF NOT EXISTS workspace_room_bindings_workspace_idx ON workspace_room_bindings (workspace_id)",
+  `CREATE TABLE IF NOT EXISTS work_items (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    room_id TEXT REFERENCES rooms(id) ON DELETE SET NULL,
+    anchor_message_seq INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL,
+    brief TEXT NOT NULL,
+    topology TEXT NOT NULL DEFAULT 'verify_loop',
+    tier TEXT NOT NULL DEFAULT 'sandbox_branch_write',
+    stage TEXT NOT NULL DEFAULT 'working',
+    worktree_branch TEXT NOT NULL,
+    coordinator_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    primary_worker_agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    verifier_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    attention_json JSONB,
+    review_json JSONB,
+    trace_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    diff_files_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    agent_snapshots_json JSONB NOT NULL,
+    op_key TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS op_key TEXT",
+  "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS trace_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+  "ALTER TABLE work_items ADD COLUMN IF NOT EXISTS diff_files_json JSONB NOT NULL DEFAULT '[]'::jsonb",
+  "CREATE UNIQUE INDEX IF NOT EXISTS work_items_owner_op_key_unique_idx ON work_items (owner_user_id, op_key)",
+  "CREATE INDEX IF NOT EXISTS work_items_workspace_updated_idx ON work_items (workspace_id, updated_at DESC)",
+  "CREATE INDEX IF NOT EXISTS work_items_room_anchor_idx ON work_items (room_id, anchor_message_seq ASC)",
+  "CREATE INDEX IF NOT EXISTS work_items_owner_stage_idx ON work_items (owner_user_id, stage)",
+  `CREATE TABLE IF NOT EXISTS work_slices (
+    id TEXT PRIMARY KEY,
+    work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    order_index INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    lease_role TEXT NOT NULL DEFAULT 'write',
+    assigned_agent_id TEXT NOT NULL,
+    lease_owner_agent_id TEXT,
+    lease_version INTEGER NOT NULL DEFAULT 0,
+    lease_expires_at TIMESTAMPTZ,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    owned_paths_json JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'waiting',
+    live_summary TEXT NOT NULL DEFAULT '',
+    diff_added INTEGER NOT NULL DEFAULT 0,
+    diff_removed INTEGER NOT NULL DEFAULT 0,
+    changed_files_json JSONB NOT NULL,
+    worktree_branch TEXT,
+    steer_notes_json JSONB NOT NULL,
+    failure_code TEXT,
+    provenance_json JSONB,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
+  "CREATE INDEX IF NOT EXISTS work_slices_item_order_idx ON work_slices (work_item_id, order_index ASC)",
+  "CREATE INDEX IF NOT EXISTS work_slices_assigned_status_idx ON work_slices (assigned_agent_id, status, lease_expires_at)",
+  "CREATE INDEX IF NOT EXISTS work_slices_active_lease_expiry_idx ON work_slices (lease_expires_at ASC) WHERE status IN ('running', 'verifying')",
+];
+
+/**
+ * 启动期关系元组描述符（`RelationBuildTupleDesc`）完整性探针：
+ * `CREATE TABLE IF NOT EXISTS` 在表名已存在时会直接跳过，无法发现 `pg_attribute` 目录索引缺列（`XX000`）；
+ * 在冷启动期主动触发核心表的列级解析，避免隐藏目录损坏留到用户登录时才抛出 HTTP 500。
+ */
+const CORE_RELATION_PROBES: readonly string[] = [
+  "SELECT id, email, password_hash, role, status, theme_preference FROM users LIMIT 0",
+  "SELECT id, user_id, token_hash, expires_at FROM user_sessions LIMIT 0",
+  "SELECT id, owner_user_id, token_hash, allow_external_dm FROM agents LIMIT 0",
+  "SELECT room_id, member_key, remark FROM room_members LIMIT 0",
+  "SELECT id, workspace_id, op_key, trace_json, diff_files_json FROM work_items LIMIT 0",
 ];
 
 /**
@@ -220,5 +324,8 @@ export async function ensureCoreSchema(db: OpenHuddleDb): Promise<void> {
   // Drizzle 在 PGlite 与 pg 驱动上使用 PostgreSQL 扩展查询协议（Prepared Statement），单次仅允许提交一条命令。
   for (const ddl of CORE_DDL_STATEMENTS) {
     await db.execute(sql.raw(ddl));
+  }
+  for (const probe of CORE_RELATION_PROBES) {
+    await db.execute(sql.raw(probe));
   }
 }

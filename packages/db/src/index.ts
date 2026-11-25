@@ -10,6 +10,18 @@ export {
   type OpenHuddleDb,
 } from "./client.js";
 export {
+  DEFAULT_PGLITE_SNAPSHOT_KEEP,
+  findLatestPgliteSnapshot,
+  pruneArchivedDirectories,
+  restorePgliteSnapshot,
+  writePgliteSnapshot,
+} from "./pglite-backup.js";
+export {
+  isCorruptedLocalPgliteError,
+  type PgliteSalvageReport,
+  salvageCorruptedPgliteInto,
+} from "./pglite-salvage.js";
+export {
   type ManagedPgliteSocketServer,
   type PgliteSocketServerOptions,
   startPgliteSocketServer,
@@ -28,4 +40,8 @@ export {
   roomsTable,
   userSessionsTable,
   usersTable,
+  workItemsTable,
+  workSlicesTable,
+  workspaceRoomBindingsTable,
+  workspacesTable,
 } from "./schema.js";

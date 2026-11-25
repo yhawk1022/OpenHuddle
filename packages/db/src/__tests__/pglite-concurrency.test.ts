@@ -2,6 +2,9 @@
  * @module db/tests/pglite-concurrency
  * @description 基于真实内存态 PGlite 内核验证房间消息 `seq` 行锁严格单调递增与 `op_key` 幂等去重不变量。
  */
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type MessageSeq, asMessageSeq, createDefaultGovernanceState } from "@openhuddle/protocol";
 import { and, asc, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,9 +13,14 @@ import {
   type OpenHuddleDb,
   createDatabaseClient,
   ensureCoreSchema,
+  findLatestPgliteSnapshot,
+  isCorruptedLocalPgliteError,
   messagesTable,
+  pruneArchivedDirectories,
+  restorePgliteSnapshot,
   roomsTable,
   usersTable,
+  writePgliteSnapshot,
 } from "../index.js";
 
 /**
@@ -129,5 +137,139 @@ describe("@openhuddle/db — in-memory PGlite row-lock seq monotonicity & opKey 
       .orderBy(asc(messagesTable.seq));
 
     expect(rows.map((r) => r.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+});
+
+describe("@openhuddle/db — PGlite file:// atomic directory lock & crash recovery guards", () => {
+  let sandboxDir: string;
+
+  beforeEach(() => {
+    sandboxDir = mkdtempSync(join(tmpdir(), "openhuddle-pglite-lock-"));
+  });
+
+  afterEach(() => {
+    rmSync(sandboxDir, { recursive: true, force: true });
+  });
+
+  it("rejects concurrent second writer on the same PGlite directory and allows clean reopen after close", async () => {
+    const dataDir = join(sandboxDir, "pglite");
+    const first = createDatabaseClient({
+      url: `file://${dataDir}`,
+      lockWaitTimeoutMs: 120,
+    });
+    await ensureCoreSchema(first.db);
+
+    expect(() =>
+      createDatabaseClient({
+        url: `file://${dataDir}`,
+        lockWaitTimeoutMs: 120,
+      }),
+    ).toThrow(/already in use by active process/);
+
+    await first.close();
+
+    const reopened = createDatabaseClient({
+      url: `file://${dataDir}`,
+      lockWaitTimeoutMs: 120,
+    });
+    await ensureCoreSchema(reopened.db);
+    await reopened.close();
+  });
+
+  it("automatically reclaims stale dead-PID lockfile and stale postmaster.pid after crash", async () => {
+    const dataDir = join(sandboxDir, "crashed-pglite");
+    const initial = createDatabaseClient({ url: `file://${dataDir}` });
+    await ensureCoreSchema(initial.db);
+    await initial.close();
+
+    // 模拟进程被 SIGKILL 后残留的死 PID 锁与虚拟 postmaster.pid
+    writeFileSync(
+      `${dataDir}.owner.pid`,
+      `${JSON.stringify({ pid: 999_999, acquiredAt: 1 })}\n`,
+      "utf8",
+    );
+    writeFileSync(join(dataDir, "postmaster.pid"), "-42\n/tmp/pglite/base\n", "utf8");
+
+    const recovered = createDatabaseClient({
+      url: `file://${dataDir}`,
+      lockWaitTimeoutMs: 200,
+    });
+    await ensureCoreSchema(recovered.db);
+    await recovered.close();
+  });
+
+  it("classifies WASM RuntimeError and PostgreSQL XX000 catalog errors as local PGlite corruption", () => {
+    const wasmErr = Object.assign(new Error("Aborted()"), { name: "RuntimeError" });
+    expect(isCorruptedLocalPgliteError(wasmErr)).toBe(true);
+
+    const catalogErr = Object.assign(
+      new Error("pg_attribute catalog is missing 1 attribute(s) for relation OID 16384"),
+      { code: "XX000" },
+    );
+    expect(isCorruptedLocalPgliteError(catalogErr)).toBe(true);
+    expect(isCorruptedLocalPgliteError(new Error("Normal validation error"))).toBe(false);
+  });
+});
+
+describe("@openhuddle/db — PGlite snapshot backup & restore", () => {
+  let sandboxDir: string;
+
+  beforeEach(() => {
+    sandboxDir = mkdtempSync(join(tmpdir(), "openhuddle-pglite-snap-"));
+  });
+
+  afterEach(() => {
+    rmSync(sandboxDir, { recursive: true, force: true });
+  });
+
+  it("restores rows from the latest snapshot, keeps only N snapshots, and refuses to overwrite", async () => {
+    const dataDir = join(sandboxDir, "pglite");
+    const backupDir = join(sandboxDir, "pglite.backups");
+    const source = createDatabaseClient({ url: `file://${dataDir}` });
+    await ensureCoreSchema(source.db);
+    await source.db.insert(usersTable).values({
+      id: "usr_snapshot",
+      email: "snapshot@openhuddle.dev",
+      displayName: "Snapshot",
+    });
+    const pglite = source.pglite;
+    expect(pglite).toBeDefined();
+    if (!pglite) return;
+
+    for (let i = 0; i < 3; i += 1) {
+      await writePgliteSnapshot(pglite, backupDir, 2);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(readdirSync(backupDir).filter((n) => n.endsWith(".tar.gz"))).toHaveLength(2);
+    await source.close();
+
+    const latest = findLatestPgliteSnapshot(backupDir);
+    expect(latest).toBeDefined();
+    if (!latest) return;
+    const restoredDir = join(sandboxDir, "restored");
+    await restorePgliteSnapshot(latest.path, restoredDir);
+    await expect(restorePgliteSnapshot(latest.path, restoredDir)).rejects.toThrow(
+      /existing directory/,
+    );
+
+    const restored = createDatabaseClient({ url: `file://${restoredDir}` });
+    await ensureCoreSchema(restored.db);
+    const rows = await restored.db.select({ email: usersTable.email }).from(usersTable);
+    expect(rows).toEqual([{ email: "snapshot@openhuddle.dev" }]);
+    await restored.close();
+  });
+
+  it("prunes old archived corrupt directories beyond the retention count", () => {
+    for (const ts of [1, 2, 3, 4]) {
+      mkdirSync(join(sandboxDir, `pglite.corrupt-${String(ts)}`));
+      utimesSync(join(sandboxDir, `pglite.corrupt-${String(ts)}`), ts, ts);
+    }
+    mkdirSync(join(sandboxDir, "pglite"));
+    pruneArchivedDirectories(sandboxDir, "pglite.corrupt-", 2);
+    expect(readdirSync(sandboxDir).sort()).toEqual([
+      "pglite",
+      "pglite.corrupt-3",
+      "pglite.corrupt-4",
+    ]);
   });
 });
