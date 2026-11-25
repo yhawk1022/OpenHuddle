@@ -15,6 +15,7 @@ import type { OpenAPIHono } from "@hono/zod-openapi";
 import type { ManagedDatabase } from "@openhuddle/db";
 import type { ApiErrorEnvelope } from "@openhuddle/protocol";
 import { Scalar } from "@scalar/hono-api-reference";
+import { sql } from "drizzle-orm";
 import { ZodError } from "zod";
 import type { ServerEnv } from "./infra/env.js";
 import { AppError } from "./infra/errors.js";
@@ -45,6 +46,7 @@ import { createBootstrapDocsRouter } from "./modules/pairing/bootstrap-docs.rout
 import {
   LocalConnectService,
   type LocalDaemonInstallerFn,
+  isLoopbackServerUrl,
 } from "./modules/pairing/local-connect.service.js";
 import { PairingRepository } from "./modules/pairing/pairing.repo.js";
 import { createPairingRouter } from "./modules/pairing/pairing.routes.js";
@@ -56,8 +58,18 @@ import { RoomsRepository } from "./modules/rooms/rooms.repo.js";
 import { createPublicSharePageRouter, createRoomsRouter } from "./modules/rooms/rooms.routes.js";
 import { RoomsService } from "./modules/rooms/rooms.service.js";
 import { createSystemRouter } from "./modules/system/system.routes.js";
+import {
+  type LocalCliExecutorFn,
+  type LocalWorkspaceRunnerHandle,
+  startLocalWorkspaceRunner,
+} from "./modules/workspaces/local-workspace-runner.js";
+import { WorkspacesRepository } from "./modules/workspaces/workspaces.repo.js";
+import { createWorkspacesRouter } from "./modules/workspaces/workspaces.routes.js";
+import { WorkspacesService } from "./modules/workspaces/workspaces.service.js";
 
 const DEFAULT_WEB_DIST_DIR = fileURLToPath(new URL("../../web/dist", import.meta.url));
+const DEFAULT_LOCAL_REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+const appBackgroundRunners = new WeakMap<OpenAPIHono, LocalWorkspaceRunnerHandle>();
 
 const STATIC_MIME_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -65,6 +77,7 @@ const STATIC_MIME_TYPES: Readonly<Record<string, string>> = {
   ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -90,6 +103,20 @@ export interface AppDependencies {
   readonly localConnectHomeDir?: string;
   readonly localConnectPathEnv?: string;
   readonly localDaemonInstaller?: LocalDaemonInstallerFn;
+  readonly defaultLocalWorkspaceRoot?: string;
+  readonly enableLocalWorkspaceRunner?: boolean;
+  readonly localRunnerCliExecutor?: LocalCliExecutorFn;
+}
+
+/**
+ * 停止挂载在指定 `OpenAPIHono` 实例上的后台本机工作区执行器（供进程优雅停机或集成测试收尾调用）。
+ */
+export async function stopServerAppBackgroundTasks(app: OpenAPIHono): Promise<void> {
+  const runner = appBackgroundRunners.get(app);
+  if (runner) {
+    appBackgroundRunners.delete(app);
+    await runner.stop();
+  }
 }
 
 function getMimeTypeForFile(filePath: string): string {
@@ -138,6 +165,7 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
   const roomsRepo = new RoomsRepository(deps.database.db);
   const messagesRepo = new MessagesRepository(deps.database.db);
   const proposalsRepo = new ProposalsRepository(deps.database.db);
+  const workspacesRepo = new WorkspacesRepository(deps.database.db);
   const adminRepo = new AdminRepository(deps.database.db);
   const startedAtMs = Date.now();
 
@@ -215,6 +243,34 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
     aiModerator,
     realtimeBus: deps.realtimeBus,
   });
+  const isLoopback = isLoopbackServerUrl(deps.env.PUBLIC_BASE_URL);
+  const enableLocalRunner =
+    deps.enableLocalWorkspaceRunner ?? (deps.env.NODE_ENV !== "test" && isLoopback);
+  const defaultLocalWorkspaceRoot =
+    deps.defaultLocalWorkspaceRoot ??
+    (deps.env.NODE_ENV !== "test" && isLoopback ? DEFAULT_LOCAL_REPO_ROOT : undefined);
+
+  const workspacesService = new WorkspacesService({
+    repo: workspacesRepo,
+    realtimeBus: deps.realtimeBus,
+    logger: rootLogger,
+    ...(defaultLocalWorkspaceRoot !== undefined ? { defaultLocalWorkspaceRoot } : {}),
+    ...(deps.localConnectHomeDir !== undefined ? { localHomeDir: deps.localConnectHomeDir } : {}),
+    isLoopbackHost: isLoopback && (enableLocalRunner || deps.env.NODE_ENV !== "test"),
+  });
+  if (enableLocalRunner) {
+    const localRunner = startLocalWorkspaceRunner({
+      repo: workspacesRepo,
+      workspacesService,
+      logger: rootLogger,
+      ...(deps.localConnectHomeDir !== undefined ? { homeDir: deps.localConnectHomeDir } : {}),
+      ...(deps.localConnectPathEnv !== undefined ? { pathEnv: deps.localConnectPathEnv } : {}),
+      ...(deps.localRunnerCliExecutor !== undefined
+        ? { cliExecutor: deps.localRunnerCliExecutor }
+        : {}),
+    });
+    appBackgroundRunners.set(app, localRunner);
+  }
   const adminService = new AdminService({
     adminRepo,
     authRepo,
@@ -235,6 +291,9 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
     createSystemRouter({
       databaseDriver: deps.database.driver,
       realtimeBusDriver: deps.env.REALTIME_BUS_DRIVER,
+      pingDatabase: async () => {
+        await deps.database.db.execute(sql`SELECT 1`);
+      },
     }),
   );
   apiV1.route("/", createAuthRouter({ authService, env: deps.env }));
@@ -248,6 +307,7 @@ export function createServerApp(deps: Readonly<AppDependencies>): OpenAPIHono {
   apiV1.route("/", createMessagesRouter({ authService, messagesService }));
   apiV1.route("/", createEventsRouter({ authService, eventsService }));
   apiV1.route("/", createProposalsRouter({ authService, proposalsService }));
+  apiV1.route("/", createWorkspacesRouter({ authService, workspacesService }));
   apiV1.route("/", createAdminRouter({ authService, adminService }));
   apiV1.route(
     "/",

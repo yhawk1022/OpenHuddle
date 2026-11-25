@@ -29,7 +29,7 @@ import {
   type UserId,
   asReadCursorSeq,
 } from "@openhuddle/protocol";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { computeAgentReachState } from "../../infra/identity-stamp.js";
 import type { RealtimeBus } from "../../infra/realtime-bus.js";
 import { extractSqlRows } from "../../infra/sql-rows.js";
@@ -169,7 +169,6 @@ function mapInternalMemberRow(
       ? computeAgentReachState(
           {
             id: agentId,
-            platform,
             wakeKind: row.agentWakeKind ?? "none",
             checkinIntervalMin: row.agentCheckinIntervalMin,
             lastSeenAt,
@@ -279,6 +278,7 @@ export function buildRoomDetailDto(
     readonly includeInviteToken: boolean;
     readonly viewer?: Readonly<AuthenticatedCaller>;
     readonly peerOverride?: DirectChatPeerDto;
+    readonly lastMessageAt?: Date | null | undefined;
   },
 ): RoomDetailDto {
   const peer =
@@ -306,6 +306,9 @@ export function buildRoomDetailDto(
     governance: room.governanceJson,
     ...(peer !== undefined ? { peer } : {}),
     members: [...members],
+    ...(options.lastMessageAt !== undefined && options.lastMessageAt !== null
+      ? { lastMessageAtIso: options.lastMessageAt.toISOString() }
+      : {}),
     createdAtIso: room.createdAt.toISOString(),
   };
 }
@@ -426,7 +429,27 @@ export class RoomsRepository {
   }
 
   /**
-   * 列出指定成员（人类或 Agent）已加入的所有房间摘要，按房间创建时间倒序排列，并批量水合 1v1 单聊对端信息。
+   * 查询指定房间内最新一条消息的创建时间（无消息时返回 `undefined`）。
+   *
+   * @param roomId - 房间主键
+   * @returns 最新消息创建时间或 `undefined`
+   */
+  public async findLatestMessageAt(roomId: RoomId): Promise<Date | undefined> {
+    const result = await this.db.execute(sql`
+      SELECT MAX(created_at) AS "lastMessageAt"
+      FROM messages
+      WHERE room_id = ${roomId}
+    `);
+    const raw = extractSqlRows<{ readonly lastMessageAt: Date | string | null }>(result)[0]
+      ?.lastMessageAt;
+    if (raw === null || raw === undefined) {
+      return undefined;
+    }
+    return raw instanceof Date ? raw : new Date(raw);
+  }
+
+  /**
+   * 列出指定成员（人类或 Agent）已加入的所有房间摘要，按最新消息时间倒序排列（无消息房间回退至房间创建时间），并批量水合 1v1 单聊对端信息。
    *
    * @param memberKey - 确定性成员键（`human:usr_...` 或 `agent:agt_...`）
    * @param viewer - 可选当前查看者身份（用于动态解析单聊对端 `peer` 与显示标题）
@@ -438,23 +461,51 @@ export class RoomsRepository {
     viewer?: Readonly<AuthenticatedCaller>,
     realtimeBus?: RealtimeBus,
   ): Promise<readonly RoomSummaryDto[]> {
-    const rows = await this.db
-      .select({
-        id: roomsTable.id,
-        kind: roomsTable.kind,
-        ownerUserId: roomsTable.ownerUserId,
-        name: roomsTable.name,
-        topic: roomsTable.topic,
-        visibility: roomsTable.visibility,
-        lastSeq: roomsTable.lastSeq,
-        yourLastReadSeq: roomMembersTable.lastReadSeq,
-        governanceJson: roomsTable.governanceJson,
-        createdAt: roomsTable.createdAt,
-      })
-      .from(roomMembersTable)
-      .innerJoin(roomsTable, eq(roomMembersTable.roomId, roomsTable.id))
-      .where(eq(roomMembersTable.memberKey, memberKey))
-      .orderBy(desc(roomsTable.createdAt));
+    const queryResult = await this.db.execute(sql`
+      SELECT
+        r.id AS "id",
+        r.kind AS "kind",
+        r.owner_user_id AS "ownerUserId",
+        r.name AS "name",
+        r.topic AS "topic",
+        r.visibility AS "visibility",
+        r.last_seq AS "lastSeq",
+        rm.last_read_seq AS "yourLastReadSeq",
+        r.governance_json AS "governanceJson",
+        r.created_at AS "createdAt",
+        msg_agg."lastMessageAt" AS "lastMessageAt"
+      FROM room_members rm
+      INNER JOIN rooms r ON rm.room_id = r.id
+      LEFT JOIN (
+        SELECT
+          m.room_id AS "roomId",
+          MAX(m.created_at) AS "lastMessageAt"
+        FROM messages m
+        INNER JOIN room_members rm_self
+          ON rm_self.room_id = m.room_id AND rm_self.member_key = ${memberKey}
+        GROUP BY m.room_id
+      ) msg_agg ON msg_agg."roomId" = r.id
+      WHERE rm.member_key = ${memberKey}
+      ORDER BY
+        COALESCE(msg_agg."lastMessageAt", r.created_at) DESC,
+        r.last_seq DESC,
+        r.created_at DESC,
+        r.id ASC
+    `);
+
+    const rows = extractSqlRows<{
+      readonly id: string;
+      readonly kind: string;
+      readonly ownerUserId: string;
+      readonly name: string;
+      readonly topic: string;
+      readonly visibility: string;
+      readonly lastSeq: number;
+      readonly yourLastReadSeq: number;
+      readonly governanceJson: unknown;
+      readonly createdAt: Date | string;
+      readonly lastMessageAt: Date | string | null;
+    }>(queryResult);
 
     const directRoomIds = rows.filter((r) => r.kind !== "group").map((r) => r.id);
 
@@ -475,6 +526,13 @@ export class RoomsRepository {
           ? resolveDirectPeerForViewer(kind, membersByDirectRoom.get(row.id) ?? [], viewer)
           : undefined;
       const displayTitle = kind !== "group" && peer !== undefined ? peer.displayName : row.name;
+      const createdAt = row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt);
+      const lastMessageAt =
+        row.lastMessageAt === null || row.lastMessageAt === undefined
+          ? undefined
+          : row.lastMessageAt instanceof Date
+            ? row.lastMessageAt
+            : new Date(row.lastMessageAt);
 
       return {
         id: row.id as RoomId,
@@ -483,11 +541,12 @@ export class RoomsRepository {
         name: displayTitle,
         topic: row.topic,
         visibility: RoomVisibilitySchema.parse(row.visibility),
-        lastSeq: asReadCursorSeq(row.lastSeq),
-        yourLastReadSeq: asReadCursorSeq(row.yourLastReadSeq),
+        lastSeq: asReadCursorSeq(Number(row.lastSeq)),
+        yourLastReadSeq: asReadCursorSeq(Number(row.yourLastReadSeq)),
         governance: parseGovernanceJson(row.governanceJson),
         ...(peer !== undefined ? { peer } : {}),
-        createdAtIso: row.createdAt.toISOString(),
+        ...(lastMessageAt !== undefined ? { lastMessageAtIso: lastMessageAt.toISOString() } : {}),
+        createdAtIso: createdAt.toISOString(),
       };
     });
   }

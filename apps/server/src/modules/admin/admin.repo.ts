@@ -471,7 +471,6 @@ export class AdminRepository {
       const reach = computeAgentReachState(
         {
           id: row.id as AgentId,
-          platform,
           wakeKind: row.wakeKind,
           checkinIntervalMin: row.checkinIntervalMin,
           lastSeenAt: row.lastSeenAt,
@@ -1692,7 +1691,6 @@ export class AdminRepository {
       const reach = computeAgentReachState(
         {
           id: agentId,
-          platform,
           wakeKind: row.wakeKind,
           checkinIntervalMin: row.checkinIntervalMin,
           lastSeenAt,

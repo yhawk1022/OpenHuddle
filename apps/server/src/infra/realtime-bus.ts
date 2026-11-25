@@ -11,6 +11,12 @@ import type { AgentId, RoomId, SseEvent, UserId } from "@openhuddle/protocol";
 /** 订阅取消函数签名 */
 export type UnsubscribeFn = () => void;
 
+/** Agent 唤醒订阅分为持久 SSE 和一次性收件箱等待，只有 SSE 计作实时在线。 */
+export interface AgentEventSubscriptionOptions {
+  readonly transport?: "sse" | "inbox";
+  readonly onEvict?: () => void;
+}
+
 /**
  * 实时事件总线进程内连接遥测快照。
  */
@@ -48,9 +54,14 @@ export interface RealtimeBus {
 
   /**
    * 订阅某个 Agent 的专属唤醒事件流。
+   * @param options - 连接方式及凭据失效时的清理回调
    * @returns 调用后立即解除监听的清理函数
    */
-  subscribeAgent(agentId: AgentId, listener: (event: SseEvent) => void): UnsubscribeFn;
+  subscribeAgent(
+    agentId: AgentId,
+    listener: (event: SseEvent) => void,
+    options?: Readonly<AgentEventSubscriptionOptions>,
+  ): UnsubscribeFn;
 
   /**
    * 订阅某个人类用户的专属事件流（接收跨人新建单聊、拉群与好友通知）。
@@ -64,7 +75,7 @@ export interface RealtimeBus {
   getActiveAgentConnectionCount(agentId: AgentId): number;
 
   /**
-   * 当某个 Agent 被其主人彻底删除吊销时，立即驱逐该 Agent 名下挂载的所有内存唤醒订阅器。
+   * 当某个 Agent 被删除或轮换凭据时，断开当前实例中该 Agent 的事件连接。
    */
   evictAgentSubscribers(agentId: AgentId): void;
 
@@ -94,7 +105,10 @@ export interface RealtimeBus {
  */
 export class InMemoryRealtimeBus implements RealtimeBus {
   private readonly roomSubscribers = new Map<RoomId, Set<(event: SseEvent) => void>>();
-  private readonly agentSubscribers = new Map<AgentId, Set<(event: SseEvent) => void>>();
+  private readonly agentSubscribers = new Map<
+    AgentId,
+    Map<(event: SseEvent) => void, Readonly<AgentEventSubscriptionOptions>>
+  >();
   private readonly userSubscribers = new Map<UserId, Set<(event: SseEvent) => void>>();
 
   /** {@inheritDoc RealtimeBus.publishToRoom} */
@@ -114,7 +128,7 @@ export class InMemoryRealtimeBus implements RealtimeBus {
     if (!listeners) {
       return;
     }
-    for (const listener of listeners) {
+    for (const listener of listeners.keys()) {
       listener(event);
     }
   }
@@ -152,13 +166,17 @@ export class InMemoryRealtimeBus implements RealtimeBus {
   }
 
   /** {@inheritDoc RealtimeBus.subscribeAgent} */
-  public subscribeAgent(agentId: AgentId, listener: (event: SseEvent) => void): UnsubscribeFn {
-    let set = this.agentSubscribers.get(agentId);
-    if (!set) {
-      set = new Set();
-      this.agentSubscribers.set(agentId, set);
+  public subscribeAgent(
+    agentId: AgentId,
+    listener: (event: SseEvent) => void,
+    options: Readonly<AgentEventSubscriptionOptions> = {},
+  ): UnsubscribeFn {
+    let listeners = this.agentSubscribers.get(agentId);
+    if (!listeners) {
+      listeners = new Map();
+      this.agentSubscribers.set(agentId, listeners);
     }
-    set.add(listener);
+    listeners.set(listener, options);
 
     return () => {
       const current = this.agentSubscribers.get(agentId);
@@ -195,12 +213,20 @@ export class InMemoryRealtimeBus implements RealtimeBus {
 
   /** {@inheritDoc RealtimeBus.getActiveAgentConnectionCount} */
   public getActiveAgentConnectionCount(agentId: AgentId): number {
-    return this.agentSubscribers.get(agentId)?.size ?? 0;
+    let connections = 0;
+    for (const subscription of this.agentSubscribers.get(agentId)?.values() ?? []) {
+      if (subscription.transport !== "inbox") connections += 1;
+    }
+    return connections;
   }
 
   /** {@inheritDoc RealtimeBus.evictAgentSubscribers} */
   public evictAgentSubscribers(agentId: AgentId): void {
+    const listeners = this.agentSubscribers.get(agentId);
     this.agentSubscribers.delete(agentId);
+    for (const subscription of listeners?.values() ?? []) {
+      subscription.onEvict?.();
+    }
   }
 
   /** {@inheritDoc RealtimeBus.evictUserSubscribers} */
@@ -216,8 +242,11 @@ export class InMemoryRealtimeBus implements RealtimeBus {
   /** {@inheritDoc RealtimeBus.getTelemetry} */
   public getTelemetry(): RealtimeBusTelemetry {
     let activeAgentConnections = 0;
-    for (const listeners of this.agentSubscribers.values()) {
-      activeAgentConnections += listeners.size;
+    let activeAgentCount = 0;
+    for (const agentId of this.agentSubscribers.keys()) {
+      const count = this.getActiveAgentConnectionCount(agentId);
+      activeAgentConnections += count;
+      if (count > 0) activeAgentCount += 1;
     }
     let activeRoomSubscriptions = 0;
     for (const listeners of this.roomSubscribers.values()) {
@@ -225,7 +254,7 @@ export class InMemoryRealtimeBus implements RealtimeBus {
     }
     return {
       activeAgentConnections,
-      activeAgentCount: this.agentSubscribers.size,
+      activeAgentCount,
       activeRoomSubscriptions,
       activeRoomCount: this.roomSubscribers.size,
     };

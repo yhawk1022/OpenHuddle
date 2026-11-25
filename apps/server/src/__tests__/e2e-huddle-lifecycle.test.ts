@@ -52,7 +52,7 @@ import type {
   UnreadConflictDetails,
   VerifyOtpResponse,
 } from "@openhuddle/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServerApp } from "../app.js";
 import { parseServerEnv } from "../infra/env.js";
 import { InMemoryRealtimeBus } from "../infra/realtime-bus.js";
@@ -203,6 +203,161 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
       headers: { authorization: `Bearer ${owner.sessionToken}` },
     });
     expect(await account.json()).toMatchObject({ agents: [{ id: agent.agent.id }] });
+  });
+
+  it("connects a shell-free Agent and exchanges messages through stateless Streamable HTTP MCP", async () => {
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      DATABASE_URL: "memory://",
+      PUBLIC_BASE_URL: "https://huddle.example.com",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus });
+    const owner = await loginHumanViaOtp(app, "mcp-owner@example.com", "MCP Owner");
+    const post = (path: string, body: unknown, token?: string) =>
+      app.request(path, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(token !== undefined ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    const createRoom = async (name: string) => {
+      const response = await post("/api/v1/rooms", { name }, owner.sessionToken);
+      expect(response.status).toBe(201);
+      return ((await response.json()) as { room: RoomDetailDto }).room;
+    };
+    const room = await createRoom("MCP test room");
+    const otherRoom = await createRoom("Private room outside the Agent connection");
+    const connect = async (
+      scope: Readonly<{ autoJoinRoomId?: string; reclaimAgentId?: string }>,
+    ) => {
+      const issue = await post("/api/v1/agent-connections", scope, owner.sessionToken);
+      expect(issue.status).toBe(201);
+      const { connectUrl } = (await issue.json()) as CreateAgentConnectionResponse;
+      const redeemed = await post("/api/v1/agent-connections/redeem", {
+        connectionToken: new URL(connectUrl).hash.slice(1),
+        name: "HTTP-only MCP Agent",
+        platform: "hosted",
+      });
+      expect(redeemed.status).toBe(201);
+      return (await redeemed.json()) as PairAgentResponse;
+    };
+    const agent = await connect({ autoJoinRoomId: room.id });
+    expect(agent).toMatchObject({
+      agent: { platform: "hosted", reach: "polling" },
+      owner: { id: owner.user.id },
+      autoJoinedRoomId: room.id,
+    });
+
+    const mcp = (token: string, method: string, params?: unknown) =>
+      app.request("/api/v1/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: `Bearer ${token}`,
+          "mcp-protocol-version": "2025-03-26",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+    const initialize = await mcp(agent.token, "initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "openhuddle-http-integration", version: "1.0.0" },
+    });
+    expect(initialize.status).toBe(200);
+    expect(await initialize.json()).toMatchObject({
+      result: { serverInfo: { name: "@openhuddle/mcp" } },
+    });
+    expect((await mcp(owner.sessionToken, "tools/list")).status).toBe(403);
+    const list = await mcp(agent.token, "tools/list");
+    expect(list.status).toBe(200);
+    expect(await list.json()).toMatchObject({
+      result: {
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "openhuddle_read_room" }),
+          expect.objectContaining({ name: "openhuddle_send_message" }),
+        ]),
+      },
+    });
+
+    const messagePath = `/api/v1/rooms/${room.id}/messages`;
+    expect(
+      (await post(messagePath, { content: "Confirm HTTP receipt" }, owner.sessionToken)).status,
+    ).toBe(201);
+    const callTool = async (name: string, args: Record<string, unknown>) => {
+      const response = await mcp(agent.token, "tools/call", { name, arguments: args });
+      expect(response.status).toBe(200);
+      return (
+        (await response.json()) as {
+          result: { isError?: boolean; content: ReadonlyArray<{ text: string }> };
+        }
+      ).result;
+    };
+    const read = await callTool("openhuddle_read_room", { roomId: room.id });
+    expect(read.isError).toBeFalsy();
+    expect(JSON.parse(read.content[0]?.text ?? "null")).toMatchObject({
+      messages: [{ content: "Confirm HTTP receipt", author: { trustLevel: "owner_command" } }],
+    });
+    const denied = await callTool("openhuddle_read_room", { roomId: otherRoom.id });
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0]?.text).toContain("FORBIDDEN_NOT_ROOM_MEMBER");
+
+    // Each HTTP request owns a fresh MCP Server. The persisted member cursor still permits this reply.
+    const reply = await callTool("openhuddle_send_message", {
+      roomId: room.id,
+      content: "Received",
+    });
+    expect(reply.isError).toBeFalsy();
+    expect(JSON.parse(reply.content[0]?.text ?? "null")).toMatchObject({
+      message: { content: "Received", author: { agentId: agent.agent.id } },
+    });
+
+    const agentHeaders = { authorization: `Bearer ${agent.token}` };
+    const abortInbox = new AbortController();
+    const pendingInbox = app.request("/api/v1/inbox?waitSec=5", {
+      headers: agentHeaders,
+      signal: abortInbox.signal,
+    });
+    try {
+      await vi.waitFor(() => expect(bus.getTelemetry().activeRoomSubscriptions).toBe(1));
+      const me = await app.request("/api/v1/me", { headers: agentHeaders });
+      expect(await me.json()).toMatchObject({ agent: { reach: "polling" } });
+    } finally {
+      abortInbox.abort();
+      expect((await pendingInbox).status).toBe(200);
+    }
+
+    const events = await app.request("/api/v1/events", {
+      headers: agentHeaders,
+    });
+    expect(events.status).toBe(200);
+    const oldStream = events.body?.getReader();
+    if (oldStream === undefined) throw new Error("Expected an Agent SSE response body.");
+    try {
+      const handshake = await oldStream.read();
+      expect(new TextDecoder().decode(handshake.value)).toContain("event: connected");
+      expect(bus.getTelemetry()).toMatchObject({
+        activeAgentConnections: 1,
+        activeRoomSubscriptions: 1,
+      });
+
+      const reclaimed = await connect({ reclaimAgentId: agent.agent.id });
+      expect(reclaimed.agent.id).toBe(agent.agent.id);
+      expect(reclaimed.agent.reach).toBe("polling");
+      expect((await mcp(agent.token, "tools/list")).status).toBe(401);
+      expect((await mcp(reclaimed.token, "tools/list")).status).toBe(200);
+      expect(bus.getTelemetry()).toMatchObject({
+        activeAgentConnections: 0,
+        activeRoomSubscriptions: 0,
+      });
+      expect((await oldStream.read()).done).toBe(true);
+    } finally {
+      await oldStream.cancel();
+      oldStream.releaseLock();
+    }
   });
 
   it("shares room attachments with members and removes their bytes on recall", async () => {

@@ -974,4 +974,94 @@ describe("@openhuddle/server — ADR-0005 direct chats, friendships & external a
       unsubscribe();
     }
   });
+
+  it("orders joined rooms by latest message timestamp descending and ignores message recalls for bumping", async () => {
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      PUBLIC_BASE_URL: "https://huddle.example.com",
+      DATABASE_URL: "memory://",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus });
+    const alice = await loginHuman(app, "alice@example.com", "Alice");
+    const aliceAgent = await pairOwnedAgent(app, alice.sessionToken, "AliceHelper");
+
+    const waitTick = () => new Promise<void>((resolve) => setTimeout(resolve, 6));
+    const requestJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
+      const res = await app.request(`/api/v1${path}`, {
+        ...init,
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${alice.sessionToken}`,
+          ...(init?.headers ?? {}),
+        },
+      });
+      expect(res.ok).toBe(true);
+      return (await res.json()) as T;
+    };
+
+    const { room: roomA } = await requestJson<{ room: RoomDetailDto }>("/rooms", {
+      method: "POST",
+      body: JSON.stringify({ name: "Room A" }),
+    });
+    await waitTick();
+    const { room: roomB } = await requestJson<{ room: RoomDetailDto }>("/rooms", {
+      method: "POST",
+      body: JSON.stringify({ name: "Room B" }),
+    });
+    await waitTick();
+    const { room: roomC } = await requestJson<OpenDirectRoomResponse>("/rooms/direct/agent", {
+      method: "POST",
+      body: JSON.stringify({ agentId: aliceAgent.agent.id }),
+    });
+
+    // 1. 尚无消息时按会话创建时间倒序排列
+    const initialList = await requestJson<{ rooms: readonly RoomSummaryDto[] }>("/rooms");
+    expect(initialList.rooms.map((r) => r.id)).toEqual([roomC.id, roomB.id, roomA.id]);
+    expect(initialList.rooms[0]?.lastMessageAtIso).toBeUndefined();
+
+    // 2. 最早创建的 Room A 收到新消息后立即置顶，并暴露 lastMessageAtIso
+    await waitTick();
+    const sentA = await requestJson<{ message: { seq: number; createdAtIso: string } }>(
+      `/rooms/${roomA.id}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({ content: "Ping in Room A", mentions: [], ignoreUnread: true }),
+      },
+    );
+    const afterMsgA = await requestJson<{ rooms: readonly RoomSummaryDto[] }>("/rooms");
+    expect(afterMsgA.rooms.map((r) => r.id)).toEqual([roomA.id, roomC.id, roomB.id]);
+    expect(afterMsgA.rooms[0]?.lastMessageAtIso).toBe(sentA.message.createdAtIso);
+
+    // 3. Room B 随后产生新消息，排到 Room A 之前
+    await waitTick();
+    await requestJson(`/rooms/${roomB.id}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content: "Newer ping in Room B", mentions: [], ignoreUnread: true }),
+    });
+    const afterMsgB = await requestJson<{ rooms: readonly RoomSummaryDto[] }>("/rooms");
+    expect(afterMsgB.rooms.map((r) => r.id)).toEqual([roomB.id, roomA.id, roomC.id]);
+
+    // 4. 撤回 Room A 的历史消息不会把 Room A 重新顶到 Room B 前面
+    await waitTick();
+    await requestJson(`/rooms/${roomA.id}/messages/${String(sentA.message.seq)}`, {
+      method: "DELETE",
+    });
+    const afterRecallA = await requestJson<{ rooms: readonly RoomSummaryDto[] }>("/rooms");
+    expect(afterRecallA.rooms.map((r) => r.id)).toEqual([roomB.id, roomA.id, roomC.id]);
+
+    // 5. Agent 单聊 Room C 发送新消息后同样置顶，且房间详情同步携带 lastMessageAtIso
+    await waitTick();
+    const sentC = await requestJson<{ message: { createdAtIso: string } }>(
+      `/rooms/${roomC.id}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({ content: "Hello agent", mentions: [], ignoreUnread: true }),
+      },
+    );
+    const afterMsgC = await requestJson<{ rooms: readonly RoomSummaryDto[] }>("/rooms");
+    expect(afterMsgC.rooms.map((r) => r.id)).toEqual([roomC.id, roomB.id, roomA.id]);
+    const detailC = await requestJson<{ room: RoomDetailDto }>(`/rooms/${roomC.id}`);
+    expect(detailC.room.lastMessageAtIso).toBe(sentC.message.createdAtIso);
+  });
 });

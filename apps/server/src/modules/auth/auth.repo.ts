@@ -772,9 +772,17 @@ export class AuthRepository {
 
     const ownerStatus = UserStatusSchema.parse(row.ownerStatus);
     if (ownerStatus === "active") {
-      await this.db.update(agentsTable).set({ lastSeenAt: now }).where(eq(agentsTable.id, row.id));
+      // 30 秒节流窗口：避免高频只读 API 或双跳 MCP 调用每次鉴权都触发行写锁竞争
+      const shouldTouch =
+        row.lastSeenAt === null || now.getTime() - row.lastSeenAt.getTime() >= 30_000;
+      if (shouldTouch) {
+        await this.db
+          .update(agentsTable)
+          .set({ lastSeenAt: now })
+          .where(eq(agentsTable.id, row.id));
+      }
       return {
-        agent: toSafeAgentRecord({ ...row, lastSeenAt: now }),
+        agent: toSafeAgentRecord({ ...row, lastSeenAt: shouldTouch ? now : row.lastSeenAt }),
         ownerStatus,
       };
     }

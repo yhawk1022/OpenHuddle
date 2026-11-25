@@ -1,11 +1,13 @@
 /**
  * @module server/modules/ai-moderator/service
- * @description 主持人 AI 提案自动提炼引擎（支持 OpenAI 兼容 BYOK 模型接口与无外部密钥确定性离线聚合双模态）。
+ * @description 主持人提案提炼引擎（支持 OpenAI 兼容 BYOK 模型接口与无外部密钥确定性离线聚合双路径）。
  *
- * 架构职责与关键不变量（Invariants）：
- * 1. 强契约校验：无论走远程 LLM `chat/completions` 还是本地确定性观点聚合，返回结构都必须通过 `ProposalDraftSchema.parse` 严格校验后才能入库。
- * 2. 离线与本地演示 100% 可用：当未配置 `AI_API_KEY` 且请求未携带 `apiKey` 时，自动按发言主体聚类最近讨论并生成结构化对比备选方案，确保零外部依赖环境下集成测试与本地自举丝滑可用。
+ * 关键不变量：
+ * 1. 强契约校验：远程模型输出与本地确定性聚合均须通过 `ProposalDraftSchema.parse` 校验后方可入库。
+ * 2. 密钥隔离与 SSRF 防护：服务端配置的 `AI_API_KEY` 仅允许发往服务端配置的 `AI_BASE_URL`；调用者自定义 `baseUrl` 时必须自带 BYOK `apiKey`，且严禁指向回环、链路本地云元数据（`169.254.0.0/16`）或内网私网地址。
+ * 3. 离线兜底：未配置外部密钥、上游超时或输出不合契约时，自动降级为按发言者聚类的确定性草案生成。
  */
+import net from "node:net";
 import {
   type ProposalDraft,
   ProposalDraftSchema,
@@ -53,6 +55,121 @@ function truncateClean(text: string, maxLen: number): string {
     return normalized;
   }
   return `${normalized.slice(0, Math.max(1, maxLen - 1)).trim()}…`;
+}
+
+function normalizeBaseUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+function isPrivateOrLoopbackHost(rawHostname: string): boolean {
+  const host = rawHostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal")
+  ) {
+    return true;
+  }
+
+  const ipVersion = net.isIP(host);
+  if (ipVersion === 4) {
+    const octets = host.split(".").map((part) => Number(part));
+    const a = octets[0] ?? 0;
+    const b = octets[1] ?? 0;
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    );
+  }
+
+  if (ipVersion === 6) {
+    return (
+      host === "::" ||
+      host === "::1" ||
+      host.startsWith("fc") ||
+      host.startsWith("fd") ||
+      host.startsWith("fe8") ||
+      host.startsWith("fe9") ||
+      host.startsWith("fea") ||
+      host.startsWith("feb") ||
+      host.startsWith("::ffff:127.") ||
+      host.startsWith("::ffff:10.") ||
+      host.startsWith("::ffff:192.168.") ||
+      host.startsWith("::ffff:169.254.")
+    );
+  }
+
+  return false;
+}
+
+/**
+ * 剥离部分 OpenAI 兼容服务商在 JSON 模式外层包裹的 Markdown 代码围栏。
+ *
+ * @param rawContent - 模型原始返回字符串
+ * @returns 适合传入 `JSON.parse` 的净荷字符串
+ */
+export function stripJsonCodeFence(rawContent: string): string {
+  const trimmed = rawContent.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  return fenced?.[1]?.trim() ?? trimmed;
+}
+
+/**
+ * 校验并决议本次提案提炼的远端推理端点与凭据；若触发密钥越界或 SSRF 风险则返回 `null`。
+ *
+ * @param params - 服务端默认配置与请求级 BYOK 覆盖参数
+ * @returns 安全可调用的 `{ baseUrl, apiKey, model }`，不可用或不安全时返回 `null`
+ */
+export function resolveSafeSynthesisEndpoint(params: {
+  readonly configuredBaseUrl: string;
+  readonly configuredApiKey?: string | undefined;
+  readonly configuredModel: string;
+  readonly request: Readonly<SynthesizeProposalBody>;
+}): { readonly baseUrl: string; readonly apiKey: string; readonly model: string } | null {
+  const defaultBaseUrl = normalizeBaseUrl(params.configuredBaseUrl);
+  const requestedBaseUrl =
+    params.request.baseUrl !== undefined ? normalizeBaseUrl(params.request.baseUrl) : undefined;
+  const effectiveBaseUrl = requestedBaseUrl ?? defaultBaseUrl;
+  const isCustomEndpoint = requestedBaseUrl !== undefined && requestedBaseUrl !== defaultBaseUrl;
+
+  // 安全红线 1：客户端自定义 baseUrl 时严禁附带服务端 AI_API_KEY，防止服务端密钥被诱骗外泄至第三方域名
+  const apiKey = isCustomEndpoint
+    ? params.request.apiKey?.trim()
+    : (params.request.apiKey?.trim() ?? params.configuredApiKey?.trim());
+
+  if (!apiKey) {
+    return null;
+  }
+
+  // 安全红线 2：对调用者传入的自定义 baseUrl 强制校验 HTTPS 协议与公网宿主，阻断内网探测与云元数据 SSRF
+  if (isCustomEndpoint) {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(effectiveBaseUrl);
+    } catch {
+      return null;
+    }
+    if (
+      parsedUrl.protocol !== "https:" ||
+      parsedUrl.username.length > 0 ||
+      parsedUrl.password.length > 0 ||
+      isPrivateOrLoopbackHost(parsedUrl.hostname)
+    ) {
+      return null;
+    }
+  }
+
+  return {
+    baseUrl: effectiveBaseUrl,
+    apiKey,
+    model: params.request.model ?? params.configuredModel,
+  };
 }
 
 /**
@@ -208,8 +325,19 @@ export class AiModeratorService {
   public async synthesizeProposalDraft(
     input: Readonly<SynthesizeProposalInput>,
   ): Promise<ProposalDraft> {
-    const apiKey = input.request.apiKey ?? this.env.AI_API_KEY;
-    if (!apiKey) {
+    const endpoint = resolveSafeSynthesisEndpoint({
+      configuredBaseUrl: this.env.AI_BASE_URL,
+      configuredApiKey: this.env.AI_API_KEY,
+      configuredModel: this.env.AI_MODEL,
+      request: input.request,
+    });
+    if (!endpoint) {
+      if (input.request.baseUrl !== undefined) {
+        this.logger.warn(
+          { hasCallerKey: Boolean(input.request.apiKey) },
+          "Rejected unsafe or unauthenticated custom AI baseUrl; falling back to deterministic synthesis",
+        );
+      }
       return buildDeterministicProposalDraft({
         roomName: input.roomName,
         roomTopic: input.roomTopic,
@@ -217,8 +345,7 @@ export class AiModeratorService {
       });
     }
 
-    const baseUrl = (input.request.baseUrl ?? this.env.AI_BASE_URL).replace(/\/+$/, "");
-    const model = input.request.model ?? this.env.AI_MODEL;
+    const { baseUrl, apiKey, model } = endpoint;
 
     const transcriptLines = input.messages
       .filter((m) => m.recalledAt === null)
@@ -255,6 +382,7 @@ export class AiModeratorService {
           ],
         }),
         signal: AbortSignal.timeout(25_000),
+        redirect: "error",
       });
 
       if (!response.ok) {
@@ -276,7 +404,7 @@ export class AiModeratorService {
         throw new Error("Empty completion content returned by provider.");
       }
 
-      const parsedJson: unknown = JSON.parse(rawContent);
+      const parsedJson: unknown = JSON.parse(stripJsonCodeFence(rawContent));
       return ProposalDraftSchema.parse(parsedJson);
     } catch (err) {
       this.logger.warn(

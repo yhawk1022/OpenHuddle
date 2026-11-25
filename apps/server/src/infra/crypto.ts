@@ -22,6 +22,9 @@ import type {
   ProposalId,
   RoomId,
   UserId,
+  WorkItemId,
+  WorkSliceId,
+  WorkspaceId,
 } from "@openhuddle/protocol";
 
 /** 剔除易混淆字符（0/O/1/I）的大写配对码字母表 */
@@ -186,9 +189,30 @@ export function constantTimeEqualHex(expectedHex: string, actualHex: string): bo
  * @returns 形如 `<prefix>_<24位hex>` 的唯一标识符
  */
 export function generatePrefixedId(
-  prefix: "usr" | "ses" | "otp" | "agt" | "rom" | "prp" | "aud" | "frd",
+  prefix: "usr" | "ses" | "otp" | "agt" | "rom" | "prp" | "aud" | "frd" | "wsp" | "wrk" | "slc",
 ): string {
   return `${prefix}_${randomBytes(12).toString("hex")}`;
+}
+
+/**
+ * 生成品牌化的工作区主键 `WorkspaceId`。
+ */
+export function generateWorkspaceId(): WorkspaceId {
+  return generatePrefixedId("wsp") as WorkspaceId;
+}
+
+/**
+ * 生成品牌化的协作工单主键 `WorkItemId`。
+ */
+export function generateWorkItemId(): WorkItemId {
+  return generatePrefixedId("wrk") as WorkItemId;
+}
+
+/**
+ * 生成品牌化的协作分片主键 `WorkSliceId`。
+ */
+export function generateWorkSliceId(): WorkSliceId {
+  return generatePrefixedId("slc") as WorkSliceId;
 }
 
 /**

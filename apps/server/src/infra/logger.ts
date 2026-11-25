@@ -20,8 +20,10 @@ declare module "hono" {
   }
 }
 
+const SAFE_REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
+
 /**
- * 创建根 Pino 结构化日志实例。
+ * 创建根 Pino 结构化日志实例（内置敏感请求头与凭据字段脱敏）。
  *
  * @param level - 日志输出最低级别
  * @returns 配置完成的 Pino `Logger`
@@ -30,6 +32,17 @@ export function createRootLogger(level: string): Logger {
   return pino({
     level,
     base: { service: "openhuddle-server" },
+    redact: {
+      paths: [
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "*.password",
+        "*.apiKey",
+        "*.agentToken",
+        "*.sessionToken",
+      ],
+      censor: "[REDACTED]",
+    },
   });
 }
 
@@ -42,7 +55,8 @@ export function createRootLogger(level: string): Logger {
 export function createRequestContextMiddleware(rootLogger: Logger) {
   return createMiddleware(async (c, next) => {
     const incomingId = c.req.header("x-request-id")?.trim();
-    const requestId = incomingId && incomingId.length <= 64 ? incomingId : randomUUID();
+    const requestId =
+      incomingId && SAFE_REQUEST_ID_PATTERN.test(incomingId) ? incomingId : randomUUID();
 
     const childLogger = rootLogger.child({
       requestId,

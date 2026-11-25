@@ -153,22 +153,31 @@ export class SlidingWindowRateLimiter {
 }
 
 /**
- * 从 Hono 请求头中安全提取客户端源 IP（兼容 Caddy 反向代理注入的 `x-forwarded-for` / `x-real-ip`）。
+ * 从 Hono 请求头中提取客户端源 IP（兼容 Caddy / Nginx 单层反向代理注入头）。
+ *
+ * @remarks
+ * 在标准反向代理拓扑下，代理会将真实对端 IP 追加在 `X-Forwarded-For` 末尾；
+ * 若读取首跳（`[0]`），客户端可伪造随机 `X-Forwarded-For` 请求头绕过登录与验证码频控。
+ * 因此优先读取代理覆写的单值 `X-Real-IP`，否则取 `X-Forwarded-For` 最右跳。
  *
  * @param c - Hono 请求上下文
  * @returns 规范化后的客户端 IP 标识字符串
  */
 export function extractClientIp(c: Context): string {
-  const forwarded = c.req.header("x-forwarded-for")?.trim();
-  if (forwarded && forwarded.length > 0) {
-    const firstHop = forwarded.split(",")[0]?.trim();
-    if (firstHop && firstHop.length > 0) {
-      return firstHop.slice(0, 64);
-    }
-  }
   const realIp = c.req.header("x-real-ip")?.trim();
   if (realIp && realIp.length > 0) {
     return realIp.slice(0, 64);
+  }
+  const forwarded = c.req.header("x-forwarded-for")?.trim();
+  if (forwarded && forwarded.length > 0) {
+    const hops = forwarded
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    const rightmostHop = hops[hops.length - 1];
+    if (rightmostHop !== undefined) {
+      return rightmostHop.slice(0, 64);
+    }
   }
   return "local";
 }

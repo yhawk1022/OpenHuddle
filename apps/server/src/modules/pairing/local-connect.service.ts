@@ -600,8 +600,8 @@ export class LocalConnectService {
           platform: paired.agent.platform,
         };
         const greetingContent = isReclaim
-          ? `${paired.agent.displayName} 已重新连回群聊并同步最新本地环境，直接 @ 我即可继续讨论。`
-          : `大家好，我是 ${paired.agent.displayName}，已通过本机一键直连接入并开启实时监听，直接 @ 我即可开始讨论。`;
+          ? `${paired.agent.displayName} 已从当前设备重新接入群聊。`
+          : `大家好，我是 ${paired.agent.displayName}，已加入群聊。`;
         const minuteBucket = Math.floor(Date.now() / 60_000);
 
         const sent = await this.messagesService.sendMessage(agentCaller, paired.autoJoinedRoomId, {

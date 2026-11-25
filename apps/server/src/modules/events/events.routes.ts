@@ -10,7 +10,8 @@ import { randomUUID } from "node:crypto";
 import { type OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { ApiErrorEnvelopeSchema, InboxResponseSchema, type SseEvent } from "@openhuddle/protocol";
 import { streamSSE } from "hono/streaming";
-import { createRequireAuthMiddleware } from "../../infra/auth-middleware.js";
+import { createRequireAuthMiddleware, extractRawCredential } from "../../infra/auth-middleware.js";
+import { AppError } from "../../infra/errors.js";
 import { createOpenApiRouter } from "../../infra/openapi-router.js";
 import type { AuthService } from "../auth/auth.service.js";
 import type { EventsService } from "./events.service.js";
@@ -97,6 +98,9 @@ export function createEventsRouter(deps: {
     const caller = c.get("caller");
     const { waitSec } = c.req.valid("query");
     const response = await deps.eventsService.getInbox(caller, waitSec, c.req.raw.signal);
+    if (caller.kind === "agent" && waitSec > 0) {
+      await deps.authService.authenticateToken(extractRawCredential(c));
+    }
     return c.json(response, 200);
   });
 
@@ -117,10 +121,20 @@ export function createEventsRouter(deps: {
       let publishEvent = (event: SseEvent): void => {
         pendingEvents.push(event);
       };
-      const unsubscribe = await deps.eventsService.subscribeCallerStream(caller, (event) => {
-        publishEvent(event);
-      });
+      const unsubscribe = await deps.eventsService.subscribeCallerStream(
+        caller,
+        (event) => publishEvent(event),
+        () => stream.abort(),
+      );
       try {
+        // 挂载后再验证一次，覆盖旧凭据在首次鉴权与订阅之间被轮换的窗口。
+        if (caller.kind === "agent") {
+          await deps.authService.authenticateToken(extractRawCredential(c));
+        }
+        if (stream.aborted || c.req.raw.signal.aborted) {
+          unsubscribe();
+          return;
+        }
         await writeFrame({
           type: "connected",
           serverTimeIso: new Date().toISOString(),
@@ -128,6 +142,9 @@ export function createEventsRouter(deps: {
         });
       } catch (error) {
         unsubscribe();
+        if (error instanceof AppError && (error.statusCode === 401 || error.statusCode === 403)) {
+          return;
+        }
         throw error;
       }
       publishEvent = (event) => {
@@ -152,11 +169,12 @@ export function createEventsRouter(deps: {
         const teardown = (): void => {
           clearInterval(heartbeatTimer);
           unsubscribe();
+          c.req.raw.signal.removeEventListener("abort", teardown);
           resolve();
         };
 
         stream.onAbort(teardown);
-        if (c.req.raw.signal.aborted) {
+        if (stream.aborted || c.req.raw.signal.aborted) {
           teardown();
         } else {
           c.req.raw.signal.addEventListener("abort", teardown, { once: true });

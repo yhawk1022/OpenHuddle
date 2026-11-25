@@ -610,7 +610,6 @@ export class FriendsRepository {
       const reach = computeAgentReachState(
         {
           id: agentId,
-          platform,
           wakeKind: row.wakeKind,
           checkinIntervalMin: row.checkinIntervalMin,
           lastSeenAt,

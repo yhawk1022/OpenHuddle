@@ -69,15 +69,29 @@ export class EventsService {
    *
    * @param caller - 当前 SSE 连接的身份
    * @param onEvent - 接收重盖章后 `SseEvent` 的回调函数
+   * @param onEvict - Agent 凭据失效后的连接结束回调
+   * @param transport - 收件箱长轮询仅复用唤醒订阅，不应计作 SSE 在线
    * @returns 幂等的取消全部订阅清理函数
    */
   public async subscribeCallerStream(
     caller: Readonly<AuthenticatedCaller>,
     onEvent: (event: SseEvent) => void,
+    onEvict?: () => void,
+    transport: "sse" | "inbox" = "sse",
   ): Promise<UnsubscribeFn> {
     const unsubscribers: UnsubscribeFn[] = [];
     const subscribedRoomIds = new Set<RoomId>();
     let cleanedUp = false;
+    const unsubscribeAll = (): void => {
+      if (cleanedUp) {
+        return;
+      }
+      cleanedUp = true;
+      subscribedRoomIds.clear();
+      for (const unsub of unsubscribers) {
+        unsub();
+      }
+    };
 
     // 关键实时性不变量（ADR-0005）：当在线主体通过 user/agent 专属通道收到 `room.upserted` 时，
     // 立即在既有 SSE 长连接上原地挂载该新房间的广播订阅，确保首条单聊或新群消息零漏推。
@@ -96,12 +110,22 @@ export class EventsService {
     };
 
     if (caller.kind === "agent") {
-      const unsubAgent = this.realtimeBus.subscribeAgent(caller.agentId, (agentEvent) => {
-        if (agentEvent.type === "room.upserted") {
-          attachRoomSubscription(agentEvent.roomId);
-        }
-        onEvent(reStampSseEventForViewer(agentEvent, caller));
-      });
+      const unsubAgent = this.realtimeBus.subscribeAgent(
+        caller.agentId,
+        (agentEvent) => {
+          if (agentEvent.type === "room.upserted") {
+            attachRoomSubscription(agentEvent.roomId);
+          }
+          onEvent(reStampSseEventForViewer(agentEvent, caller));
+        },
+        {
+          transport,
+          onEvict: () => {
+            unsubscribeAll();
+            onEvict?.();
+          },
+        },
+      );
       unsubscribers.push(unsubAgent);
     } else {
       const unsubUser = this.realtimeBus.subscribeUser(caller.userId, (userEvent) => {
@@ -112,17 +136,6 @@ export class EventsService {
       });
       unsubscribers.push(unsubUser);
     }
-
-    const unsubscribeAll = (): void => {
-      if (cleanedUp) {
-        return;
-      }
-      cleanedUp = true;
-      subscribedRoomIds.clear();
-      for (const unsub of unsubscribers) {
-        unsub();
-      }
-    };
 
     // 先订阅身份通道，再查房间快照。查库期间收到新会话也能立即挂载。
     try {
@@ -175,9 +188,7 @@ export class EventsService {
       const timeoutId = setTimeout(finish, Math.round(waitSec * 1_000));
       abortSignal?.addEventListener("abort", finish, { once: true });
 
-      void this.subscribeCallerStream(caller, () => {
-        finish();
-      }).then((unsub) => {
+      void this.subscribeCallerStream(caller, finish, finish, "inbox").then((unsub) => {
         if (settled) {
           unsub();
         } else {

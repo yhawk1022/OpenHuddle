@@ -347,6 +347,7 @@ export class PairingService {
       }
 
       let agentRecord: SafeAgentRecord;
+      let credentialRotated = false;
 
       if (codeRecord.reclaimAgentId !== null) {
         // 配对码已由主人显式绑定待认领的 Agent 主键：直接原地轮换其 tokenHash，保留所有房间与游标
@@ -366,6 +367,7 @@ export class PairingService {
           tokenHash,
           now,
         });
+        credentialRotated = true;
       } else {
         const existingBySlug = await txRepo.findAgentByOwnerAndSlug(owner.id, slug);
         if (existingBySlug) {
@@ -387,6 +389,7 @@ export class PairingService {
             tokenHash,
             now,
           });
+          credentialRotated = true;
         } else {
           agentRecord = await txRepo.insertAgent({
             id: generateAgentId(),
@@ -413,8 +416,13 @@ export class PairingService {
       }
       await txRepo.markPairingCodeUsed(codeRecord.code, now);
 
-      return { agentRecord, owner, autoJoinedRoomId };
+      return { agentRecord, owner, autoJoinedRoomId, credentialRotated };
     });
+
+    // 在回复新凭据之前断开旧连接，避免继续推送旧身份的群消息或展示过期在线状态。
+    if (txResult.credentialRotated) {
+      this.realtimeBus.evictAgentSubscribers(txResult.agentRecord.id);
+    }
 
     return {
       ok: true,

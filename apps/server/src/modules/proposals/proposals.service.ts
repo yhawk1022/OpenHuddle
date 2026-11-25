@@ -17,7 +17,6 @@ import {
   type RoomId,
   type SynthesizeProposalBody,
   asMessageSeq,
-  asReadCursorSeq,
 } from "@openhuddle/protocol";
 import { assertHumanCaller } from "../../infra/auth-middleware.js";
 import { generateProposalId } from "../../infra/crypto.js";
@@ -259,10 +258,8 @@ export class ProposalsService {
       });
     }
 
-    const startAfterSeq = Math.max(0, room.lastSeq - body.messageWindowLimit);
-    const recentMessages = await this.messagesRepo.listAfterSeq(
+    const recentMessages = await this.messagesRepo.listRecentChronological(
       roomId,
-      asReadCursorSeq(startAfterSeq),
       body.messageWindowLimit,
     );
 

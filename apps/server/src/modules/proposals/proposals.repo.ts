@@ -495,19 +495,39 @@ export class ProposalsRepository {
       readonly deciderDisplayName: string | null;
     }>(proposalResult);
 
-    const output: HydratedRawProposalRecord[] = [];
-    for (const pRow of pRows) {
-      const votes = await this.loadVotesForProposal(pRow.id as ProposalId);
-      output.push(this.assembleProposalRecord(pRow, votes));
+    if (pRows.length === 0) {
+      return [];
     }
-    return output;
+
+    // 单次批量水合全部提案的投票记录，消除按提案逐行查库的 1+N 往返开销
+    const votesByProposalId = await this.loadVotesByProposalIds(
+      pRows.map((r) => r.id as ProposalId),
+    );
+    return pRows.map((pRow) =>
+      this.assembleProposalRecord(pRow, votesByProposalId.get(pRow.id) ?? []),
+    );
   }
 
   private async loadVotesForProposal(
     proposalId: ProposalId,
   ): Promise<readonly HydratedRawVoteRecord[]> {
+    const byId = await this.loadVotesByProposalIds([proposalId]);
+    return byId.get(proposalId) ?? [];
+  }
+
+  private async loadVotesByProposalIds(
+    proposalIds: readonly ProposalId[],
+  ): Promise<ReadonlyMap<string, readonly HydratedRawVoteRecord[]>> {
+    if (proposalIds.length === 0) {
+      return new Map();
+    }
+    const idParams = sql.join(
+      proposalIds.map((id) => sql`${id}`),
+      sql`, `,
+    );
     const voteResult = await this.db.execute(sql`
       SELECT
+        v.proposal_id AS "proposalId",
         v.voter_kind AS "voterKind",
         v.voter_user_id AS "voterUserId",
         v.voter_agent_id AS "voterAgentId",
@@ -522,11 +542,13 @@ export class ProposalsRepository {
       FROM proposal_votes v
       LEFT JOIN users u ON v.voter_user_id = u.id
       LEFT JOIN agents a ON v.voter_agent_id = a.id
-      WHERE v.proposal_id = ${proposalId}
+      WHERE v.proposal_id IN (${idParams})
       ORDER BY v.created_at ASC
     `);
 
-    return extractSqlRows<{
+    const grouped = new Map<string, HydratedRawVoteRecord[]>();
+    for (const row of extractSqlRows<{
+      readonly proposalId: string;
       readonly voterKind: string;
       readonly voterUserId: string | null;
       readonly voterAgentId: string | null;
@@ -538,7 +560,7 @@ export class ProposalsRepository {
       readonly humanDisplayName: string | null;
       readonly agentDisplayName: string | null;
       readonly agentPlatform: string | null;
-    }>(voteResult).map((row): HydratedRawVoteRecord => {
+    }>(voteResult)) {
       const voterKind = ActorKindSchema.parse(row.voterKind);
       const ownerUserId = row.ownerUserId as UserId;
 
@@ -560,14 +582,21 @@ export class ProposalsRepository {
                 : {}),
             };
 
-      return {
+      const hydrated: HydratedRawVoteRecord = {
         rawVoter,
         stance: ProposalVoteStanceSchema.parse(row.stance),
         preferredOptionKey: row.preferredOptionKey ?? undefined,
         rationale: row.rationale,
         createdAt: row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt),
       };
-    });
+      const bucket = grouped.get(row.proposalId);
+      if (bucket) {
+        bucket.push(hydrated);
+      } else {
+        grouped.set(row.proposalId, [hydrated]);
+      }
+    }
+    return grouped;
   }
 
   private assembleProposalRecord(

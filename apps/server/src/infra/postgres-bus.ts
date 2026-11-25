@@ -22,6 +22,7 @@ import type pg from "pg";
 import type { Logger } from "pino";
 import { z } from "zod";
 import {
+  type AgentEventSubscriptionOptions,
   InMemoryRealtimeBus,
   type RealtimeBus,
   type RealtimeBusTelemetry,
@@ -162,8 +163,12 @@ export class PostgresListenNotifyBus implements RealtimeBus {
   }
 
   /** {@inheritDoc RealtimeBus.subscribeAgent} */
-  public subscribeAgent(agentId: AgentId, listener: (event: SseEvent) => void): UnsubscribeFn {
-    return this.localBus.subscribeAgent(agentId, listener);
+  public subscribeAgent(
+    agentId: AgentId,
+    listener: (event: SseEvent) => void,
+    options?: Readonly<AgentEventSubscriptionOptions>,
+  ): UnsubscribeFn {
+    return this.localBus.subscribeAgent(agentId, listener, options);
   }
 
   /** {@inheritDoc RealtimeBus.subscribeUser} */

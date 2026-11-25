@@ -142,10 +142,12 @@ export class GovernanceService {
       governance: txResult.updatedRoom.governanceJson,
     });
 
-    const { members, internal } = await this.roomsRepo.listHydratedMembersWithPeerMeta(
-      roomId,
-      this.realtimeBus,
-    );
+    const [{ members, internal }, lastMessageAt] = await Promise.all([
+      this.roomsRepo.listHydratedMembersWithPeerMeta(roomId, this.realtimeBus),
+      txResult.updatedRoom.lastSeq > 0
+        ? this.roomsRepo.findLatestMessageAt(roomId)
+        : Promise.resolve(undefined),
+    ]);
     const peer =
       txResult.updatedRoom.kind !== "group"
         ? resolveDirectPeerForViewer(txResult.updatedRoom.kind, internal, caller)
@@ -155,6 +157,7 @@ export class GovernanceService {
       includeInviteToken: txResult.updatedRoom.kind === "group",
       viewer: caller,
       ...(peer !== undefined ? { peerOverride: peer } : {}),
+      ...(lastMessageAt !== undefined ? { lastMessageAt } : {}),
     });
   }
 }

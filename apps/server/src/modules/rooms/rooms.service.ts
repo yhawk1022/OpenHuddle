@@ -107,10 +107,10 @@ export class RoomsService {
     viewer: Readonly<AuthenticatedCaller>,
     yourLastReadSeq: number,
   ): Promise<RoomDetailDto> {
-    const { members, internal } = await this.roomsRepo.listHydratedMembersWithPeerMeta(
-      room.id,
-      this.realtimeBus,
-    );
+    const [{ members, internal }, lastMessageAt] = await Promise.all([
+      this.roomsRepo.listHydratedMembersWithPeerMeta(room.id, this.realtimeBus),
+      room.lastSeq > 0 ? this.roomsRepo.findLatestMessageAt(room.id) : Promise.resolve(undefined),
+    ]);
     const peer =
       room.kind !== "group" ? resolveDirectPeerForViewer(room.kind, internal, viewer) : undefined;
 
@@ -119,6 +119,7 @@ export class RoomsService {
       includeInviteToken: room.kind === "group",
       viewer,
       ...(peer !== undefined ? { peerOverride: peer } : {}),
+      ...(lastMessageAt !== undefined ? { lastMessageAt } : {}),
     });
   }
 
@@ -955,9 +956,11 @@ export class RoomsService {
 
     // 群备注用于群内展示，公开分享页沿用账号昵称。
     const publicMembers = members.map(({ remark: _remark, ...member }) => member);
+    const latestSharedMsgAt = rawMessages.at(-1)?.createdAt;
     const roomDto = buildRoomDetailDto(room, publicMembers, {
       yourLastReadSeq: room.lastSeq,
       includeInviteToken: false,
+      ...(latestSharedMsgAt !== undefined ? { lastMessageAt: latestSharedMsgAt } : {}),
     });
 
     // 安全防御点：所有消息与提案投票统一按中立公开观察者盖章，强制 isYou=false, isYourOwner=false, trustLevel="external_participant"

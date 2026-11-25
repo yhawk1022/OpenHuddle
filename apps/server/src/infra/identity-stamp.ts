@@ -32,7 +32,6 @@ export const PUBLIC_NEUTRAL_VIEWER: AuthenticatedCaller = Object.freeze({
  */
 export interface AgentReachSnapshotInput {
   readonly id: AgentId;
-  readonly platform: string;
   readonly wakeKind: string;
   readonly checkinIntervalMin: number | null;
   readonly lastSeenAt: Date | null;
@@ -64,7 +63,8 @@ export function computeAgentReachState(
   if (realtimeBus.getActiveAgentConnectionCount(agent.id) > 0) {
     return "online_sse";
   }
-  if (agent.platform === "hosted" || agent.wakeKind === "hosted") {
+  // 配对请求里的 platform 只描述身份。托管就绪必须来自服务端登记的唤醒方式。
+  if (agent.wakeKind === "hosted") {
     return "hosted_ready";
   }
   if (agent.wakeKind === "webhook") {

@@ -71,6 +71,13 @@ function escapeRegexLiteral(value: string): string {
 }
 
 /**
+ * 剥离围栏代码块与行内反引号片段，避免粘贴代码中的 `@All()` 装饰器或包作用域 `@scope/pkg` 误触发唤醒。
+ */
+function stripMarkdownCodeSegments(content: string): string {
+  return content.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]+`/g, " ");
+}
+
+/**
  * 合并客户端显式提交的 `mentions` 与消息正文中手打的 `@<displayName>` / `@<slug>` / `@全体` 在席 Agent 提及。
  *
  * @remarks
@@ -91,17 +98,18 @@ function resolveEffectiveMentions(
     }
   }
 
-  const lowerContent = content.toLowerCase();
+  const strippedProse = stripMarkdownCodeSegments(content);
+  const lowerContent = strippedProse.toLowerCase();
   if (!lowerContent.includes("@")) {
     return merged;
   }
 
-  // 安全边界：仅允许人类发言者手打 `@全体` / `@所有人` / `@all` / `@everyone` 唤醒房间全部在席 Agent，防止失控 Agent 广播风暴
+  // 仅允许人类在非代码正文中手打 `@全体` / `@所有人` / `@all` / `@everyone` 唤醒全部在席 Agent；排除 `@All(` 装饰器
   const mentionsAllAgents =
     caller.kind === "human" &&
-    (content.includes("@全体") ||
-      content.includes("@所有人") ||
-      /(?<![a-z0-9._%+-])@(?:all|everyone)(?![a-z0-9_-])/iu.test(lowerContent));
+    (strippedProse.includes("@全体") ||
+      strippedProse.includes("@所有人") ||
+      /(?<![a-z0-9._%+-])@(?:all|everyone)(?![a-z0-9_(-])/iu.test(lowerContent));
 
   for (const agent of activeRoomAgents) {
     if (caller.kind === "agent" && caller.agentId === agent.agentId) {
@@ -148,10 +156,15 @@ function didGovernanceChange(
   before: Readonly<RoomGovernanceState>,
   after: Readonly<RoomGovernanceState>,
 ): boolean {
-  return (
+  if (
     before.status !== after.status ||
     before.consecutiveAgentTurns !== after.consecutiveAgentTurns ||
     before.roundTableSpokenAgentIds.length !== after.roundTableSpokenAgentIds.length
+  ) {
+    return true;
+  }
+  return before.roundTableSpokenAgentIds.some(
+    (agentId, index) => agentId !== after.roundTableSpokenAgentIds[index],
   );
 }
 
@@ -210,12 +223,14 @@ export class MessagesService {
     const stampedMessages = rawMessages.map((msg) => stampRawMessageForViewer(msg, caller));
 
     const lastReturned = rawMessages[rawMessages.length - 1];
+    // 若读取期间并发事务推进了消息流，以实际观测到的最高 seq 为准，防止游标停留在旧快照导致紧随其后的发送触发假阳性 409
+    const observedLatestSeq = Math.max(room.lastSeq, lastReturned?.seq ?? 0);
     const isCaughtUp =
       rawMessages.length < options.limit ||
-      (lastReturned !== undefined && lastReturned.seq >= room.lastSeq);
+      (lastReturned !== undefined && lastReturned.seq >= observedLatestSeq);
 
     const targetReadSeq = isCaughtUp
-      ? room.lastSeq
+      ? observedLatestSeq
       : (lastReturned?.seq ?? memberState.lastReadSeq);
 
     await this.repo.advanceReadCursorMonotonically(roomId, memberKey, targetReadSeq);
@@ -223,7 +238,7 @@ export class MessagesService {
     return {
       ok: true,
       messages: stampedMessages,
-      latestSeq: asReadCursorSeq(room.lastSeq),
+      latestSeq: asReadCursorSeq(observedLatestSeq),
       governance: room.governanceJson,
     };
   }

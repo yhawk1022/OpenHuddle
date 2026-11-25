@@ -1,11 +1,11 @@
 /**
  * @module server/infra/mailer
- * @description 零外部依赖原生 Node.js SMTP 邮件投递基础设施（支持隐式 TLS 465 / 阿里云 DirectMail、`STARTTLS` 587、`AUTH PLAIN` / `AUTH LOGIN` 与 `SMTP_CREDENTIALS_FILE` 凭据加载）。
+ * @description 零外部依赖原生 Node.js SMTP 邮件投递客户端（支持隐式 TLS 465、`STARTTLS` 587、`AUTH PLAIN` / `AUTH LOGIN` 与 `SMTP_CREDENTIALS_FILE` 凭据加载）。
  *
- * 架构职责与关键不变量（Invariants）：
- * 1. 参考 `/Users/pangyan/ai_workspace/my_server/cyanarch-mail.py` 的阿里云 DirectMail（`smtpdm.aliyun.com:465` SSL + `smtp.json`）模型，以纯 TypeScript `node:tls` / `node:net` 实现，避免 2C4G Node 容器额外依赖 Python 运行时或重型三方库。
- * 2. 凭据解析优先级：显式 `SMTP_*` 环境变量恒高于 `SMTP_CREDENTIALS_FILE` 文件值；使用 `SMTP_CREDENTIALS_FILE` 且未指定主机时默认对齐 `smtpdm.aliyun.com:465`（隐式 TLS）。
- * 3. 安全红线：严禁 SMTP 头部 CR/LF 注入；严禁在日志中输出 `password` 或验证码明文；任意超时或协议异常均强制 `socket.destroy()` 防止文件描述符泄漏。
+ * 关键不变量：
+ * 1. 纯标准库实现：基于 `node:tls` / `node:net` 驱动 SMTP 会话，避免 2C4G 容器引入重型三方发信依赖。
+ * 2. 凭据优先级：显式 `SMTP_*` 环境变量高于 `SMTP_CREDENTIALS_FILE` 文件字段；使用凭据文件且未指定主机时默认连接 `smtpdm.aliyun.com:465`（隐式 TLS）。
+ * 3. 安全红线：阻断 SMTP 头部 CR/LF 注入；非回环明文端口认证前强制要求 `STARTTLS` 升级成功（防 StripTLS 明文泄密）；超时或异常均强制销毁底层套接字。
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -17,12 +17,14 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import type { ServerEnv } from "./env.js";
 
-/** 参考 `cyanarch-mail.py` 的阿里云 DirectMail 默认 SMTP 节点 */
+/** 阿里云 DirectMail 默认 SMTP 节点 */
 export const DEFAULT_ALIYUN_SMTP_HOST = "smtpdm.aliyun.com";
 /** 默认隐式 TLS SMTP 端口 */
 export const DEFAULT_SMTP_PORT = 465;
-/** 默认 SMTP 套接字超时时间（15 秒，与 `cyanarch-mail.py` 一致） */
+/** 默认 SMTP 套接字超时时间（15 秒） */
 export const DEFAULT_SMTP_TIMEOUT_MS = 15_000;
+/** 单行 SMTP 响应最大缓冲长度（64 KiB），防止异常对端无限发送无换行字节耗尽内存 */
+const MAX_SMTP_LINE_BUFFER_CHARS = 65_536;
 
 const CredentialsFileSchema = z.object({
   username: z.string().trim().min(1).optional(),
@@ -97,14 +99,32 @@ function assertSafeHeaderValue(fieldName: string, value: string): void {
 }
 
 /**
- * 将包含非 ASCII 字符（如中文）的邮件主题或发件人名称按 RFC 2047 UTF-8 Base64 编码。
+ * 将包含非 ASCII 字符的邮件头按 RFC 2047 UTF-8 Base64 分块编码（每段 encoded-word 不超过 75 字符）。
  */
 function encodeMimeWordUtf8(value: string): string {
   assertSafeHeaderValue("mime-word", value);
   if (/^[\x20-\x7E]+$/.test(value) && !value.includes("=?")) {
     return value;
   }
-  return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
+  const chunks: string[] = [];
+  let currentBytes: Buffer[] = [];
+  let currentLen = 0;
+
+  // 45 UTF-8 字节经 Base64 编码后为 60 字符，加上 `=?UTF-8?B?` (10) 与 `?=` (2) 共 72 <= 75 字符上限
+  for (const ch of value) {
+    const buf = Buffer.from(ch, "utf8");
+    if (currentLen + buf.length > 45 && currentBytes.length > 0) {
+      chunks.push(`=?UTF-8?B?${Buffer.concat(currentBytes).toString("base64")}?=`);
+      currentBytes = [];
+      currentLen = 0;
+    }
+    currentBytes.push(buf);
+    currentLen += buf.length;
+  }
+  if (currentBytes.length > 0) {
+    chunks.push(`=?UTF-8?B?${Buffer.concat(currentBytes).toString("base64")}?=`);
+  }
+  return chunks.join("\r\n ");
 }
 
 /**
@@ -324,6 +344,12 @@ class SmtpSession {
 
   private readonly onData = (chunk: Buffer | string): void => {
     this.buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    if (this.buffer.length > MAX_SMTP_LINE_BUFFER_CHARS) {
+      const overflowErr = new Error("SMTP response line exceeded 64 KiB safety limit.");
+      this.failPending(overflowErr);
+      this.socket.destroy(overflowErr);
+      return;
+    }
     while (true) {
       const idx = this.buffer.indexOf("\n");
       if (idx < 0) {
@@ -580,15 +606,26 @@ export class SmtpMailer implements EmailMailer {
 
       const ehloDomain = this.getEhloDomain();
       let ehlo = await session.command(`EHLO ${ehloDomain}`, [250]);
+      let isEncrypted = this.config.secure;
 
       if (!this.config.secure && supportsStartTls(ehlo.lines)) {
         await session.command("STARTTLS", [220]);
         await session.upgradeToTls(this.config.host, this.config.rejectUnauthorized ?? true);
+        isEncrypted = true;
         ehlo = await session.command(`EHLO ${ehloDomain}`, [250]);
       }
 
       let authCode = 250;
       if (this.config.username !== undefined && this.config.password !== undefined) {
+        const isLoopback =
+          this.config.host === "127.0.0.1" ||
+          this.config.host === "::1" ||
+          this.config.host === "localhost";
+        if (!isEncrypted && !isLoopback) {
+          throw new Error(
+            `Refusing plaintext SMTP authentication to "${this.config.host}:${this.config.port}" because STARTTLS was not negotiated.`,
+          );
+        }
         const methods = parseAdvertisedAuthMethods(ehlo.lines);
         if (methods.has("PLAIN")) {
           const authToken = Buffer.from(
