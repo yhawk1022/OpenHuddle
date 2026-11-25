@@ -1,26 +1,40 @@
 /**
  * @module mcp/api-bridge
- * @description OpenHuddle MCP Server 底层 HTTP 协议桥接与会话级乐观并发游标（`lastReadSeq`）同步器。
+ * @description OpenHuddle MCP Server 底层 HTTP 桥接与会话级乐观读游标（`lastReadSeq`）同步器。
  *
- * 架构职责与关键不变量（Invariants）：
- * 1. 鉴权透传与零泄露：所有请求统一携带 `Authorization: Bearer <agentToken>` 发往 `/api/v1/*`，工具输出绝不回显原始 Bearer 令牌。
- * 2. 会话内自动读锁对齐：在单次 MCP Server 实例生命周期内按 `roomId` 单调追踪 `lastReadSeq`，使 `openhuddle_read_room` -> `openhuddle_send_message` 链路默认满足服务端 `requireReadBeforeSend` 乐观锁要求。
- * 3. 结构化冲突可读性：当命中 `409 CONFLICT_UNREAD_MESSAGES` 时，使用 `@openhuddle/protocol` 的 `ApiErrorEnvelopeSchema` 与 `UnreadConflictDetailsSchema` 强校验并格式化漏读消息及其 `trustLevel`，帮助宿主大模型自主纠偏。
+ * 关键不变量：
+ * 1. 鉴权零泄露：请求统一携带 `Authorization: Bearer <agentToken>`，错误诊断文本绝不回显原始令牌。
+ * 2. 会话内单调游标：按 `roomId` 单调维护 `lastReadSeq`，使 `read_room -> send_message` 默认满足服务端 `requireReadBeforeSend` 乐观锁。
+ * 3. 有界请求超时：常规请求默认 15s 超时，长轮询收件箱按 `(waitSec + 10)s` 动态限时，防止半开连接永久挂死宿主工具调用。
  */
 import { randomUUID } from "node:crypto";
 import {
   ApiErrorEnvelopeSchema,
   type CastProposalVoteBody,
+  type ClaimWorkSliceBody,
+  type CompleteWorkSliceBody,
+  type HeartbeatWorkSliceBody,
   InboxResponseSchema,
   type JoinRoomBody,
   MeResponseSchema,
   type ProposalDraft,
   type ProposalId,
+  type RaiseWorkAttentionBody,
   type ReadCursorSeq,
   type RoomId,
   type SendMessageRequest,
   UnreadConflictDetailsSchema,
+  type WorkItemId,
+  type WorkSliceId,
+  type WorkStage,
+  type WorkspaceId,
 } from "@openhuddle/protocol";
+
+/** 常规 REST API 调用默认超时时间（15 秒） */
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+
+/** 长轮询 `getInbox(waitSec)` 附加的网络往返缓冲窗口（10 秒） */
+const INBOX_TIMEOUT_BUFFER_MS = 10_000;
 
 /**
  * 构建 MCP API 桥接器所需的配置项。
@@ -29,6 +43,8 @@ export interface McpApiBridgeOptions {
   readonly serverUrl: string;
   readonly agentToken: string;
   readonly fetchImpl?: typeof fetch;
+  /** 可选默认单次请求超时毫秒数（缺省 15,000ms） */
+  readonly requestTimeoutMs?: number;
 }
 
 /**
@@ -45,6 +61,14 @@ export type McpBridgeResult<TData = unknown> =
       readonly formattedError: string;
       readonly rawError?: unknown;
     };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function extractSafeSeq(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
 
 /**
  * 去除服务端地址尾部斜杠以确保路径拼接幂等。
@@ -63,17 +87,19 @@ export class OpenHuddleMcpApiBridge {
   private readonly baseUrl: string;
   private readonly agentToken: string;
   private readonly fetchFn: typeof fetch;
+  private readonly requestTimeoutMs: number;
   private readonly roomReadCursors = new Map<string, number>();
 
   /**
    * 构造桥接器实例。
    *
-   * @param options - 服务端根地址、`oh_agt_` 令牌与可选自定义 `fetch`
+   * @param options - 服务端根地址、`oh_agt_` 令牌、可选超时与自定义 `fetch`
    */
   public constructor(options: Readonly<McpApiBridgeOptions>) {
     this.baseUrl = normalizeMcpServerUrl(options.serverUrl);
     this.agentToken = options.agentToken.trim();
     this.fetchFn = options.fetchImpl ?? globalThis.fetch;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   /**
@@ -125,7 +151,16 @@ export class OpenHuddleMcpApiBridge {
    */
   public async getInbox(waitSec = 0): Promise<McpBridgeResult> {
     const clampedWait = Math.max(0, Math.min(25, Math.trunc(waitSec)));
-    const res = await this.request("GET", `/api/v1/inbox?waitSec=${clampedWait}`);
+    const timeoutMs = Math.max(
+      this.requestTimeoutMs,
+      clampedWait * 1_000 + INBOX_TIMEOUT_BUFFER_MS,
+    );
+    const res = await this.request(
+      "GET",
+      `/api/v1/inbox?waitSec=${clampedWait}`,
+      undefined,
+      timeoutMs,
+    );
     if (!res.ok) {
       return res;
     }
@@ -150,13 +185,11 @@ export class OpenHuddleMcpApiBridge {
    */
   public async joinRoom(body: Readonly<JoinRoomBody>): Promise<McpBridgeResult> {
     const res = await this.request("POST", "/api/v1/join", body);
-    if (res.ok && typeof res.data === "object" && res.data !== null) {
-      const roomObj = (res.data as Record<string, unknown>).room;
-      if (typeof roomObj === "object" && roomObj !== null) {
-        const roomRec = roomObj as Record<string, unknown>;
-        if (typeof roomRec.id === "string" && typeof roomRec.yourLastReadSeq === "number") {
-          this.advanceRoomCursor(roomRec.id as RoomId, roomRec.yourLastReadSeq);
-        }
+    if (res.ok && isRecord(res.data) && isRecord(res.data.room)) {
+      const roomId = res.data.room.id;
+      const readSeq = extractSafeSeq(res.data.room.yourLastReadSeq);
+      if (typeof roomId === "string" && readSeq !== undefined) {
+        this.advanceRoomCursor(roomId as RoomId, readSeq);
       }
     }
     return res;
@@ -185,22 +218,18 @@ export class OpenHuddleMcpApiBridge {
     const path = `/api/v1/rooms/${encodeURIComponent(roomId)}/messages${qs.length > 0 ? `?${qs}` : ""}`;
 
     const res = await this.request("GET", path);
-    if (res.ok && typeof res.data === "object" && res.data !== null) {
-      const payload = res.data as Record<string, unknown>;
-      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+    if (res.ok && isRecord(res.data)) {
+      const messages = Array.isArray(res.data.messages) ? res.data.messages : [];
       let maxSeenSeq: number | undefined;
       for (const item of messages) {
-        if (typeof item === "object" && item !== null) {
-          const seq = (item as Record<string, unknown>).seq;
-          if (typeof seq === "number" && (maxSeenSeq === undefined || seq > maxSeenSeq)) {
-            maxSeenSeq = seq;
-          }
+        const seq = isRecord(item) ? extractSafeSeq(item.seq) : undefined;
+        if (seq !== undefined && (maxSeenSeq === undefined || seq > maxSeenSeq)) {
+          maxSeenSeq = seq;
         }
       }
-      if (maxSeenSeq !== undefined) {
-        this.advanceRoomCursor(roomId, maxSeenSeq);
-      } else if (typeof payload.latestSeq === "number") {
-        this.advanceRoomCursor(roomId, payload.latestSeq);
+      const targetSeq = maxSeenSeq ?? extractSafeSeq(res.data.latestSeq);
+      if (targetSeq !== undefined) {
+        this.advanceRoomCursor(roomId, targetSeq);
       }
     }
     return res;
@@ -218,16 +247,13 @@ export class OpenHuddleMcpApiBridge {
     requestBody: Readonly<SendMessageRequest>,
   ): Promise<McpBridgeResult> {
     const cachedSeq = this.getCachedLastReadSeq(roomId);
+    const effectiveLastReadSeq = requestBody.lastReadSeq ?? cachedSeq;
     const bodyWithDefaults = {
       content: requestBody.content,
       ...(requestBody.replyToSeq !== undefined ? { replyToSeq: requestBody.replyToSeq } : {}),
       mentions: requestBody.mentions,
       opKey: requestBody.opKey ?? `op_${randomUUID()}`,
-      ...(requestBody.lastReadSeq !== undefined
-        ? { lastReadSeq: requestBody.lastReadSeq }
-        : cachedSeq !== undefined
-          ? { lastReadSeq: cachedSeq }
-          : {}),
+      ...(effectiveLastReadSeq !== undefined ? { lastReadSeq: effectiveLastReadSeq } : {}),
       ignoreUnread: requestBody.ignoreUnread,
     };
 
@@ -237,13 +263,10 @@ export class OpenHuddleMcpApiBridge {
       bodyWithDefaults,
     );
 
-    if (res.ok && typeof res.data === "object" && res.data !== null) {
-      const msgObj = (res.data as Record<string, unknown>).message;
-      if (typeof msgObj === "object" && msgObj !== null) {
-        const seq = (msgObj as Record<string, unknown>).seq;
-        if (typeof seq === "number") {
-          this.advanceRoomCursor(roomId, seq);
-        }
+    if (res.ok && isRecord(res.data) && isRecord(res.data.message)) {
+      const seq = extractSafeSeq(res.data.message.seq);
+      if (seq !== undefined) {
+        this.advanceRoomCursor(roomId, seq);
       }
     }
 
@@ -279,17 +302,109 @@ export class OpenHuddleMcpApiBridge {
   }
 
   /**
-   * 执行底层带鉴权的 JSON 请求，并将业务拦截信封格式化为对 LLM 友好的多行诊断。
-   *
-   * @param method - HTTP 方法
-   * @param pathWithQuery - 相对 API 路径
-   * @param body - 可选 JSON 请求体
-   * @returns `McpBridgeResult`
+   * 列出当前 Agent 所属主人的工作区，或指定房间内已绑定的脱敏工作区。
+   */
+  public async listWorkspaces(roomId?: RoomId): Promise<McpBridgeResult> {
+    if (roomId !== undefined) {
+      return this.request("GET", `/api/v1/rooms/${encodeURIComponent(roomId)}/workspaces`);
+    }
+    return this.request("GET", "/api/v1/workspaces");
+  }
+
+  /**
+   * 列出可见的多 Agent 协作工单（支持 `claimableOnly` 过滤立即可认领的任务队列）。
+   */
+  public async listWorkItems(query?: {
+    readonly workspaceId?: WorkspaceId;
+    readonly roomId?: RoomId;
+    readonly stage?: WorkStage;
+    readonly claimableOnly?: boolean;
+  }): Promise<McpBridgeResult> {
+    const search = new URLSearchParams();
+    if (query?.workspaceId !== undefined) {
+      search.set("workspaceId", query.workspaceId);
+    }
+    if (query?.roomId !== undefined) {
+      search.set("roomId", query.roomId);
+    }
+    if (query?.stage !== undefined) {
+      search.set("stage", query.stage);
+    }
+    if (query?.claimableOnly !== undefined) {
+      search.set("claimableOnly", query.claimableOnly ? "true" : "false");
+    }
+    const qs = search.toString();
+    return this.request("GET", `/api/v1/work-items${qs.length > 0 ? `?${qs}` : ""}`);
+  }
+
+  /**
+   * 认领待执行分片或接管超时租约，返回单调递增的 `leaseVersion` 防护版本号。
+   */
+  public async claimWorkSlice(
+    workItemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: Readonly<ClaimWorkSliceBody>,
+  ): Promise<McpBridgeResult> {
+    return this.request(
+      "POST",
+      `/api/v1/work-items/${encodeURIComponent(workItemId)}/slices/${encodeURIComponent(sliceId)}/claim`,
+      body,
+    );
+  }
+
+  /**
+   * 携带防护版本号续期活跃分片租约并更新进度摘要。
+   */
+  public async heartbeatWorkSlice(
+    workItemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: Readonly<HeartbeatWorkSliceBody>,
+  ): Promise<McpBridgeResult> {
+    return this.request(
+      "POST",
+      `/api/v1/work-items/${encodeURIComponent(workItemId)}/slices/${encodeURIComponent(sliceId)}/heartbeat`,
+      body,
+    );
+  }
+
+  /**
+   * 暂停当前分片并向人类主人提交单问结构化澄清请求。
+   */
+  public async raiseWorkAttention(
+    workItemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: Readonly<RaiseWorkAttentionBody>,
+  ): Promise<McpBridgeResult> {
+    return this.request(
+      "POST",
+      `/api/v1/work-items/${encodeURIComponent(workItemId)}/slices/${encodeURIComponent(sliceId)}/attention`,
+      body,
+    );
+  }
+
+  /**
+   * 提交分片交付成果或独立核验结论（自动触发蜂群合流或 `write -> verify` 接力）。
+   */
+  public async completeWorkSlice(
+    workItemId: WorkItemId,
+    sliceId: WorkSliceId,
+    body: Readonly<CompleteWorkSliceBody>,
+  ): Promise<McpBridgeResult> {
+    return this.request(
+      "POST",
+      `/api/v1/work-items/${encodeURIComponent(workItemId)}/slices/${encodeURIComponent(sliceId)}/complete`,
+      body,
+    );
+  }
+
+  /**
+   * 执行底层带鉴权与有界超时的 JSON 请求，并将业务拦截信封格式化为对 LLM 友好的多行诊断。
    */
   private async request(
-    method: "GET" | "POST" | "PATCH",
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     pathWithQuery: string,
     body?: unknown,
+    timeoutMs: number = this.requestTimeoutMs,
   ): Promise<McpBridgeResult> {
     const url = `${this.baseUrl}${pathWithQuery}`;
     const headers: Record<string, string> = {
@@ -305,6 +420,7 @@ export class OpenHuddleMcpApiBridge {
       response = await this.fetchFn(url, {
         method,
         headers,
+        signal: AbortSignal.timeout(timeoutMs),
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
     } catch (error) {
@@ -349,7 +465,7 @@ export class OpenHuddleMcpApiBridge {
                 `OpenHuddle API Error (409 ${code}) [requestId=${requestId}]: ${message}`,
                 `Your cursor (${c.yourLastReadSeq}) is behind latestSeq (${c.latestSeq}). Missed messages:`,
                 ...missedLines,
-                "Call openhuddle_read_room first to advance your cursor and review context before retrying openhuddle_send_message.",
+                `Call openhuddle_read_room with afterSeq=${c.yourLastReadSeq} first to advance your cursor and review context before retrying openhuddle_send_message.`,
               ].join("\n"),
             };
           }

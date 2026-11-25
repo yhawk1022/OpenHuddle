@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import {
+  OpenHuddleMcpApiBridge,
   createOpenHuddleMcpServer,
   getCoreMcpToolDescriptors,
   handleOpenHuddleMcpHttpRequest,
@@ -301,6 +302,62 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server & 8 Core Tools", () => {
         });
       }
 
+      if (url.pathname === "/api/v1/workspaces" && method === "GET") {
+        return jsonHttpResponse(200, {
+          ok: true,
+          workspaces: [{ id: "wsp_core_01", name: "OpenHuddle", hostMode: "local_machine" }],
+          roomBindings: [],
+        });
+      }
+
+      if (url.pathname === "/api/v1/work-items" && method === "GET") {
+        return jsonHttpResponse(200, {
+          ok: true,
+          items: [
+            {
+              id: "wrk_mcp_01",
+              workspaceId: "wsp_core_01",
+              stage: "working",
+              slices: [{ sliceId: "slc_mcp_01", status: "waiting", leaseVersion: 0 }],
+            },
+          ],
+        });
+      }
+
+      if (
+        url.pathname === "/api/v1/work-items/wrk_mcp_01/slices/slc_mcp_01/claim" &&
+        method === "POST"
+      ) {
+        return jsonHttpResponse(200, {
+          ok: true,
+          claimedSlice: {
+            sliceId: "slc_mcp_01",
+            status: "running",
+            leaseVersion: 1,
+          },
+        });
+      }
+
+      if (
+        url.pathname === "/api/v1/work-items/wrk_mcp_01/slices/slc_mcp_01/heartbeat" &&
+        method === "POST"
+      ) {
+        return jsonHttpResponse(200, {
+          ok: true,
+          item: { id: "wrk_mcp_01", stage: "working" },
+        });
+      }
+
+      if (
+        url.pathname === "/api/v1/work-items/wrk_mcp_01/slices/slc_mcp_01/complete" &&
+        method === "POST"
+      ) {
+        return jsonHttpResponse(200, {
+          ok: true,
+          item: { id: "wrk_mcp_01", stage: "verifying" },
+        });
+      }
+
       return jsonHttpResponse(404, { ok: false });
     };
 
@@ -331,6 +388,11 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server & 8 Core Tools", () => {
         "openhuddle_send_message",
         "openhuddle_submit_proposal",
         "openhuddle_vote_proposal",
+        "openhuddle_list_workspaces",
+        "openhuddle_list_work",
+        "openhuddle_claim_work_slice",
+        "openhuddle_update_work_slice",
+        "openhuddle_complete_work_slice",
       ]);
 
       // 1. whoami
@@ -428,6 +490,60 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server & 8 Core Tools", () => {
       });
       expect(voteRes.isError).toBeFalsy();
       expect(extractFirstTextBlock(voteRes)).toContain("endorse");
+
+      // 9. list_workspaces + 10. list_work + 11. claim + 12. heartbeat + 13. complete
+      const wsRes = await mcpClient.callTool({
+        name: "openhuddle_list_workspaces",
+        arguments: {},
+      });
+      expect(wsRes.isError).toBeFalsy();
+      expect(extractFirstTextBlock(wsRes)).toContain("wsp_core_01");
+
+      const workRes = await mcpClient.callTool({
+        name: "openhuddle_list_work",
+        arguments: { claimableOnly: true },
+      });
+      expect(workRes.isError).toBeFalsy();
+      expect(extractFirstTextBlock(workRes)).toContain("wrk_mcp_01");
+
+      const claimRes = await mcpClient.callTool({
+        name: "openhuddle_claim_work_slice",
+        arguments: {
+          workItemId: "wrk_mcp_01",
+          sliceId: "slc_mcp_01",
+          agentEnvironment: "Local Mac MCP",
+        },
+      });
+      expect(claimRes.isError).toBeFalsy();
+      expect(extractFirstTextBlock(claimRes)).toContain('"leaseVersion": 1');
+
+      const hbRes = await mcpClient.callTool({
+        name: "openhuddle_update_work_slice",
+        arguments: {
+          workItemId: "wrk_mcp_01",
+          sliceId: "slc_mcp_01",
+          action: "heartbeat",
+          leaseVersion: 1,
+          liveSummary: "Updated DB schema and running tests",
+          diffAdded: 42,
+        },
+      });
+      expect(hbRes.isError).toBeFalsy();
+
+      const doneRes = await mcpClient.callTool({
+        name: "openhuddle_complete_work_slice",
+        arguments: {
+          workItemId: "wrk_mcp_01",
+          sliceId: "slc_mcp_01",
+          leaseVersion: 1,
+          summary: "Completed workspace DB migration",
+          changedFiles: ["packages/db/src/schema.ts"],
+          diffAdded: 42,
+          diffRemoved: 1,
+        },
+      });
+      expect(doneRes.isError).toBeFalsy();
+      expect(extractFirstTextBlock(doneRes)).toContain("verifying");
     } finally {
       await mcpClient.close();
       await mcpServer.close();
@@ -464,5 +580,29 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server & 8 Core Tools", () => {
       readonly result?: { readonly serverInfo?: { readonly name?: string } };
     };
     expect(payload.result?.serverInfo?.name).toBe("@openhuddle/mcp");
+  });
+
+  it("aborts hung HTTP calls deterministically via AbortSignal.timeout without leaking the agent token", async () => {
+    const hungFetch: typeof fetch = (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(init.signal?.reason ?? new Error("Aborted"));
+        });
+      });
+
+    const bridge = new OpenHuddleMcpApiBridge({
+      serverUrl: "https://huddle.example.com",
+      agentToken: "oh_agt_super_secret_should_not_leak",
+      fetchImpl: hungFetch,
+      requestTimeoutMs: 40,
+    });
+
+    const res = await bridge.listRooms();
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.status).toBe(0);
+      expect(res.formattedError).toContain("Network error calling GET /api/v1/rooms");
+      expect(res.formattedError).not.toContain("oh_agt_super_secret_should_not_leak");
+    }
   });
 });
