@@ -14,6 +14,13 @@ apps/server/public/openhuddle.mjs
 *.db
 *.sqlite
 
+# Local AI Agent Config, Specs & Shared Memory
+/.context/
+/.agents/
+/AGENTS.md
+/CLAUDE.md
+/docs/
+
 # Environment & Secrets
 .env
 .env.*
