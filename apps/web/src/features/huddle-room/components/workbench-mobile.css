@@ -181,7 +181,7 @@
     position: absolute;
     inset: 6px;
     border-radius: 50%;
-    background: #2563eb;
+    background: var(--oh-mobile-send-bg);
   }
 
   .oh-workbench-note-submit:disabled::before {

@@ -120,4 +120,9 @@
     background-clip: content-box;
     box-shadow: none;
   }
+
+  .oh-chat-send:enabled {
+    background-color: var(--oh-mobile-send-bg);
+    color: white;
+  }
 }

@@ -496,6 +496,7 @@ body::before {
 /* In contained iOS Home Screen windows, the reported bottom inset can be zero. */
 :root {
   --oh-mobile-nav-bottom: max(10px, calc(env(safe-area-inset-bottom, 0px) + 6px));
+  --oh-mobile-send-bg: #2563eb;
 }
 
 :root[data-ios-standalone="true"] {

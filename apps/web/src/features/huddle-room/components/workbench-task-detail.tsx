@@ -19,7 +19,15 @@ import {
   Square,
   Terminal,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AnimatePresence,
   AppButton,
@@ -68,6 +76,60 @@ import {
 import { WorkbenchTraceEvents } from "./workbench-trace-events.js";
 
 type DetailSectionTab = "changes" | "steps";
+
+function WorkbenchTraceScrollArea({
+  followLiveTrace,
+  children,
+}: {
+  readonly followLiveTrace: boolean;
+  readonly children: ReactNode;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    const content = contentRef.current;
+    if (!followLiveTrace || !container || !content) return;
+
+    let atBottom = true;
+    const rememberPosition = () => {
+      atBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 4;
+    };
+    const followLatest = () => {
+      if (atBottom && !container.querySelector("details[open]")) {
+        container.scrollTop = container.scrollHeight;
+      }
+    };
+
+    followLatest();
+    container.addEventListener("scroll", rememberPosition, { passive: true });
+    let observer: ResizeObserver | MutationObserver;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(followLatest);
+      observer.observe(container);
+      observer.observe(content);
+    } else {
+      // The viewport synchronizer writes the current keyboard and viewport size to <html>.
+      observer = new MutationObserver(followLatest);
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["style", "data-keyboard-open"],
+      });
+      observer.observe(content, { childList: true, subtree: true, characterData: true });
+    }
+    return () => {
+      container.removeEventListener("scroll", rememberPosition);
+      observer.disconnect();
+    };
+  }, [followLiveTrace]);
+
+  return (
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3.5 @[640px]:px-5">
+      <div ref={contentRef}>{children}</div>
+    </div>
+  );
+}
 
 function sanitizeWorktreeSegment(raw: string): string {
   const cleaned = raw
@@ -172,7 +234,6 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
 
   const prevTaskIdRef = useRef<string>(task.id);
   const prevStageRef = useRef<SoloWorkTaskView["stage"]>(task.stage);
-  const traceScrollRef = useRef<HTMLDivElement | null>(null);
 
   // 切换任务时：运行中任务优先聚焦「执行追踪」，已完成且带 Diff 的任务直接聚焦「代码变更」；
   // 同一任务刚由运行态转入待审阅且产出真实 Diff 时，自动切至「代码变更」供签收检视。
@@ -194,18 +255,6 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
   }, [hasDiff, isRunning, task.id, task.stage]);
 
   const traceEntries: ReadonlyArray<WorkTraceEntry> = task.trace ?? [];
-  const traceCount = traceEntries.length;
-
-  // 运行中收到新实时追踪行时自动贴底滚动
-  useEffect(() => {
-    if (!isRunning || sectionTab !== "steps" || traceCount === 0) {
-      return;
-    }
-    const container = traceScrollRef.current;
-    if (container && !container.querySelector("details[open]")) {
-      container.scrollTop = container.scrollHeight;
-    }
-  }, [isRunning, sectionTab, traceCount]);
 
   const activeDiffFile: SoloDiffFile | undefined =
     task.diffFiles[selectedFileIndex] ?? task.diffFiles[0];
@@ -840,9 +889,9 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
             transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
-            <div
-              ref={traceScrollRef}
-              className="min-h-0 flex-1 overflow-y-auto px-4 py-3.5 @[640px]:px-5"
+            <WorkbenchTraceScrollArea
+              key={task.id}
+              followLiveTrace={isRunning && traceEntries.length > 0}
             >
               {/* 1. 分片执行管线卡片 */}
               <div className="divide-y divide-black/[0.05] overflow-hidden rounded-[14px] border border-black/[0.06] bg-white/75 dark:divide-white/[0.06] dark:border-white/[0.075] dark:bg-white/[0.03]">
@@ -1006,7 +1055,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                   </div>
                 )}
               </div>
-            </div>
+            </WorkbenchTraceScrollArea>
           </motion.div>
         )}
       </AnimatePresence>
