@@ -152,7 +152,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
       if (peer?.kind === "human" && peer.email !== undefined && peer.email.length > 0) {
         return `好友私聊 · ${peer.email}`;
       }
-      return "好友 1v1 私聊";
+      return "好友私聊";
     }
     if (isDirectAgent) {
       if (peer?.kind === "agent") {
@@ -163,7 +163,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
           ? `我的个人 Agent · ${reachLabel}`
           : `${peer.ownerDisplayName} 共享的 Agent · ${reachLabel}`;
       }
-      return "Agent 1v1 单聊";
+      return "Agent 私聊";
     }
     if (props.room.topic.length > 0) {
       return props.room.topic;

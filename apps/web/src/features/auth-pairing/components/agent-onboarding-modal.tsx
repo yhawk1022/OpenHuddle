@@ -200,8 +200,8 @@ function CopyButton(props: CopyButtonProps) {
  */
 const ONBOARDING_TIER_TABS: ReadonlyArray<SegmentedTabItem<AgentExecutionTier>> = [
   { value: "chat_only", label: "仅群聊讨论" },
-  { value: "workspace_read", label: "只读查库" },
-  { value: "worktree_write", label: "Worktree 改码" },
+  { value: "workspace_read", label: "查看代码" },
+  { value: "worktree_write", label: "修改代码" },
 ];
 
 export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
@@ -562,7 +562,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
               ? err.message
               : err instanceof Error
                 ? err.message
-                : "本机一键直连失败";
+                : "连接本机失败";
           toast.error(msg);
         },
       },
@@ -704,7 +704,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         <span className="min-w-0 flex-1 truncate">{meta.label}</span>
                         {isInstalledLocally ? (
                           <span
-                            title="已检测到本机安装，支持一键秒连"
+                            title="已安装，可直接连接"
                             className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#16A34A] dark:bg-[#34D399]"
                           />
                         ) : null}
@@ -849,7 +849,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     <span className="inline-flex min-w-0 items-center gap-2">
                       <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-[#111318] dark:text-[#F2F2F4]" />
                       <span className="truncate font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                        本地代码库执行与温热加速（可选）
+                        本地运行设置（可选）
                       </span>
                       <span className="rounded-full bg-black/[0.055] px-2 py-0.5 text-[10.5px] font-medium text-[#3B414E] dark:bg-white/[0.09] dark:text-[#C4C4CA]">
                         {getExecutionTierMeta(draftTier).shortLabel}
@@ -876,7 +876,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         <div className="space-y-3 p-4 text-xs">
                           <div>
                             <p className="mb-1.5 font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-                              守护端执行能力上限（Owner-First 本地门禁）
+                              本地权限（仅用于你批准的任务）
                             </p>
                             <SegmentedTabs
                               value={draftTier}
@@ -893,7 +893,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                               items={ONBOARDING_TIER_TABS}
                               size="xs"
                               fullWidth={true}
-                              ariaLabel="选择守护进程本地执行能力"
+                              ariaLabel="选择 Agent 本地权限"
                             />
                             <p className="mt-1.5 text-[11px] text-im-muted">
                               {getExecutionTierMeta(draftTier).description}
@@ -922,15 +922,15 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
                               <p className="font-medium text-[#111318] dark:text-[#F2F2F4]">
-                                开启 15 分钟温热会话驻留
+                                保留会话 15 分钟
                               </p>
                               <p className="text-[11px] text-im-muted">
-                                保持会话句柄与 KV 缓存热态，消除每次唤醒 5~10s CLI 冷启动
+                                下次运行任务时可以继续使用这个会话。
                               </p>
                             </div>
                             <AppSwitch
                               size="sm"
-                              ariaLabel="开启 15 分钟温热会话驻留"
+                              ariaLabel="保留会话 15 分钟"
                               checked={draftWarmSession}
                               onCheckedChange={setDraftWarmSession}
                             />
@@ -940,15 +940,15 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             <div className="flex items-center justify-between gap-3 border-t border-black/[0.05] pt-2.5 dark:border-white/[0.07]">
                               <div className="min-w-0">
                                 <p className="font-medium text-[#111318] dark:text-[#F2F2F4]">
-                                  启用原生双模规划与执行
+                                  分开规划和执行
                                 </p>
                                 <p className="text-[11px] text-im-muted">
-                                  进程内由 Carbon 只读规划 + Hydrogen 极速改码，零跨进程延迟
+                                  Carbon 负责只读规划，Hydrogen 负责执行。
                                 </p>
                               </div>
                               <AppSwitch
                                 size="sm"
-                                ariaLabel="启用 Antigravity 原生 Orchestrator 双模"
+                                ariaLabel="分开规划和执行"
                                 checked={draftNativeOrchestrator}
                                 onCheckedChange={setDraftNativeOrchestrator}
                               />
@@ -1055,8 +1055,8 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     {connectLocalMutation.isPending || autoJoinRoomPending
                       ? "正在直连并启动后台监听..."
                       : reclaimTarget
-                        ? `一键重连本机「${reclaimTarget.displayName}」`
-                        : `一键直连本机 ${platformMeta.label}`}
+                        ? `重新连接本机的「${reclaimTarget.displayName}」`
+                        : `连接本机的 ${platformMeta.label}`}
                   </AppButton>
 
                   <div className="mt-2.5 flex items-center justify-center">

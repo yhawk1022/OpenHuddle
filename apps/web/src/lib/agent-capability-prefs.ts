@@ -167,8 +167,8 @@ export function getExecutionTierMeta(tier: AgentExecutionTier): ExecutionTierBad
       return {
         tier,
         shortLabel: "仅讨论",
-        fullLabel: "Tier 0 · 仅群聊讨论",
-        description: "零本地文件读写，仅参与方案研讨、提问与提案投票",
+        fullLabel: "仅讨论",
+        description: "可以聊天和投票，不能读写本地文件。",
         cliFlags: "",
         pillClassName:
           "bg-black/[0.05] text-[#687082] ring-black/[0.05] dark:bg-white/[0.07] dark:text-[#9B9BA3] dark:ring-white/[0.08]",
@@ -176,9 +176,9 @@ export function getExecutionTierMeta(tier: AgentExecutionTier): ExecutionTierBad
     case "workspace_read":
       return {
         tier,
-        shortLabel: "只读查库",
-        fullLabel: "Tier 1 · 只读探查与审查",
-        description: "允许只读检索绑定代码库、规划与审查 Diff（零拷贝免 Worktree）",
+        shortLabel: "查看代码",
+        fullLabel: "只读访问代码库",
+        description: "可以查看代码和审查改动，不能修改文件。",
         cliFlags: "--allow-read",
         pillClassName:
           "bg-[#E1ECFF]/85 text-[#1E40AF] ring-[#2563EB]/15 dark:bg-[#1A273D] dark:text-[#93C5FD] dark:ring-[#60A5FA]/25",
@@ -186,9 +186,9 @@ export function getExecutionTierMeta(tier: AgentExecutionTier): ExecutionTierBad
     case "worktree_write":
       return {
         tier,
-        shortLabel: "Worktree 改码",
-        fullLabel: "Tier 2 · 隔离 Worktree 改码",
-        description: "对本人签批工单自动检出预热 Git Worktree 改码并跑单测，严检独占路径",
+        shortLabel: "修改代码",
+        fullLabel: "在独立工作树中修改代码",
+        description: "你批准任务后，Agent 可以在独立的 Git 工作树中修改代码并运行测试。",
         cliFlags: "--allow-worktree",
         pillClassName:
           "bg-[#E6F5EC] text-[#145335] ring-[#16A34A]/18 dark:bg-[#1B2B23] dark:text-[#6EE7B7] dark:ring-[#34D399]/25",

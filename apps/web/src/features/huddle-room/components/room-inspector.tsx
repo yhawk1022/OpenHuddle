@@ -916,7 +916,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                                   ? [
                                       {
                                         id: `ctx-insp-agt-dm-${agentId}`,
-                                        label: "发消息（1v1 单聊）",
+                                        label: "发消息",
                                         icon: <MessageCircle className="h-3.5 w-3.5" />,
                                         onSelect: () => props.onStartDirectAgentChat?.(agentId),
                                       } satisfies AppContextMenuEntry,

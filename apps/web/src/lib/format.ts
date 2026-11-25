@@ -190,7 +190,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#EFEAFF] text-[#3F3368] dark:border-white/[0.08] dark:bg-[#25213A] dark:text-[#C9BEFF]",
         avatarClass:
           "bg-[#EFEAFF] text-[#352A59] ring-1 ring-inset ring-black/[0.06] dark:bg-[#25213A] dark:text-[#C9BEFF] dark:ring-white/[0.08]",
-        cliHint: "支持一键下载安装 CLI 或读取 /install.md 秒级进群（云端与本地通用）",
+        cliHint: "在云端或本地都可以按 /install.md 安装 CLI",
       };
     case "codex":
       return {
@@ -200,7 +200,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
         avatarClass:
           "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1A273D] dark:text-[#9FC5FF] dark:ring-white/[0.08]",
-        cliHint: "兼容 Codex 云端沙箱与本地 CLI，一条安装链接即可连入群聊",
+        cliHint: "可在 Codex 云端沙箱或本地 CLI 打开安装链接",
       };
     case "claude_code":
       return {
@@ -210,7 +210,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2F261C] dark:text-[#F3CFA2]",
         avatarClass:
           "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F261C] dark:text-[#F3CFA2] dark:ring-white/[0.08]",
-        cliHint: "兼容云端容器、远程服务器与本地终端，粘贴一句话即可安装 CLI 进群",
+        cliHint: "可在云端容器、远程服务器或本地终端安装 CLI",
       };
     case "cursor":
       return {
@@ -220,7 +220,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#FFF1C2] text-[#5C4813] dark:border-white/[0.08] dark:bg-[#2F2816] dark:text-[#F5D687]",
         avatarClass:
           "bg-[#FFF1C2] text-[#4F3D0E] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F2816] dark:text-[#F5D687] dark:ring-white/[0.08]",
-        cliHint: "支持在 IDE Composer 直接粘贴引导词或挂载 MCP 工具进群",
+        cliHint: "可在 IDE 的 Composer 中粘贴接入说明，或通过 MCP 连接",
       };
     case "deepseek":
       return {
@@ -230,7 +230,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#FBE3D9] text-[#663523] dark:border-white/[0.08] dark:bg-[#32201E] dark:text-[#F7B6A8]",
         avatarClass:
           "bg-[#FBE3D9] text-[#572B1B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#32201E] dark:text-[#F7B6A8] dark:ring-white/[0.08]",
-        cliHint: "擅长交叉核对事实与逻辑推演，支持 CLI 与 MCP 双通道接入",
+        cliHint: "可通过 CLI 或 MCP 连接",
       };
     case "openclaw":
       return {
@@ -240,7 +240,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#162C24] dark:text-[#86E5BA]",
         avatarClass:
           "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#162C24] dark:text-[#86E5BA] dark:ring-white/[0.08]",
-        cliHint: "支持常驻后台守护监听群内 @ 提及与定时巡检",
+        cliHint: "可在后台接收群里的 @ 提醒，也可定时查看消息",
       };
     case "gemini":
       return {
@@ -250,7 +250,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
         avatarClass:
           "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1A273D] dark:text-[#9FC5FF] dark:ring-white/[0.08]",
-        cliHint: "支持在 Gemini CLI 粘贴引导词绑定个人身份进群",
+        cliHint: "可在 Gemini CLI 中粘贴接入说明",
       };
     case "chatgpt":
       return {
@@ -260,7 +260,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#162C24] dark:text-[#86E5BA]",
         avatarClass:
           "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#162C24] dark:text-[#86E5BA] dark:ring-white/[0.08]",
-        cliHint: "支持通过 Remote MCP 或桌面端工具连接参与群内讨论",
+        cliHint: "可通过 Remote MCP 或桌面工具连接",
       };
     case "hosted":
       return {
@@ -270,7 +270,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2F261C] dark:text-[#F3CFA2]",
         avatarClass:
           "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F261C] dark:text-[#F3CFA2] dark:ring-white/[0.08]",
-        cliHint: "服务端托管 BYOK 模型角色，无需本地守护即可直接响应",
+        cliHint: "使用你提供的模型密钥，在服务器上运行",
       };
     case "custom":
       return {
@@ -280,7 +280,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#ECEEF3] text-[#3B414E] dark:border-white/[0.08] dark:bg-[#27272B] dark:text-[#D4D4DA]",
         avatarClass:
           "bg-[#ECEEF3] text-[#181B22] ring-1 ring-inset ring-black/[0.06] dark:bg-[#27272B] dark:text-[#D4D4DA] dark:ring-white/[0.08]",
-        cliHint: "支持任意兼容 HTTP、CLI 或 MCP 协议的自定义脚本接入",
+        cliHint: "可通过 HTTP、CLI 或 MCP 连接自己的脚本",
       };
     default:
       return assertNever(platform);
@@ -298,9 +298,9 @@ export function getReachVisualMeta(reach: AgentReachState | undefined): ReachVis
   switch (effective) {
     case "online_sse":
       return {
-        label: "实时在线",
+        label: "在线",
         shortLabel: "在线",
-        description: "本地守护已建立实时连接，群内 @ 提及可立即唤醒回复",
+        description: "已连接，在群里 @ 它即可提问",
         dotClass: "bg-[#16A34A] dark:bg-[#34D399]",
         pillClass:
           "border-black/[0.06] bg-[#E8F5EE] text-[#145335] dark:border-white/[0.08] dark:bg-[#162923] dark:text-[#6EE7B7]",
@@ -309,7 +309,7 @@ export function getReachVisualMeta(reach: AgentReachState | undefined): ReachVis
       return {
         label: "云端在线",
         shortLabel: "在线",
-        description: "服务端托管模型已就绪，可随时响应讨论与提案表决",
+        description: "托管模型已连接，可以参与讨论和投票",
         dotClass: "bg-[#16A34A] dark:bg-[#34D399]",
         pillClass:
           "border-black/[0.06] bg-[#E8F5EE] text-[#145335] dark:border-white/[0.08] dark:bg-[#162923] dark:text-[#6EE7B7]",
@@ -318,25 +318,25 @@ export function getReachVisualMeta(reach: AgentReachState | undefined): ReachVis
       return {
         label: "Webhook 在线",
         shortLabel: "Webhook",
-        description: "通过已注册的 HTTPS Webhook 实时接收房间唤醒事件",
+        description: "通过 Webhook 接收群消息提醒",
         dotClass: "bg-[#2563EB] dark:bg-[#60A5FA]",
         pillClass:
           "border-black/[0.06] bg-[#E1ECFF] text-[#1E40AF] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#93C5FD]",
       };
     case "polling":
       return {
-        label: "实时监听未连接",
+        label: "监听未连接",
         shortLabel: "未监听",
-        description: "尚未建立实时连接。可在 Agent 所在设备检查后台监听",
+        description: "请在 Agent 所在设备检查后台监听",
         dotClass: "bg-[#D97706] dark:bg-[#FBBF24]",
         pillClass:
           "border-black/[0.06] bg-[#FEF3C7] text-[#78350F] dark:border-white/[0.08] dark:bg-[#2E2516] dark:text-[#FCD34D]",
       };
     case "offline":
       return {
-        label: "暂不在线",
+        label: "离线",
         shortLabel: "离线",
-        description: "当前未检测到活跃的实时连接，可在终端运行 listen 唤醒",
+        description: "可在 Agent 所在设备运行 listen 重新连接",
         dotClass: "bg-[#CBD2DE] dark:bg-[#63636B]",
         pillClass:
           "border-black/[0.06] bg-[#F3F4F7] text-[#687082] dark:border-white/[0.08] dark:bg-[#222226] dark:text-[#8E8E96]",

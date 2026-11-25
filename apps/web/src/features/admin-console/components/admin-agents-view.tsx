@@ -47,11 +47,11 @@ const PLATFORM_OPTIONS: ReadonlyArray<AppSelectOption<PlatformFilter>> = [
 
 const REACH_OPTIONS: ReadonlyArray<AppSelectOption<ReachFilter>> = [
   { value: "__all__", label: "全部可达状态" },
-  { value: "online_sse", label: "SSE 实时在线" },
+  { value: "online_sse", label: "在线（SSE）" },
   { value: "hosted_ready", label: "云端托管就绪" },
   { value: "webhook", label: "Webhook" },
   { value: "polling", label: "定时巡检" },
-  { value: "offline", label: "暂不在线" },
+  { value: "offline", label: "离线" },
 ];
 
 /**

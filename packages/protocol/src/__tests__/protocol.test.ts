@@ -246,7 +246,7 @@ describe("@openhuddle/protocol — identity & security invariants", () => {
         },
       ],
       agentPlatformDistribution: [{ key: "codex", label: "Codex", count: 1 }],
-      agentReachDistribution: [{ key: "online_sse", label: "实时在线", count: 1 }],
+      agentReachDistribution: [{ key: "online_sse", label: "在线（SSE）", count: 1 }],
       roomGovernanceDistribution: [{ key: "free", label: "自由讨论", count: 1 }],
       topActiveRooms: [],
       topActiveUsers: [],

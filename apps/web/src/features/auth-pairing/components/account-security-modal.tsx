@@ -1,6 +1,6 @@
 /**
  * @module web/features/auth-pairing/account-security-modal
- * @description 登录后人类账号资料与密码安全管理弹窗（编辑展示昵称、修改登录密码或为早期无密码老用户首次补设密码）。
+ * @description 登录后人类账号资料与密码安全管理弹窗（编辑昵称、修改登录密码或为早期无密码老用户首次补设密码）。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 无密码老用户平滑迁移：根据 `currentUser.hasPassword` 自动切换「修改登录密码（需核验当前密码）」与「首次设置登录密码」表单。
@@ -83,11 +83,11 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
     event.preventDefault();
     setLocalError(null);
     if (currentUser.hasPassword && currentPassword.length === 0) {
-      setLocalError("请输入当前登录密码。");
+      setLocalError("请输入当前密码。");
       return;
     }
     if (newPassword.length < PASSWORD_MIN_LENGTH || !/\S/.test(newPassword)) {
-      setLocalError(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 位有效字符。`);
+      setLocalError(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`);
       return;
     }
     if (newPassword !== confirmNewPassword) {
@@ -110,7 +110,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
           setNewPassword("");
           setConfirmNewPassword("");
           toast.success(currentUser.hasPassword ? "登录密码已修改" : "登录密码已设置", {
-            description: "其余设备上的历史会话已自动安全下线",
+            description: "其他设备需要重新登录",
           });
         },
       },
@@ -132,7 +132,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
     <ModalDialog
       open={open}
       onClose={onClose}
-      title="账号与密码安全"
+      title="账号安全"
       subtitle={`${currentUser.email} · ${currentUser.role === "admin" ? "平台管理员" : "成员"}`}
       maxWidthClass="max-w-md"
       icon={<ShieldCheck className="h-4 w-4" />}
@@ -142,18 +142,18 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
         <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-[#F5F5F7] px-3.5 py-2.5 text-xs text-[#52525B] dark:bg-white/[0.05] dark:text-zinc-300">
           <span className="inline-flex items-center gap-1 text-[#1E5638] dark:text-[#86E0A6]">
             <CheckCircle2 className="h-3.5 w-3.5" />
-            {currentUser.emailVerified ? "邮箱已核验" : "待核验邮箱"}
+            {currentUser.emailVerified ? "邮箱已验证" : "邮箱未验证"}
           </span>
           <span aria-hidden="true" className="opacity-35">
             ·
           </span>
-          <span>{currentUser.hasPassword ? "已开启邮箱密码登录" : "尚未设置登录密码"}</span>
+          <span>{currentUser.hasPassword ? "已设置登录密码" : "未设置登录密码"}</span>
         </div>
 
-        {/* 1. 展示昵称设置 */}
+        {/* 1. 昵称设置 */}
         <form onSubmit={handleSaveDisplayName} className="space-y-3">
           <label htmlFor="account-display-name" className={LABEL_CLASS}>
-            展示昵称
+            昵称
           </label>
           <div className="flex items-center gap-2">
             <AppInput
@@ -214,7 +214,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
                   setLocalError(null);
                 }}
                 leadingIcon={<Lock className="h-4 w-4" />}
-                placeholder="输入当前登录密码"
+                placeholder="输入当前密码"
                 containerClassName="mt-1.5"
               />
             </div>
@@ -237,7 +237,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
                 setLocalError(null);
               }}
               leadingIcon={<Lock className="h-4 w-4" />}
-              placeholder={`至少 ${PASSWORD_MIN_LENGTH} 位字符`}
+              placeholder={`至少 ${PASSWORD_MIN_LENGTH} 个字符`}
               containerClassName="mt-1.5"
             />
           </div>
@@ -289,7 +289,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
             {changePasswordMutation.isPending
               ? "正在保存..."
               : currentUser.hasPassword
-                ? "更新登录密码"
+                ? "保存新密码"
                 : "保存登录密码"}
           </AppButton>
         </form>

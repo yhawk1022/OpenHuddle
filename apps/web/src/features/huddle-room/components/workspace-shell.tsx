@@ -1153,19 +1153,19 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                 )}
                 <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-[#111318] dark:text-[#F2F2F4]">
                   {room.kind === "direct_agent"
-                    ? `与 ${room.name} 的 1v1 单聊`
+                    ? `和 ${room.name} 的聊天`
                     : room.kind === "direct_human"
-                      ? `与 ${roomDisplayName} 的好友私聊`
+                      ? `和 ${roomDisplayName} 的聊天`
                       : room.name}
                 </h2>
                 <p className="mx-auto mt-2 text-[13.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                   {room.kind === "direct_agent"
                     ? room.peer?.kind === "agent" && room.peer.ownerUserId !== props.currentUser.id
-                      ? `对方是由 ${room.peer.ownerDisplayName} 开放私聊的个人 Agent。直接在下方发送消息即可交流（你的发言将以参考信息身份送达）。`
-                      : "这是你与个人 Agent 的专属一对一对话，在下方直接输入消息即可自动唤醒，无需加 @。"
+                      ? `这是 ${room.peer.ownerDisplayName} 的 Agent。你可以和它聊天，你的消息仅供参考。`
+                      : "直接发消息就好，不用 @ 它。"
                     : room.kind === "direct_human"
-                      ? "你们已成为站内好友，在下方输入消息即可开始一对一实时沟通。"
-                      : "把你的 Agent 或好友拉进群，直接在下方输入舱说话，或输入 `@` 点名一起讨论。"}
+                      ? "发条消息打个招呼吧。"
+                      : "邀请好友或 Agent 进群，输入 @ 可以点名。"}
                 </p>
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
                   {room.kind === "group" ? (
@@ -1176,7 +1176,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                         leadingIcon={<Users className="h-4 w-4" />}
                         onClick={() => setInviteMode("members")}
                       >
-                        拉好友 / Agent 进群
+                        邀请成员
                       </AppButton>
                       <AppButton
                         variant="secondary"
@@ -1605,15 +1605,15 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
       data-tauri-drag-region=""
       className="app-drag-region relative liquid-glass-panel hidden w-[72px] shrink-0 select-none flex-col items-center pt-4 pb-3 md:flex md:rounded-[22px] [--oh-avatar-ring:#F4F6FA] dark:[--oh-avatar-ring:#1E1E22]"
     >
-      {/* 1. 顶部个人身份：纯净浮起圆形头像 + `我`（点击打开账号与密码安全弹窗，告别多层灰环套娃） */}
+      {/* 1. 顶部个人身份：纯净浮起圆形头像 + `我`（点击打开账号安全弹窗，告别多层灰环套娃） */}
       <AppTooltip
         side="right"
-        content={`${props.currentUser.displayName} · ${props.currentUser.email}（点击管理账号与密码）`}
+        content={`${props.currentUser.displayName} · ${props.currentUser.email} · 账号安全`}
       >
         <button
           type="button"
           onClick={props.onOpenAccountSecurity}
-          aria-label="打开账号与密码安全设置"
+          aria-label="打开账号安全设置"
           className="im-press app-no-drag group relative flex w-full shrink-0 cursor-pointer flex-col items-center"
         >
           <div className="rounded-full shadow-[0_2px_8px_rgba(15,23,42,0.08)] ring-[1.5px] ring-white/95 transition-transform duration-150 group-hover:scale-[1.04] dark:shadow-[0_2px_10px_rgba(0,0,0,0.4)] dark:ring-white/18">
@@ -1636,7 +1636,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
         aria-label="切换会话与单人工作台模式"
         className="app-no-drag mt-3 flex w-[56px] shrink-0 flex-col gap-1 rounded-[16px] bg-black/[0.038] p-1 dark:bg-white/[0.05]"
       >
-        <AppTooltip side="right" shortcut="⌥1" content="聊天会话（多人协同 · 群聊提案 · 1v1）">
+        <AppTooltip side="right" shortcut="⌥1" content="聊天">
           <button
             type="button"
             role="tab"
@@ -1665,7 +1665,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
           </button>
         </AppTooltip>
 
-        <AppTooltip side="right" shortcut="⌥2" content="工作台（个人任务与代码审阅）">
+        <AppTooltip side="right" shortcut="⌥2" content="工作台">
           <button
             type="button"
             role="tab"
@@ -1702,7 +1702,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
         className="mt-2.5 h-px w-7 shrink-0 bg-black/[0.06] dark:bg-white/[0.08]"
       />
 
-      {/* 2. 中部可滚动区：已连接的个人 Agents + 虚线圆形 `+ 接入 agent`（必须携带 min-h-0 确保高倍率缩放矮视口下可滚动不挤爆顶底） */}
+      {/* 2. 中部可滚动区：已连接的个人 Agents + 虚线圆形 `+ 接入 Agent`（必须携带 min-h-0 确保高倍率缩放矮视口下可滚动不挤爆顶底） */}
       <div className="my-2.5 flex min-h-0 w-full flex-1 flex-col items-center gap-2.5 overflow-y-auto px-1 [scrollbar-width:none]">
         {props.ownedAgents.map((agent) => {
           const agentHandle = `@${agent.slug}`;
@@ -1715,7 +1715,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
           const railAgentMenuItems: ReadonlyArray<AppContextMenuEntry> = [
             {
               id: `ctx-rail-dm-${agent.id}`,
-              label: "发消息（1v1 单聊）",
+              label: "发消息",
               icon: <MessageCircle className="h-3.5 w-3.5" />,
               onSelect: () => props.onStartDirectAgentChat(agent.id),
             },
@@ -1732,14 +1732,14 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
               onSelect: () => {
                 if (typeof navigator !== "undefined" && navigator.clipboard) {
                   void navigator.clipboard.writeText(agentHandle).then(() => {
-                    toast.success("已复制提及标识", { description: agentHandle });
+                    toast.success("已复制 @ 标识", { description: agentHandle });
                   });
                 }
               },
             },
             {
               id: `ctx-rail-reclaim-${agent.id}`,
-              label: "恢复原身份重连",
+              label: "重新连接",
               icon: <KeyRound className="h-3.5 w-3.5" />,
               onSelect: () => props.onReclaimAgent(agent.id),
             },
@@ -1797,7 +1797,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
           );
         })}
 
-        {/* 轻透虚线圆环 `+` 按钮 + `接入 agent` */}
+        {/* 轻透虚线圆环 `+` 按钮 + `接入 Agent` */}
         <button
           type="button"
           onClick={props.onOpenConnectAgent}
@@ -1808,7 +1808,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
             <Plus className="h-4 w-4 stroke-[1.9]" />
           </span>
           <span className="text-center text-[10px] leading-[1.24] text-[#687082] transition-colors group-hover:text-[#111318] dark:text-[#8E8E96] dark:group-hover:text-white">
-            接入 agent
+            接入 Agent
           </span>
         </button>
       </div>
@@ -2588,14 +2588,11 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       items: [
         {
           id: "act-toggle-workbench-surface",
-          label:
-            surfaceMode === "workbench"
-              ? "切换回多人聊天会话 (Huddles)"
-              : "打开单人工作台 (Solo Workbench)",
+          label: surfaceMode === "workbench" ? "返回聊天" : "打开工作台",
           subtitle:
             surfaceMode === "workbench"
-              ? "回到群聊、好友私聊与提案讨论区"
-              : `个人工作区并发任务 · ${String(workbenchCounts.needsYou)} 项待确认`,
+              ? "查看私聊和群聊"
+              : `${String(workbenchCounts.needsYou)} 项任务待确认`,
           icon:
             surfaceMode === "workbench" ? (
               <MessageCircle className="h-4 w-4" />
@@ -2640,7 +2637,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           subtitle:
             incomingRequests.length > 0
               ? `收到 ${String(incomingRequests.length)} 条新的好友申请`
-              : "按昵称或邮箱搜索站内用户并发起 1v1 私聊",
+              : "用昵称或邮箱找好友",
           icon: <UserPlus className="h-4 w-4" />,
           keywords: ["friend", "dm", "user", "search", "好友", "私聊", "单聊", "添加"],
           onSelect: () => setAddFriendOpen(true),
@@ -2683,7 +2680,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           : []),
         {
           id: "act-account-security",
-          label: "账号与密码安全",
+          label: "账号安全",
           subtitle: `${props.currentUser.email} · 修改昵称或登录密码`,
           icon: <KeyRound className="h-4 w-4" />,
           keywords: ["account", "password", "security", "profile", "账号", "密码", "安全", "昵称"],
@@ -2784,7 +2781,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
     const friendsGroup: CommandPaletteGroup = {
       id: "friends-dm",
-      heading: "我的好友（点击发起私聊）",
+      heading: "我的好友",
       items: friends.map((f) => ({
         id: `cmd-friend-${f.user.userId}`,
         label: f.remark ?? f.user.displayName,
@@ -2797,7 +2794,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
     const agentItemsGroup: CommandPaletteGroup = {
       id: "owned-agents",
-      heading: "我的 agent（点击发起 1v1 单聊）",
+      heading: "我的 Agent",
       items: props.ownedAgents.map((agt) => {
         const reachMeta = getReachVisualMeta(agt.reach);
         return {
@@ -2865,7 +2862,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
   return (
     <div className="flex h-vvh w-full flex-col overflow-hidden text-[#111318] md:flex-row md:gap-2.5 md:p-2.5 dark:text-[#F2F2F4]">
-      {/* 第 1 栏：72px 个人身份 + 会话/工作台切换舱 + 我的 Agents + `+ 接入 agent` 悬浮液态玻璃导轨 */}
+      {/* 第 1 栏：72px 个人身份 + 会话/工作台切换舱 + 我的 Agents + `+ 接入 Agent` 悬浮液态玻璃导轨 */}
       <PersonalAgentRail
         currentUser={props.currentUser}
         ownedAgents={props.ownedAgents}
@@ -3069,11 +3066,10 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                   <div className="max-w-md select-none text-center">
                     <BrandMark className="mx-auto mb-4 h-12 w-12 rounded-[14px] shadow-xs" />
                     <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[#111318] dark:text-[#F2F2F4]">
-                      还没有聊天会话
+                      还没有聊天记录
                     </h1>
                     <p className="mt-2.5 text-[14px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                      支持与你的 Claude Code、Codex 开启 1v1
-                      单聊，添加站内好友私聊，或建群拉大家一起讨论。
+                      可以和好友或 Agent 私聊，也可以建个群。
                     </p>
 
                     <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
@@ -3098,7 +3094,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                         size="lg"
                         onClick={() => openOnboarding("pair_agent")}
                       >
-                        接入 agent
+                        接入 Agent
                       </AppButton>
                     </div>
                   </div>

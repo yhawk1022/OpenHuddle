@@ -146,7 +146,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
       open={props.open}
       onClose={props.onClose}
       title="添加好友"
-      subtitle="按昵称或注册邮箱搜索站内同伴，互为好友后即可发起 1v1 私聊与直接拉群"
+      subtitle="用昵称或邮箱找好友。加为好友后，就能发消息或邀请对方进群。"
       maxWidthClass="max-w-lg"
       icon={<UserPlus className="h-4 w-4" />}
       footer={
@@ -169,7 +169,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
             value={queryText}
             onChange={(e) => setQueryText(e.target.value)}
             leadingIcon={<Search className="h-4 w-4" />}
-            placeholder="输入对方的昵称或邮箱搜索…"
+            placeholder="输入昵称或邮箱"
             trailingSlot={
               queryText.length > 0 ? (
                 <button
@@ -191,7 +191,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
             value={noteText}
             onChange={(e) => setNoteText(e.target.value)}
             leadingIcon={<Mail className="h-3.5 w-3.5" />}
-            placeholder="可选验证留言（例如：你好，我是同组的王明）"
+            placeholder="给对方留句话（选填）"
           />
         </div>
 
@@ -218,7 +218,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
               </div>
             ) : searchResults.length === 0 ? (
               <div className="rounded-2xl bg-black/[0.035] px-4 py-5 text-center text-xs text-[#687082] dark:bg-white/[0.04] dark:text-[#8E8E96]">
-                未找到匹配「{trimmedQuery}」的活跃用户
+                没找到与「{trimmedQuery}」匹配的用户
               </div>
             ) : (
               <ul className="space-y-1.5 pr-0.5 sm:max-h-60 sm:overflow-y-auto">
@@ -675,8 +675,8 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
             {candidateFriends.length === 0 ? (
               <p className="rounded-2xl bg-black/[0.03] px-3.5 py-3 text-xs text-[#687082] dark:bg-white/[0.04] dark:text-[#8E8E96]">
                 {props.friends.length === 0
-                  ? "暂未添加好友；可点击右上角「+ 添加新好友」或复制群邀请码发给同伴。"
-                  : "你的全部好友均已在群内。"}
+                  ? "你还没有好友。可以先加好友，也可以把群邀请码发给对方。"
+                  : "你的好友都在群里了。"}
               </p>
             ) : (
               <div className="flex flex-wrap gap-1.5 sm:max-h-40 sm:overflow-y-auto">
@@ -724,9 +724,9 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
           {candidateAgents.length === 0 ? (
             <p className="rounded-2xl bg-black/[0.03] px-3.5 py-3 text-xs text-[#687082] dark:bg-white/[0.04] dark:text-[#8E8E96]">
               {props.ownedAgents.length === 0
-                ? "尚未绑定个人 Agent；点击右上角「+ 配对新 Agent」一键接入。"
+                ? "你还没有接入 Agent。点击「配对新 Agent」开始接入。"
                 : props.ownedAgents.every((agent) => existingAgentSet.has(agent.id))
-                  ? "你的 Agent 均已在群内。"
+                  ? "你的 Agent 都在群里了。"
                   : "没有符合筛选条件的 Agent。"}
             </p>
           ) : (

@@ -1,7 +1,7 @@
 /**
  * @module web/features/huddle-room/room-sidebar
  * @description Apple Liquid Glass 空间工作台第 2 栏（`276px` 悬浮烟熏玻璃会话与通讯录侧栏）：
- * 顶栏展示圆形本人头像、昵称、实时在线状态与快捷新建/搜索入口；
+ * 顶栏展示圆形本人头像、昵称、在线状态与快捷新建/搜索入口；
  * 主体通过圆胶囊 `SegmentedTabs` 在「聊天」与「通讯录」间丝滑切换，会话行采用温润粉彩圆角方标与高通透浮起选中态，
  * 底部停靠统一的操作栏（彻底消除旧版粗黑线框按钮与机械四字截断头像）。
  *
@@ -110,19 +110,19 @@ const CHAT_KIND_META = {
     label: "群聊",
     icon: Users,
     badgeClass: "bg-[#DDF1E8] text-[#185A43] dark:bg-[#243B33] dark:text-[#A8E1C7]",
-    emptyMessage: "暂无群聊，可以发起群聊或通过邀请码加入。",
+    emptyMessage: "还没有群聊。你可以建群，也可以用邀请码加入。",
   },
   direct_human: {
-    label: "真人",
+    label: "好友",
     icon: UserRound,
     badgeClass: "bg-[#E2ECFC] text-[#284C81] dark:bg-[#27364C] dark:text-[#B7D3FF]",
-    emptyMessage: "暂无真人私聊，去「通讯录」选择好友发起会话。",
+    emptyMessage: "还没有好友聊天记录。可以去通讯录找好友。",
   },
   direct_agent: {
     label: "Agent",
     icon: Bot,
     badgeClass: "bg-[#EDE5FA] text-[#5A3888] dark:bg-[#382C4C] dark:text-[#DAC4FA]",
-    emptyMessage: "暂无 Agent 单聊，去「通讯录」选择 Agent 发起会话。",
+    emptyMessage: "还没有和 Agent 聊过天。可以去通讯录选一个 Agent。",
   },
 } as const satisfies Record<
   RoomKind,
@@ -186,7 +186,7 @@ export interface RoomSidebarProps {
   readonly onUpdateRoomGovernance?:
     | ((roomId: RoomId, patch: UpdateGovernanceBody) => void)
     | undefined;
-  /** 从通讯录右键菜单触发恢复原身份重连（`--reclaim`） */
+  /** 从通讯录右键菜单触发重新连接（`--reclaim`） */
   readonly onReclaimOwnedAgent?: ((agentId: AgentId) => void) | undefined;
   /** 从通讯录右键菜单唤起 Agent 名片并直接展开删除确认 */
   readonly onRequestDeleteOwnedAgent?: ((agent: OwnedAgentSummaryDto) => void) | undefined;
@@ -194,7 +194,7 @@ export interface RoomSidebarProps {
   readonly deletingRoomId?: RoomId | null | undefined;
   /** 点击搜索框内 `⌘K` 徽章时打开全局命令面板 */
   readonly onOpenCommandPalette?: (() => void) | undefined;
-  /** 打开账号与密码安全设置弹窗 */
+  /** 打开账号安全设置弹窗 */
   readonly onOpenAccountSecurity?: (() => void) | undefined;
   /** 打开「添加到手机主屏幕」分步引导抽屉 */
   readonly onOpenPwaInstallGuide?: (() => void) | undefined;
@@ -287,7 +287,7 @@ function describeSse(status: SseConnectionStatus): {
   readonly label: string;
 } {
   if (status === "live") {
-    return { dot: "bg-[#16A34A] dark:bg-[#34D399]", label: "实时在线" };
+    return { dot: "bg-[#16A34A] dark:bg-[#34D399]", label: "在线" };
   }
   if (status === "connecting" || status === "reconnecting") {
     return { dot: "animate-pulse bg-[#D97706] dark:bg-[#FBBF24]", label: "正在重连…" };
@@ -449,7 +449,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
           trigger={
             <button
               type="button"
-              aria-label="打开个人与账号设置菜单"
+              aria-label="打开账号菜单"
               className="app-no-drag -ml-1 flex min-w-0 cursor-pointer items-center gap-2 rounded-2xl px-1.5 py-1 text-left transition hover:bg-black/[0.045] active:scale-[0.99] dark:hover:bg-white/[0.07]"
             >
               <PlatformAvatar
@@ -488,13 +488,13 @@ export function RoomSidebar(props: RoomSidebarProps) {
           {props.onOpenAccountSecurity !== undefined ? (
             <AppDropdownMenuItem onSelect={props.onOpenAccountSecurity}>
               <KeyRound className="h-4 w-4 shrink-0" />
-              <span className="flex-1">账号与密码安全</span>
+              <span className="flex-1">账号安全</span>
             </AppDropdownMenuItem>
           ) : null}
           {props.onOpenCommandPalette !== undefined ? (
             <AppDropdownMenuItem onSelect={props.onOpenCommandPalette}>
               <Search className="h-4 w-4 shrink-0" />
-              <span className="flex-1">全局快速搜索</span>
+              <span className="flex-1">全局搜索</span>
             </AppDropdownMenuItem>
           ) : null}
           <AppDropdownMenuItem onSelect={() => navigateTo("/welcome")}>
@@ -791,10 +791,10 @@ export function RoomSidebar(props: RoomSidebarProps) {
             ) : props.rooms.length === 0 ? (
               <div className="mx-1 my-2 rounded-2xl bg-black/[0.035] px-4 py-6 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.04] dark:ring-white/[0.06]">
                 <p className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                  还没有聊天会话
+                  还没有聊天记录
                 </p>
                 <p className="mt-1 text-[12px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                  支持与你的个人 Agent 开启 1v1 单聊、加好友私聊，或建群拉大家一起讨论。
+                  可以和好友或 Agent 私聊，也可以建个群。
                 </p>
                 <div className="mt-3.5 flex flex-wrap items-center justify-center gap-2 md:hidden">
                   <AppButton
@@ -861,8 +861,8 @@ export function RoomSidebar(props: RoomSidebarProps) {
                         return room.topic;
                       }
                       return room.visibility === "public_shareable"
-                        ? "公开只读可分享"
-                        : "仅限邀请加入";
+                        ? "可分享只读链接"
+                        : "凭邀请加入";
                     })();
 
                     const roomMenuItems: ReadonlyArray<AppContextMenuEntry> = [
@@ -1209,7 +1209,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
               {friends.length === 0 ? (
                 <div className="mx-1 rounded-2xl bg-black/[0.03] px-3.5 py-3.5 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.035] dark:ring-white/[0.06]">
                   <p className="text-[12px] text-[#687082] dark:text-[#8E8E96]">
-                    添加站内同伴为好友，即可直接 1v1 私聊或一键拉进群聊
+                    加为好友后，就能发消息或邀请对方进群。
                   </p>
                 </div>
               ) : filteredFriends.length === 0 ? (
@@ -1226,7 +1226,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                         ? [
                             {
                               id: `ctx-frd-dm-${u.userId}`,
-                              label: "发私聊消息",
+                              label: "发消息",
                               icon: <MessageCircle className="h-3.5 w-3.5" />,
                               onSelect: () => props.onStartDirectHumanChat?.(u.userId),
                             } satisfies AppContextMenuEntry,
@@ -1307,7 +1307,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
             <section className="space-y-1">
               <div className="flex items-center justify-between px-2 pb-0.5">
                 <span className="text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                  我的 agent · {props.ownedAgents.length}
+                  我的 Agent · {props.ownedAgents.length}
                 </span>
                 <button
                   type="button"
@@ -1321,15 +1321,15 @@ export function RoomSidebar(props: RoomSidebarProps) {
               {props.ownedAgents.length === 0 ? (
                 <div className="mx-1 rounded-2xl bg-black/[0.03] px-3.5 py-4 text-center ring-1 ring-inset ring-black/[0.04] dark:bg-white/[0.035] dark:ring-white/[0.06]">
                   <p className="text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                    还没有已接入的 agent
+                    还没有接入 Agent
                   </p>
                   <p className="mt-1 text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                    把你的 Claude Code、Codex 或 Cursor 接入进来，支持随时 1v1 单聊或拉进群聊。
+                    接入 Claude Code、Codex 或 Cursor 后，就能私聊或邀请它进群。
                   </p>
                 </div>
               ) : filteredAgents.length === 0 ? (
                 <p className="px-3 py-2 text-center text-xs text-[#8E96A6] dark:text-[#63636B]">
-                  没有匹配的个人 agent
+                  没找到匹配的 Agent
                 </p>
               ) : (
                 <ul className="space-y-1">
@@ -1347,7 +1347,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                         ? [
                             {
                               id: `ctx-agt-dm-${agent.id}`,
-                              label: "发消息（1v1 单聊）",
+                              label: "发消息",
                               icon: <MessageCircle className="h-3.5 w-3.5" />,
                               onSelect: () => props.onStartDirectAgentChat?.(agent.id),
                             } satisfies AppContextMenuEntry,
@@ -1355,7 +1355,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                         : []),
                       {
                         id: `ctx-agt-inspect-${agent.id}`,
-                        label: "查看 Agent 名片与私聊设置",
+                        label: "查看 Agent 名片",
                         icon: <UserRound className="h-3.5 w-3.5" />,
                         onSelect: () => {
                           setConfirmDeleteAgentId(null);
@@ -1370,13 +1370,13 @@ export function RoomSidebar(props: RoomSidebarProps) {
                         id: `ctx-agt-copy-${agent.id}`,
                         label: `复制 ${agentHandle}`,
                         icon: <Copy className="h-3.5 w-3.5" />,
-                        onSelect: () => copySidebarText(agentHandle, "已复制提及标识", agentHandle),
+                        onSelect: () => copySidebarText(agentHandle, "已复制 @ 标识", agentHandle),
                       },
                       ...(props.onReclaimOwnedAgent !== undefined
                         ? [
                             {
                               id: `ctx-agt-reclaim-${agent.id}`,
-                              label: "恢复原身份重连",
+                              label: "重新连接",
                               icon: <KeyRound className="h-3.5 w-3.5" />,
                               onSelect: () => props.onReclaimOwnedAgent?.(agent.id),
                             } satisfies AppContextMenuEntry,
@@ -1434,7 +1434,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                                   </span>
                                   {agent.allowExternalDm ? (
                                     <span
-                                      title="已开放站内其他用户 1v1 私聊"
+                                      title="其他用户也可以私聊"
                                       className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[#E6F5EC] px-1.5 py-0.2 text-[10px] font-medium text-[#145335] dark:bg-[#1B2B23] dark:text-[#6EE7B7]"
                                     >
                                       <Globe className="h-2.5 w-2.5" />
@@ -1457,7 +1457,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
                             </button>
 
                             {!isConfirming && props.onStartDirectAgentChat !== undefined ? (
-                              <AppTooltip side="top" content="1v1 单聊">
+                              <AppTooltip side="top" content="发消息">
                                 <IconButton
                                   size="sm"
                                   variant="ghost"
@@ -1520,7 +1520,7 @@ export function RoomSidebar(props: RoomSidebarProps) {
             {filteredDiscoverableAgents.length > 0 ? (
               <section className="space-y-1">
                 <div className="px-2 pb-0.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                  开放私聊的外部 agent · {filteredDiscoverableAgents.length}
+                  可私聊的其他 Agent · {filteredDiscoverableAgents.length}
                 </div>
                 <ul className="space-y-1">
                   {filteredDiscoverableAgents.map((extAgent) => {

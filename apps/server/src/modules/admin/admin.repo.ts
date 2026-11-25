@@ -103,7 +103,7 @@ const PLATFORM_LABELS: Readonly<Record<AgentPlatform, string>> = {
 };
 
 const REACH_LABELS: Readonly<Record<AgentReachState, string>> = {
-  online_sse: "SSE 实时在线",
+  online_sse: "在线（SSE）",
   webhook: "Webhook 回调",
   hosted_ready: "托管模型就绪",
   polling: "轮询活跃",
