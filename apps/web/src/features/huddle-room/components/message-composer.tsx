@@ -33,6 +33,7 @@ import {
   Loader2,
   Mic,
   Paperclip,
+  Plus,
   Square,
   User,
   Users,
@@ -43,6 +44,7 @@ import {
   type KeyboardEvent,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -71,12 +73,13 @@ import {
   getReachVisualMeta,
 } from "../../../lib/format.js";
 import type { DraftMessageAttachment } from "../../../lib/message-media.js";
-import { isImeComposing } from "../../../lib/viewport-sync.js";
+import { isCoarsePointerDevice, isImeComposing } from "../../../lib/viewport-sync.js";
 import type {
   DispatchWorkPayload,
   RoomOrchestrationDefaults,
   WorkTopology,
 } from "../work/work-types.js";
+import "./mobile-chat-composer.css";
 import { StickerPicker } from "./sticker-picker.js";
 import { useMessageMediaDraft } from "./use-message-media-draft.js";
 
@@ -368,6 +371,11 @@ export function MessageComposer(props: MessageComposerProps) {
   const [dispatchTopology, setDispatchTopology] = useState<WorkTopology>("verify_loop");
   const [dispatchTier, setDispatchTier] = useState<AgentExecutionTier>("worktree_write");
   const [selectedExecutorId, setSelectedExecutorId] = useState<AgentId | null>(null);
+  const touchKeyboard = isCoarsePointerDevice();
+  const [editing, setEditing] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const composerRef = useRef<HTMLElement>(null);
+  const toolstripId = useId();
   const [pickerOpen, setPickerOpen] = useState<boolean>(false);
   const { getPref } = useAgentCapabilityPrefs();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -393,6 +401,39 @@ export function MessageComposer(props: MessageComposerProps) {
     readonly opKey: OperationKey;
   } | null>(null);
   const media = useMessageMediaDraft();
+  const expanded = editing || toolsOpen || media.phase !== "idle";
+
+  useEffect(() => {
+    if (!toolsOpen) return;
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        !composerRef.current?.contains(target) &&
+        !target.closest('[data-radix-popper-content-wrapper], [role="dialog"]')
+      ) {
+        setToolsOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePress);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePress);
+  }, [toolsOpen]);
+
+  // Some mobile keyboards dismiss without blurring their textarea (e.g. Android Back).
+  useEffect(() => {
+    if (!editing || !touchKeyboard) return;
+    const root = document.documentElement;
+    let keyboardWasOpen = root.dataset.keyboardOpen === "true";
+    const observer = new MutationObserver(() => {
+      const open = root.dataset.keyboardOpen === "true";
+      if (keyboardWasOpen && !open && document.activeElement === textareaRef.current) {
+        textareaRef.current?.blur();
+      }
+      keyboardWasOpen = open;
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ["data-keyboard-open"] });
+    return () => observer.disconnect();
+  }, [editing, touchKeyboard]);
 
   const senderDisplayName =
     props.currentUserDisplayName !== undefined && props.currentUserDisplayName.trim().length > 0
@@ -503,18 +544,28 @@ export function MessageComposer(props: MessageComposerProps) {
     resolvedExecutor,
   ]);
 
-  // 自适应高度：先归零再按 scrollHeight 撑开，useLayoutEffect 保证绘制前完成，杜绝输入高度闪烁
-  // biome-ignore lint/correctness/useExhaustiveDependencies: draft 变化是重新测量高度的唯一触发源
-  useLayoutEffect(() => {
+  const resizeDraft = useCallback(() => {
     const el = textareaRef.current;
-    if (!el) {
-      return;
-    }
+    if (!el) return;
     el.style.height = "auto";
-    const next = Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT_PX);
-    el.style.height = `${String(next)}px`;
-    el.style.overflowY = el.scrollHeight > TEXTAREA_MAX_HEIGHT_PX ? "auto" : "hidden";
-  }, [draft]);
+    const contentHeight = el.scrollHeight;
+    el.style.height = `${Math.min(contentHeight, TEXTAREA_MAX_HEIGHT_PX)}px`;
+    el.style.overflowY = contentHeight > TEXTAREA_MAX_HEIGHT_PX ? "auto" : "hidden";
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: both text and editing width affect line wrapping
+  useLayoutEffect(resizeDraft, [resizeDraft, draft, expanded]);
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      resizeDraft();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [resizeDraft]);
 
   /** 在下一帧将光标定位至指定偏移（等待 React 提交受控 value 更新后执行） */
   const focusAt = useCallback((position: number): void => {
@@ -968,7 +1019,11 @@ export function MessageComposer(props: MessageComposerProps) {
         return;
       }
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      (!touchKeyboard || event.metaKey || event.ctrlKey)
+    ) {
       event.preventDefault();
       submitMessage();
     }
@@ -994,7 +1049,13 @@ export function MessageComposer(props: MessageComposerProps) {
         : `发消息到 ${props.roomName}…`;
 
   return (
-    <footer className="app-no-drag pointer-events-none relative z-10 shrink-0 bg-gradient-to-t from-[var(--oh-stage-scrim)] via-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5">
+    <footer
+      ref={composerRef}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setEditing(false);
+      }}
+      className="oh-chat-footer app-no-drag pointer-events-none relative z-10 shrink-0 bg-gradient-to-t from-[var(--oh-stage-scrim)] via-[var(--oh-stage-scrim-mid)] to-transparent px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-5"
+    >
       <div className="relative mx-auto max-w-3xl">
         {/* 1. 发送异常告警或离线 Agent 自动补回提示胶囊（草稿完整保留） */}
         <AnimatePresence initial={false}>
@@ -1164,197 +1225,215 @@ export function MessageComposer(props: MessageComposerProps) {
         </AnimatePresence>
 
         {/* 3. Apple Liquid Glass 悬浮输入舱主体 */}
-        <div className="pointer-events-auto relative liquid-glass-composer rounded-[22px] sm:rounded-[24px] px-3.5 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5">
-          {/* 3.0 派活编排微胶囊条（仅开启交办任务时浮现，窄屏单行滑轨紧凑排布以释放软键盘消息区） */}
-          <AnimatePresence initial={false}>
-            {dispatchMode && effectiveKind !== "direct_human" ? (
-              <motion.div
-                key="composer-dispatch-bar"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.16, ease: "easeOut" }}
-                className="overflow-hidden"
-              >
-                <div className="mb-1.5 flex items-center justify-between gap-1.5 border-b border-black/[0.06] pb-1.5 text-[11.5px] sm:mb-2 sm:pb-2 dark:border-white/[0.07]">
-                  <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overscroll-x-contain sm:flex-wrap">
-                    <span className="hidden sm:inline-flex shrink-0 items-center gap-1 px-1 text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-                      <ListTodo className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
-                      <span>交办任务</span>
-                    </span>
+        <div
+          data-expanded={expanded}
+          data-tools-open={toolsOpen}
+          className="oh-chat-capsule pointer-events-auto relative liquid-glass-composer rounded-[22px] sm:rounded-[24px] px-3.5 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5"
+        >
+          <div className="oh-chat-context">
+            {/* 3.0 派活编排微胶囊条（仅开启交办任务时浮现，窄屏单行滑轨紧凑排布以释放软键盘消息区） */}
+            <AnimatePresence initial={false}>
+              {dispatchMode && effectiveKind !== "direct_human" ? (
+                <motion.div
+                  key="composer-dispatch-bar"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.16, ease: "easeOut" }}
+                  className="overflow-hidden"
+                >
+                  <div className="mb-1.5 flex items-center justify-between gap-1.5 border-b border-black/[0.06] pb-1.5 text-[11.5px] sm:mb-2 sm:pb-2 dark:border-white/[0.07]">
+                    <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overscroll-x-contain sm:flex-wrap">
+                      <span className="hidden sm:inline-flex shrink-0 items-center gap-1 px-1 text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
+                        <ListTodo className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
+                        <span>交办任务</span>
+                      </span>
 
-                    {effectiveKind === "group" ? (
-                      <div className="shrink-0">
-                        <SegmentedTabs
-                          value={dispatchTopology}
-                          onValueChange={setDispatchTopology}
-                          items={TOPOLOGY_TAB_ITEMS}
-                          size="xs"
-                          ariaLabel="选择协作方式"
-                        />
-                      </div>
-                    ) : null}
+                      {effectiveKind === "group" ? (
+                        <div className="shrink-0">
+                          <SegmentedTabs
+                            value={dispatchTopology}
+                            onValueChange={setDispatchTopology}
+                            items={TOPOLOGY_TAB_ITEMS}
+                            size="xs"
+                            ariaLabel="选择协作方式"
+                          />
+                        </div>
+                      ) : null}
 
-                    {/* 责任人与点击轮换 */}
-                    {agentMembers.length > 0 ? (
+                      {/* 责任人与点击轮换 */}
+                      {agentMembers.length > 0 ? (
+                        <button
+                          type="button"
+                          title="点击切换负责的 Agent"
+                          onClick={() => {
+                            if (agentMembers.length < 2) {
+                              return;
+                            }
+                            const curIdx = agentMembers.findIndex(
+                              (m) => m.agentId === resolvedExecutor?.agentId,
+                            );
+                            const next = agentMembers[(curIdx + 1) % agentMembers.length];
+                            if (next?.agentId !== undefined) {
+                              setSelectedExecutorId(next.agentId);
+                            }
+                          }}
+                          className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-full bg-black/[0.045] px-2.5 py-0.5 text-[#3B414E] transition hover:bg-black/[0.08] dark:bg-white/[0.07] dark:text-[#D4D4D8] dark:hover:bg-white/[0.12]"
+                        >
+                          {dispatchTopology === "swarm" ? (
+                            <span className="truncate">
+                              @{resolvedCoordinator?.displayName ?? "Agent"} 等{" "}
+                              {Math.max(2, agentMembers.length)} 路并行
+                            </span>
+                          ) : dispatchTopology === "verify_loop" ? (
+                            <span className="truncate">
+                              @{resolvedExecutor?.displayName ?? "Agent"} 执行 · @
+                              {resolvedVerifier?.displayName ?? "Agent"} 复核
+                            </span>
+                          ) : (
+                            <span className="truncate">
+                              @{resolvedExecutor?.displayName ?? "Agent"}
+                            </span>
+                          )}
+                        </button>
+                      ) : null}
+
                       <button
                         type="button"
-                        title="点击切换负责的 Agent"
+                        disabled={!isExecutorOwnedByMe}
+                        title={
+                          isExecutorOwnedByMe
+                            ? "点击切换本地目录权限"
+                            : "其他成员的 Agent 仅参与讨论，不读写本地目录"
+                        }
                         onClick={() => {
-                          if (agentMembers.length < 2) {
-                            return;
-                          }
-                          const curIdx = agentMembers.findIndex(
-                            (m) => m.agentId === resolvedExecutor?.agentId,
-                          );
-                          const next = agentMembers[(curIdx + 1) % agentMembers.length];
-                          if (next?.agentId !== undefined) {
-                            setSelectedExecutorId(next.agentId);
-                          }
+                          const idx = TIER_CYCLE_ORDER.indexOf(dispatchTier);
+                          const nextTier =
+                            TIER_CYCLE_ORDER[(idx + 1) % TIER_CYCLE_ORDER.length] ?? "chat_only";
+                          setDispatchTier(nextTier);
                         }}
-                        className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-full bg-black/[0.045] px-2.5 py-0.5 text-[#3B414E] transition hover:bg-black/[0.08] dark:bg-white/[0.07] dark:text-[#D4D4D8] dark:hover:bg-white/[0.12]"
-                      >
-                        {dispatchTopology === "swarm" ? (
-                          <span className="truncate">
-                            @{resolvedCoordinator?.displayName ?? "Agent"} 等{" "}
-                            {Math.max(2, agentMembers.length)} 路并行
-                          </span>
-                        ) : dispatchTopology === "verify_loop" ? (
-                          <span className="truncate">
-                            @{resolvedExecutor?.displayName ?? "Agent"} 执行 · @
-                            {resolvedVerifier?.displayName ?? "Agent"} 复核
-                          </span>
-                        ) : (
-                          <span className="truncate">
-                            @{resolvedExecutor?.displayName ?? "Agent"}
-                          </span>
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded-full bg-black/[0.045] px-2 py-0.5 text-[11px] text-[#4B5565] transition dark:bg-white/[0.07] dark:text-[#C4C4CA]",
+                          isExecutorOwnedByMe
+                            ? "cursor-pointer hover:bg-black/[0.08] dark:hover:bg-white/[0.12]"
+                            : "cursor-not-allowed opacity-70",
                         )}
+                      >
+                        <FolderGit2 className="h-3 w-3 text-[#687082] dark:text-[#8E8E96]" />
+                        <span>
+                          {isExecutorOwnedByMe
+                            ? getExecutionTierMeta(effectiveDispatchTier).shortLabel
+                            : "仅讨论"}
+                        </span>
                       </button>
-                    ) : null}
+                    </div>
 
                     <button
                       type="button"
-                      disabled={!isExecutorOwnedByMe}
-                      title={
-                        isExecutorOwnedByMe
-                          ? "点击切换本地目录权限"
-                          : "其他成员的 Agent 仅参与讨论，不读写本地目录"
-                      }
-                      onClick={() => {
-                        const idx = TIER_CYCLE_ORDER.indexOf(dispatchTier);
-                        const nextTier =
-                          TIER_CYCLE_ORDER[(idx + 1) % TIER_CYCLE_ORDER.length] ?? "chat_only";
-                        setDispatchTier(nextTier);
-                      }}
-                      className={cn(
-                        "inline-flex items-center gap-1 rounded-full bg-black/[0.045] px-2 py-0.5 text-[11px] text-[#4B5565] transition dark:bg-white/[0.07] dark:text-[#C4C4CA]",
-                        isExecutorOwnedByMe
-                          ? "cursor-pointer hover:bg-black/[0.08] dark:hover:bg-white/[0.12]"
-                          : "cursor-not-allowed opacity-70",
-                      )}
+                      aria-label="退出派活模式"
+                      onClick={() => setDispatchMode(false)}
+                      className="relative inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] after:absolute after:-inset-1.5 dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
                     >
-                      <FolderGit2 className="h-3 w-3 text-[#687082] dark:text-[#8E8E96]" />
-                      <span>
-                        {isExecutorOwnedByMe
-                          ? getExecutionTierMeta(effectiveDispatchTier).shortLabel
-                          : "仅讨论"}
-                      </span>
+                      <X className="h-3.5 w-3.5" />
                     </button>
                   </div>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
 
-                  <button
-                    type="button"
-                    aria-label="退出派活模式"
-                    onClick={() => setDispatchMode(false)}
-                    className="relative inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] after:absolute after:-inset-1.5 dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </motion.div>
-            ) : null}
-          </AnimatePresence>
-
-          {/* 舱内顶部上下文微胶囊条（引用回复 & 已点名成员，平滑展开收起，无内容时完全零占位） */}
-          <AnimatePresence initial={false}>
-            {hasContextChips ? (
-              <motion.div
-                key="composer-context-chips"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
-                className="overflow-hidden"
-              >
-                <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 border-b border-black/[0.06] pb-2 dark:border-white/[0.07]">
-                  {props.replyTarget !== null ? (
-                    <span className="inline-flex max-w-[18rem] items-center gap-1.5 rounded-full bg-black/[0.05] py-0.5 pr-1 pl-2.5 text-[11.5px] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]">
-                      <CornerUpLeft className="h-3 w-3 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
-                      <span className="truncate">
-                        回复 <strong>{props.replyTarget.author.displayName}</strong>：
-                        {getMessageSnippet(props.replyTarget, 42)}
-                      </span>
-                      <button
-                        type="button"
-                        aria-label="取消引用回复"
-                        onClick={props.onClearReplyTarget}
-                        className="relative inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] after:absolute after:-inset-1.5 dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ) : null}
-
-                  {activeChipMentions.map((mention) => {
-                    const isAgent = mention.kind === "agent";
-                    return (
-                      <span
-                        key={mentionIdentityKey(mention)}
-                        className={cn(
-                          "inline-flex items-center gap-1 rounded-full py-0.5 pr-1 pl-2 text-[11.5px] font-medium",
-                          isAgent
-                            ? "bg-black/[0.05] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]"
-                            : "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]",
-                        )}
-                      >
-                        <span className="max-w-[8.5rem] truncate">@{mention.displayName}</span>
+            {/* 舱内顶部上下文微胶囊条（引用回复 & 已点名成员，平滑展开收起，无内容时完全零占位） */}
+            <AnimatePresence initial={false}>
+              {hasContextChips ? (
+                <motion.div
+                  key="composer-context-chips"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
+                  className="overflow-hidden"
+                >
+                  <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 border-b border-black/[0.06] pb-2 dark:border-white/[0.07]">
+                    {props.replyTarget !== null ? (
+                      <span className="inline-flex max-w-[18rem] items-center gap-1.5 rounded-full bg-black/[0.05] py-0.5 pr-1 pl-2.5 text-[11.5px] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]">
+                        <CornerUpLeft className="h-3 w-3 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
+                        <span className="truncate">
+                          回复 <strong>{props.replyTarget.author.displayName}</strong>：
+                          {getMessageSnippet(props.replyTarget, 42)}
+                        </span>
                         <button
                           type="button"
-                          aria-label={`移除点名 @${mention.displayName}`}
-                          onClick={() => toggleMention(mention)}
-                          className="relative inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-full transition hover:bg-black/10 after:absolute after:-inset-1.5 dark:hover:bg-white/15"
+                          aria-label="取消引用回复"
+                          onClick={props.onClearReplyTarget}
+                          className="relative inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] after:absolute after:-inset-1.5 dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
                         >
                           <X className="h-3 w-3" />
                         </button>
                       </span>
-                    );
-                  })}
-                </div>
-              </motion.div>
+                    ) : null}
+
+                    {activeChipMentions.map((mention) => {
+                      const isAgent = mention.kind === "agent";
+                      return (
+                        <span
+                          key={mentionIdentityKey(mention)}
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-full py-0.5 pr-1 pl-2 text-[11.5px] font-medium",
+                            isAgent
+                              ? "bg-black/[0.05] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]"
+                              : "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#A7F3D0]",
+                          )}
+                        >
+                          <span className="max-w-[8.5rem] truncate">@{mention.displayName}</span>
+                          <button
+                            type="button"
+                            aria-label={`移除点名 @${mention.displayName}`}
+                            onClick={() => toggleMention(mention)}
+                            className="relative inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-full transition hover:bg-black/10 after:absolute after:-inset-1.5 dark:hover:bg-white/15"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+
+            {media.attachment !== null ? (
+              <AttachmentPreview
+                attachment={media.attachment}
+                disabled={props.isSending || media.isPreparingImage}
+                onRemove={() => {
+                  retryRef.current = null;
+                  media.clearAttachment();
+                }}
+              />
             ) : null}
-          </AnimatePresence>
-
-          {media.attachment !== null ? (
-            <AttachmentPreview
-              attachment={media.attachment}
-              disabled={props.isSending || media.isPreparingImage}
-              onRemove={() => {
-                retryRef.current = null;
-                media.clearAttachment();
-              }}
-            />
-          ) : null}
-          {media.isPreparingImage ? (
-            <output className="mb-1 block text-xs text-[#687082] dark:text-[#C4C4CA]">
-              正在压缩图片…
-            </output>
-          ) : null}
-          {media.error !== null ? (
-            <p role="alert" className="mb-1 text-xs text-[#C81E1E] dark:text-[#FCA5A5]">
-              {media.error}
-            </p>
-          ) : null}
-
+            {media.isPreparingImage ? (
+              <output className="mb-1 block text-xs text-[#687082] dark:text-[#C4C4CA]">
+                正在压缩图片…
+              </output>
+            ) : null}
+            {media.error !== null ? (
+              <p role="alert" className="mb-1 text-xs text-[#C81E1E] dark:text-[#FCA5A5]">
+                {media.error}
+              </p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className={cn(MEDIA_BUTTON_CLASS, "oh-chat-more hidden")}
+            aria-expanded={toolsOpen}
+            aria-controls={toolstripId}
+            aria-label={toolsOpen ? "收起聊天工具" : "更多聊天工具"}
+            onPointerDown={(event) => {
+              if (document.activeElement === textareaRef.current) event.preventDefault();
+            }}
+            onClick={() => setToolsOpen((open) => !open)}
+          >
+            {toolsOpen ? <X className="h-5 w-5" /> : <Plus className="h-5 w-5" />}
+          </button>
           <textarea
             ref={textareaRef}
             rows={1}
@@ -1385,21 +1464,27 @@ export function MessageComposer(props: MessageComposerProps) {
             }}
             onSelect={(e) => setCaretIndex(e.currentTarget.selectionStart)}
             onBlur={() => setSuggestDismissed(true)}
-            onFocus={() => setSuggestDismissed(false)}
+            onFocus={() => {
+              setSuggestDismissed(false);
+              setEditing(true);
+            }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            enterKeyHint="send"
+            enterKeyHint={touchKeyboard ? "enter" : "send"}
             aria-label={`在 ${props.roomName} 发言`}
             placeholder={composerPlaceholder}
             className={cn(
-              "block max-h-[168px] min-h-[26px] w-full resize-none border-0 bg-transparent p-0 text-[16px] md:text-[14.5px] leading-[1.5] text-[#111318] caret-[#111318] outline-none placeholder:text-im-placeholder dark:text-[#F2F2F4] dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]",
+              "oh-chat-draft block max-h-[168px] min-h-[26px] w-full resize-none border-0 bg-transparent p-0 text-[16px] md:text-[14.5px] leading-[1.5] text-[#111318] caret-[#111318] outline-none placeholder:text-im-placeholder dark:text-[#F2F2F4] dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]",
               draft.length === 0 && "overflow-hidden whitespace-nowrap text-ellipsis",
             )}
           />
 
           {/* 舱内底部工具栏：窄屏严格保持单行不折行（`@全体` 在窄屏合并于 `@` 菜单首项），释放聊天舞台高度 */}
-          <div className="mt-1.5 sm:mt-2 flex select-none items-center justify-between gap-1.5">
-            <div className="flex min-w-0 items-center gap-0.5 sm:gap-1.5">
+          <div className="oh-chat-actions mt-1.5 sm:mt-2 flex select-none items-center justify-between gap-1.5">
+            <div
+              id={toolstripId}
+              className="oh-chat-tools flex min-w-0 items-center gap-0.5 sm:gap-1.5"
+            >
               {effectiveKind === "group" ? (
                 <AppPopover
                   open={pickerOpen}
@@ -1414,7 +1499,7 @@ export function MessageComposer(props: MessageComposerProps) {
                       title="提及群内 Agent 或成员"
                       aria-label="提及群内 Agent 或成员"
                       className={cn(
-                        "app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95] disabled:cursor-not-allowed disabled:opacity-40",
+                        "oh-chat-extra app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95] disabled:cursor-not-allowed disabled:opacity-40",
                         pickerOpen
                           ? "bg-black/[0.08] text-[#111318] dark:bg-white/[0.14] dark:text-white"
                           : "text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]",
@@ -1552,14 +1637,14 @@ export function MessageComposer(props: MessageComposerProps) {
                 title="添加图片、音频或文件"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={!canChooseMedia}
-                className={MEDIA_BUTTON_CLASS}
+                className={cn(MEDIA_BUTTON_CLASS, "oh-chat-extra")}
               >
                 <Paperclip className="h-[17px] w-[17px]" />
               </button>
               <StickerPicker
                 userId={props.currentUserId}
                 disabled={!canChooseMedia}
-                triggerClassName={MEDIA_BUTTON_CLASS}
+                triggerClassName={cn(MEDIA_BUTTON_CLASS, "oh-chat-extra")}
                 onSelect={media.chooseSticker}
               />
               {media.phase === "idle" ? (
@@ -1569,7 +1654,7 @@ export function MessageComposer(props: MessageComposerProps) {
                   title={media.canRecord ? "录制语音" : "当前浏览器无法录音，可以上传音频文件"}
                   disabled={!canChooseMedia || !media.canRecord}
                   onClick={() => void media.startRecording()}
-                  className={MEDIA_BUTTON_CLASS}
+                  className={cn(MEDIA_BUTTON_CLASS, "oh-chat-voice")}
                 >
                   <Mic className="h-[17px] w-[17px]" />
                 </button>
@@ -1697,7 +1782,11 @@ export function MessageComposer(props: MessageComposerProps) {
               </div>
             </div>
 
-            <AppTooltip side="top" content="发送消息" shortcut="Enter">
+            <AppTooltip
+              side="top"
+              content="发送消息"
+              shortcut={touchKeyboard ? undefined : "Enter"}
+            >
               <motion.button
                 type="button"
                 disabled={!canSend}
@@ -1706,7 +1795,7 @@ export function MessageComposer(props: MessageComposerProps) {
                 transition={{ type: "spring", stiffness: 560, damping: 30 }}
                 aria-label="发送消息"
                 className={cn(
-                  "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-black/25 focus-visible:outline-none dark:focus-visible:ring-white/35",
+                  "oh-chat-send inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-black/25 focus-visible:outline-none dark:focus-visible:ring-white/35",
                   canSend
                     ? "cursor-pointer bg-[#181B22] text-white shadow-xs hover:bg-[#252A35] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
                     : "cursor-not-allowed bg-black/[0.08] text-black/30 dark:bg-white/[0.08] dark:text-white/25",

@@ -10,6 +10,7 @@
  * 5. 多环境自适应兜底：除暗色输入框防白底兜底外，内建 `@media (prefers-reduced-transparency: reduce)` 与 `@supports not (backdrop-filter: blur(1px))` 实色回落规则，以及 `@media (prefers-reduced-motion: reduce)` 无障碍支持。
  */
 @import "tailwindcss";
+@import "./features/huddle-room/components/workbench-mobile.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -519,16 +520,120 @@ body::before {
 }
 
 /* In contained iOS Home Screen windows, the reported bottom inset can be zero. */
-.oh-mobile-main-nav {
-  padding-bottom: max(10px, calc(env(safe-area-inset-bottom, 0px) + 6px));
+:root {
+  --oh-mobile-nav-bottom: max(10px, calc(env(safe-area-inset-bottom, 0px) + 6px));
+  --oh-mobile-send-bg: #2563eb;
 }
 
-html[data-ios-standalone="true"] .oh-mobile-main-nav {
-  padding-bottom: max(36px, calc(env(safe-area-inset-bottom, 0px) + 6px));
+:root[data-ios-standalone="true"] {
+  --oh-mobile-nav-bottom: max(36px, calc(env(safe-area-inset-bottom, 0px) + 6px));
+}
+
+.oh-mobile-main-nav {
+  padding-bottom: var(--oh-mobile-nav-bottom);
+}
+
+@media (max-width: 767px) {
+  /* Lists extend behind the pill; the last row can scroll fully above it. */
+  html:not([data-keyboard-open="true"]) [data-mobile-main-nav] .oh-mobile-nav-list {
+    --oh-list-bottom: calc(
+      var(--oh-mobile-nav-height, calc(var(--oh-mobile-nav-bottom) + 3.5rem)) +
+      8px
+    );
+    padding-bottom: var(--oh-list-bottom);
+    scroll-padding-bottom: var(--oh-list-bottom);
+  }
 }
 
 html[data-keyboard-open="true"] .oh-mobile-main-nav {
   display: none;
+}
+
+/* Long task briefs may also be shown in short desktop and split-screen windows. */
+.oh-workbench-task-summary {
+  max-height: 50%;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+@media (max-width: 767px), (pointer: coarse) {
+  .oh-workbench-task-summary[data-code-view] {
+    display: flex;
+    flex-direction: column;
+    padding-block: 4px;
+  }
+
+  [data-code-view] .oh-workbench-section-tabs {
+    order: -1;
+    flex-shrink: 0;
+    margin-top: 0;
+    padding-left: 0;
+  }
+
+  [data-code-view] .oh-workbench-details-toggle {
+    display: inline-flex;
+  }
+
+  [data-code-view][data-collapsed] :is(.oh-workbench-task-overview, .oh-workbench-task-status) {
+    display: none;
+  }
+
+  :root {
+    --oh-mobile-composer-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  }
+
+  @media (display-mode: standalone), (display-mode: fullscreen) {
+    :root {
+      --oh-mobile-composer-bottom: max(24px, calc(env(safe-area-inset-bottom, 0px) + 10px));
+    }
+  }
+
+  :root[data-ios-standalone="true"] {
+    --oh-mobile-composer-bottom: max(36px, calc(env(safe-area-inset-bottom, 0px) + 10px));
+  }
+
+  /* The visual viewport already ends at the top of the software keyboard. */
+  :root[data-keyboard-open="true"] {
+    --oh-mobile-composer-bottom: 8px;
+  }
+
+  .oh-workbench-steer {
+    padding-left: max(1rem, calc(env(safe-area-inset-left, 0px) + 8px));
+    padding-right: max(1rem, calc(env(safe-area-inset-right, 0px) + 8px));
+    padding-bottom: var(--oh-mobile-composer-bottom);
+  }
+
+  .oh-workbench-diff-lines {
+    padding-bottom: var(--oh-mobile-composer-bottom);
+  }
+
+  /* A long task brief shares this viewport with both the keyboard and the editor. */
+  html[data-keyboard-open="true"]:has(.oh-workbench-note) .oh-workbench-task-pane {
+    container: work-detail / size;
+  }
+
+  html[data-keyboard-open="true"]:has(.oh-workbench-note)
+    :is(.oh-workbench-task-overview, .oh-workbench-back-label, .oh-workbench-details-toggle) {
+    display: none;
+  }
+
+  html[data-keyboard-open="true"]:has(.oh-workbench-note) .oh-workbench-editing-title {
+    display: inline;
+  }
+
+  html[data-keyboard-open="true"]:has(.oh-workbench-note) .oh-workbench-task-summary {
+    padding-block: 2px;
+  }
+
+  html[data-keyboard-open="true"]:has(.oh-workbench-note) .oh-workbench-section-tabs {
+    margin-top: 0;
+  }
+
+  @container work-detail (max-height: 205px) {
+    html[data-keyboard-open="true"]:has(.oh-workbench-note) .oh-workbench-task-summary {
+      display: none;
+    }
+  }
 }
 
 /* 移动端刘海屏 / Home Indicator 安全区 */

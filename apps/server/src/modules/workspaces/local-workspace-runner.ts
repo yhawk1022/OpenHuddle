@@ -31,7 +31,13 @@ import {
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { scrubWorkText } from "@openhuddle/core-governance";
+import {
+  type AgentAttention,
+  WORK_AGENT_STOP_INSTRUCTION,
+  WorkAgentAttention,
+  checkAgentWorkOutput,
+  scrubWorkText,
+} from "@openhuddle/core-governance";
 import {
   type PlainFolderSnapshot,
   type WorkingTreeDiffSnapshot,
@@ -86,7 +92,7 @@ export interface LocalCliExecutionResult {
 
 export type LocalCliExecutorFn = (
   input: Readonly<LocalCliExecutionInput>,
-) => Promise<LocalCliExecutionResult>;
+) => Promise<LocalCliExecutionResult | { readonly attention: AgentAttention }>;
 
 export interface LocalWorkspaceRunnerDeps {
   readonly repo: WorkspacesRepository;
@@ -465,7 +471,10 @@ function buildExecutionPrompt(params: {
       "## Independent Verification Instructions",
       "- Do NOT modify source files. Inspect the working tree changes and verification command results below.",
       "- Check correctness, edge cases, type safety, and adherence to the task brief.",
-      "- End your response with an explicit final line: either `VERDICT: PASSED` or `VERDICT: CHANGES_REQUESTED` followed by concise, actionable findings.",
+      "- Give concise, actionable findings. For a completed review end with exactly VERDICT: PASSED or VERDICT: CHANGES_REQUESTED.",
+      ...(params.item.review?.verifierNote
+        ? [`Previous review: ${params.item.review.verifierNote}`]
+        : []),
     );
     if (params.verifyHookReport !== undefined) {
       lines.push("", "## Automated Verify Hook Result", params.verifyHookReport);
@@ -495,6 +504,7 @@ function buildExecutionPrompt(params: {
     );
   }
 
+  lines.push("", WORK_AGENT_STOP_INSTRUCTION);
   return lines.join("\n");
 }
 
@@ -516,17 +526,10 @@ function summarizeCliOutput(rawOutput: string, fallback: string): string {
   return tail.length > 260 ? `${tail.slice(0, 257)}…` : tail;
 }
 
-function parseVerifierVerdict(
-  rawOutput: string,
-  hookPassed: boolean,
-): "passed" | "changes_requested" {
-  if (!hookPassed) {
-    return "changes_requested";
-  }
-  if (/VERDICT:\s*CHANGES_REQUESTED/i.test(rawOutput)) {
-    return "changes_requested";
-  }
-  return "passed";
+function parseVerifierVerdict(rawOutput: string): "passed" | "changes_requested" {
+  const verdict = /(?:^|\n)VERDICT:\s*(PASSED|CHANGES_REQUESTED)\s*$/i.exec(rawOutput);
+  if (!verdict) throw new Error("复核 Agent 未返回明确的最终判定。");
+  return verdict[1]?.toUpperCase() === "PASSED" ? "passed" : "changes_requested";
 }
 
 async function runShellHookCommand(params: {
@@ -716,7 +719,6 @@ async function defaultLocalCliExecutor(
     let partial = "";
     const onData = (chunk: Buffer): void => {
       const text = chunk.toString("utf8");
-      collected += text;
       partial += text;
       const lines = partial.split(/\r?\n/);
       partial = lines.pop() ?? "";
@@ -728,19 +730,23 @@ async function defaultLocalCliExecutor(
       }
     };
 
-    child.stdout?.on("data", onData);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      collected += chunk.toString("utf8");
+      onData(chunk);
+    });
     child.stderr?.on("data", onData);
 
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-    }, CLI_TURN_TIMEOUT_MS);
-
+    let timedOut = false;
     const onAbort = (): void => {
       child.kill("SIGTERM");
       setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       }, 1_500).unref();
     };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      onAbort();
+    }, CLI_TURN_TIMEOUT_MS);
     input.signal.addEventListener("abort", onAbort, { once: true });
 
     child.on("error", (err) => {
@@ -776,20 +782,30 @@ async function defaultLocalCliExecutor(
         return;
       }
 
-      if (code !== 0 && finalOutput.trim().length === 0) {
-        reject(new Error(`${resolved.binary} exited with status ${String(code)}`));
+      if (timedOut || code !== 0) {
+        reject(
+          new Error(
+            timedOut
+              ? "本机 Agent 执行超时。"
+              : `${resolved.binary} exited with status ${String(code)}`,
+          ),
+        );
         return;
       }
-
-      const summary = summarizeCliOutput(
-        finalOutput,
-        input.role === "verify" ? "已完成独立代码复核。" : "已完成工作区分片执行。",
-      );
-      resolve({
-        summary,
-        ...(input.role === "verify" ? { verdict: parseVerifierVerdict(finalOutput, true) } : {}),
-        commandLabel: invocation.label,
-      });
+      try {
+        checkAgentWorkOutput(finalOutput);
+        const summary = summarizeCliOutput(
+          finalOutput,
+          input.role === "verify" ? "已完成独立代码复核。" : "已完成工作区分片执行。",
+        );
+        resolve({
+          summary,
+          ...(input.role === "verify" ? { verdict: parseVerifierVerdict(finalOutput) } : {}),
+          commandLabel: invocation.label,
+        });
+      } catch (err) {
+        reject(err);
+      }
     });
   });
 }
@@ -801,7 +817,12 @@ export function startLocalWorkspaceRunner(
   deps: Readonly<LocalWorkspaceRunnerDeps>,
 ): LocalWorkspaceRunnerHandle {
   const homeDir = deps.homeDir ?? homedir();
-  const cliExecutor = deps.cliExecutor ?? defaultLocalCliExecutor;
+  const runCli = deps.cliExecutor ?? defaultLocalCliExecutor;
+  const cliExecutor = async (input: LocalCliExecutionInput): Promise<LocalCliExecutionResult> => {
+    const result = await runCli(input);
+    if ("attention" in result) throw new WorkAgentAttention(result.attention);
+    return result;
+  };
   const activeSlices = new Map<
     WorkSliceId,
     { readonly workItemId: WorkItemId; readonly controller: AbortController }
@@ -1409,6 +1430,13 @@ export function startLocalWorkspaceRunner(
         await flushOutputTrace();
 
         if (controller.signal.aborted) {
+          return;
+        }
+        if (execErr instanceof WorkAgentAttention) {
+          await deps.workspacesService.raiseAttention(agentCaller, initialItem.id, sliceId, {
+            leaseVersion,
+            ...execErr.attention,
+          });
           return;
         }
         const errMessage = execErr instanceof Error ? execErr.message : String(execErr);

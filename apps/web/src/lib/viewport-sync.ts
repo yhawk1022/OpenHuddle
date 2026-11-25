@@ -133,7 +133,9 @@ export function startVisualViewportSync(): () => void {
   }
   const vv = window.visualViewport;
   let baselineHeight = Math.max(window.innerHeight || 0, Math.round(vv?.height ?? 0));
+  let viewportWidth = window.innerWidth;
   let rafId = 0;
+  let blurTimer = 0;
 
   const syncViewport = (): void => {
     const scale = vv?.scale ?? 1;
@@ -146,12 +148,25 @@ export function startVisualViewportSync(): () => void {
     const height = Math.max(1, Math.round(rawHeight));
     const offsetTop = Math.max(0, Math.round(vv?.offsetTop ?? 0));
     const activeEditable = isEditableElement(document.activeElement);
+    const keyboardWasOpen = root.dataset.keyboardOpen === "true";
+    // Use the resized dimensions. WebKit can fire orientationchange before they are available.
+    if (viewportWidth !== window.innerWidth) {
+      baselineHeight = Math.max(window.innerHeight, height);
+      // When Android rotates with its keyboard up, both heights can already be reduced.
+      if (keyboardWasOpen && activeEditable && window.screen?.height) {
+        baselineHeight = Math.max(baselineHeight, Math.min(viewportWidth, window.screen.height));
+      }
+      viewportWidth = window.innerWidth;
+    }
+    // Safari keeps the layout viewport tall; Android may resize both viewports together.
+    const fullHeight = Math.max(baselineHeight, window.innerHeight);
+    // A tap can blur the input before WebKit dispatches click or retracts its keyboard.
+    const isKeyboardOpen =
+      (activeEditable || keyboardWasOpen) && fullHeight - height > Math.min(130, fullHeight * 0.22);
 
-    if (!activeEditable || height > baselineHeight) {
+    if (!isKeyboardOpen && (!activeEditable || height > baselineHeight)) {
       baselineHeight = height;
     }
-
-    const isKeyboardOpen = activeEditable && baselineHeight - height > 130;
 
     root.style?.setProperty("--oh-vvh", `${height}px`);
     root.style?.setProperty("--oh-vv-offset-top", `${offsetTop}px`);
@@ -179,15 +194,11 @@ export function startVisualViewportSync(): () => void {
     }
   };
 
-  const handleOrientationChange = (): void => {
-    baselineHeight = 0;
-    scheduleSync();
-  };
-
   const handleFocusOut = (): void => {
     // 软键盘收起动画约 220-300ms，延迟二次对齐确保回弹到底
     scheduleSync();
-    window.setTimeout(scheduleSync, 260);
+    window.clearTimeout(blurTimer);
+    blurTimer = window.setTimeout(scheduleSync, 260);
   };
 
   syncViewport();
@@ -195,18 +206,19 @@ export function startVisualViewportSync(): () => void {
   vv?.addEventListener("resize", scheduleSync);
   vv?.addEventListener("scroll", scheduleSync);
   window.addEventListener("resize", scheduleSync);
-  window.addEventListener("orientationchange", handleOrientationChange);
+  window.addEventListener("orientationchange", scheduleSync);
   window.addEventListener("focusin", scheduleSync);
   window.addEventListener("focusout", handleFocusOut);
 
   return () => {
+    window.clearTimeout(blurTimer);
     if (typeof window.cancelAnimationFrame === "function") {
       window.cancelAnimationFrame(rafId);
     }
     vv?.removeEventListener("resize", scheduleSync);
     vv?.removeEventListener("scroll", scheduleSync);
     window.removeEventListener("resize", scheduleSync);
-    window.removeEventListener("orientationchange", handleOrientationChange);
+    window.removeEventListener("orientationchange", scheduleSync);
     window.removeEventListener("focusin", scheduleSync);
     window.removeEventListener("focusout", handleFocusOut);
   };

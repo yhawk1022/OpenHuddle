@@ -1,0 +1,128 @@
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .oh-chat-timeline {
+    height: auto;
+    min-height: 0;
+    flex: 1 1 0;
+  }
+
+  .oh-chat-messages {
+    padding-bottom: 0.5rem;
+  }
+
+  .oh-chat-dock {
+    position: relative;
+    flex: none;
+  }
+
+  .oh-chat-jump {
+    position: absolute;
+    right: 0;
+    bottom: 100%;
+  }
+
+  .oh-chat-footer {
+    padding: 2px max(10px, env(safe-area-inset-right, 0px))
+      var(--oh-mobile-composer-bottom, max(10px, env(safe-area-inset-bottom, 0px)))
+      max(10px, env(safe-area-inset-left, 0px));
+    background-image: none;
+  }
+
+  .oh-chat-capsule {
+    padding: 0 3px;
+    border-radius: 24px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .oh-chat-capsule[data-expanded="true"] {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .oh-chat-more {
+    display: inline-flex;
+    width: 44px;
+    height: 44px;
+  }
+
+  .oh-chat-draft {
+    min-width: 0;
+    min-height: 24px;
+    font-size: 16px;
+    line-height: 24px;
+  }
+
+  .oh-chat-capsule[data-expanded="false"] .oh-chat-draft {
+    /* Keep the same textarea mounted so the first tap can open the iOS keyboard. */
+    height: 24px !important;
+    overflow: hidden !important;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .oh-chat-capsule[data-expanded="true"] .oh-chat-draft {
+    order: -1;
+    grid-column: 1 / -1;
+    width: calc(100% - 24px);
+    max-height: min(168px, max(48px, calc(var(--oh-vvh, 100dvh) * 0.24)));
+    margin: 9px 12px 0;
+    overflow-y: auto !important;
+  }
+
+  .oh-chat-context:empty {
+    display: none;
+  }
+
+  .oh-chat-context:not(:empty) {
+    grid-column: 1 / -1;
+    order: -2;
+    max-height: min(9rem, calc(var(--oh-vvh, 100dvh) * 0.24));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .oh-chat-context > * {
+    margin: 5px 10px;
+  }
+
+  .oh-chat-actions {
+    min-width: 0;
+    margin: 0;
+    gap: 0;
+  }
+
+  .oh-chat-tools {
+    min-width: 0;
+    gap: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .oh-chat-tools::-webkit-scrollbar {
+    display: none;
+  }
+
+  .oh-chat-tools > button,
+  .oh-chat-tools > div > button,
+  .oh-chat-send {
+    width: 44px;
+    height: 44px;
+  }
+
+  .oh-chat-capsule[data-expanded="false"] .oh-chat-tools > :not(.oh-chat-voice),
+  .oh-chat-capsule[data-tools-open="false"] .oh-chat-extra {
+    display: none;
+  }
+
+  .oh-chat-send {
+    padding: 6px;
+    background-clip: content-box;
+    box-shadow: none;
+  }
+
+  .oh-chat-send:enabled {
+    background-color: var(--oh-mobile-send-bg);
+    color: white;
+  }
+}

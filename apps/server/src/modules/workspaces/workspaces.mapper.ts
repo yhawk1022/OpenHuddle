@@ -6,10 +6,11 @@
  * 1. 本机路径脱敏：当查看者所属人类主人不等于 `workspace.ownerUserId` 时，`serializeWorkspaceForViewer` 强制剥离所有 `roots[*].localPath`，仅暴露仓库名、分支与脱敏远端标识。
  * 2. 历史快照兜底：参与工单的 Agent 若后续被解绑删除，优先从 `agentSnapshots` 还原展示名与平台标识，保证审计时间线永不破损。
  */
-import type {
-  OrchestrationItemState,
-  OrchestrationReviewState,
-  OrchestrationSliceState,
+import {
+  type OrchestrationItemState,
+  type OrchestrationReviewState,
+  type OrchestrationSliceState,
+  recentWorkSteerNotes,
 } from "@openhuddle/core-governance";
 import {
   type AgentExecutionTier,
@@ -425,7 +426,7 @@ export function parseRawSliceRow(row: {
       : [],
     ...(row.worktreeBranch !== null ? { worktreeBranch: row.worktreeBranch } : {}),
     steerNotes: Array.isArray(rawSteer)
-      ? rawSteer.filter((v): v is string => typeof v === "string")
+      ? recentWorkSteerNotes(rawSteer.filter((v): v is string => typeof v === "string"))
       : [],
     ...(row.failureCode !== null ? { failureCode: row.failureCode } : {}),
     ...(provParsed.success ? { provenance: provParsed.data } : {}),
@@ -544,6 +545,16 @@ export function parseStoredReview(raw: unknown): OrchestrationReviewState | unde
       : {}),
     ...(typeof rec.worktreeBranch === "string" ? { worktreeBranch: rec.worktreeBranch } : {}),
     ...(typeof rec.verifierNote === "string" ? { verifierNote: rec.verifierNote } : {}),
+    ...(Array.isArray(rec.rejectedEvidenceKeys)
+      ? {
+          rejectedEvidenceKeys: rec.rejectedEvidenceKeys.filter(
+            (v): v is string => typeof v === "string",
+          ),
+        }
+      : {}),
+    ...(typeof rec.lastReworkLeaseVersion === "number"
+      ? { lastReworkLeaseVersion: rec.lastReworkLeaseVersion }
+      : {}),
     verifyLoopsUsed: typeof rec.verifyLoopsUsed === "number" ? rec.verifyLoopsUsed : 0,
     ...(typeof rec.reviewedByUserId === "string"
       ? { reviewedByUserId: rec.reviewedByUserId as UserId }

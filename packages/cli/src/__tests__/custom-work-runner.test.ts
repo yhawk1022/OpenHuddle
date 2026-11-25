@@ -67,3 +67,33 @@ it("requires a structured independent verdict from a verification adapter", asyn
     ),
   ).toMatch(/VERDICT: CHANGES_REQUESTED$/);
 });
+
+it("lets a custom verifier request an owner decision only for its current lease", async () => {
+  const attention = {
+    type: "openhuddle.work.attention",
+    question: "Which target should I verify?",
+    options: ["Mobile", "Desktop"],
+  };
+  const encode = JSON.stringify(attention);
+  await expect(
+    runAdapter(`${receive}console.log(JSON.stringify({...receipt, ...${encode}}))`, "verify"),
+  ).rejects.toMatchObject({
+    attention: { question: attention.question, options: attention.options },
+  });
+  await expect(
+    runAdapter(
+      `${receive}console.log(JSON.stringify({...receipt, ...${encode}, leaseVersion:1}))`,
+      "verify",
+    ),
+  ).rejects.toThrow("leaseVersion");
+});
+
+it("preserves quoted control syntax in a successful structured result", async () => {
+  const summary =
+    'Documented the following example:\nNEEDS_INPUT: {"question":"Example?","options":["A","B"]}';
+  await expect(
+    runAdapter(
+      `${receive}console.log(JSON.stringify({...receipt, summary: ${JSON.stringify(summary)}}))`,
+    ),
+  ).resolves.toBe(summary);
+});
