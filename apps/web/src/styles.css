@@ -333,6 +333,16 @@
   }
 }
 
+/* 长按由消息菜单接管，包括 Markdown 正文和代码块内显式可选的文字。 */
+@media (hover: none), (pointer: coarse) {
+  .oh-message-menu-trigger,
+  .oh-message-menu-trigger * {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
 .oh-floating-menu {
   will-change: transform, opacity;
   backface-visibility: hidden;

@@ -32,7 +32,7 @@ import {
   RotateCcw,
   UserRound,
 } from "lucide-react";
-import { type KeyboardEvent, type MouseEvent, type TouchEvent, useRef, useState } from "react";
+import { type KeyboardEvent, type MouseEvent, useRef, useState } from "react";
 import {
   canViewerRecallMessage,
   formatMessageTimestamp,
@@ -43,7 +43,6 @@ import type { OptimisticMessageItem } from "../../lib/query-keys.js";
 import {
   AppContextMenu,
   type AppContextMenuEntry,
-  AppSheetDrawer,
   AppTooltip,
   INSTANT_TRANSITION,
   NATIVE_LIVE_BUBBLE_SPRING,
@@ -138,9 +137,7 @@ export function MessageBubble(props: MessageBubbleProps) {
   const authorDisplayName = props.authorDisplayName ?? message.author.displayName;
   const [copied, setCopied] = useState(false);
   const [capturedSelection, setCapturedSelection] = useState("");
-  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
-  const longPressTimerRef = useRef<number | null>(null);
-  const touchOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const bubbleRef = useRef<HTMLDivElement>(null);
   const reducedMotion = usePrefersReducedMotion();
 
   const isSelf = message.author.isYou;
@@ -406,116 +403,32 @@ export function MessageBubble(props: MessageBubbleProps) {
           : []),
       ];
 
-  // ── 悬浮 Liquid Glass 快捷操作条（桌面指针悬停可见；触屏端改为气泡侧边 `⋯` 与长按底部抽屉） ──
-  const actionableMobileItems = contextMenuItems.filter(
-    (entry): entry is Extract<AppContextMenuEntry, { readonly onSelect: () => void }> =>
-      entry.kind !== "separator" && entry.kind !== "label",
+  const hasMessageActions = contextMenuItems.some(
+    (entry) => entry.kind !== "separator" && entry.kind !== "label",
   );
-
-  const cancelTouchLongPress = (): void => {
-    if (longPressTimerRef.current !== null) {
-      window.clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-    touchOriginRef.current = null;
-  };
-
-  const handleBubbleTouchStart = (event: TouchEvent<HTMLDivElement>): void => {
-    if (isContextMenuDisabled || actionableMobileItems.length === 0 || event.touches.length !== 1) {
-      return;
-    }
-    const target = event.target as HTMLElement | null;
-    if (target?.closest("a, button, audio, input, textarea, pre, code")) {
-      return;
-    }
-    const touch = event.touches[0];
-    if (!touch) {
-      return;
-    }
-    cancelTouchLongPress();
-    touchOriginRef.current = { x: touch.clientX, y: touch.clientY };
-    longPressTimerRef.current = window.setTimeout(() => {
-      longPressTimerRef.current = null;
-      const activeSel =
-        typeof window !== "undefined" ? (window.getSelection()?.toString().trim() ?? "") : "";
-      if (activeSel.length > 0) {
-        return;
-      }
-      if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-        navigator.vibrate(10);
-      }
-      setMobileActionsOpen(true);
-    }, 460);
-  };
-
-  const handleBubbleTouchMove = (event: TouchEvent<HTMLDivElement>): void => {
-    if (longPressTimerRef.current === null || touchOriginRef.current === null) {
-      return;
-    }
-    const touch = event.touches[0];
-    if (!touch) {
-      cancelTouchLongPress();
-      return;
-    }
-    const dx = Math.abs(touch.clientX - touchOriginRef.current.x);
-    const dy = Math.abs(touch.clientY - touchOriginRef.current.y);
-    if (dx > 8 || dy > 8) {
-      cancelTouchLongPress();
-    }
-  };
-
-  const mobileQuickTrigger =
-    !isContextMenuDisabled && actionableMobileItems.length > 0 ? (
-      <button
-        type="button"
-        aria-label="消息操作菜单"
-        onClick={(e) => {
-          e.stopPropagation();
-          setMobileActionsOpen(true);
-        }}
-        className="app-no-drag relative inline-flex [@media(hover:hover)]:hidden h-7 w-7 shrink-0 items-center justify-center self-end rounded-full text-im-subtle/80 transition-colors active:bg-im-hover active:text-im-fg after:absolute after:-inset-1.5"
-      >
-        <MoreHorizontal className="h-3.5 w-3.5" />
-      </button>
-    ) : null;
-
-  const mobileActionSheet =
-    !isContextMenuDisabled && actionableMobileItems.length > 0 ? (
-      <AppSheetDrawer
-        open={mobileActionsOpen}
-        onOpenChange={setMobileActionsOpen}
-        side="bottom"
-        title={authorDisplayName}
-        subtitle={getMessageSnippet(message, 48) || timeLabel}
-      >
-        <div className="divide-y divide-black/[0.06] px-3 pb-2 dark:divide-white/[0.07]">
-          {actionableMobileItems.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              disabled={Boolean(entry.disabled)}
-              onClick={() => {
-                setMobileActionsOpen(false);
-                entry.onSelect();
-              }}
-              className={cn(
-                "flex min-h-11 w-full items-center gap-3 px-2 py-2.5 text-left text-[14px] font-medium transition-colors active:bg-black/[0.04] disabled:opacity-45 dark:active:bg-white/[0.06]",
-                entry.danger
-                  ? "text-[#C6282E] dark:text-[#F88B8B]"
-                  : "text-[#111318] dark:text-[#ECEFF6]",
-              )}
-            >
-              {entry.icon !== undefined ? (
-                <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center opacity-85">
-                  {entry.icon}
-                </span>
-              ) : null}
-              <span className="min-w-0 flex-1 truncate">{entry.label}</span>
-            </button>
-          ))}
-        </div>
-      </AppSheetDrawer>
-    ) : null;
+  const mobileQuickTrigger = hasMessageActions ? (
+    <button
+      type="button"
+      aria-label="消息操作菜单"
+      aria-haspopup="menu"
+      onClick={(event) => {
+        event.stopPropagation();
+        const { left, bottom, width } = event.currentTarget.getBoundingClientRect();
+        // Radix 用同一个 contextmenu 入口定位长按、右键和按钮打开的菜单。
+        bubbleRef.current?.dispatchEvent(
+          new window.MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: left + width / 2,
+            clientY: bottom,
+          }),
+        );
+      }}
+      className="app-no-drag relative inline-flex [@media(hover:hover)]:hidden h-7 w-7 shrink-0 items-center justify-center self-end rounded-full text-im-subtle/80 transition-colors active:bg-im-hover active:text-im-fg after:absolute after:-inset-1.5"
+    >
+      <MoreHorizontal className="h-3.5 w-3.5" />
+    </button>
+  ) : null;
 
   const actionBar =
     !props.readOnly && !isPending ? (
@@ -782,11 +695,9 @@ export function MessageBubble(props: MessageBubbleProps) {
                 onClick={handleBubbleClick}
                 onKeyDown={handleBubbleKeyDown}
                 onContextMenuCapture={captureBubbleSelection}
-                onTouchStart={handleBubbleTouchStart}
-                onTouchMove={handleBubbleTouchMove}
-                onTouchEnd={cancelTouchLongPress}
-                onTouchCancel={cancelTouchLongPress}
+                ref={bubbleRef}
                 className={cn(
+                  hasMessageActions && "oh-message-menu-trigger",
                   "min-w-0 transition-shadow duration-150",
                   isStandaloneSticker
                     ? "rounded-lg p-1"
@@ -807,7 +718,6 @@ export function MessageBubble(props: MessageBubbleProps) {
             {attentionPanel}
           </div>
         </div>
-        {mobileActionSheet}
 
         {isGrouped && isPending ? <div className="mt-0.5 pr-1">{timeNode}</div> : null}
       </>
@@ -905,11 +815,9 @@ export function MessageBubble(props: MessageBubbleProps) {
               onClick={handleBubbleClick}
               onKeyDown={handleBubbleKeyDown}
               onContextMenuCapture={captureBubbleSelection}
-              onTouchStart={handleBubbleTouchStart}
-              onTouchMove={handleBubbleTouchMove}
-              onTouchEnd={cancelTouchLongPress}
-              onTouchCancel={cancelTouchLongPress}
+              ref={bubbleRef}
               className={cn(
+                hasMessageActions && "oh-message-menu-trigger",
                 "min-w-0 transition-shadow duration-150",
                 isStandaloneSticker
                   ? "rounded-lg p-1"
@@ -929,7 +837,6 @@ export function MessageBubble(props: MessageBubbleProps) {
         </div>
         {mobileQuickTrigger}
       </div>
-      {mobileActionSheet}
     </>
   );
 
