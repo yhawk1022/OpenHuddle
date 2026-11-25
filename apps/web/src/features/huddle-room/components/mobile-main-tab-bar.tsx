@@ -227,7 +227,7 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
   ];
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center bg-gradient-to-t from-[var(--oh-stage-scrim)]/80 via-[var(--oh-stage-scrim-mid)]/30 to-transparent px-5 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] md:hidden">
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center bg-gradient-to-t from-[var(--oh-stage-scrim)]/80 via-[var(--oh-stage-scrim-mid)]/30 to-transparent px-5 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom,0px))] md:hidden">
       <nav
         aria-label="移动端主导航"
         className="app-no-drag pointer-events-auto relative liquid-glass-bar w-full max-w-[19.5rem] select-none rounded-full p-1"

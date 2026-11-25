@@ -138,7 +138,7 @@ describe("IME composition & editable element guards", () => {
     expect(isEditableElement(null)).toBe(false);
   });
 
-  it("synchronizes --oh-vvh, --oh-vv-offset-top, and keyboard-open state from visualViewport", () => {
+  it.each([false, true])("fits the viewport and keyboard (standalone: %s)", (standalone) => {
     const { win } = createStubBrowserWindow("/");
     const vvTarget = new EventTarget();
     const vv = Object.assign(vvTarget, {
@@ -146,11 +146,15 @@ describe("IME composition & editable element guards", () => {
       offsetTop: 0,
       scale: 1,
     });
-    Object.assign(win, { visualViewport: vv, scrollY: 48 });
+    Object.assign(win, { visualViewport: vv, scrollY: 48, navigator: { standalone } });
 
     const cssVars = new Map<string, string>();
+    const viewport = {
+      content: "width=device-width, viewport-fit=cover, interactive-widget=resizes-content",
+    };
     const dataset: Record<string, string> = {};
     const doc = Object.assign(new EventTarget(), {
+      querySelector: (selector: string) => (selector === 'meta[name="viewport"]' ? viewport : null),
       activeElement: null as unknown,
       documentElement: {
         style: {
@@ -166,6 +170,9 @@ describe("IME composition & editable element guards", () => {
     vi.stubGlobal("document", doc);
 
     const stop = startVisualViewportSync();
+    expect(viewport.content).toBe(
+      `width=device-width, viewport-fit=${standalone ? "contain" : "cover"}, interactive-widget=resizes-content`,
+    );
     expect(cssVars.get("--oh-vvh")).toBe("844px");
     expect(dataset.keyboardOpen).toBe("false");
 
@@ -179,6 +186,13 @@ describe("IME composition & editable element guards", () => {
     expect(cssVars.get("--oh-vv-offset-top")).toBe("48px");
     expect(dataset.keyboardOpen).toBe("true");
     expect(win.scrollTo).toHaveBeenCalledWith(0, 0);
+
+    vv.height = 844;
+    vv.offsetTop = 0;
+    vv.dispatchEvent(new Event("resize"));
+    expect(cssVars.get("--oh-vvh")).toBe("844px");
+    expect(cssVars.get("--oh-vv-offset-top")).toBe("0px");
+    expect(dataset.keyboardOpen).toBe("false");
 
     stop();
   });

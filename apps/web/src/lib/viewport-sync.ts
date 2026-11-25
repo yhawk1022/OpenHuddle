@@ -4,8 +4,7 @@
  *
  * 架构不变量（Invariants）：
  * 1. 零重复扣减高度：配合 `<meta name="viewport" content="..., interactive-widget=resizes-content">`，
- *    将 `#root` 直接绑定至 `--oh-vvh`（`visualViewport.height`）与 `--oh-vv-offset-top`（`visualViewport.offsetTop`），
- *    在 Android `resizes-content`（`offsetTop=0`）、iOS Safari 17/18+（Layout 不缩但 Visual 缩）与国内 WebView 下均精确等于真实可视区高度。
+ *    页面高度和键盘偏移均跟随可视视口。iOS 主屏幕模式由系统分配状态栏和手势区。
  * 2. 无障碍缩放友好：仅当 `visualViewport.scale <= 1.01`（非用户双指手动放大态）时锁定视口偏移，不干扰无障碍双指放大检视。
  */
 import { useSyncExternalStore } from "react";
@@ -114,7 +113,7 @@ export function useIsMobileViewport(): boolean {
 }
 
 /**
- * 启动全局 `visualViewport` CSS 变量（`--oh-vvh`、`--oh-vv-offset-top`）与 `data-keyboard-open` 实时同步。
+ * 将可视视口的测量值与软键盘状态同步到根元素。
  *
  * @returns 卸载监听器的清理函数
  */
@@ -124,6 +123,13 @@ export function startVisualViewportSync(): () => void {
   }
 
   const root = document.documentElement;
+  if ("standalone" in window.navigator && window.navigator.standalone) {
+    // WebKit can clip the bottom of an installed app when cover extends it under the status bar.
+    const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    if (viewport?.content.includes("viewport-fit=cover")) {
+      viewport.content = viewport.content.replace("viewport-fit=cover", "viewport-fit=contain");
+    }
+  }
   const vv = window.visualViewport;
   let baselineHeight = Math.max(window.innerHeight || 0, Math.round(vv?.height ?? 0));
   let rafId = 0;

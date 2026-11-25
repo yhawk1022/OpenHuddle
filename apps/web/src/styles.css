@@ -385,6 +385,14 @@ body {
   overscroll-behavior: none;
 }
 
+@media (display-mode: standalone) {
+  /* Anchor the app to its content area while iOS transitions from the launch screen. */
+  :root:not([data-keyboard-open="true"]) #root {
+    position: relative;
+    top: 0;
+  }
+}
+
 .h-vvh {
   height: var(--oh-vvh, 100dvh);
 }
