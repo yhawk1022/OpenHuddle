@@ -46,6 +46,7 @@ import {
   compressPngToMaxBytes,
   detectImageFormatAndDimensions,
   readReplyImage,
+  referencesEarlierImage,
   requestsReplyImage,
 } from "./reply-image.js";
 import { normalizeServerUrl, updateRoomLastReadSeq } from "./token-store.js";
@@ -74,6 +75,7 @@ const DEFAULT_SSE_IDLE_TIMEOUT_MS = 60_000;
 
 /** 单轮本地预设 Agent 主推理保护超时（120 秒），兼顾代理握手开销与长代码生成，同时防止死循环永久锁死房间队列 */
 export const DEFAULT_PRESET_TURN_TIMEOUT_MS = 120_000;
+const REFERENCE_IMAGE_EDIT_TIMEOUT_MS = 300_000;
 
 /** 主推理超时后自动降级为“零工具纯文本极速回复”回合的保护超时（90 秒） */
 export const FAST_FALLBACK_TURN_TIMEOUT_MS = 90_000;
@@ -765,6 +767,12 @@ export function buildBrokeredWakePrompt(input: Readonly<BrokeredWakePromptInput>
       const names = inboundImages.map((img) => img.fileName).join(", ");
       visionInstructionLines.push(
         `- INBOUND VISION: Loaded room image(s) (${names}) are attached inline with this prompt in chronological order.`,
+      );
+    }
+    if (input.allowImageReply && input.preset === "codex") {
+      const sources = inboundImages.map((img) => `#${img.seq}: ${img.filePath ?? img.fileName}`);
+      visionInstructionLines.push(
+        `- The attached reference images for this turn are ${sources.join(", ")}. Match them to the owner's message by sequence. For edits, use the referenced images as inputs and produce the requested edited image. For photographic edits, use the image editing/generation tool if available. Save only the new result of this turn as ${REPLY_IMAGE_NAME}. If editing is unavailable, explain that limitation accurately.`,
       );
     }
     visionInstructionLines.push(
@@ -1864,14 +1872,6 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     const triggerTrustLevel = replyAnchorMsg.author.trustLevel;
     const isExternalTrigger = triggerTrustLevel === "external_participant";
 
-    // 安全门控：仅当触发本轮的消息作者权威 trustLevel === "owner_command"（严禁使用合并后的 wake.reason！）、
-    // 正文（剥离代码块与 `>` 引用后）明确请求发图，且当前预设在当前 OS 支持受限写沙箱时，才开启发图回合。
-    const allowImageReply =
-      !isExternalTrigger &&
-      triggerTrustLevel === "owner_command" &&
-      requestsReplyImage(replyAnchorMsg.content) &&
-      canPresetOutputImageOnPlatform(preset);
-
     // 入站视觉候选收集（P0: 触发消息本身 -> P1: 显式回复的目标消息 -> P2: 窗口内近期消息）
     const isUnrecalledImage = (msg: MessageDto | undefined): msg is MessageDto =>
       msg !== undefined &&
@@ -1916,6 +1916,30 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       }
       addCandidate(repliedTarget);
     }
+
+    // Bind edit intent to the owner's attachment, reply target, or immediately preceding image.
+    // A stale photo elsewhere in the room must not turn an ordinary instruction into an edit.
+    const previousMessages = visibleMessages.filter((msg) => msg.seq < replyAnchorMsg.seq);
+    const previous = previousMessages.at(-1);
+    const followsImage =
+      isUnrecalledImage(previous) && previous.author.trustLevel !== "external_participant";
+    const referenceSeqs = new Set(candidateMessages.map((msg) => msg.seq));
+    if (referenceSeqs.size === 0 && followsImage) referenceSeqs.add(previous.seq);
+    if (referenceSeqs.size < 2 && referencesEarlierImage(replyAnchorMsg.content)) {
+      const recentReference = previousMessages.findLast(
+        (msg) =>
+          isUnrecalledImage(msg) &&
+          msg.author.trustLevel !== "external_participant" &&
+          !referenceSeqs.has(msg.seq),
+      );
+      if (recentReference) referenceSeqs.add(recentReference.seq);
+    }
+    const allowImageReply =
+      triggerTrustLevel === "owner_command" &&
+      canPresetOutputImageOnPlatform(preset) &&
+      requestsReplyImage(replyAnchorMsg.content, referenceSeqs.size);
+
+    const referencedOutput = allowImageReply && referenceSeqs.size > 0;
 
     // P2: 近期窗口图片（混淆代理人防护 I-5：
     // 1. 触发者自身为 external_participant 时仅拉取 P0/P1 最多 2 张；
@@ -2155,25 +2179,42 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     let reply: BrokeredReply;
     try {
       try {
-        reply = await invokeWithTransientRetries(DEFAULT_PRESET_TURN_TIMEOUT_MS, "primary");
+        const missingSource = candidateMessages.find(
+          (msg) =>
+            referenceSeqs.has(msg.seq) && !fetchedVisionItems.some((img) => img.seq === msg.seq),
+        );
+        if (referencedOutput && missingSource) {
+          reply = {
+            content: `未能载入第 ${missingSource.seq} 条消息的参考图。请重新上传该图后再试。`,
+          };
+        } else {
+          reply = await invokeWithTransientRetries(
+            referencedOutput ? REFERENCE_IMAGE_EDIT_TIMEOUT_MS : DEFAULT_PRESET_TURN_TIMEOUT_MS,
+            "primary",
+          );
+        }
       } catch (primaryErr) {
         if (options.signal?.aborted || !isPresetTimeoutError(primaryErr)) {
           throw primaryErr;
         }
-        // 超时极速降级（fast-fallback）：强制关闭 allowImageReply 且不传入入站图片，确保 90s 纯文本零工具保底必达
-        log(
-          `[openhuddle:wake:fast-fallback] room=${wake.roomId} preset=${preset} primary turn timed out (${formatSafeDiagnosticReason(primaryErr)}); switching to ${FAST_FALLBACK_TURN_TIMEOUT_MS}ms zero-tool pure-text fallback...`,
-        );
-        reply = await invokeWithTransientRetries(
-          FAST_FALLBACK_TURN_TIMEOUT_MS,
-          "fast-fallback",
-          (pureTextBase) =>
-            buildFastFallbackWakePrompt(
-              allowImageReply
-                ? `${pureTextBase}\nThe image attempt timed out. Tell the owner that no image was attached.`
-                : pureTextBase,
-            ),
-        );
+        if (referencedOutput) {
+          reply = { content: "这次图片处理超时，未生成附件。可以重试这条改图请求。" };
+        } else {
+          // 超时极速降级（fast-fallback）：强制关闭 allowImageReply 且不传入入站图片，确保 90s 纯文本零工具保底必达
+          log(
+            `[openhuddle:wake:fast-fallback] room=${wake.roomId} preset=${preset} primary turn timed out (${formatSafeDiagnosticReason(primaryErr)}); switching to ${FAST_FALLBACK_TURN_TIMEOUT_MS}ms zero-tool pure-text fallback...`,
+          );
+          reply = await invokeWithTransientRetries(
+            FAST_FALLBACK_TURN_TIMEOUT_MS,
+            "fast-fallback",
+            (pureTextBase) =>
+              buildFastFallbackWakePrompt(
+                allowImageReply
+                  ? `${pureTextBase}\nThe image attempt timed out. Tell the owner that no image was attached.`
+                  : pureTextBase,
+              ),
+          );
+        }
       }
     } catch (finalErr) {
       // 可观测自愈反馈：若明确被人类主人或 @点名唤醒但本地推理最终失败，向群聊回传一条零提及的故障提示，彻底杜绝“石沉大海无响应”

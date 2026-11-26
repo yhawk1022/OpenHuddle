@@ -215,32 +215,48 @@ export function detectImageFormatAndDimensions(bytes: Buffer): DetectedImageInfo
   return candidate;
 }
 
-/**
- * 判断一条已由调用方验证为主人所发的消息是否请求生成或发送图片。
- *
- * @remarks
- * 先剥离围栏代码块、Markdown 引用行 `>` 与行内反引号，防止引用外部文字或粘贴代码误触发发图沙箱。
- *
- * @param content - 本轮触发消息的正文
- * @returns 是否启用受限的图片输出
- */
-export function requestsReplyImage(content: string): boolean {
+// An attachment can also accompany a question, a caption, or a request for wording.
+const TEXT_ABOUT_IMAGE =
+  /[?？]|(?:如何|怎样|怎么|是否|是不是|什么意思|能看出|看起来|描述一下|解读|翻译|提示词|只(?:需|要)?(?:文字|描述)|[吗么呢](?:\s|$))|\b(?:how|whether|describe|explain|caption|prompt|translate|looks? like)\b/iu;
+const EDIT_DIRECTIVE =
+  /(?:把|将|让|请|帮我|给).{0,65}(?:换成|改成|变成|换上|放[在到进]|移[到至]|挪到|加上|加个|放大|缩小|去掉|抹掉|改为|变为|合成|同框)|^(?:换成|改成|去掉背景|换背景|抠图|裁剪|调亮|调暗|合成一张)|^(?:please\s+)?(?:edit|combine|merge|crop|recolor|replace|move|place|put|remove)\b/iu;
+// A scene brief can refer to subjects in two images without an explicit drawing verb.
+const CROSS_IMAGE_SCENE =
+  /^(?:(?:@[^\s]+|请让|让)\s*)*(?:这|那|上一|第一)(?:个|位|只|辆|张|幅).{1,40}(?:这|那|另一|第二)(?:个|张|幅)?(?:图片|照片|图像|图)(?:中|里|上)的/u;
+
+export function referencesEarlierImage(content: string): boolean {
+  return (
+    CROSS_IMAGE_SCENE.test(content.trim()) ||
+    /(?:[上前]一?[张幅]|(?:前面|刚才|之前|上面)的(?:图|照片)|[两兩]张|图[一二12]|\b(?:previous|first|both|earlier) (?:images?|pictures?|photos?))/iu.test(
+      content,
+    )
+  );
+}
+
+export function requestsReplyImage(content: string, referenceCount = 0): boolean {
   const stripped = content
-    .replace(/```[\s\S]*?```/g, "\n")
-    .replace(/~~~[\s\S]*?~~~/g, "\n")
+    .replace(/```[\s\S]*?(?:```|$)/g, "\n")
+    .replace(/~~~[\s\S]*?(?:~~~|$)/g, "\n")
     .replace(/^\s*>.*$/gm, "")
     .replace(/`[^`\n]*`/g, " ");
+  const clauses = stripped.split(/[，。；！？,.!?;\r\n]+/u).map((part) => part.trim());
+  if (
+    clauses.some(
+      (clause) =>
+        !IMAGE_NEGATION.test(clause) &&
+        !PURE_CODE_DIAGRAM_ONLY.test(clause) &&
+        IMAGE_REQUEST.test(clause),
+    )
+  )
+    return true;
 
-  return stripped.split(/[，。；！？,.!?;\r\n]+/u).some((rawClause) => {
-    const clause = rawClause.trim();
-    if (clause.length === 0) {
-      return false;
-    }
-    if (IMAGE_NEGATION.test(clause) || PURE_CODE_DIAGRAM_ONLY.test(clause)) {
-      return false;
-    }
-    return IMAGE_REQUEST.test(clause);
-  });
+  if (!referenceCount || TEXT_ABOUT_IMAGE.test(stripped) || IMAGE_NEGATION.test(stripped))
+    return false;
+  return clauses.some(
+    (clause) =>
+      !PURE_CODE_DIAGRAM_ONLY.test(clause) &&
+      (EDIT_DIRECTIVE.test(clause) || (referenceCount >= 2 && CROSS_IMAGE_SCENE.test(clause))),
+  );
 }
 
 function resizePng(source: PNG, width: number, height: number): PNG {

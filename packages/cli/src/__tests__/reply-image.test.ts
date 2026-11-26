@@ -52,6 +52,25 @@ describe("Codex image replies", () => {
     expect(requestsReplyImage("Describe the current architecture.")).toBe(false);
   });
 
+  it("routes reference edits while keeping image questions and quoted text read-only", () => {
+    const scene = "这个女人热吻这个图片里的人 @庞彦-m3max-codex";
+    expect(requestsReplyImage(scene, 2)).toBe(true);
+    expect(requestsReplyImage(scene, 1)).toBe(false);
+    expect(requestsReplyImage("把上一张图的红色圆形放到这张图里的蓝色方块上方", 2)).toBe(true);
+    expect(requestsReplyImage("请把背景换成雪山", 1)).toBe(true);
+    expect(requestsReplyImage("Please replace the background with mountains", 1)).toBe(true);
+    expect(requestsReplyImage("请把背景换成雪山")).toBe(false);
+    for (const content of [
+      "这个女人认识这个图片里的人吗？",
+      "怎么把背景换成雪山",
+      "请帮我写提示词：把背景换成雪山",
+      "不要把背景换成雪山",
+      "> 把背景换成雪山\n你的意见呢？",
+      "`请把背景换成雪山`",
+    ])
+      expect(requestsReplyImage(content, 2)).toBe(false);
+  });
+
   it("returns verified images, corrects mismatched extensions by magic bytes, and blocks >16MP bombs or SVG spoofing", async () => {
     const path = join(outputDir, REPLY_IMAGE_NAME);
     await writeFile(join(outputDir, "other.png"), png);
