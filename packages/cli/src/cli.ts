@@ -8,32 +8,35 @@
  * 3. 乐观并发读锁自动衔接：`read` 自动在本地推进房间 `lastReadSeq`，`send` 自动携带该游标并在命中 `409` 时打印漏读上下文。
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import { chmod, lstat, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type {
-  AgentId,
-  AgentPlatform,
-  CastProposalVoteBody,
-  InboxResponse,
-  InboxWorkAssignment,
-  MessageDto,
-  MessageMention,
-  MessageSeq,
-  OperationKey,
-  OwnedAgentSummaryDto,
-  ProposalDraft,
-  ProposalId,
-  ProposalOption,
-  ProposalVoteStance,
-  ReadCursorSeq,
-  RoomId,
-  RoomVisibility,
-  UpdateMeBody,
-  UserId,
-  WorkItemId,
+import {
+  type AgentId,
+  type AgentPlatform,
+  type CastProposalVoteBody,
+  type InboxResponse,
+  type InboxWorkAssignment,
+  MAX_MESSAGE_ATTACHMENT_BYTES,
+  type MessageAttachmentUpload,
+  type MessageDto,
+  type MessageMention,
+  type MessageSeq,
+  type OperationKey,
+  type OwnedAgentSummaryDto,
+  type ProposalDraft,
+  type ProposalId,
+  type ProposalOption,
+  type ProposalVoteStance,
+  type ReadCursorSeq,
+  type RoomId,
+  type RoomVisibility,
+  type UpdateMeBody,
+  type UserId,
+  type WorkItemId,
 } from "@openhuddle/protocol";
 import {
   type DaemonControlReport,
@@ -48,6 +51,12 @@ import { recoverReviewPatch } from "./execute-work-slice.js";
 import { isPresetCliBinaryAvailable } from "./host-env.js";
 import { OpenHuddleApiError, OpenHuddleHttpClient, formatOpenHuddleError } from "./http-client.js";
 import { runCliMcpStdioServer } from "./mcp-stdio.js";
+import {
+  MAX_IMAGE_SOURCE_BYTES,
+  compressPngToMaxBytes,
+  detectImageFormatAndDimensions,
+  sanitizeAttachmentFileName,
+} from "./reply-image.js";
 import {
   type WakeAgentPreset,
   type WakeExecutionTarget,
@@ -80,9 +89,132 @@ function formatMessageLine(message: MessageDto): string {
   const parts = [content];
   if (attachment !== undefined) {
     const path = `/api/v1/rooms/${encodeURIComponent(roomId)}/messages/${seq}/attachment`;
-    parts.push(`[Attachment: ${attachment.mimeType}, ${attachment.byteLength} bytes, GET ${path}]`);
+    parts.push(
+      `[Attachment: ${attachment.mimeType}, ${attachment.byteLength} bytes, GET ${path} (run: openhuddle attachment ${seq} --room ${roomId})]`,
+    );
   }
   return `  [#${seq}] ${author.displayName} (${author.kind}, trust=${author.trustLevel}): ${parts.filter(Boolean).join(" ")}`;
+}
+
+function defaultAttachmentSuffix(mimeType: string, fileName?: string): string {
+  if (fileName !== undefined) {
+    const cleaned = sanitizeAttachmentFileName(fileName);
+    if (cleaned !== undefined) {
+      return cleaned;
+    }
+  }
+  switch (mimeType) {
+    case "image/png":
+      return "image.png";
+    case "image/jpeg":
+      return "image.jpg";
+    case "image/gif":
+      return "image.gif";
+    case "image/webp":
+      return "image.webp";
+    case "audio/webm":
+      return "audio.webm";
+    case "audio/ogg":
+      return "audio.ogg";
+    case "audio/mp4":
+      return "audio.m4a";
+    case "audio/mpeg":
+      return "audio.mp3";
+    case "audio/wav":
+      return "audio.wav";
+    default:
+      return "attachment.bin";
+  }
+}
+
+async function buildCliOutboundAttachment(
+  parsed: Readonly<ParsedCliArgs>,
+): Promise<MessageAttachmentUpload | undefined> {
+  const imageFlag = getLastFlag(parsed, "image")?.trim();
+  const fileFlag = getLastFlag(parsed, "file")?.trim();
+  const stickerFlag = getLastFlag(parsed, "sticker");
+
+  if (imageFlag !== undefined && fileFlag !== undefined) {
+    throw new Error("--image and --file cannot be used together.");
+  }
+  if (stickerFlag !== undefined && imageFlag === undefined) {
+    throw new Error("--sticker can only be used together with --image <path>.");
+  }
+
+  if (imageFlag !== undefined) {
+    const resolvedImg = resolve(imageFlag);
+    const imgStat = await stat(resolvedImg);
+    if (!imgStat.isFile()) {
+      throw new Error(`--image target must be a regular file: ${resolvedImg}`);
+    }
+    if (imgStat.size <= 0) {
+      throw new Error(`--image file must not be empty: ${resolvedImg}`);
+    }
+    if (imgStat.size > MAX_IMAGE_SOURCE_BYTES) {
+      throw new Error(`--image file exceeds maximum source size (64 MiB): ${resolvedImg}`);
+    }
+    let bytes: Buffer = await readFile(resolvedImg);
+    const detected = detectImageFormatAndDimensions(bytes);
+    if (detected === undefined) {
+      throw new Error(
+        `Unsupported or malformed image "${imageFlag}": expected PNG, JPEG, GIF, or WebP within 32768x32768 and 16 megapixels.`,
+      );
+    }
+    if (bytes.byteLength > MAX_MESSAGE_ATTACHMENT_BYTES) {
+      if (detected.mimeType !== "image/png") {
+        throw new Error(`Image "${imageFlag}" exceeds the 8 MiB upload limit.`);
+      }
+      const compressed = compressPngToMaxBytes(bytes, MAX_MESSAGE_ATTACHMENT_BYTES);
+      if (compressed === undefined) {
+        throw new Error(
+          `PNG image "${imageFlag}" exceeds 8 MiB and could not be compressed within limit.`,
+        );
+      }
+      bytes = compressed;
+    }
+
+    if (stickerFlag !== undefined) {
+      const trimmedSticker = stickerFlag.trim();
+      if (trimmedSticker.length === 0 || trimmedSticker.length > 80) {
+        throw new Error("--sticker name must be between 1 and 80 characters.");
+      }
+      return {
+        mimeType: detected.mimeType,
+        stickerName: trimmedSticker,
+        data: bytes.toString("base64"),
+      };
+    }
+
+    const safeFileName = sanitizeAttachmentFileName(basename(resolvedImg));
+    return {
+      mimeType: detected.mimeType,
+      ...(safeFileName !== undefined ? { fileName: safeFileName } : {}),
+      data: bytes.toString("base64"),
+    };
+  }
+
+  if (fileFlag !== undefined) {
+    const resolvedFile = resolve(fileFlag);
+    const fileStat = await stat(resolvedFile);
+    if (!fileStat.isFile()) {
+      throw new Error(`--file target must be a regular file: ${resolvedFile}`);
+    }
+    if (fileStat.size <= 0) {
+      throw new Error(`--file attachment must not be empty: ${resolvedFile}`);
+    }
+    if (fileStat.size > MAX_MESSAGE_ATTACHMENT_BYTES) {
+      throw new Error(`--file attachment exceeds the 8 MiB upload limit: ${resolvedFile}`);
+    }
+    const bytes = await readFile(resolvedFile);
+    const safeFileName = sanitizeAttachmentFileName(basename(resolvedFile)) ?? "attachment.bin";
+    return {
+      mimeType: "application/octet-stream",
+      fileName: safeFileName,
+      data: bytes.toString("base64"),
+    };
+  }
+
+  return undefined;
 }
 
 /** 系统服务已加载后短暂等待服务端确认实际监听，避免把进程启动当作长连就绪。 */
@@ -158,6 +290,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "--greet",
   "--no-greet",
   "--ignore-unread",
+  "--force",
   "--help",
   "-h",
   "--list",
@@ -588,10 +721,12 @@ function buildHelpText(): string {
     "  members [roomId]              List room members with owner attribution & live reach state",
     "  read [roomId] [--after <seq>] [--limit <n>]",
     "                                Read incremental messages and advance local lastReadSeq cursor",
-    "  reply <content> [--room <id>] [--reply <seq>] [--ignore-unread]",
-    "                                Reply to active/default room with automatic read-lock cursor",
-    "  send <roomId> <content> [--reply <seq>] [--last-read-seq <seq>] [--ignore-unread]",
-    "                                Send message with automatic optimistic read-lock cursor",
+    "  attachment <seq> [--room <id>] [--out <path>] [--force]",
+    "                                Download a room message attachment safely (0600, symlink-safe)",
+    "  reply [content] [--room <id>] [--reply <seq>] [--image <path> [--sticker <name>] | --file <path>] [--ignore-unread]",
+    "                                Reply to active/default room with text and/or attachment",
+    "  send <roomId> [content] [--reply <seq>] [--image <path> [--sticker <name>] | --file <path>] [--last-read-seq <seq>] [--ignore-unread]",
+    "                                Send message and/or attachment with automatic optimistic read-lock cursor",
     "  propose [roomId] (--draft-json <json> | --title <t> --summary <s> --option <k:l:s>)",
     "                                Submit a structured multi-option proposal card (or --list)",
     "  vote <proposalId> --stance <endorse|challenge|abstain> --rationale <text> [--option <key>]",
@@ -645,6 +780,7 @@ export async function runCli(
           "join",
           "members",
           "read",
+          "attachment",
           "reply",
           "send",
           "propose",
@@ -1379,21 +1515,143 @@ export async function runCli(
         return 0;
       }
 
+      case "attachment": {
+        const seqRaw = parsed.positionals[0]?.trim();
+        const seq =
+          seqRaw !== undefined && /^[1-9]\d*$/.test(seqRaw)
+            ? Number.parseInt(seqRaw, 10)
+            : Number.NaN;
+        if (!Number.isSafeInteger(seq) || seq < 1) {
+          throw new Error(
+            "Usage: openhuddle attachment <seq> [--room <roomId>] [--out <path>] [--force]",
+          );
+        }
+
+        const roomId = await resolveTargetRoomId(getLastFlag(parsed, "room"));
+        if (/[/\\\p{Cc}\p{Cs}]/u.test(roomId) || roomId === "." || roomId === "..") {
+          throw new Error(`Invalid room ID "${roomId}".`);
+        }
+
+        const outFlag = getLastFlag(parsed, "out")?.trim();
+        const force = parsed.booleanFlags.has("--force");
+        const downloaded = await client.downloadRoomAttachment(roomId, seq as MessageSeq);
+
+        let targetPath: string;
+        if (outFlag === undefined || outFlag.length === 0) {
+          const attRoot = join(getOpenHuddleHome(baseHome), "attachments");
+          const roomAttDir = join(attRoot, roomId);
+          for (const checkDir of [attRoot, roomAttDir]) {
+            const existingDir = await lstat(checkDir).catch(() => undefined);
+            if (existingDir?.isSymbolicLink()) {
+              throw new Error(`Refusing to write attachment inside symbolic link: ${checkDir}`);
+            }
+          }
+          await mkdir(roomAttDir, { recursive: true, mode: 0o700 });
+          await chmod(roomAttDir, 0o700).catch(() => undefined);
+          const safeName = defaultAttachmentSuffix(downloaded.mimeType, downloaded.fileName);
+          targetPath = join(roomAttDir, `seq-${seq}-${safeName}`);
+        } else {
+          targetPath = resolve(outFlag);
+          const parentDir = dirname(targetPath);
+          const existingParent = await lstat(parentDir).catch(() => undefined);
+          if (existingParent?.isSymbolicLink()) {
+            throw new Error(
+              `Refusing to write attachment inside symbolic link directory: ${parentDir}`,
+            );
+          }
+          if (existingParent === undefined) {
+            await mkdir(parentDir, { recursive: true });
+          }
+        }
+
+        const finalParentDir = dirname(targetPath);
+        const finalParentStat = await lstat(finalParentDir);
+        if (finalParentStat.isSymbolicLink() || !finalParentStat.isDirectory()) {
+          throw new Error(
+            `Refusing to write attachment inside symbolic link or non-directory: ${finalParentDir}`,
+          );
+        }
+
+        const existingTarget = await lstat(targetPath).catch((err: unknown) => {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            return undefined;
+          }
+          throw err;
+        });
+        if (existingTarget !== undefined) {
+          if (existingTarget.isSymbolicLink()) {
+            throw new Error(`Refusing to write attachment to symbolic link: ${targetPath}`);
+          }
+          if (!existingTarget.isFile()) {
+            throw new Error(`Refusing to overwrite non-regular file: ${targetPath}`);
+          }
+          if (!force) {
+            throw new Error(
+              `Attachment output file already exists: ${targetPath} (pass --force to overwrite).`,
+            );
+          }
+        }
+
+        if (!force) {
+          await writeFile(targetPath, downloaded.bytes, { flag: "wx", mode: 0o600 });
+        } else {
+          const fh = await open(
+            targetPath,
+            constants.O_CREAT |
+              constants.O_WRONLY |
+              constants.O_TRUNC |
+              (constants.O_NOFOLLOW ?? 0),
+            0o600,
+          );
+          try {
+            const st = await fh.stat();
+            if (!st.isFile()) {
+              throw new Error(`Refusing to write attachment to non-regular file: ${targetPath}`);
+            }
+            await fh.writeFile(downloaded.bytes);
+            await fh.chmod(0o600).catch(() => undefined);
+          } finally {
+            await fh.close();
+          }
+        }
+
+        if (parsed.json) {
+          emitJson({
+            ok: true,
+            roomId,
+            seq,
+            path: targetPath,
+            mimeType: downloaded.mimeType,
+            byteLength: downloaded.byteLength,
+            ...(downloaded.fileName !== undefined ? { fileName: downloaded.fileName } : {}),
+            authorTrustLevel: downloaded.authorTrustLevel,
+            authorKind: downloaded.authorKind,
+          });
+        } else {
+          writeOut(
+            `Saved attachment #${seq} (${downloaded.mimeType}, ${downloaded.byteLength} bytes, trust=${downloaded.authorTrustLevel}) to ${targetPath}`,
+          );
+        }
+        return 0;
+      }
+
       case "reply":
       case "send": {
         const isReplyShortcut = parsed.command === "reply";
+        const attachmentUpload = await buildCliOutboundAttachment(parsed);
         const roomId = isReplyShortcut
           ? await resolveTargetRoomId(getLastFlag(parsed, "room"))
           : (parsed.positionals[0]?.trim() as RoomId | undefined);
-        const content = isReplyShortcut
+        const rawContent = isReplyShortcut
           ? parsed.positionals.join(" ").trim() || getLastFlag(parsed, "content")?.trim()
           : parsed.positionals.slice(1).join(" ").trim() || getLastFlag(parsed, "content")?.trim();
+        const content = rawContent ?? "";
 
-        if (!roomId || !content) {
+        if (!roomId || (content.length === 0 && attachmentUpload === undefined)) {
           throw new Error(
             isReplyShortcut
-              ? "Usage: openhuddle reply <content> [--room <roomId>] [--reply <seq>] [--ignore-unread]"
-              : "Usage: openhuddle send <roomId> <content> [--reply <seq>] [--last-read-seq <seq>] [--ignore-unread]",
+              ? "Usage: openhuddle reply <content> [--room <roomId>] [--reply <seq>] [--image <path> [--sticker <name>] | --file <path>] [--ignore-unread]"
+              : "Usage: openhuddle send <roomId> <content> [--reply <seq>] [--image <path> [--sticker <name>] | --file <path>] [--last-read-seq <seq>] [--ignore-unread]",
           );
         }
 
@@ -1430,6 +1688,7 @@ export async function runCli(
 
         const sent = await client.sendRoomMessage(roomId, {
           content,
+          ...(attachmentUpload !== undefined ? { attachment: attachmentUpload } : {}),
           ...(replyToSeq !== undefined ? { replyToSeq } : {}),
           ...(mentions.length > 0 ? { mentions } : {}),
           opKey,

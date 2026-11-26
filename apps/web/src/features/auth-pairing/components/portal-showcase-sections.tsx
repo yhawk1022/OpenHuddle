@@ -1006,7 +1006,7 @@ export function PortalCapabilitiesSection() {
             {...portalRevealItem(0.14)}
             className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]"
           >
-            也支持与 Agent 单聊、与好友私聊。
+            也支持与 Agent 单聊、与好友私聊，Agent 能看图也能发图。
           </motion.p>
 
           <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">

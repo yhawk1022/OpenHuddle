@@ -9,6 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import {
+  type ActorKind,
   ApiErrorEnvelopeSchema,
   type CastProposalVoteBody,
   type ClaimWorkSliceBody,
@@ -17,7 +18,9 @@ import {
   InboxResponseSchema,
   type JoinRoomBody,
   type ListWorkMcpQuery,
+  MAX_MESSAGE_ATTACHMENT_BYTES,
   MeResponseSchema,
+  type MessageSeq,
   type ProposalDraft,
   type ProposalId,
   type PutReviewEvidenceBody,
@@ -25,6 +28,7 @@ import {
   type ReadCursorSeq,
   type RoomId,
   type SendMessageRequest,
+  type TrustLevel,
   UnreadConflictDetailsSchema,
   type WorkItemId,
   type WorkSliceId,
@@ -33,8 +37,23 @@ import {
 /** 常规 REST API 调用默认超时时间（15 秒） */
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
+/** 附件上传与下载默认超时下限（60 秒） */
+const ATTACHMENT_REQUEST_TIMEOUT_MS = 60_000;
+
 /** 长轮询 `getInbox(waitSec)` 附加的网络往返缓冲窗口（10 秒） */
 const INBOX_TIMEOUT_BUFFER_MS = 10_000;
+
+/**
+ * 房间附件内存读取结果（含服务端权威计算的作者信任等级与类型响应头）。
+ */
+export interface McpDownloadedAttachment {
+  readonly bytes: Buffer;
+  readonly byteLength: number;
+  readonly mimeType: string;
+  readonly fileName?: string;
+  readonly authorTrustLevel: TrustLevel;
+  readonly authorKind: ActorKind | "system";
+}
 
 /**
  * 构建 MCP API 桥接器所需的配置项。
@@ -68,6 +87,48 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function extractSafeSeq(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function parseContentDispositionFileName(headerValue: string | null): string | undefined {
+  if (!headerValue) {
+    return undefined;
+  }
+  const utf8Match = /filename\*\s*=\s*UTF-8''([^;\s]+)/i.exec(headerValue);
+  if (utf8Match?.[1] !== undefined) {
+    try {
+      const decoded = decodeURIComponent(utf8Match[1]).trim();
+      if (decoded.length > 0 && !/[/\\\p{Cc}\p{Cs}\u202a-\u202e\u2066-\u2069]/u.test(decoded)) {
+        return decoded.slice(0, 255);
+      }
+    } catch {
+      // ignore malformed percent encoding
+    }
+  }
+  const plainMatch = /filename\s*=\s*"([^"]+)"/i.exec(headerValue);
+  const plain = plainMatch?.[1]?.trim();
+  if (
+    plain !== undefined &&
+    plain.length > 0 &&
+    plain !== "download" &&
+    !/[/\\\p{Cc}\p{Cs}\u202a-\u202e\u2066-\u2069]/u.test(plain)
+  ) {
+    return plain.slice(0, 255);
+  }
+  return undefined;
+}
+
+function parseAuthorTrustHeader(raw: string | null): TrustLevel {
+  if (raw === "owner_command" || raw === "owner_sibling_agent" || raw === "external_participant") {
+    return raw;
+  }
+  return "external_participant";
+}
+
+function parseAuthorKindHeader(raw: string | null): ActorKind | "system" {
+  if (raw === "human" || raw === "agent" || raw === "system") {
+    return raw;
+  }
+  return "human";
 }
 
 /**
@@ -250,17 +311,23 @@ export class OpenHuddleMcpApiBridge {
     const effectiveLastReadSeq = requestBody.lastReadSeq ?? cachedSeq;
     const bodyWithDefaults = {
       content: requestBody.content,
+      ...(requestBody.attachment !== undefined ? { attachment: requestBody.attachment } : {}),
       ...(requestBody.replyToSeq !== undefined ? { replyToSeq: requestBody.replyToSeq } : {}),
       mentions: requestBody.mentions,
       opKey: requestBody.opKey ?? `op_${randomUUID()}`,
       ...(effectiveLastReadSeq !== undefined ? { lastReadSeq: effectiveLastReadSeq } : {}),
       ignoreUnread: requestBody.ignoreUnread,
     };
+    const timeoutMs =
+      requestBody.attachment !== undefined
+        ? Math.max(this.requestTimeoutMs, ATTACHMENT_REQUEST_TIMEOUT_MS)
+        : this.requestTimeoutMs;
 
     const res = await this.request(
       "POST",
       `/api/v1/rooms/${encodeURIComponent(roomId)}/messages`,
       bodyWithDefaults,
+      timeoutMs,
     );
 
     if (res.ok && isRecord(res.data) && isRecord(res.data.message)) {
@@ -271,6 +338,124 @@ export class OpenHuddleMcpApiBridge {
     }
 
     return res;
+  }
+
+  /**
+   * 调用 `GET /api/v1/rooms/:roomId/messages/:seq/attachment` 流式限长读取附件二进制与作者信任响应头，绝不推进房间 `lastReadSeq`。
+   *
+   * @param roomId - 房间 ID
+   * @param seq - 消息序号
+   * @param maxStreamBytes - 底层流式读取上限（默认 8 MiB）
+   * @returns 内存附件与服务端盖章的作者信任元数据
+   */
+  public async getAttachment(
+    roomId: RoomId,
+    seq: MessageSeq,
+    maxStreamBytes: number = MAX_MESSAGE_ATTACHMENT_BYTES,
+  ): Promise<McpBridgeResult<McpDownloadedAttachment>> {
+    const pathWithQuery = `/api/v1/rooms/${encodeURIComponent(roomId)}/messages/${seq}/attachment`;
+    const url = `${this.baseUrl}${pathWithQuery}`;
+    const timeoutMs = Math.max(this.requestTimeoutMs, ATTACHMENT_REQUEST_TIMEOUT_MS);
+
+    let response: Response;
+    try {
+      response = await this.fetchFn(url, {
+        method: "GET",
+        headers: {
+          Accept: "*/*",
+          Authorization: `Bearer ${this.agentToken}`,
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        status: 0,
+        formattedError: `Network error calling GET ${pathWithQuery}: ${detail}`,
+        rawError: error,
+      };
+    }
+
+    if (!response.ok) {
+      const rawText = await response.text();
+      let parsed: unknown;
+      try {
+        parsed = rawText.length > 0 ? JSON.parse(rawText) : undefined;
+      } catch {
+        return {
+          ok: false,
+          status: response.status,
+          formattedError: `HTTP ${response.status} error from GET ${pathWithQuery}: ${rawText.slice(0, 240)}`,
+        };
+      }
+      const envParsed = ApiErrorEnvelopeSchema.safeParse(parsed);
+      if (envParsed.success) {
+        const { code, message, requestId } = envParsed.data.error;
+        return {
+          ok: false,
+          status: response.status,
+          rawError: envParsed.data,
+          formattedError: `OpenHuddle API Error (${response.status} ${code}) [requestId=${requestId}]: ${message}`,
+        };
+      }
+      return {
+        ok: false,
+        status: response.status,
+        rawError: parsed,
+        formattedError: `OpenHuddle HTTP ${response.status} error from GET ${pathWithQuery}.`,
+      };
+    }
+
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    if (response.body !== null) {
+      const reader = response.body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          if (value !== undefined && value.byteLength > 0) {
+            totalBytes += value.byteLength;
+            if (totalBytes > maxStreamBytes) {
+              await reader.cancel().catch(() => undefined);
+              return {
+                ok: false,
+                status: 413,
+                formattedError: `Attachment #${seq} exceeds maximum allowed download size (${maxStreamBytes} bytes).`,
+              };
+            }
+            chunks.push(Buffer.from(value));
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+
+    const bytes = Buffer.concat(chunks, totalBytes);
+    const rawContentType = response.headers.get("content-type") ?? "application/octet-stream";
+    const mimeType =
+      rawContentType.split(";")[0]?.trim().toLowerCase() || "application/octet-stream";
+    const fileName = parseContentDispositionFileName(response.headers.get("content-disposition"));
+    const authorTrustLevel = parseAuthorTrustHeader(
+      response.headers.get("x-openhuddle-author-trust"),
+    );
+    const authorKind = parseAuthorKindHeader(response.headers.get("x-openhuddle-author-kind"));
+
+    return {
+      ok: true,
+      data: {
+        bytes,
+        byteLength: bytes.byteLength,
+        mimeType,
+        ...(fileName !== undefined ? { fileName } : {}),
+        authorTrustLevel,
+        authorKind,
+      },
+    };
   }
 
   /**
@@ -470,10 +655,13 @@ export class OpenHuddleMcpApiBridge {
           const conflictParsed = UnreadConflictDetailsSchema.safeParse(details);
           if (conflictParsed.success) {
             const c = conflictParsed.data;
-            const missedLines = c.missedMessages.map(
-              (m) =>
-                `  - [#${m.seq}] ${m.author.displayName} (${m.author.kind}, trustLevel=${m.author.trustLevel}): ${m.content}`,
-            );
+            const missedLines = c.missedMessages.map((m) => {
+              const attSuffix =
+                m.attachment !== undefined
+                  ? ` [Attachment: ${m.attachment.mimeType}, ${m.attachment.byteLength} bytes${m.attachment.fileName !== undefined ? `, fileName=${m.attachment.fileName}` : ""}]`
+                  : "";
+              return `  - [#${m.seq}] ${m.author.displayName} (${m.author.kind}, trustLevel=${m.author.trustLevel}): ${m.content}${attSuffix}`;
+            });
             return {
               ok: false,
               status: response.status,

@@ -104,6 +104,8 @@ export const MessageAttachmentFileNameSchema = z
 export const MessageAttachmentSchema = z.object({
   mimeType: MessageAttachmentMimeTypeSchema,
   byteLength: z.number().int().min(1).max(MAX_MESSAGE_ATTACHMENT_BYTES),
+  width: z.number().int().min(1).max(32_768).optional(),
+  height: z.number().int().min(1).max(32_768).optional(),
   stickerName: MessageStickerNameSchema.optional(),
   fileName: MessageAttachmentFileNameSchema.optional(),
 });
@@ -132,8 +134,7 @@ export const MessageAttachmentUploadSchema = z
     },
   )
   .refine(
-    ({ mimeType, fileName }) =>
-      (mimeType === "application/octet-stream") === (fileName !== undefined),
+    ({ mimeType, fileName }) => mimeType !== "application/octet-stream" || fileName !== undefined,
     { path: ["fileName"], message: "File attachments require a filename" },
   );
 

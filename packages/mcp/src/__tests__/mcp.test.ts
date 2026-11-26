@@ -6,14 +6,19 @@
  * 1. 全链路 JSON-RPC 协议校验：通过真实 `@modelcontextprotocol/sdk` `Client` 驱动工具枚举与调用，验证MCP 工具的 JSON Schema 生成与执行闭环。
  * 2. 乐观并发读锁与 409 错误透传：验证 `openhuddle_read_room` 自动缓存游标供 `openhuddle_send_message` 消费，并在命中 `409` 时向大模型返回 `isError: true` 及漏读详情。
  */
+import { randomFillSync } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { PNG } from "pngjs";
 import { describe, expect, it } from "vitest";
 import {
   OpenHuddleMcpApiBridge,
   createOpenHuddleMcpServer,
   getCoreMcpToolDescriptors,
   handleOpenHuddleMcpHttpRequest,
+  normalizeMcpAttachmentBase64,
 } from "../index.js";
 
 /**
@@ -389,6 +394,7 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server", () => {
         "openhuddle_list_rooms",
         "openhuddle_join_room",
         "openhuddle_read_room",
+        "openhuddle_get_attachment",
         "openhuddle_send_message",
         "openhuddle_submit_proposal",
         "openhuddle_vote_proposal",
@@ -639,6 +645,206 @@ describe("@openhuddle/mcp — Dual-Mode MCP Server", () => {
       expect(res.status).toBe(0);
       expect(res.formattedError).toContain("Network error calling GET /api/v1/rooms");
       expect(res.formattedError).not.toContain("oh_agt_super_secret_should_not_leak");
+    }
+  });
+
+  it("enforces zero node:fs / zero path-parameter security rules and handles multimodal attachments in memory", async () => {
+    // 1. Static source guard: MCP implementation files must NEVER import node:fs
+    for (const rel of ["../index.ts", "../api-bridge.ts", "../../../cli/src/mcp-stdio.ts"]) {
+      const src = readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+      expect(src).not.toMatch(/node:fs|from\s+["']fs["']/);
+    }
+
+    // 2. Base64 normalization helper
+    expect(normalizeMcpAttachmentBase64("data:image/png;base64,\niVBORw0KGgo\n", "image/png")).toBe(
+      "iVBORw0KGgo=",
+    );
+    // Mismatched data: prefix is intentionally NOT stripped so Zod rejects it
+    expect(
+      normalizeMcpAttachmentBase64("data:image/svg+xml;base64,PHN2Zz4=", "image/png"),
+    ).toContain("data:image/svg+xml");
+
+    const largePng = new PNG({ width: 160, height: 120 });
+    randomFillSync(largePng.data);
+    const largePngBytes = PNG.sync.write(largePng, { deflateLevel: 0 });
+    const fakeJpegBytes = Buffer.alloc(8_000, 0xff);
+    const smallBinBytes = Buffer.from("small-binary-report");
+    const bigBinBytes = Buffer.alloc(600_000, 0x41);
+
+    let lastSentBody: Record<string, unknown> | undefined;
+    const mockFetch: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+
+      if (url.pathname === "/api/v1/rooms/rom_mm/messages/1/attachment") {
+        return new Response(largePngBytes, {
+          status: 200,
+          headers: {
+            "content-type": "image/png",
+            "x-openhuddle-author-trust": "external_participant",
+            "x-openhuddle-author-kind": "human",
+          },
+        });
+      }
+      if (url.pathname === "/api/v1/rooms/rom_mm/messages/2/attachment") {
+        return new Response(fakeJpegBytes, {
+          status: 200,
+          headers: {
+            "content-type": "image/jpeg",
+            "x-openhuddle-author-trust": "owner_command",
+            "x-openhuddle-author-kind": "human",
+          },
+        });
+      }
+      if (url.pathname === "/api/v1/rooms/rom_mm/messages/3/attachment") {
+        return new Response(smallBinBytes, {
+          status: 200,
+          headers: {
+            "content-type": "application/octet-stream",
+            "content-disposition": "attachment; filename=\"download\"; filename*=UTF-8''report.csv",
+            "x-openhuddle-author-trust": "owner_sibling_agent",
+            "x-openhuddle-author-kind": "agent",
+          },
+        });
+      }
+      if (url.pathname === "/api/v1/rooms/rom_mm/messages/4/attachment") {
+        return new Response(bigBinBytes, {
+          status: 200,
+          headers: {
+            "content-type": "application/octet-stream",
+            "x-openhuddle-author-trust": "owner_command",
+            "x-openhuddle-author-kind": "human",
+          },
+        });
+      }
+      if (url.pathname === "/api/v1/rooms/rom_mm/messages" && method === "POST") {
+        lastSentBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return jsonHttpResponse(201, {
+          ok: true,
+          message: { seq: 10, roomId: "rom_mm", content: lastSentBody.content },
+          governance: { status: "active" },
+          wokenAgentIds: [],
+        });
+      }
+      return jsonHttpResponse(404, { ok: false });
+    };
+
+    const mcpServer = createOpenHuddleMcpServer({
+      serverUrl: "https://huddle.example.com",
+      agentToken: "oh_agt_mm_test",
+      fetchImpl: mockFetch,
+    });
+    const mcpClient = new Client({ name: "mm-test", version: "0.1.0" });
+    const [cTrans, sTrans] = InMemoryTransport.createLinkedPair();
+    await Promise.all([mcpServer.connect(sTrans), mcpClient.connect(cTrans)]);
+
+    try {
+      const { tools } = await mcpClient.listTools();
+      // Verify zero path/url parameters on attachment & message tools
+      for (const tool of tools) {
+        const schemaJson = JSON.stringify(tool.inputSchema);
+        expect(schemaJson).not.toMatch(/"(?:filePath|outputPath|outPath|url)"/);
+      }
+
+      // PNG > maxBytes -> downscaled automatically to <= maxBytes, returning [text, image]
+      const downscaledRes = await mcpClient.callTool({
+        name: "openhuddle_get_attachment",
+        arguments: { roomId: "rom_mm", seq: 1, maxBytes: 12_000 },
+      });
+      expect(downscaledRes.isError).toBeFalsy();
+      const blocks = downscaledRes.content as Array<{
+        type: string;
+        text?: string;
+        data?: string;
+        mimeType?: string;
+      }>;
+      expect(blocks).toHaveLength(2);
+      const meta1 = JSON.parse(blocks[0]?.text ?? "{}") as Record<string, unknown>;
+      expect(meta1).toMatchObject({
+        ok: true,
+        roomId: "rom_mm",
+        seq: 1,
+        mimeType: "image/png",
+        wasDownscaled: true,
+        authorTrustLevel: "external_participant",
+        authorKind: "human",
+      });
+      expect(Number(meta1.byteLength)).toBeLessThanOrEqual(12_000);
+      expect(blocks[1]?.type).toBe("image");
+      expect(Buffer.from(blocks[1]?.data ?? "", "base64").byteLength).toBe(
+        Number(meta1.byteLength),
+      );
+
+      // Non-PNG exceeding maxBytes -> clear isError: true with maxBytes hint
+      const jpegOverRes = await mcpClient.callTool({
+        name: "openhuddle_get_attachment",
+        arguments: { roomId: "rom_mm", seq: 2, maxBytes: 2_048 },
+      });
+      expect(jpegOverRes.isError).toBe(true);
+      expect(extractFirstTextBlock(jpegOverRes)).toContain("maxBytes");
+
+      // Non-image default -> metadata text only; includeNonImageBase64=true & <= 512 KiB -> [text, resource]; > 512 KiB -> [text] only
+      const binMetaOnly = await mcpClient.callTool({
+        name: "openhuddle_get_attachment",
+        arguments: { roomId: "rom_mm", seq: 3 },
+      });
+      expect((binMetaOnly.content as unknown[]).length).toBe(1);
+
+      const binWithResource = await mcpClient.callTool({
+        name: "openhuddle_get_attachment",
+        arguments: { roomId: "rom_mm", seq: 3, includeNonImageBase64: true },
+      });
+      expect((binWithResource.content as Array<{ type: string }>).map((b) => b.type)).toEqual([
+        "text",
+        "resource",
+      ]);
+
+      const bigBinNoResource = await mcpClient.callTool({
+        name: "openhuddle_get_attachment",
+        arguments: { roomId: "rom_mm", seq: 4, includeNonImageBase64: true },
+      });
+      expect((bigBinNoResource.content as unknown[]).length).toBe(1);
+
+      // Send image attachment without content, stripping data: URL + newlines, and confirm get_attachment never advanced lastReadSeq!
+      const tinyPngB64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFzsAAAAASUVORK5CYII=";
+      const sendImgRes = await mcpClient.callTool({
+        name: "openhuddle_send_message",
+        arguments: {
+          roomId: "rom_mm",
+          attachment: {
+            mimeType: "image/png",
+            fileName: "arch.png",
+            data: `data:image/png;base64,\n${tinyPngB64.slice(0, -1)}\n`,
+          },
+        },
+      });
+      expect(sendImgRes.isError).toBeFalsy();
+      expect(lastSentBody).toMatchObject({
+        content: "",
+        attachment: {
+          mimeType: "image/png",
+          fileName: "arch.png",
+          data: tinyPngB64,
+        },
+      });
+      expect(lastSentBody?.lastReadSeq).toBeUndefined();
+
+      // Reject image/svg+xml
+      const svgAttempt = await mcpClient.callTool({
+        name: "openhuddle_send_message",
+        arguments: {
+          roomId: "rom_mm",
+          attachment: {
+            mimeType: "image/svg+xml" as "image/png",
+            data: Buffer.from("<svg/>").toString("base64"),
+          },
+        },
+      });
+      expect(svgAttempt.isError).toBe(true);
+    } finally {
+      await mcpClient.close();
+      await mcpServer.close();
     }
   });
 });

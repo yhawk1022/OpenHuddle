@@ -11,6 +11,7 @@ import { applyCommittedMessageTurn, evaluatePreSendPolicy } from "@openhuddle/co
 import {
   type AgentId,
   type AuthenticatedCaller,
+  type AuthorStamp,
   type MessageDto,
   type MessageMention,
   type MessageSeq,
@@ -23,6 +24,7 @@ import {
   type WakeReason,
   asMessageSeq,
   asReadCursorSeq,
+  computeAuthorStamp,
 } from "@openhuddle/protocol";
 import { AppError } from "../../infra/errors.js";
 import { toActorMemberKey } from "../../infra/identity-stamp.js";
@@ -256,7 +258,7 @@ export class MessagesService {
     caller: Readonly<AuthenticatedCaller>,
     roomId: RoomId,
     seq: MessageSeq,
-  ): Promise<StoredMessageAttachment> {
+  ): Promise<StoredMessageAttachment & { readonly author: AuthorStamp }> {
     const result = await this.repo.findAttachment(roomId, seq, toActorMemberKey(caller));
     if (result?.isMember === false) {
       throw new AppError({
@@ -265,14 +267,17 @@ export class MessagesService {
         message: "You must be a member of this room to read message attachments.",
       });
     }
-    if (result?.attachment === undefined) {
+    if (result?.attachment === undefined || result.rawAuthor === undefined) {
       throw new AppError({
         code: "NOT_FOUND",
         statusCode: 404,
         message: "The message attachment was not found.",
       });
     }
-    return result.attachment;
+    return {
+      ...result.attachment,
+      author: computeAuthorStamp(result.rawAuthor, caller),
+    };
   }
 
   /**

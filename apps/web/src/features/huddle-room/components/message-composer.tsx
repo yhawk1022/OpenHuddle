@@ -60,19 +60,23 @@ import {
   motion,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
+import { ImageLightboxDialog } from "../../../components/ui/message-attachment.js";
 import {
   type AgentExecutionTier,
   getExecutionTierMeta,
   useAgentCapabilityPrefs,
 } from "../../../lib/agent-capability-prefs.js";
-import { ApiClientError } from "../../../lib/api-client.js";
+import { ApiClientError, roomMessageAttachmentPath } from "../../../lib/api-client.js";
 import {
   createClientOperationKey,
   formatAttachmentSize,
   getMessageSnippet,
   getReachVisualMeta,
 } from "../../../lib/format.js";
-import type { DraftMessageAttachment } from "../../../lib/message-media.js";
+import {
+  type DraftMessageAttachment,
+  formatDraftAttachmentDisplayName,
+} from "../../../lib/message-media.js";
 import { isCoarsePointerDevice, isImeComposing } from "../../../lib/viewport-sync.js";
 import type {
   DispatchWorkPayload,
@@ -164,14 +168,57 @@ export interface MessageComposerProps {
   }) => void;
 }
 
+/**
+ * 根据房间形态、待发图片状态与交办/提问模式计算动态输入框占位文案。
+ */
+export function resolveComposerPlaceholder(params: {
+  readonly roomName: string;
+  readonly roomKind: RoomKind;
+  readonly dispatchMode: boolean;
+  readonly askMode: boolean;
+  readonly hasDraftImage: boolean;
+}): string {
+  if (params.dispatchMode) {
+    return params.hasDraftImage ? "结合这张图片写下要交办的任务说明…" : "写下要交办的任务说明…";
+  }
+  if (params.askMode) {
+    return params.hasDraftImage ? "结合这张图片写下要提问的问题…" : "写下要等待人类作答的问题…";
+  }
+  if (params.hasDraftImage) {
+    if (params.roomKind === "group") {
+      return "输入 @ 让 Agent 看图分析，或直接发送…";
+    }
+    if (params.roomKind === "direct_agent") {
+      return `补充说明给 ${params.roomName}，或直接发送…`;
+    }
+    return "补充图片说明，或直接发送…";
+  }
+  if (params.roomKind === "direct_agent") {
+    return `发消息或图片给 ${params.roomName}…`;
+  }
+  if (params.roomKind === "direct_human") {
+    return `发消息给 ${params.roomName}…`;
+  }
+  return `发消息到 ${params.roomName}…`;
+}
+
 function AttachmentPreview(props: {
   readonly attachment: DraftMessageAttachment;
   readonly disabled: boolean;
   readonly onRemove: () => void;
 }) {
   const [url, setUrl] = useState<string | null>(null);
-  const { blob, mimeType, name, stickerName } = props.attachment;
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const { blob, mimeType, stickerName, width, height } = props.attachment;
   const isFile = mimeType === "application/octet-stream";
+  const isImage = mimeType.startsWith("image/");
+  const displayName = formatDraftAttachmentDisplayName(props.attachment);
+  const sizeLabel =
+    props.attachment.wasCompressed === true
+      ? `已压缩 · ${formatAttachmentSize(blob.size)}`
+      : formatAttachmentSize(blob.size);
+
   useEffect(() => {
     if (isFile) {
       setUrl(null);
@@ -184,55 +231,79 @@ function AttachmentPreview(props: {
   }, [blob, isFile, mimeType]);
 
   return (
-    <div className="mb-2 flex min-w-0 items-center gap-2 rounded-xl bg-black/[0.04] px-2 py-1.5 dark:bg-white/[0.07]">
-      {isFile ? (
-        <FileText
-          aria-hidden="true"
-          className="ml-1 h-5 w-5 shrink-0 text-[#687082] dark:text-[#C4C4CA]"
-        />
-      ) : mimeType.startsWith("image/") ? (
-        url !== null ? (
-          <img
-            src={url}
-            alt={stickerName !== undefined ? `待发送表情：${stickerName}` : "待发送图片预览"}
-            className={cn(
-              "h-12 w-12 shrink-0 rounded-md",
-              stickerName !== undefined ? "object-contain" : "object-cover",
-            )}
+    <>
+      <div className="mb-2 flex min-w-0 items-center gap-2.5 rounded-xl bg-black/[0.04] px-2 py-1.5 dark:bg-white/[0.07]">
+        {isFile ? (
+          <FileText
+            aria-hidden="true"
+            className="ml-1 h-5 w-5 shrink-0 text-[#687082] dark:text-[#C4C4CA]"
           />
-        ) : null
-      ) : url !== null ? (
-        // biome-ignore lint/a11y/useMediaCaption: 用户的音频草稿没有字幕轨，原生控件支持键盘播放与暂停。
-        <audio
+        ) : isImage ? (
+          url !== null ? (
+            <button
+              ref={previewTriggerRef}
+              type="button"
+              onClick={() => setPreviewOpen(true)}
+              aria-label={`预览待发送图片：${displayName}`}
+              title="点击放大确认待发送图片"
+              className="app-no-drag relative h-12 w-12 shrink-0 cursor-zoom-in overflow-hidden rounded-md ring-1 ring-inset ring-black/[0.06] focus-visible:ring-2 dark:ring-white/[0.08]"
+            >
+              <img
+                src={url}
+                alt={stickerName !== undefined ? `待发送表情：${stickerName}` : "待发送图片预览"}
+                className={cn(
+                  "block h-full w-full",
+                  stickerName !== undefined ? "object-contain" : "object-cover",
+                )}
+              />
+            </button>
+          ) : null
+        ) : url !== null ? (
+          // biome-ignore lint/a11y/useMediaCaption: 用户的音频草稿没有字幕轨，原生控件支持键盘播放与暂停。
+          <audio
+            src={url}
+            controls
+            preload="metadata"
+            aria-label="试听待发送语音"
+            className="h-9 w-48 min-w-0 max-w-[65%]"
+          />
+        ) : null}
+
+        <div className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-[#111318] dark:text-[#ECECEF]">
+            {displayName}
+          </span>
+          <span className="block truncate text-[11px] tabular-nums text-[#687082] dark:text-[#8E8E96]">
+            {sizeLabel}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          aria-label="移除附件"
+          title="移除附件"
+          disabled={props.disabled}
+          onClick={props.onRemove}
+          className={MEDIA_BUTTON_CLASS}
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {isImage && url !== null ? (
+        <ImageLightboxDialog
+          open={previewOpen}
+          onOpenChange={setPreviewOpen}
           src={url}
-          controls
-          preload="metadata"
-          aria-label="试听待发送语音"
-          className="h-9 w-48 min-w-0 max-w-[65%]"
+          title={displayName}
+          downloadName={displayName}
+          width={width}
+          height={height}
+          isSticker={stickerName !== undefined}
+          returnFocusRef={previewTriggerRef}
         />
       ) : null}
-      <span className="min-w-0 flex-1 truncate text-xs text-[#687082] dark:text-[#C4C4CA]">
-        {name}
-      </span>
-      {isFile ? (
-        <span className="shrink-0 text-xs text-[#687082] dark:text-[#C4C4CA]">
-          {formatAttachmentSize(blob.size)}
-        </span>
-      ) : null}
-      {props.attachment.wasCompressed === true ? (
-        <span className="shrink-0 text-xs text-[#687082] dark:text-[#C4C4CA]">已压缩</span>
-      ) : null}
-      <button
-        type="button"
-        aria-label="移除附件"
-        title="移除附件"
-        disabled={props.disabled}
-        onClick={props.onRemove}
-        className={MEDIA_BUTTON_CLASS}
-      >
-        <X className="h-4 w-4" />
-      </button>
-    </div>
+    </>
   );
 }
 
@@ -389,19 +460,28 @@ export function MessageComposer(props: MessageComposerProps) {
     readonly dispatchMode: boolean;
     readonly dispatchTopology: WorkTopology;
     readonly replySeq?: MessageSeq | undefined;
+    readonly attachment?: DraftMessageAttachment | undefined;
     readonly opKey: OperationKey;
     readonly attention?:
       | { readonly question: string; readonly addresseeUserIds: UserId[] }
       | undefined;
     readonly workDispatch?: DispatchWorkPayload | undefined;
   } | null>(null);
+  const [failedReplyChipKey, setFailedReplyChipKey] = useState<string | null>(null);
   const retryRef = useRef<{
     readonly attachment: DraftMessageAttachment | null;
     readonly fingerprint: string;
     readonly opKey: OperationKey;
   } | null>(null);
   const media = useMessageMediaDraft();
-  const expanded = editing || toolsOpen || media.phase !== "idle";
+  const mediaAttachmentRef = useRef<DraftMessageAttachment | null>(media.attachment);
+  mediaAttachmentRef.current = media.attachment;
+  const expanded =
+    editing ||
+    toolsOpen ||
+    media.phase !== "idle" ||
+    media.attachment !== null ||
+    media.isPreparingImage;
 
   useEffect(() => {
     if (!toolsOpen) return;
@@ -816,10 +896,11 @@ export function MessageComposer(props: MessageComposerProps) {
 
   const trimmed = draft.trim();
   const canChooseMedia = !props.isSending && !media.isPreparingImage && media.phase === "idle";
-  // 原生 IM 体验不变量：纯文本发送支持 0ms 连续回车抢发（不因上一条网络请求在途而锁死输入框），仅二进制附件上传时等待当前传输完成
+  const requiresAccompanyingText = askMode || dispatchMode;
+  // 原生 IM 体验不变量：纯文本发送支持 0ms 连续回车抢发；携带图片时也允许开启交办任务或提问模式（需填写非空说明文字）
   const canSend =
     media.attachment !== null
-      ? canChooseMedia && !askMode && !dispatchMode
+      ? canChooseMedia && (!requiresAccompanyingText || trimmed.length > 0)
       : !media.isPreparingImage && media.phase === "idle" && trimmed.length > 0;
 
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
@@ -888,61 +969,26 @@ export function MessageComposer(props: MessageComposerProps) {
     retryRef.current = { attachment, fingerprint, opKey };
     setFailedTextSnapshot(null);
 
-    // 纯文本消息采用原生客户端级 0ms 瞬时清空策略：按下回车当帧立即清空输入框并保持焦点，乐观气泡同步弹入时间线；若请求异常且输入框仍为空则自动无损回填
-    if (attachment === null) {
-      const savedDraft = draft;
-      const savedMentions = selectedMentions;
-      const savedAsk = askMode;
-      const savedDispatch = dispatchMode;
-      const savedTopology = dispatchTopology;
+    // 统一 0ms 瞬时清空策略：无论纯文本还是带图消息，按下发送当帧立即清空输入舱文本与附件预览槽，由时间线乐观气泡直接渲染本地真实缩略图；若失败且输入舱为空则自动无损回填
+    const savedDraft = draft;
+    const savedMentions = selectedMentions;
+    const savedAsk = askMode;
+    const savedDispatch = dispatchMode;
+    const savedTopology = dispatchTopology;
+    const savedAttachment = attachment;
 
-      setDraft("");
-      setAskMode(false);
-      setDispatchMode(false);
-      setSelectedMentions([]);
-      setCaretIndex(0);
-      if (replySeq !== undefined) {
-        props.onClearReplyTarget();
-      }
-      window.requestAnimationFrame(() => textareaRef.current?.focus());
-
-      props.onSendMessage({
-        content: trimmed,
-        opKey,
-        ...(replySeq !== undefined ? { replyToSeq: replySeq } : {}),
-        mentions: finalMentions,
-        ...(attention !== undefined ? { attention } : {}),
-        ...(workDispatch !== undefined ? { workDispatch } : {}),
-        onConfirmed: () => {
-          retryRef.current = null;
-          setFailedTextSnapshot(null);
-        },
-        onFailed: () => {
-          if (draftRef.current.trim().length === 0) {
-            setDraft(savedDraft);
-            setSelectedMentions(savedMentions);
-            setAskMode(savedAsk);
-            setDispatchMode(savedDispatch);
-            setDispatchTopology(savedTopology);
-            focusAt(savedDraft.length);
-          } else {
-            // 用户已在网络请求期间继续输入下一句，绝不覆盖新草稿，而是提供一键原样重发入口
-            setFailedTextSnapshot({
-              content: trimmed,
-              mentions: finalMentions,
-              askMode: savedAsk,
-              dispatchMode: savedDispatch,
-              dispatchTopology: savedTopology,
-              ...(replySeq !== undefined ? { replySeq } : {}),
-              opKey,
-              ...(attention !== undefined ? { attention } : {}),
-              ...(workDispatch !== undefined ? { workDispatch } : {}),
-            });
-          }
-        },
-      });
-      return;
+    setDraft("");
+    setAskMode(false);
+    setDispatchMode(false);
+    setSelectedMentions([]);
+    setCaretIndex(0);
+    if (savedAttachment !== null) {
+      media.clearAttachment(savedAttachment);
     }
+    if (replySeq !== undefined) {
+      props.onClearReplyTarget();
+    }
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
 
     props.onSendMessage({
       content: trimmed,
@@ -951,17 +997,39 @@ export function MessageComposer(props: MessageComposerProps) {
       mentions: finalMentions,
       ...(attention !== undefined ? { attention } : {}),
       ...(workDispatch !== undefined ? { workDispatch } : {}),
-      attachment,
+      ...(savedAttachment !== null ? { attachment: savedAttachment } : {}),
       onConfirmed: () => {
         retryRef.current = null;
-        setDraft((current) => (current === draft ? "" : current));
-        setAskMode((current) => (current === askMode ? false : current));
-        setDispatchMode((current) => (current === dispatchMode ? false : current));
-        setSelectedMentions((current) => (current === selectedMentions ? [] : current));
-        if (textareaRef.current?.value === draft) {
-          setCaretIndex(0);
+        setFailedTextSnapshot(null);
+      },
+      onFailed: () => {
+        const isComposerCurrentlyEmpty =
+          draftRef.current.trim().length === 0 && mediaAttachmentRef.current === null;
+        if (isComposerCurrentlyEmpty) {
+          setDraft(savedDraft);
+          setSelectedMentions(savedMentions);
+          setAskMode(savedAsk);
+          setDispatchMode(savedDispatch);
+          setDispatchTopology(savedTopology);
+          if (savedAttachment !== null) {
+            media.restoreAttachment(savedAttachment);
+          }
+          focusAt(savedDraft.length);
+        } else {
+          // 用户已在请求期间继续输入新内容或选定新附件，绝不覆盖新草稿，而在错误条提供一键重发入口
+          setFailedTextSnapshot({
+            content: trimmed,
+            mentions: finalMentions,
+            askMode: savedAsk,
+            dispatchMode: savedDispatch,
+            dispatchTopology: savedTopology,
+            ...(replySeq !== undefined ? { replySeq } : {}),
+            ...(savedAttachment !== null ? { attachment: savedAttachment } : {}),
+            opKey,
+            ...(attention !== undefined ? { attention } : {}),
+            ...(workDispatch !== undefined ? { workDispatch } : {}),
+          });
         }
-        media.clearAttachment(attachment);
       },
     });
   };
@@ -1040,13 +1108,22 @@ export function MessageComposer(props: MessageComposerProps) {
   const hasAnyTeammate =
     effectiveKind === "group" && (agentMembers.length > 0 || humanMembers.length > 0);
   const hasContextChips = props.replyTarget !== null || activeChipMentions.length > 0;
-  const composerPlaceholder = dispatchMode
-    ? "写下要交办的任务说明…"
-    : effectiveKind === "direct_agent"
-      ? `发消息给 ${props.roomName}…`
-      : effectiveKind === "direct_human"
-        ? `发消息给 ${props.roomName}…`
-        : `发消息到 ${props.roomName}…`;
+  const hasDraftImage =
+    media.attachment?.mimeType.startsWith("image/") === true &&
+    media.attachment.stickerName === undefined;
+  const composerPlaceholder = resolveComposerPlaceholder({
+    roomName: props.roomName,
+    roomKind: effectiveKind,
+    dispatchMode,
+    askMode,
+    hasDraftImage,
+  });
+  const sendButtonTooltip =
+    media.attachment !== null && dispatchMode && trimmed.length === 0
+      ? "请补充要交办的任务说明后再发送"
+      : media.attachment !== null && askMode && trimmed.length === 0
+        ? "请补充要提问的问题后再发送"
+        : "发送消息";
 
   return (
     <footer
@@ -1089,6 +1166,7 @@ export function MessageComposer(props: MessageComposerProps) {
                         ...(snap.workDispatch !== undefined
                           ? { workDispatch: snap.workDispatch }
                           : {}),
+                        ...(snap.attachment !== undefined ? { attachment: snap.attachment } : {}),
                         onConfirmed: () => {
                           retryRef.current = null;
                         },
@@ -1099,7 +1177,12 @@ export function MessageComposer(props: MessageComposerProps) {
                     }}
                     className="im-press shrink-0 cursor-pointer rounded-full bg-[#C81E1E] px-2.5 py-0.5 text-[11px] font-medium text-white hover:bg-[#B91C1C] dark:bg-[#F87171] dark:text-[#111318]"
                   >
-                    重发上一条
+                    {failedTextSnapshot.attachment?.mimeType.startsWith("image/") === true &&
+                    failedTextSnapshot.attachment.stickerName === undefined
+                      ? "重发上一条图片消息"
+                      : failedTextSnapshot.attachment !== undefined
+                        ? "重发上一条附件消息"
+                        : "重发上一条"}
                   </button>
                 ) : null}
               </div>
@@ -1228,7 +1311,7 @@ export function MessageComposer(props: MessageComposerProps) {
         <div
           data-expanded={expanded}
           data-tools-open={toolsOpen}
-          className="oh-chat-capsule pointer-events-auto relative liquid-glass-composer rounded-[22px] sm:rounded-[24px] px-3.5 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5"
+          className="@container oh-chat-capsule pointer-events-auto relative liquid-glass-composer rounded-[22px] sm:rounded-[24px] px-3.5 pt-2.5 pb-2 sm:px-4 sm:pt-3 sm:pb-2.5"
         >
           <div className="oh-chat-context">
             {/* 3.0 派活编排微胶囊条（仅开启交办任务时浮现，窄屏单行滑轨紧凑排布以释放软键盘消息区） */}
@@ -1356,6 +1439,25 @@ export function MessageComposer(props: MessageComposerProps) {
                     {props.replyTarget !== null ? (
                       <span className="inline-flex max-w-[18rem] items-center gap-1.5 rounded-full bg-black/[0.05] py-0.5 pr-1 pl-2.5 text-[11.5px] text-[#111318] dark:bg-white/[0.08] dark:text-[#ECECEF]">
                         <CornerUpLeft className="h-3 w-3 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
+                        {(() => {
+                          const target = props.replyTarget;
+                          const chipKey = `${target.roomId}:${String(target.seq)}`;
+                          const showThumb =
+                            target.recalledAtIso === undefined &&
+                            target.attachment !== undefined &&
+                            target.attachment.mimeType.startsWith("image/") &&
+                            failedReplyChipKey !== chipKey;
+                          return showThumb ? (
+                            <img
+                              src={roomMessageAttachmentPath(target.roomId, target.seq)}
+                              alt=""
+                              aria-hidden="true"
+                              decoding="async"
+                              onError={() => setFailedReplyChipKey(chipKey)}
+                              className="h-[18px] w-[18px] shrink-0 rounded-[4px] object-cover ring-1 ring-inset ring-black/[0.06] dark:ring-white/[0.08]"
+                            />
+                          ) : null;
+                        })()}
                         <span className="truncate">
                           回复 <strong>{props.replyTarget.author.displayName}</strong>：
                           {getMessageSnippet(props.replyTarget, 42)}
@@ -1628,6 +1730,9 @@ export function MessageComposer(props: MessageComposerProps) {
                 onChange={(event) => {
                   const files = Array.from(event.currentTarget.files ?? []);
                   event.currentTarget.value = "";
+                  if (files.length > 0) {
+                    setToolsOpen(false);
+                  }
                   void media.chooseFiles(files);
                 }}
               />
@@ -1645,7 +1750,10 @@ export function MessageComposer(props: MessageComposerProps) {
                 userId={props.currentUserId}
                 disabled={!canChooseMedia}
                 triggerClassName={cn(MEDIA_BUTTON_CLASS, "oh-chat-extra")}
-                onSelect={media.chooseSticker}
+                onSelect={(sticker) => {
+                  setToolsOpen(false);
+                  media.chooseSticker(sticker);
+                }}
               />
               {media.phase === "idle" ? (
                 <button
@@ -1724,7 +1832,7 @@ export function MessageComposer(props: MessageComposerProps) {
                 <Hand className="h-[17px] w-[17px] stroke-[1.9]" />
               </button>
               {askMode ? (
-                <span className="hidden select-none rounded-full bg-amber-500/12 px-2 py-0.5 text-[10.5px] font-medium text-amber-700 sm:inline dark:text-amber-300">
+                <span className="hidden select-none rounded-full bg-amber-500/12 px-2 py-0.5 text-[10.5px] font-medium text-amber-700 @[420px]:inline dark:text-amber-300">
                   提问模式
                 </span>
               ) : null}
@@ -1762,14 +1870,14 @@ export function MessageComposer(props: MessageComposerProps) {
                   type="button"
                   onClick={handleMentionAllAgents}
                   title="同时点名群内所有 Agent"
-                  className="hidden sm:inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full bg-black/[0.05] px-2.5 text-[12px] font-medium text-[#181B22] transition-colors hover:bg-black/[0.09] active:scale-[0.97] dark:bg-white/[0.07] dark:text-[#ECECEF] dark:hover:bg-white/[0.12]"
+                  className="hidden @[390px]:inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full bg-black/[0.05] px-2.5 text-[12px] font-medium text-[#181B22] transition-colors hover:bg-black/[0.09] active:scale-[0.97] dark:bg-white/[0.07] dark:text-[#ECECEF] dark:hover:bg-white/[0.12]"
                 >
                   <span>@全体</span>
                 </button>
               ) : null}
 
-              {/* 安静的本人发言身份微标（宽屏展示，不额外挤占纵向对话空间） */}
-              <div className="ml-1 hidden min-w-0 items-center gap-1.5 border-l border-black/[0.07] pl-2.5 sm:flex dark:border-white/[0.08]">
+              {/* 安静的本人发言身份微标（按容器实际可用宽度展示，避免分屏或 175% 缩放窄舞台下挤压发送键） */}
+              <div className="ml-1 hidden min-w-0 items-center gap-1.5 border-l border-black/[0.07] pl-2.5 @[470px]:flex dark:border-white/[0.08]">
                 <PlatformAvatar
                   kind="human"
                   displayName={senderDisplayName}
@@ -1784,29 +1892,32 @@ export function MessageComposer(props: MessageComposerProps) {
 
             <AppTooltip
               side="top"
-              content="发送消息"
-              shortcut={touchKeyboard ? undefined : "Enter"}
+              content={sendButtonTooltip}
+              shortcut={touchKeyboard || !canSend ? undefined : "Enter"}
             >
-              <motion.button
-                type="button"
-                disabled={!canSend}
-                onClick={submitMessage}
-                {...(canSend ? { whileTap: { scale: 0.92 } } : {})}
-                transition={{ type: "spring", stiffness: 560, damping: 30 }}
-                aria-label="发送消息"
-                className={cn(
-                  "oh-chat-send inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-black/25 focus-visible:outline-none dark:focus-visible:ring-white/35",
-                  canSend
-                    ? "cursor-pointer bg-[#181B22] text-white shadow-xs hover:bg-[#252A35] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
-                    : "cursor-not-allowed bg-black/[0.08] text-black/30 dark:bg-white/[0.08] dark:text-white/25",
-                )}
-              >
-                {props.isSending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <ArrowUp className="h-4 w-4 stroke-[2.4]" />
-                )}
-              </motion.button>
+              <span className="inline-flex shrink-0">
+                <motion.button
+                  type="button"
+                  disabled={!canSend}
+                  onClick={submitMessage}
+                  {...(canSend ? { whileTap: { scale: 0.92 } } : {})}
+                  transition={{ type: "spring", stiffness: 560, damping: 30 }}
+                  aria-label={sendButtonTooltip}
+                  title={sendButtonTooltip}
+                  className={cn(
+                    "oh-chat-send inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-black/25 focus-visible:outline-none dark:focus-visible:ring-white/35",
+                    canSend
+                      ? "cursor-pointer bg-[#181B22] text-white shadow-xs hover:bg-[#252A35] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
+                      : "cursor-not-allowed bg-black/[0.08] text-black/30 dark:bg-white/[0.08] dark:text-white/25",
+                  )}
+                >
+                  {props.isSending && media.attachment !== null ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <ArrowUp className="h-4 w-4 stroke-[2.4]" />
+                  )}
+                </motion.button>
+              </span>
             </AppTooltip>
           </div>
         </div>

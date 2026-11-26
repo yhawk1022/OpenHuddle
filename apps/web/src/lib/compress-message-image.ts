@@ -17,7 +17,12 @@ const TARGET_LONG_EDGES = [2560, 2048, 1536, 1024];
 export async function compressMessageImage(
   source: Blob,
   signal: AbortSignal,
-): Promise<{ readonly blob: Blob; readonly mimeType: "image/jpeg" | "image/webp" | "image/png" }> {
+): Promise<{
+  readonly blob: Blob;
+  readonly mimeType: "image/jpeg" | "image/webp" | "image/png";
+  readonly width: number;
+  readonly height: number;
+}> {
   signal.throwIfAborted();
   if (source.size > MAX_SOURCE_BYTES) {
     throw new Error("原图超过 64 MB，请缩小原图后重试");
@@ -60,7 +65,7 @@ export async function compressMessageImage(
         blob.size <= MAX_MESSAGE_ATTACHMENT_BYTES &&
         (blob.type === "image/jpeg" || blob.type === "image/webp" || blob.type === "image/png")
       ) {
-        return { blob, mimeType: blob.type };
+        return { blob, mimeType: blob.type, width: canvas.width, height: canvas.height };
       }
     }
     throw new Error("无法把图片压缩到 8 MB 以内，请换一张图片");

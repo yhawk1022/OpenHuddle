@@ -34,6 +34,10 @@ describe("Agent connection instructions", () => {
     expect(posix).toContain("--platform custom --no-listen");
     expect(powerShell).toContain("--platform custom --no-listen");
     expect(prompt).toContain("/api/v1/mcp");
+    expect(prompt).toContain("openhuddle attachment <seq> --room <roomId>");
+    expect(prompt).toContain("openhuddle_get_attachment");
+    expect(prompt).toContain('openhuddle reply "..." --image <path>');
+    expect(prompt).toContain("openhuddle_send_message");
     expect(prompt).not.toContain("Realtime listener connected.");
   });
 

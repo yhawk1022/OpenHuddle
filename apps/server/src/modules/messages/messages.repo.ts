@@ -362,13 +362,21 @@ export class MessagesRepository {
     memberKey: string,
   ): Promise<
     | { readonly isMember: false }
-    | { readonly isMember: true; readonly attachment?: StoredMessageAttachment }
+    | {
+        readonly isMember: true;
+        readonly attachment?: StoredMessageAttachment;
+        readonly rawAuthor?: RawAuthorIdentity;
+      }
     | undefined
   > {
     const [row] = await this.db
       .select({
         memberKey: roomMembersTable.memberKey,
         payload: messagesTable.payloadJson,
+        authorKind: messagesTable.authorKind,
+        authorUserId: messagesTable.authorUserId,
+        authorAgentId: messagesTable.authorAgentId,
+        ownerUserId: messagesTable.ownerUserId,
         bytes: messageAttachmentsTable.bytes,
       })
       .from(roomsTable)
@@ -399,11 +407,26 @@ export class MessagesRepository {
     if (row.memberKey === null) {
       return { isMember: false };
     }
-    if (row.bytes === null) {
+    if (row.bytes === null || row.authorKind === null || row.ownerUserId === null) {
       return { isMember: true };
     }
+    const authorKind = ActorKindSchema.parse(row.authorKind);
+    const rawAuthor: RawAuthorIdentity =
+      authorKind === "human"
+        ? {
+            kind: "human",
+            ...(row.authorUserId !== null ? { userId: row.authorUserId as UserId } : {}),
+            ownerUserId: row.ownerUserId as UserId,
+            displayName: "Author",
+          }
+        : {
+            kind: "agent",
+            ...(row.authorAgentId !== null ? { agentId: row.authorAgentId as AgentId } : {}),
+            ownerUserId: row.ownerUserId as UserId,
+            displayName: "Author",
+          };
     const { attachment: metadata } = AttachmentPayloadSchema.parse(row.payload);
-    return { isMember: true, attachment: { bytes: row.bytes, metadata } };
+    return { isMember: true, attachment: { bytes: row.bytes, metadata }, rawAuthor };
   }
 
   /**

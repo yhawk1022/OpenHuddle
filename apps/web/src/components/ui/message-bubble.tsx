@@ -24,21 +24,26 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Download,
   FileText,
+  Image as ImageIcon,
   ListTodo,
   Loader2,
+  Maximize2,
   MoreHorizontal,
   Reply,
   RotateCcw,
   UserRound,
 } from "lucide-react";
 import { type KeyboardEvent, type MouseEvent, useRef, useState } from "react";
+import { roomMessageAttachmentPath } from "../../lib/api-client.js";
 import {
   canViewerRecallMessage,
   formatMessageTimestamp,
   getMessageSnippet,
   getPlatformVisualMeta,
 } from "../../lib/format.js";
+import { canCopyImageToClipboard, copyImageUrlToClipboard } from "../../lib/message-media.js";
 import type { OptimisticMessageItem } from "../../lib/query-keys.js";
 import {
   AppContextMenu,
@@ -98,6 +103,192 @@ export interface MessageBubbleProps {
 const JUMP_HIGHLIGHT_CLASS = "bg-im-accent-soft";
 const JUMP_FLASH_CLASS = "oh-jump-flash";
 
+/** 构建单条消息右键菜单所需的上下文与回调参数 */
+export interface BuildMessageContextMenuOptions {
+  readonly message: OptimisticMessageItem;
+  readonly readOnly?: boolean | undefined;
+  readonly isPending: boolean;
+  readonly isSelf: boolean;
+  readonly canRecall: boolean;
+  readonly isRecalling?: boolean | undefined;
+  readonly canSaveSticker: boolean;
+  readonly canCopyImage: boolean;
+  readonly isAgentInspectable: boolean;
+  readonly hasLinkedProposal: boolean;
+  readonly capturedSelection: string;
+  readonly onCopySelection?: ((text: string) => void) | undefined;
+  readonly onReply?: ((message: MessageDto) => void) | undefined;
+  readonly onOpenLightbox?: (() => void) | undefined;
+  readonly onCopyImage?: (() => void) | undefined;
+  readonly onDownloadImage?: (() => void) | undefined;
+  readonly onCopyMessageContent?: (() => void) | undefined;
+  readonly onSaveSticker?: ((message: MessageDto) => void) | undefined;
+  readonly onConvertToWorkTask?: ((content: string) => void) | undefined;
+  readonly onQuickMention?: (() => void) | undefined;
+  readonly onInspectAgent?: (() => void) | undefined;
+  readonly onOpenProposal?: (() => void) | undefined;
+  readonly onRecall?: ((seq: MessageSeq) => void) | undefined;
+}
+
+/**
+ * 纯函数生成消息气泡 `AppContextMenu` 条目列表（图片消息按序展示看大图、复制图片、下载图片、复制消息文字与转任务）。
+ */
+export function buildMessageContextMenuItems(
+  opts: BuildMessageContextMenuOptions,
+): ReadonlyArray<AppContextMenuEntry> {
+  if (Boolean(opts.readOnly) || opts.isPending) {
+    return [];
+  }
+  const { message } = opts;
+  const hasContent = message.content.length > 0;
+  const hasNonStickerImage =
+    message.attachment?.mimeType.startsWith("image/") === true &&
+    message.attachment.stickerName === undefined;
+  const taskSeedText = hasContent
+    ? message.content
+    : `请结合消息 #${String(message.seq)} 的图片处理：`;
+
+  return [
+    ...(opts.capturedSelection.length > 0 && opts.onCopySelection !== undefined
+      ? [
+          {
+            id: "ctx-msg-copy-selection",
+            label: "复制选中文字",
+            icon: <Copy className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onCopySelection?.(opts.capturedSelection),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    ...(opts.onReply !== undefined
+      ? [
+          {
+            id: "ctx-msg-reply",
+            label: "回复此消息",
+            icon: <Reply className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onReply?.(message),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    ...(hasNonStickerImage && opts.onOpenLightbox !== undefined
+      ? [
+          {
+            id: "ctx-msg-view-image",
+            label: "查看大图",
+            icon: <Maximize2 className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onOpenLightbox?.(),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    ...(hasNonStickerImage && opts.canCopyImage && opts.onCopyImage !== undefined
+      ? [
+          {
+            id: "ctx-msg-copy-image",
+            label: "复制图片",
+            icon: <ImageIcon className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onCopyImage?.(),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    ...(hasNonStickerImage && opts.onDownloadImage !== undefined
+      ? [
+          {
+            id: "ctx-msg-download-image",
+            label: "下载图片",
+            icon: <Download className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onDownloadImage?.(),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    ...(hasContent && opts.onCopyMessageContent !== undefined
+      ? [
+          {
+            id: "ctx-msg-copy-all",
+            label: hasNonStickerImage ? "复制消息文字" : "复制消息内容",
+            icon: <Copy className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onCopyMessageContent?.(),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    ...(opts.canSaveSticker && opts.onSaveSticker !== undefined
+      ? [
+          {
+            id: "ctx-msg-save-sticker",
+            label: "收藏表情",
+            icon: <BookmarkPlus className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onSaveSticker?.(message),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    ...((hasContent || hasNonStickerImage) && opts.onConvertToWorkTask !== undefined
+      ? [
+          {
+            id: "ctx-msg-to-task",
+            label: "转为任务…",
+            icon: <ListTodo className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onConvertToWorkTask?.(taskSeedText),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    { kind: "separator", id: "ctx-msg-sep-actor" },
+    ...(opts.onQuickMention !== undefined && !opts.isSelf
+      ? [
+          {
+            id: "ctx-msg-mention",
+            label: `@ ${message.author.displayName}`,
+            icon: <AtSign className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onQuickMention?.(),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    ...(opts.isAgentInspectable && opts.onInspectAgent !== undefined
+      ? [
+          {
+            id: "ctx-msg-inspect",
+            label: `查看 ${message.author.displayName} 名片`,
+            icon: <UserRound className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onInspectAgent?.(),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    ...(opts.hasLinkedProposal && opts.onOpenProposal !== undefined
+      ? [
+          {
+            id: "ctx-msg-proposal",
+            label: "查看关联提案",
+            icon: <FileText className="h-3.5 w-3.5" />,
+            onSelect: () => opts.onOpenProposal?.(),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+    { kind: "separator", id: "ctx-msg-sep-recall" },
+    ...(opts.canRecall && opts.onRecall !== undefined
+      ? [
+          {
+            id: "ctx-msg-recall",
+            label: "撤回消息",
+            icon: <RotateCcw className="h-3.5 w-3.5" />,
+            danger: true,
+            disabled: Boolean(opts.isRecalling),
+            onSelect: () => opts.onRecall?.(message.seq),
+          } satisfies AppContextMenuEntry,
+        ]
+      : []),
+  ];
+}
+
+function triggerAttachmentDownload(src: string, fileName: string): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+  const anchor = document.createElement("a");
+  anchor.href = src;
+  anchor.download = fileName;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+}
+
 /**
  * 默认引用跳转行为：平滑滚动到目标 `#msg-seq-{seq}` 锚点并短暂淡入柔和底色。
  *
@@ -137,6 +328,8 @@ export function MessageBubble(props: MessageBubbleProps) {
   const authorDisplayName = props.authorDisplayName ?? message.author.displayName;
   const [copied, setCopied] = useState(false);
   const [capturedSelection, setCapturedSelection] = useState("");
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [failedReplyThumbKey, setFailedReplyThumbKey] = useState<string | null>(null);
   const bubbleRef = useRef<HTMLDivElement>(null);
   const reducedMotion = usePrefersReducedMotion();
 
@@ -147,8 +340,36 @@ export function MessageBubble(props: MessageBubbleProps) {
   const shouldAnimateEntrance = props.animateEntrance === true && !reducedMotion;
   const hasContent = message.content.length > 0;
   const isSticker = message.attachment?.stickerName !== undefined;
+  const hasNonStickerImage =
+    message.attachment?.mimeType.startsWith("image/") === true && !isSticker;
   const isStandaloneSticker =
-    isSticker && !hasContent && message.replyToSeq === undefined && message.type === "text";
+    !props.readOnly &&
+    isSticker &&
+    !hasContent &&
+    message.replyToSeq === undefined &&
+    props.linkedProposal === undefined &&
+    message.type === "text";
+  const isStandaloneImage =
+    !props.readOnly &&
+    hasNonStickerImage &&
+    !hasContent &&
+    message.replyToSeq === undefined &&
+    props.linkedProposal === undefined &&
+    message.type === "text";
+  const isReadOnlyStandaloneMedia =
+    Boolean(props.readOnly) &&
+    message.attachment !== undefined &&
+    !hasContent &&
+    message.replyToSeq === undefined &&
+    props.linkedProposal === undefined &&
+    message.type === "text";
+  const isStandaloneMedia =
+    isStandaloneSticker ||
+    isStandaloneImage ||
+    (!hasContent &&
+      message.replyToSeq === undefined &&
+      props.linkedProposal === undefined &&
+      message.type === "text");
   const canSaveSticker = isSticker && props.onSaveSticker !== undefined;
   const canRecall = !props.readOnly && !isPending && canViewerRecallMessage(message, props.nowMs);
   const timeLabel = formatMessageTimestamp(message.createdAtIso);
@@ -243,7 +464,26 @@ export function MessageBubble(props: MessageBubbleProps) {
   };
 
   const handleCopy = (): void => {
-    handleCopyText(message.content, "已复制消息内容", true);
+    handleCopyText(message.content, hasNonStickerImage ? "已复制消息文字" : "已复制消息内容", true);
+  };
+
+  const imageAttachmentSrc = hasNonStickerImage
+    ? roomMessageAttachmentPath(message.roomId, message.seq)
+    : null;
+  const imageDownloadName =
+    message.attachment?.fileName ?? `openhuddle-image-${String(message.seq)}`;
+
+  const handleCopyImage = (): void => {
+    if (imageAttachmentSrc === null) {
+      return;
+    }
+    void copyImageUrlToClipboard(imageAttachmentSrc)
+      .then(() => {
+        toast.success("已复制图片");
+      })
+      .catch(() => {
+        toast.error("复制图片失败，请尝试下载图片");
+      });
   };
 
   const captureBubbleSelection = (): void => {
@@ -300,108 +540,41 @@ export function MessageBubble(props: MessageBubbleProps) {
       : undefined;
 
   const isContextMenuDisabled = Boolean(props.readOnly) || isPending;
-  const contextMenuItems: ReadonlyArray<AppContextMenuEntry> = isContextMenuDisabled
-    ? []
-    : [
-        ...(capturedSelection.length > 0
-          ? [
-              {
-                id: "ctx-msg-copy-selection",
-                label: "复制选中文字",
-                icon: <Copy className="h-3.5 w-3.5" />,
-                onSelect: () => handleCopyText(capturedSelection, "已复制选中文字"),
-              } satisfies AppContextMenuEntry,
-            ]
-          : []),
-        ...(props.onReply !== undefined
-          ? [
-              {
-                id: "ctx-msg-reply",
-                label: "回复此消息",
-                icon: <Reply className="h-3.5 w-3.5" />,
-                onSelect: () => props.onReply?.(message),
-              } satisfies AppContextMenuEntry,
-            ]
-          : []),
-        ...(hasContent
-          ? [
-              {
-                id: "ctx-msg-copy-all",
-                label: "复制消息内容",
-                icon: <Copy className="h-3.5 w-3.5" />,
-                onSelect: handleCopy,
-              } satisfies AppContextMenuEntry,
-            ]
-          : []),
-        ...(canSaveSticker
-          ? [
-              {
-                id: "ctx-msg-save-sticker",
-                label: "收藏表情",
-                icon: <BookmarkPlus className="h-3.5 w-3.5" />,
-                onSelect: () => props.onSaveSticker?.(message),
-              } satisfies AppContextMenuEntry,
-            ]
-          : []),
-        ...(hasContent && props.onConvertToWorkTask !== undefined
-          ? [
-              {
-                id: "ctx-msg-to-task",
-                label: "转为任务…",
-                icon: <ListTodo className="h-3.5 w-3.5" />,
-                onSelect: () => props.onConvertToWorkTask?.(message.content),
-              } satisfies AppContextMenuEntry,
-            ]
-          : []),
-        { kind: "separator", id: "ctx-msg-sep-actor" },
-        ...(props.onQuickMention !== undefined && !isSelf
-          ? [
-              {
-                id: "ctx-msg-mention",
-                label: `@ ${message.author.displayName}`,
-                icon: <AtSign className="h-3.5 w-3.5" />,
-                onSelect: handleMentionClick,
-              } satisfies AppContextMenuEntry,
-            ]
-          : []),
-        ...(isAgentInspectable
-          ? [
-              {
-                id: "ctx-msg-inspect",
-                label: `查看 ${message.author.displayName} 名片`,
-                icon: <UserRound className="h-3.5 w-3.5" />,
-                onSelect: handleAgentInspect,
-              } satisfies AppContextMenuEntry,
-            ]
-          : []),
-        ...(props.linkedProposal !== undefined && props.onOpenProposal !== undefined
-          ? [
-              {
-                id: "ctx-msg-proposal",
-                label: "查看关联提案",
-                icon: <FileText className="h-3.5 w-3.5" />,
-                onSelect: () => {
-                  if (props.linkedProposal !== undefined) {
-                    props.onOpenProposal?.(props.linkedProposal.id);
-                  }
-                },
-              } satisfies AppContextMenuEntry,
-            ]
-          : []),
-        { kind: "separator", id: "ctx-msg-sep-recall" },
-        ...(canRecall && props.onRecall !== undefined
-          ? [
-              {
-                id: "ctx-msg-recall",
-                label: "撤回消息",
-                icon: <RotateCcw className="h-3.5 w-3.5" />,
-                danger: true,
-                disabled: Boolean(props.isRecalling),
-                onSelect: () => props.onRecall?.(message.seq),
-              } satisfies AppContextMenuEntry,
-            ]
-          : []),
-      ];
+  const contextMenuItems = buildMessageContextMenuItems({
+    message,
+    readOnly: props.readOnly,
+    isPending,
+    isSelf,
+    canRecall,
+    isRecalling: props.isRecalling,
+    canSaveSticker,
+    canCopyImage: canCopyImageToClipboard(),
+    isAgentInspectable,
+    hasLinkedProposal: props.linkedProposal !== undefined && props.onOpenProposal !== undefined,
+    capturedSelection,
+    onCopySelection: (text) => handleCopyText(text, "已复制选中文字"),
+    onReply: props.onReply,
+    onOpenLightbox: hasNonStickerImage ? () => setLightboxOpen(true) : undefined,
+    onCopyImage: hasNonStickerImage ? handleCopyImage : undefined,
+    onDownloadImage:
+      hasNonStickerImage && imageAttachmentSrc !== null
+        ? () => triggerAttachmentDownload(imageAttachmentSrc, imageDownloadName)
+        : undefined,
+    onCopyMessageContent: hasContent ? handleCopy : undefined,
+    onSaveSticker: props.onSaveSticker,
+    onConvertToWorkTask: props.onConvertToWorkTask,
+    onQuickMention: props.onQuickMention ? handleMentionClick : undefined,
+    onInspectAgent: isAgentInspectable ? handleAgentInspect : undefined,
+    onOpenProposal:
+      props.linkedProposal !== undefined && props.onOpenProposal !== undefined
+        ? () => {
+            if (props.linkedProposal !== undefined) {
+              props.onOpenProposal?.(props.linkedProposal.id);
+            }
+          }
+        : undefined,
+    onRecall: props.onRecall,
+  });
 
   const hasMessageActions = contextMenuItems.some(
     (entry) => entry.kind !== "separator" && entry.kind !== "label",
@@ -479,6 +652,19 @@ export function MessageBubble(props: MessageBubbleProps) {
           </button>
         ) : null}
 
+        {hasNonStickerImage && imageAttachmentSrc !== null ? (
+          <AppTooltip content="下载图片" side="top">
+            <a
+              href={imageAttachmentSrc}
+              download={imageDownloadName}
+              aria-label="下载图片"
+              className="app-no-drag inline-flex cursor-pointer items-center justify-center rounded-full px-1.5 py-1 text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
+            >
+              <Download className="h-3.5 w-3.5" />
+            </a>
+          </AppTooltip>
+        ) : null}
+
         {canSaveSticker ? (
           <AppTooltip content="收藏表情" side="top">
             <button
@@ -512,20 +698,45 @@ export function MessageBubble(props: MessageBubbleProps) {
       </div>
     ) : null;
 
-  // ── 极简 2px 竖线内联引用（无嵌套背景盒，点击定位源消息） ──
+  // ── 极简 2px 竖线内联引用（支持嵌入 28×28px 图片微缩略图，点击定位源消息） ──
   const replyQuote =
     message.replyToSeq !== undefined
       ? (() => {
           const replySeq = message.replyToSeq;
           const replied = props.repliedMessage;
           const snippet = replied === undefined ? "引用前序发言" : getMessageSnippet(replied, 88);
+          const replyThumbKey =
+            replied !== undefined ? `${replied.roomId}:${String(replied.seq)}` : null;
+          const showReplyImageThumb =
+            !props.readOnly &&
+            replied !== undefined &&
+            replied.recalledAtIso === undefined &&
+            replied.attachment !== undefined &&
+            replied.attachment.mimeType.startsWith("image/") &&
+            replyThumbKey !== null &&
+            failedReplyThumbKey !== replyThumbKey;
           return (
             <button
               type="button"
               onClick={() => handleJump(replySeq)}
-              className="app-no-drag mb-1.5 block w-full min-w-0 cursor-pointer select-none border-l-2 border-black/15 py-0.5 pl-2.5 text-left text-[13px] leading-snug text-[#687082] transition-opacity hover:opacity-75 dark:border-white/20 dark:text-[#8E8E96]"
+              className="app-no-drag mb-1.5 flex w-full min-w-0 cursor-pointer select-none items-center gap-2 border-l-2 border-black/15 py-0.5 pl-2.5 text-left text-[13px] leading-snug text-[#687082] transition-opacity hover:opacity-75 dark:border-white/20 dark:text-[#8E8E96]"
             >
-              <span className="line-clamp-2 min-w-0">
+              {showReplyImageThumb && replied !== undefined ? (
+                <img
+                  src={roomMessageAttachmentPath(replied.roomId, replied.seq)}
+                  alt=""
+                  aria-hidden="true"
+                  loading="lazy"
+                  decoding="async"
+                  onError={() => {
+                    if (replyThumbKey !== null) {
+                      setFailedReplyThumbKey(replyThumbKey);
+                    }
+                  }}
+                  className="h-7 w-7 shrink-0 rounded-[6px] object-cover ring-1 ring-inset ring-black/[0.06] dark:ring-white/[0.08]"
+                />
+              ) : null}
+              <span className="line-clamp-2 min-w-0 flex-1">
                 {replied !== undefined ? (
                   <span className="mr-1 font-medium text-[#111318]/85 dark:text-[#F2F2F4]/90">
                     {props.repliedAuthorDisplayName ?? replied.author.displayName}：
@@ -636,6 +847,13 @@ export function MessageBubble(props: MessageBubbleProps) {
       </div>
     ) : null;
 
+  const isFallbackEmptyBody =
+    !hasContent &&
+    message.attachment === undefined &&
+    message.replyToSeq === undefined &&
+    props.linkedProposal === undefined &&
+    attention === undefined;
+
   const bubbleBody = (
     <>
       {semanticBadge}
@@ -646,7 +864,16 @@ export function MessageBubble(props: MessageBubbleProps) {
           message={{ roomId: message.roomId, seq: message.seq, attachment: message.attachment }}
           isPending={isPending}
           readOnly={props.readOnly === true}
+          standalone={isStandaloneMedia}
+          localBlob={message._optimisticBlob}
+          lightboxOpen={lightboxOpen}
+          onLightboxOpenChange={setLightboxOpen}
         />
+      ) : null}
+      {isFallbackEmptyBody ? (
+        <span className="select-none text-[13px] text-[#687082] dark:text-[#8E8E96]">
+          消息内容仅群成员可见
+        </span>
       ) : null}
       {linkedCard}
     </>
@@ -703,7 +930,11 @@ export function MessageBubble(props: MessageBubbleProps) {
                   isStandaloneSticker
                     ? "rounded-lg p-1"
                     : cn(
-                        "px-3.5 py-2.5 sm:px-4",
+                        isStandaloneImage
+                          ? "p-1"
+                          : isReadOnlyStandaloneMedia
+                            ? "px-3 py-2"
+                            : "px-3.5 py-2.5 sm:px-4",
                         isGrouped ? "rounded-[18px]" : "rounded-[18px_6px_18px_18px]",
                         "bg-im-self text-im-self-fg ring-1 ring-inset ring-black/[0.06] shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
                         "dark:ring-1 dark:ring-inset dark:ring-white/[0.11] dark:shadow-[0_2px_8px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.08)]",
@@ -732,7 +963,7 @@ export function MessageBubble(props: MessageBubbleProps) {
         className={cn(
           "group/msg flex justify-end rounded-xl pl-5 pr-1 transition-[background-color,opacity] duration-200 sm:pl-16",
           isGrouped ? "mt-1" : "mt-3.5",
-          isPending && "opacity-80",
+          isPending && !hasNonStickerImage && "opacity-80",
         )}
       >
         {shouldAnimateEntrance ? (
@@ -824,7 +1055,11 @@ export function MessageBubble(props: MessageBubbleProps) {
                 isStandaloneSticker
                   ? "rounded-lg p-1"
                   : cn(
-                      "px-3.5 py-2.5 sm:px-4",
+                      isStandaloneImage
+                        ? "p-1"
+                        : isReadOnlyStandaloneMedia
+                          ? "px-3 py-2"
+                          : "px-3.5 py-2.5 sm:px-4",
                       isGrouped ? "rounded-[18px]" : "rounded-[6px_18px_18px_18px]",
                       peerBubbleSurfaceClass,
                     ),
@@ -850,7 +1085,7 @@ export function MessageBubble(props: MessageBubbleProps) {
       className={cn(
         "group/msg flex items-start gap-2 rounded-xl pl-1 pr-2.5 transition-[background-color,opacity] duration-200 sm:gap-2.5 sm:pr-16",
         isGrouped ? "mt-1" : "mt-3.5",
-        isPending && "opacity-80",
+        isPending && !hasNonStickerImage && "opacity-80",
       )}
     >
       {/* 左侧 36px 圆形头像对齐列：连续分组时隐藏头像，悬停轻显紧凑时刻 */}

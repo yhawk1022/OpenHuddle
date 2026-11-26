@@ -4,7 +4,8 @@
  *
  * 关键不变量：
  * 1. 防 XSS 边界：所有群聊消息均按不可信输入处理，外部超链接仅放行 `http:` / `https:` 协议。
- * 2. 渲染缓存：对 `parseMarkdownBlocks` 结果按 `content` 做引用级缓存，避免父容器时钟刷新触发全时间线重复解析。
+ * 2. 防零点击外带与 IP 探测：聊天 Markdown 严禁将 `![alt](url)` 渲染为自动发起网络请求的 `<img>` 元素，安全 `http(s)` 图片语法统一降级为显式点击的 `<a target="_blank" rel="noopener noreferrer">` 外链，非法协议降级为纯文本。
+ * 3. 渲染缓存：对 `parseMarkdownBlocks` 结果按 `content` 做引用级缓存，避免父容器时钟刷新触发全时间线重复解析。
  */
 import { assertNever } from "@openhuddle/protocol";
 import { Check, Copy } from "lucide-react";
@@ -390,7 +391,11 @@ function getToneStyles(tone: MarkdownTone): MarkdownToneStyles {
 }
 
 const INLINE_TOKEN_REGEX =
-  /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)]+\)|(?<![A-Za-z0-9._%+-])@[A-Za-z0-9_\-\u4e00-\u9fa5]+)/g;
+  /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|!\[[^\]]*\]\([^)\n]+\)|\[[^\]]+\]\([^)\n]+\)|(?<![A-Za-z0-9._%+-])@[A-Za-z0-9_\-\u4e00-\u9fa5]+)/g;
+
+function extractMarkdownTargetUrl(rawTarget: string): string {
+  return rawTarget.replace(/\s+(?:"[^"]*"|'[^']*')$/u, "").trim();
+}
 
 function renderInlineMarkdown(
   text: string,
@@ -433,11 +438,35 @@ function renderInlineMarkdown(
           {renderInlineMarkdown(matchText.slice(1, -1), `${tokenKey}-i`, styles)}
         </em>,
       );
+    } else if (matchText.startsWith("![")) {
+      // 安全红线：严禁渲染任意外部 <img>（阻断零点击请求外带与客户端 IP 探测），仅对合法 http(s) 地址降级为安全显式外链
+      const imgParts = /^!\[([^\]]*)\]\(([^)\n]+)\)$/.exec(matchText);
+      const rawAlt = imgParts?.[1]?.trim() ?? "";
+      const rawTarget = imgParts?.[2];
+      const safeHref =
+        rawTarget !== undefined ? sanitizeSafeHttpUrl(extractMarkdownTargetUrl(rawTarget)) : null;
+      if (safeHref !== null) {
+        const linkLabel = rawAlt.length > 0 ? `[外部图片：${rawAlt}]` : "[查看外部图片链接]";
+        nodes.push(
+          <a
+            key={tokenKey}
+            href={safeHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={styles.link}
+          >
+            {linkLabel}
+          </a>,
+        );
+      } else {
+        nodes.push(matchText);
+      }
     } else if (matchText.startsWith("[")) {
-      const linkParts = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(matchText);
+      const linkParts = /^\[([^\]]+)\]\(([^)\n]+)\)$/.exec(matchText);
       const label = linkParts?.[1];
       const rawHref = linkParts?.[2];
-      const safeHref = rawHref !== undefined ? sanitizeSafeHttpUrl(rawHref.trim()) : null;
+      const safeHref =
+        rawHref !== undefined ? sanitizeSafeHttpUrl(extractMarkdownTargetUrl(rawHref)) : null;
       if (label !== undefined && safeHref !== null) {
         nodes.push(
           <a

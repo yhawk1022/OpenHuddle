@@ -71,6 +71,7 @@ import { pickLatestIso, sortRoomsByLatestActivity } from "../../../lib/format.js
 import {
   type DraftMessageAttachment,
   encodeMessageAttachment,
+  sanitizeAttachmentFileName,
 } from "../../../lib/message-media.js";
 import {
   type OptimisticMessageItem,
@@ -186,7 +187,9 @@ function reconcileRoomHistory(cachedValue: unknown, incomingValue: unknown): Roo
 
   // 合并发生在 QueryClient 写入时，以保留请求期间到达的 SSE、发送确认和乐观气泡。
   const { afterSeq, previousGovernance } = incoming[historySnapshot];
-  const confirmed = new Map(incoming.messages.map((message) => [message.seq, message]));
+  const confirmed = new Map<MessageSeq, OptimisticMessageItem>(
+    incoming.messages.map((message) => [message.seq, message]),
+  );
   const pending: OptimisticMessageItem[] = [];
   for (const message of cached?.messages ?? []) {
     if (message._optimisticPending === true) {
@@ -202,6 +205,20 @@ function reconcileRoomHistory(cachedValue: unknown, incomingValue: unknown): Roo
         fetched.recalledAtIso === undefined)
     ) {
       confirmed.set(message.seq, message);
+      continue;
+    }
+    if (
+      fetched !== undefined &&
+      (message._opKey !== undefined ||
+        (message._optimisticBlob !== undefined && fetched.recalledAtIso === undefined))
+    ) {
+      confirmed.set(message.seq, {
+        ...fetched,
+        ...(message._opKey !== undefined ? { _opKey: message._opKey } : {}),
+        ...(message._optimisticBlob !== undefined && fetched.recalledAtIso === undefined
+          ? { _optimisticBlob: message._optimisticBlob }
+          : {}),
+      });
     }
   }
 
@@ -690,6 +707,15 @@ export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto
 
       if (previousCache) {
         const provisionalSeq = asMessageSeq(Math.max(1, previousCache.latestSeq + 1));
+        const optimisticFileName =
+          vars.attachment === undefined
+            ? undefined
+            : vars.attachment.mimeType === "application/octet-stream"
+              ? vars.attachment.name
+              : vars.attachment.mimeType.startsWith("image/") &&
+                  vars.attachment.stickerName === undefined
+                ? sanitizeAttachmentFileName(vars.attachment.name)
+                : undefined;
         const optimisticBubble: OptimisticMessageItem = {
           roomId,
           seq: provisionalSeq,
@@ -710,13 +736,15 @@ export function useSendMessageMutation(roomId: RoomId, currentUser: HumanUserDto
                 attachment: {
                   mimeType: vars.attachment.mimeType,
                   byteLength: vars.attachment.blob.size,
-                  ...(vars.attachment.mimeType === "application/octet-stream"
-                    ? { fileName: vars.attachment.name }
+                  ...(vars.attachment.width !== undefined && vars.attachment.height !== undefined
+                    ? { width: vars.attachment.width, height: vars.attachment.height }
                     : {}),
+                  ...(optimisticFileName !== undefined ? { fileName: optimisticFileName } : {}),
                   ...(vars.attachment.stickerName !== undefined
                     ? { stickerName: vars.attachment.stickerName }
                     : {}),
                 },
+                _optimisticBlob: vars.attachment.blob,
               }
             : {}),
           ...(vars.replyToSeq !== undefined ? { replyToSeq: vars.replyToSeq } : {}),

@@ -284,7 +284,7 @@ export function createMessagesRouter(deps: {
 
   router.openapi(getAttachmentRoute, async (c) => {
     const { roomId, seq } = c.req.valid("param");
-    const { bytes, metadata } = await deps.messagesService.getAttachment(
+    const { bytes, metadata, author } = await deps.messagesService.getAttachment(
       c.get("caller"),
       roomId,
       seq,
@@ -293,9 +293,13 @@ export function createMessagesRouter(deps: {
       "accept-ranges": "bytes",
       "cache-control": "private, no-store",
       "content-disposition": "inline",
+      "content-security-policy":
+        "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'",
       "content-type": metadata.mimeType,
       "cross-origin-resource-policy": "same-origin",
       "x-content-type-options": "nosniff",
+      "x-openhuddle-author-trust": author.trustLevel,
+      "x-openhuddle-author-kind": author.kind,
     };
     if (metadata.mimeType === "application/octet-stream") {
       // 下载名采用 UTF-8 扩展参数，普通文件按原始字节下载并禁止作为页面执行。

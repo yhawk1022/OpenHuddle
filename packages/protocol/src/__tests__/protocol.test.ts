@@ -15,6 +15,9 @@ import {
   ErrorCodeSchema,
   HumanUserDtoSchema,
   LoginWithPasswordBodySchema,
+  MessageAttachmentMimeTypeSchema,
+  MessageAttachmentSchema,
+  MessageAttachmentUploadSchema,
   OtpPurposeSchema,
   PairingCodeSchema,
   PasswordSchema,
@@ -326,5 +329,107 @@ describe("@openhuddle/protocol — identity & security invariants", () => {
     });
     expect(legacyHuman.emailVerified).toBe(true);
     expect(legacyHuman.hasPassword).toBe(false);
+  });
+
+  it("validates MessageAttachment dimensions, optional image/audio fileName, required binary fileName, and blocks image/svg+xml", () => {
+    expect(MessageAttachmentMimeTypeSchema.safeParse("image/svg+xml").success).toBe(false);
+
+    expect(
+      MessageAttachmentSchema.parse({
+        mimeType: "image/png",
+        byteLength: 1024,
+        width: 1280,
+        height: 720,
+        fileName: "diagram.png",
+      }),
+    ).toEqual({
+      mimeType: "image/png",
+      byteLength: 1024,
+      width: 1280,
+      height: 720,
+      fileName: "diagram.png",
+    });
+
+    expect(
+      MessageAttachmentSchema.safeParse({
+        mimeType: "image/png",
+        byteLength: 1024,
+      }).success,
+    ).toBe(true);
+
+    expect(
+      MessageAttachmentSchema.safeParse({
+        mimeType: "image/png",
+        byteLength: 1024,
+        width: 0,
+        height: 720,
+      }).success,
+    ).toBe(false);
+
+    expect(
+      MessageAttachmentSchema.safeParse({
+        mimeType: "image/png",
+        byteLength: 1024,
+        width: 32_769,
+        height: 720,
+      }).success,
+    ).toBe(false);
+
+    // image/* and audio/* allow omitting or including fileName
+    expect(
+      MessageAttachmentUploadSchema.safeParse({
+        mimeType: "image/png",
+        data: "iVBORw0KGgo=",
+      }).success,
+    ).toBe(true);
+
+    expect(
+      MessageAttachmentUploadSchema.safeParse({
+        mimeType: "image/png",
+        fileName: "architecture.png",
+        data: "iVBORw0KGgo=",
+      }).success,
+    ).toBe(true);
+
+    expect(
+      MessageAttachmentUploadSchema.safeParse({
+        mimeType: "audio/mpeg",
+        fileName: "voice-note.mp3",
+        data: "SUQzBAAAAAA=",
+      }).success,
+    ).toBe(true);
+
+    // application/octet-stream still strictly requires fileName
+    expect(
+      MessageAttachmentUploadSchema.safeParse({
+        mimeType: "application/octet-stream",
+        data: "UEsDBBQAAAA=",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      MessageAttachmentUploadSchema.safeParse({
+        mimeType: "application/octet-stream",
+        fileName: "bundle.zip",
+        data: "UEsDBBQAAAA=",
+      }).success,
+    ).toBe(true);
+
+    // Reject path traversal and bidi spoofing in fileName
+    expect(
+      MessageAttachmentUploadSchema.safeParse({
+        mimeType: "image/png",
+        fileName: "../secret.png",
+        data: "iVBORw0KGgo=",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      MessageAttachmentUploadSchema.safeParse({
+        mimeType: "image/png",
+        fileName: "spoof\u202egnp.exe",
+        data: "iVBORw0KGgo=",
+      }).success,
+    ).toBe(false);
   });
 });

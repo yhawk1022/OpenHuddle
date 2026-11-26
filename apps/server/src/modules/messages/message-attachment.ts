@@ -16,6 +16,154 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
 const EBML_SIGNATURE = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
 const WEBM_DOC_TYPE = Buffer.from([0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d]);
+const MAX_IMAGE_DIMENSION = 32_768;
+const MAX_IMAGE_PIXELS = 16_000_000;
+
+export interface ImageDimensions {
+  readonly width: number;
+  readonly height: number;
+}
+
+function parseJpegDimensions(bytes: Buffer): ImageDimensions | undefined {
+  if (bytes.length < 4 || !bytes.subarray(0, JPEG_SIGNATURE.length).equals(JPEG_SIGNATURE)) {
+    return undefined;
+  }
+  let offset = 2;
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      return undefined;
+    }
+    while (offset < bytes.length && bytes[offset] === 0xff) {
+      offset += 1;
+    }
+    if (offset >= bytes.length) {
+      return undefined;
+    }
+    const marker = bytes[offset];
+    offset += 1;
+    if (marker === undefined || marker === 0x00 || marker === 0xd9 || marker === 0xda) {
+      return undefined;
+    }
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      continue;
+    }
+    if (offset + 2 > bytes.length) {
+      return undefined;
+    }
+    const segmentLength = bytes.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) {
+      return undefined;
+    }
+    const isSof =
+      marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isSof) {
+      if (segmentLength < 8) {
+        return undefined;
+      }
+      return {
+        height: bytes.readUInt16BE(offset + 3),
+        width: bytes.readUInt16BE(offset + 5),
+      };
+    }
+    offset += segmentLength;
+  }
+  return undefined;
+}
+
+function parseWebpDimensions(bytes: Buffer): ImageDimensions | undefined {
+  if (
+    bytes.length < 25 ||
+    bytes.toString("latin1", 0, 4) !== "RIFF" ||
+    bytes.toString("latin1", 8, 12) !== "WEBP"
+  ) {
+    return undefined;
+  }
+  const chunkType = bytes.toString("latin1", 12, 16);
+  const chunkSize = bytes.readUInt32LE(16);
+  if (20 + chunkSize > bytes.length) {
+    return undefined;
+  }
+  if (chunkType === "VP8 ") {
+    if (
+      chunkSize < 10 ||
+      bytes.length < 30 ||
+      ((bytes[20] ?? 1) & 0x01) !== 0 ||
+      bytes[23] !== 0x9d ||
+      bytes[24] !== 0x01 ||
+      bytes[25] !== 0x2a
+    ) {
+      return undefined;
+    }
+    return {
+      width: bytes.readUInt16LE(26) & 0x3fff,
+      height: bytes.readUInt16LE(28) & 0x3fff,
+    };
+  }
+  if (chunkType === "VP8L") {
+    if (chunkSize < 5 || bytes.length < 25 || bytes[20] !== 0x2f) {
+      return undefined;
+    }
+    const bits = bytes.readUInt32LE(21);
+    return {
+      width: (bits & 0x3fff) + 1,
+      height: ((bits >>> 14) & 0x3fff) + 1,
+    };
+  }
+  if (chunkType === "VP8X") {
+    if (chunkSize < 10 || bytes.length < 30) {
+      return undefined;
+    }
+    return {
+      width: bytes.readUIntLE(24, 3) + 1,
+      height: bytes.readUIntLE(27, 3) + 1,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * 纯 Buffer 解析受支持图片格式的真实像素宽高（PNG IHDR / GIF 逻辑屏 / WebP VP8|VP8L|VP8X / JPEG SOF）。
+ */
+export function parseImageDimensions(
+  bytes: Buffer,
+  mimeType: "image/png" | "image/gif" | "image/webp" | "image/jpeg",
+): ImageDimensions | undefined {
+  switch (mimeType) {
+    case "image/png": {
+      if (
+        bytes.length < 33 ||
+        !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE) ||
+        bytes.readUInt32BE(8) !== 13 ||
+        bytes.toString("ascii", 12, 16) !== "IHDR"
+      ) {
+        return undefined;
+      }
+      return {
+        width: bytes.readUInt32BE(16),
+        height: bytes.readUInt32BE(20),
+      };
+    }
+    case "image/gif": {
+      if (bytes.length < 10) {
+        return undefined;
+      }
+      const header = bytes.toString("latin1", 0, 6);
+      if (header !== "GIF87a" && header !== "GIF89a") {
+        return undefined;
+      }
+      return {
+        width: bytes.readUInt16LE(6),
+        height: bytes.readUInt16LE(8),
+      };
+    }
+    case "image/webp":
+      return parseWebpDimensions(bytes);
+    case "image/jpeg":
+      return parseJpegDimensions(bytes);
+    default:
+      return assertNever(mimeType);
+  }
+}
 
 function matchesMagicBytes(bytes: Buffer, mimeType: MessageAttachmentMimeType): boolean {
   switch (mimeType) {
@@ -89,11 +237,38 @@ export function decodeMessageAttachment(
       message: "The attachment must match its declared media type and use canonical base64.",
     });
   }
+
+  let dimensions: ImageDimensions | undefined;
+  if (
+    upload.mimeType === "image/png" ||
+    upload.mimeType === "image/gif" ||
+    upload.mimeType === "image/webp" ||
+    upload.mimeType === "image/jpeg"
+  ) {
+    dimensions = parseImageDimensions(bytes, upload.mimeType);
+    if (
+      dimensions === undefined ||
+      dimensions.width <= 0 ||
+      dimensions.height <= 0 ||
+      dimensions.width > MAX_IMAGE_DIMENSION ||
+      dimensions.height > MAX_IMAGE_DIMENSION ||
+      dimensions.width * dimensions.height > MAX_IMAGE_PIXELS
+    ) {
+      throw new AppError({
+        code: "VALIDATION_ERROR",
+        statusCode: 400,
+        message:
+          "Image attachments must contain valid frame dimensions within 32768x32768 and at most 16 megapixels.",
+      });
+    }
+  }
+
   return {
     bytes,
     metadata: {
       mimeType: upload.mimeType,
       byteLength: bytes.byteLength,
+      ...(dimensions !== undefined ? { width: dimensions.width, height: dimensions.height } : {}),
       ...(upload.stickerName !== undefined ? { stickerName: upload.stickerName } : {}),
       ...(upload.fileName !== undefined ? { fileName: upload.fileName } : {}),
     },

@@ -290,6 +290,7 @@ describe("@openhuddle/web — portal SSR rendering & optical invariants", () => 
     expect(html).toContain("和你的多路 Agent 一起讨论、改码、拍板。");
     expect(html).toContain("多 Agent 群聊");
     expect(html).toContain("工作台协作与审阅");
+    expect(html).toContain("也支持与 Agent 单聊、与好友私聊，Agent 能看图也能发图。");
     expect(html).toContain("欢迎回来");
 
     for (const platformName of [

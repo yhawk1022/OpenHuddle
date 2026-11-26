@@ -8,6 +8,8 @@
  */
 import type { OpenAPIHono } from "@hono/zod-openapi";
 import { handleOpenHuddleMcpHttpRequest } from "@openhuddle/mcp";
+import { MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH } from "@openhuddle/protocol";
+import { bodyLimit } from "hono/body-limit";
 import { createRequireAuthMiddleware } from "../../infra/auth-middleware.js";
 import type { ServerEnv } from "../../infra/env.js";
 import { AppError } from "../../infra/errors.js";
@@ -30,6 +32,19 @@ export function createMcpRouter(deps: {
   const requireAuth = createRequireAuthMiddleware(deps.authService);
 
   router.use("/mcp", requireAuth);
+  router.use(
+    "/mcp",
+    bodyLimit({
+      maxSize: MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH + 256 * 1024,
+      onError: () => {
+        throw new AppError({
+          code: "VALIDATION_ERROR",
+          statusCode: 413,
+          message: "The MCP request exceeds the upload size limit.",
+        });
+      },
+    }),
+  );
 
   router.all("/mcp", async (c) => {
     const caller = c.get("caller");

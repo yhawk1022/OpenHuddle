@@ -31,6 +31,8 @@ export interface OptimisticMessageItem extends MessageDto {
   readonly _opKey?: OperationKey | undefined;
   /** 是否处于尚未收到服务端 `seq` 确认的乐观挂起态 */
   readonly _optimisticPending?: boolean | undefined;
+  /** 客户端内存中的本地附件预览源，供乐观发送期渲染并在鉴权 `/attachment` 解码完成前零闪烁双缓冲 */
+  readonly _optimisticBlob?: Blob | undefined;
 }
 
 /**

@@ -189,9 +189,16 @@ importers:
       '@openhuddle/protocol':
         specifier: workspace:*
         version: link:../protocol
+      pngjs:
+        specifier: 7.0.0
+        version: 7.0.0
       zod:
         specifier: ^3.24.2
         version: 3.25.76
+    devDependencies:
+      '@types/pngjs':
+        specifier: 6.0.5
+        version: 6.0.5
 
   packages/protocol:
     dependencies:

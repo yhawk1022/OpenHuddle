@@ -421,9 +421,16 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     const shared = await app.request(`/api/v1/share/${room.inviteToken}`);
     expect(shared.status).toBe(200);
     const sharedBody = (await shared.json()) as { messages: MessageDto[] };
-    expect(sharedBody.messages.find(({ seq }) => seq === imageMessage.seq)).not.toHaveProperty(
-      "attachment",
-    );
+    const sharedImgMsg = sharedBody.messages.find(({ seq }) => seq === imageMessage.seq);
+    expect(sharedImgMsg?.attachment).toEqual({
+      mimeType: "image/png",
+      byteLength: png.byteLength,
+    });
+    expect(sharedImgMsg?.attachment?.fileName).toBeUndefined();
+    expect(sharedImgMsg?.attachment?.stickerName).toBeUndefined();
+    expect(sharedImgMsg?.attachment?.width).toBeUndefined();
+    expect(sharedImgMsg?.attachment?.height).toBeUndefined();
+    expect((await app.request(imageUrl)).status).toBe(401);
     const join = await app.request("/api/v1/join", {
       method: "POST",
       headers: { ...readerHeaders, "content-type": "application/json" },
@@ -539,6 +546,23 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
       latestSeq: 5,
     });
 
+    const sharedAll = await app.request(`/api/v1/share/${room.inviteToken}`);
+    expect(sharedAll.status).toBe(200);
+    const sharedAllBody = (await sharedAll.json()) as { messages: MessageDto[] };
+    const sharedStickerMsg = sharedAllBody.messages.find(({ seq }) => seq === stickerMessage.seq);
+    expect(sharedStickerMsg?.attachment).toEqual({
+      mimeType: "image/png",
+      byteLength: png.byteLength,
+    });
+    expect(sharedStickerMsg?.attachment?.stickerName).toBeUndefined();
+    expect(sharedStickerMsg?.attachment?.width).toBeUndefined();
+    const sharedFileMsg = sharedAllBody.messages.find(({ seq }) => seq === fileMessage.seq);
+    expect(sharedFileMsg?.attachment).toEqual({
+      mimeType: "application/octet-stream",
+      byteLength: document.byteLength,
+    });
+    expect(sharedFileMsg?.attachment?.fileName).toBeUndefined();
+
     const recall = await app.request(`${messagesUrl}/${imageMessage.seq}`, {
       method: "DELETE",
       headers: ownerHeaders,
@@ -546,6 +570,11 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     expect(recall.status).toBe(200);
     expect((await recall.json()).message).not.toHaveProperty("attachment");
     expect((await app.request(imageUrl, { headers: readerHeaders })).status).toBe(404);
+    const sharedAfterRecall = await app.request(`/api/v1/share/${room.inviteToken}`);
+    const sharedAfterRecallBody = (await sharedAfterRecall.json()) as { messages: MessageDto[] };
+    expect(
+      sharedAfterRecallBody.messages.find(({ seq }) => seq === imageMessage.seq),
+    ).not.toHaveProperty("attachment");
 
     const adminRecall = await app.request(
       `/api/v1/admin/rooms/${room.id}/messages/${voiceMessage.seq}/recall`,
@@ -624,6 +653,339 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     expect(oversizedBody.status).toBe(413);
     const read = await app.request(url, { headers });
     expect(await read.json()).toMatchObject({ messages: [], latestSeq: 0 });
+  });
+
+  it("extracts PNG/GIF/WebP/JPEG dimensions, blocks >16MP bombs, stamps CSP & author trust headers, and enforces recall/revocation across REST & MCP", async () => {
+    const app = createServerApp({
+      env: parseServerEnv({ NODE_ENV: "test", LOG_LEVEL: "silent", DATABASE_URL: "memory://" }),
+      database,
+      realtimeBus: bus,
+    });
+    const alice = await loginHumanViaOtp(app, "alice-media@example.com", "Alice");
+    const bob = await loginHumanViaOtp(app, "bob-media@example.com", "Bob");
+    const aliceHeaders = {
+      "content-type": "application/json",
+      authorization: `Bearer ${alice.sessionToken}`,
+    };
+    const bobHeaders = {
+      "content-type": "application/json",
+      authorization: `Bearer ${bob.sessionToken}`,
+    };
+
+    const createRes = await app.request("/api/v1/rooms", {
+      method: "POST",
+      headers: aliceHeaders,
+      body: JSON.stringify({ name: "Multimodal Security Room" }),
+    });
+    const { room } = (await createRes.json()) as { room: RoomDetailDto };
+
+    // Bob joins room; Alice pairs two agents (agtA1, agtA2); Bob pairs one agent (agtB1)
+    await app.request("/api/v1/join", {
+      method: "POST",
+      headers: bobHeaders,
+      body: JSON.stringify({ inviteToken: room.inviteToken }),
+    });
+
+    const pairAgent = async (ownerSession: string, name: string) => {
+      const cRes = await app.request("/api/v1/pairing-codes", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${ownerSession}` },
+        body: JSON.stringify({ autoJoinRoomId: room.id }),
+      });
+      const { code } = (await cRes.json()) as { code: string };
+      const pRes = await app.request("/api/v1/pair", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code, name, platform: "codex" }),
+      });
+      return (await pRes.json()) as { token: string; agent: { id: string } };
+    };
+
+    const agtA1 = await pairAgent(alice.sessionToken, "Alice-Agent-1");
+    const agtA2 = await pairAgent(alice.sessionToken, "Alice-Agent-2");
+    const agtB1 = await pairAgent(bob.sessionToken, "Bob-Agent-1");
+
+    const messagesUrl = `/api/v1/rooms/${room.id}/messages`;
+    const postMsg = (token: string, body: unknown) =>
+      app.request(messagesUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+    // 1. GIF 320x240 LE
+    const gifBuf = Buffer.alloc(14);
+    gifBuf.write("GIF89a", 0, "ascii");
+    gifBuf.writeUInt16LE(320, 6);
+    gifBuf.writeUInt16LE(240, 8);
+    const gifRes = await postMsg(alice.sessionToken, {
+      content: "gif",
+      attachment: { mimeType: "image/gif", fileName: "anim.gif", data: gifBuf.toString("base64") },
+    });
+    expect(gifRes.status).toBe(201);
+    expect(((await gifRes.json()) as { message: MessageDto }).message.attachment).toEqual({
+      mimeType: "image/gif",
+      byteLength: gifBuf.byteLength,
+      width: 320,
+      height: 240,
+      fileName: "anim.gif",
+    });
+
+    // 2. WebP VP8 lossy (640x480), VP8L lossless (128x64), VP8X extended (1024x768)
+    const webpVp8 = Buffer.alloc(30);
+    webpVp8.write("RIFF", 0, "ascii");
+    webpVp8.writeUInt32LE(22, 4);
+    webpVp8.write("WEBP", 8, "ascii");
+    webpVp8.write("VP8 ", 12, "ascii");
+    webpVp8.writeUInt32LE(10, 16);
+    webpVp8[20] = 0x00; // keyframe
+    webpVp8[23] = 0x9d;
+    webpVp8[24] = 0x01;
+    webpVp8[25] = 0x2a;
+    webpVp8.writeUInt16LE(640, 26);
+    webpVp8.writeUInt16LE(480, 28);
+    const vp8Res = await postMsg(alice.sessionToken, {
+      content: "",
+      attachment: { mimeType: "image/webp", data: webpVp8.toString("base64") },
+    });
+    expect(vp8Res.status).toBe(201);
+    expect(((await vp8Res.json()) as { message: MessageDto }).message.attachment).toMatchObject({
+      width: 640,
+      height: 480,
+    });
+
+    const webpVp8L = Buffer.alloc(25);
+    webpVp8L.write("RIFF", 0, "ascii");
+    webpVp8L.writeUInt32LE(17, 4);
+    webpVp8L.write("WEBP", 8, "ascii");
+    webpVp8L.write("VP8L", 12, "ascii");
+    webpVp8L.writeUInt32LE(5, 16);
+    webpVp8L[20] = 0x2f;
+    webpVp8L.writeUInt32LE((128 - 1) | ((64 - 1) << 14), 21);
+    const vp8lRes = await postMsg(alice.sessionToken, {
+      content: "",
+      attachment: { mimeType: "image/webp", data: webpVp8L.toString("base64") },
+    });
+    expect(vp8lRes.status).toBe(201);
+    expect(((await vp8lRes.json()) as { message: MessageDto }).message.attachment).toMatchObject({
+      width: 128,
+      height: 64,
+    });
+
+    const webpVp8X = Buffer.alloc(30);
+    webpVp8X.write("RIFF", 0, "ascii");
+    webpVp8X.writeUInt32LE(22, 4);
+    webpVp8X.write("WEBP", 8, "ascii");
+    webpVp8X.write("VP8X", 12, "ascii");
+    webpVp8X.writeUInt32LE(10, 16);
+    webpVp8X.writeUIntLE(1024 - 1, 24, 3);
+    webpVp8X.writeUIntLE(768 - 1, 27, 3);
+    const vp8xRes = await postMsg(alice.sessionToken, {
+      content: "",
+      attachment: { mimeType: "image/webp", data: webpVp8X.toString("base64") },
+    });
+    expect(vp8xRes.status).toBe(201);
+    expect(((await vp8xRes.json()) as { message: MessageDto }).message.attachment).toMatchObject({
+      width: 1024,
+      height: 768,
+    });
+
+    // 3. JPEG with fill 0xFF, RST0 standalone marker, APP0 segment, and SOF2 progressive (800x600)
+    const jpegBuf = Buffer.from([
+      0xff,
+      0xd8, // SOI
+      0xff,
+      0xd0, // standalone RST0
+      0xff,
+      0xff,
+      0xe0,
+      0x00,
+      0x04,
+      0x00,
+      0x00, // padded APP0 length 4
+      0xff,
+      0xc2,
+      0x00,
+      0x0b,
+      0x08,
+      0x02,
+      0x58,
+      0x03,
+      0x20,
+      0x01,
+      0x01,
+      0x11,
+      0x00, // SOF2: height=600 (0x0258), width=800 (0x0320)
+      0xff,
+      0xd9, // EOI
+    ]);
+    const jpegRes = await postMsg(alice.sessionToken, {
+      content: "",
+      attachment: {
+        mimeType: "image/jpeg",
+        fileName: "photo.jpg",
+        data: jpegBuf.toString("base64"),
+      },
+    });
+    expect(jpegRes.status).toBe(201);
+    const { message: aliceJpegMsg } = (await jpegRes.json()) as { message: MessageDto };
+    expect(aliceJpegMsg.attachment).toEqual({
+      mimeType: "image/jpeg",
+      byteLength: jpegBuf.byteLength,
+      width: 800,
+      height: 600,
+      fileName: "photo.jpg",
+    });
+
+    // 4. Hard gate: reject >16MP decompression bomb (4001 * 4000 = 16,004,000 > 16,000,000) & 0x0 dimensions
+    const bombGif = Buffer.alloc(14);
+    bombGif.write("GIF89a", 0, "ascii");
+    bombGif.writeUInt16LE(4001, 6);
+    bombGif.writeUInt16LE(4000, 8);
+    expect(
+      (
+        await postMsg(alice.sessionToken, {
+          content: "",
+          attachment: { mimeType: "image/gif", data: bombGif.toString("base64") },
+        })
+      ).status,
+    ).toBe(400);
+
+    const zeroGif = Buffer.alloc(14);
+    zeroGif.write("GIF89a", 0, "ascii");
+    expect(
+      (
+        await postMsg(alice.sessionToken, {
+          content: "",
+          attachment: { mimeType: "image/gif", data: zeroGif.toString("base64") },
+        })
+      ).status,
+    ).toBe(400);
+
+    // 5. Sibling agent posts a PNG; verify CSP + x-openhuddle-author-trust across owner/sibling/external
+    const png1x1 = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const agtPostRes = await postMsg(agtA2.token, {
+      content: "sibling diagram",
+      ignoreUnread: true,
+      attachment: { mimeType: "image/png", data: png1x1.toString("base64") },
+    });
+    expect(agtPostRes.status).toBe(201);
+    const { message: siblingImgMsg } = (await agtPostRes.json()) as { message: MessageDto };
+
+    // agtA1 reads Alice's JPEG -> owner_command + inline CSP
+    const ownerAttForAgtA1 = await app.request(`${messagesUrl}/${aliceJpegMsg.seq}/attachment`, {
+      headers: { authorization: `Bearer ${agtA1.token}` },
+    });
+    expect(ownerAttForAgtA1.status).toBe(200);
+    expect(ownerAttForAgtA1.headers.get("x-openhuddle-author-trust")).toBe("owner_command");
+    expect(ownerAttForAgtA1.headers.get("x-openhuddle-author-kind")).toBe("human");
+    expect(ownerAttForAgtA1.headers.get("content-disposition")).toBe("inline");
+    expect(ownerAttForAgtA1.headers.get("content-security-policy")).toBe(
+      "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'",
+    );
+    expect(ownerAttForAgtA1.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+
+    // agtA1 reads agtA2's PNG -> owner_sibling_agent
+    const siblingAttForAgtA1 = await app.request(`${messagesUrl}/${siblingImgMsg.seq}/attachment`, {
+      headers: { authorization: `Bearer ${agtA1.token}` },
+    });
+    expect(siblingAttForAgtA1.headers.get("x-openhuddle-author-trust")).toBe("owner_sibling_agent");
+    expect(siblingAttForAgtA1.headers.get("x-openhuddle-author-kind")).toBe("agent");
+
+    // agtB1 (Bob's agent) reads Alice's JPEG -> external_participant
+    const externalAttForAgtB1 = await app.request(`${messagesUrl}/${aliceJpegMsg.seq}/attachment`, {
+      headers: { authorization: `Bearer ${agtB1.token}` },
+    });
+    expect(externalAttForAgtB1.headers.get("x-openhuddle-author-trust")).toBe(
+      "external_participant",
+    );
+
+    // 6. Remote MCP `openhuddle_get_attachment` returns external_participant on Alice's image when called by agtB1,
+    // and returns 404 after Alice recalls the message!
+    const callRemoteMcp = async (token: string, name: string, args: Record<string, unknown>) =>
+      app.request("/api/v1/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: args },
+        }),
+      });
+
+    const mcpAttRes = await callRemoteMcp(agtB1.token, "openhuddle_get_attachment", {
+      roomId: room.id,
+      seq: aliceJpegMsg.seq,
+    });
+    expect(mcpAttRes.status).toBe(200);
+    const mcpAttJson = (await mcpAttRes.json()) as {
+      result: { content: Array<{ type: string; text?: string; data?: string }> };
+    };
+    expect(mcpAttJson.result.content).toHaveLength(2);
+    expect(JSON.parse(mcpAttJson.result.content[0]?.text ?? "{}")).toMatchObject({
+      ok: true,
+      authorTrustLevel: "external_participant",
+      authorKind: "human",
+    });
+    expect(mcpAttJson.result.content[1]?.type).toBe("image");
+
+    // Recall Alice's JPEG -> both REST and Remote MCP immediately return 404
+    const recallRes = await app.request(`${messagesUrl}/${aliceJpegMsg.seq}`, {
+      method: "DELETE",
+      headers: aliceHeaders,
+    });
+    expect(recallRes.status).toBe(200);
+    expect(
+      (
+        await app.request(`${messagesUrl}/${aliceJpegMsg.seq}/attachment`, {
+          headers: { authorization: `Bearer ${agtB1.token}` },
+        })
+      ).status,
+    ).toBe(404);
+    const mcpRecalledRes = await callRemoteMcp(agtB1.token, "openhuddle_get_attachment", {
+      roomId: room.id,
+      seq: aliceJpegMsg.seq,
+    });
+    const mcpRecalledJson = (await mcpRecalledRes.json()) as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    };
+    expect(mcpRecalledJson.result.isError).toBe(true);
+    expect(mcpRecalledJson.result.content[0]?.text).toContain("404");
+
+    // Oversized remote MCP payload (> MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH + 256 KiB) returns 413
+    const oversizedMcpRes = await app.request("/api/v1/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${agtA1.token}`,
+      },
+      body: "x".repeat(MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH + 256 * 1024 + 1),
+    });
+    expect(oversizedMcpRes.status).toBe(413);
+
+    // Delete agtB1 -> old token immediately returns 401 on both /attachment and /api/v1/mcp
+    const delAgtRes = await app.request(`/api/v1/agents/${agtB1.agent.id}`, {
+      method: "DELETE",
+      headers: bobHeaders,
+    });
+    expect(delAgtRes.status).toBe(200);
+    expect(
+      (
+        await app.request(`${messagesUrl}/${siblingImgMsg.seq}/attachment`, {
+          headers: { authorization: `Bearer ${agtB1.token}` },
+        })
+      ).status,
+    ).toBe(401);
+    expect((await callRemoteMcp(agtB1.token, "openhuddle_whoami", {})).status).toBe(401);
   });
 
   it("enforces owner-first trust boundaries, 409 optimistic read-lock, turn-budget pause, and human-gated proposal approval", async () => {

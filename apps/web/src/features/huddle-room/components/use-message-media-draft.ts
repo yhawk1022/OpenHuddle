@@ -112,6 +112,11 @@ export function useMessageMediaDraft() {
     setError(null);
   };
 
+  const restoreAttachment = (draftAttachment: DraftMessageAttachment): void => {
+    setAttachment((current) => current ?? draftAttachment);
+    setError(null);
+  };
+
   const chooseFiles = async (files: readonly File[]): Promise<void> => {
     const file = files[0];
     if (file === undefined) {
@@ -143,7 +148,40 @@ export function useMessageMediaDraft() {
       return;
     }
     if (file.size <= MAX_MESSAGE_ATTACHMENT_BYTES) {
-      setAttachment({ blob: file, mimeType, name: file.name });
+      const initialDraft: DraftMessageAttachment = { blob: file, mimeType, name: file.name };
+      setAttachment(initialDraft);
+      if (
+        mimeType.startsWith("image/") &&
+        typeof Image !== "undefined" &&
+        typeof URL.createObjectURL === "function"
+      ) {
+        const probeSelection = new AbortController();
+        imageSelectionRef.current = probeSelection;
+        const probeUrl = URL.createObjectURL(file);
+        const probeImg = new Image();
+        probeImg.onload = () => {
+          URL.revokeObjectURL(probeUrl);
+          if (
+            !probeSelection.signal.aborted &&
+            probeImg.naturalWidth > 0 &&
+            probeImg.naturalHeight > 0
+          ) {
+            setAttachment((current) =>
+              current === initialDraft
+                ? {
+                    ...current,
+                    width: probeImg.naturalWidth,
+                    height: probeImg.naturalHeight,
+                  }
+                : current,
+            );
+          }
+        };
+        probeImg.onerror = () => {
+          URL.revokeObjectURL(probeUrl);
+        };
+        probeImg.src = probeUrl;
+      }
       return;
     }
 
@@ -279,6 +317,7 @@ export function useMessageMediaDraft() {
     chooseFiles,
     chooseSticker,
     clearAttachment,
+    restoreAttachment,
     startRecording,
     finishRecording,
     cancelRecording,

@@ -109,7 +109,7 @@ export function sortRoomsByLatestActivity<T extends RoomSummaryDto>(rooms: Reado
 }
 
 /**
- * 获取引用与通知中的消息摘要，纯媒体消息显示对应的媒体类别。
+ * 获取引用与通知中的消息摘要，混排消息保留媒体类型前缀，纯媒体消息显示对应的媒体类别。
  * @param message - 待展示的消息
  * @param maxLength - 摘要最大长度
  * @returns 可读的短文本
@@ -119,16 +119,19 @@ export function getMessageSnippet(message: MessageDto, maxLength: number): strin
     return "该消息已撤回";
   }
   const text = message.content.replace(/\s+/gu, " ").trim();
-  if (text.length > 0 || message.attachment === undefined) {
+  if (message.attachment === undefined) {
     return text.slice(0, maxLength);
   }
   if (message.attachment.stickerName !== undefined) {
-    return `[表情] ${message.attachment.stickerName}`.slice(0, maxLength);
+    const base = `[表情] ${message.attachment.stickerName}`;
+    return (text.length > 0 ? `${base} ${text}` : base).slice(0, maxLength);
   }
   if (message.attachment.mimeType === "application/octet-stream") {
-    return `[文件] ${message.attachment.fileName ?? "附件"}`.slice(0, maxLength);
+    const base = `[文件] ${message.attachment.fileName ?? "附件"}`;
+    return (text.length > 0 ? `${base} · ${text}` : base).slice(0, maxLength);
   }
-  return message.attachment.mimeType.startsWith("image/") ? "[图片]" : "[语音]";
+  const mediaTag = message.attachment.mimeType.startsWith("image/") ? "[图片]" : "[语音]";
+  return (text.length > 0 ? `${mediaTag} ${text}` : mediaTag).slice(0, maxLength);
 }
 
 /** 用聊天视图的简短单位格式化附件字节数。 */

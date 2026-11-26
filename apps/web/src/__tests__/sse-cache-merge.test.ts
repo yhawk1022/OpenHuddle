@@ -200,16 +200,23 @@ describe("@openhuddle/web — SSE & optimistic QueryClient cache merge invariant
     expect(afterRepeat.rooms.map((r) => r.id)).toEqual([otherRoomId]);
   });
 
-  it("correlates captionless media sends by operation key rather than matching empty captions", () => {
-    const opKey = "op_media_pending" as OperationKey;
-    const attachment = { mimeType: "image/png", byteLength: 17 } as const;
+  it("coalesces optimistic image bubble when SSE arrives before HTTP 201 and keeps stable _opKey & _optimisticBlob across HTTP confirmation", () => {
+    const opKey = "op_img_sse_first" as OperationKey;
+    const localBlob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    const attachment = {
+      mimeType: "image/png",
+      byteLength: 48,
+      width: 1440,
+      height: 900,
+      fileName: "screen.png",
+    } as const;
     const optimistic = {
-      ...makeMessage(1, ""),
+      ...makeMessage(1, "  请看架构图  "),
       attachment,
       _opKey: opKey,
-      _optimisticPending: true,
+      _optimisticPending: true as const,
+      _optimisticBlob: localBlob,
     };
-    const otherDevice = { ...makeMessage(1, ""), attachment };
     const cache: RoomMessagesCacheData = {
       ok: true,
       messages: [optimistic],
@@ -217,11 +224,93 @@ describe("@openhuddle/web — SSE & optimistic QueryClient cache merge invariant
       governance: createDefaultGovernanceState(),
     };
 
-    const afterSse = mergeConfirmedMessageIntoCache(cache, otherDevice);
-    expect(afterSse.messages).toEqual([otherDevice, optimistic]);
+    // 1. SSE 广播比 HTTP 201 先抵达（无 matchedOpKey）：自动合并乐观带图气泡并继承 _opKey 与 _optimisticBlob
+    const sseConfirmed = { ...makeMessage(8, "请看架构图"), attachment };
+    const afterSse = mergeConfirmedMessageIntoCache(cache, sseConfirmed);
+    expect(afterSse.messages).toHaveLength(1);
+    expect(afterSse.messages[0]).toEqual({
+      ...sseConfirmed,
+      _opKey: opKey,
+      _optimisticBlob: localBlob,
+    });
 
-    const confirmed = { ...makeMessage(2, ""), attachment };
+    // 2. 紧接着 HTTP 201 携带 matchedOpKey 抵达：保持单条记录与完全一致的 _opKey / _optimisticBlob，零重挂载
+    const afterHttp = mergeConfirmedMessageIntoCache(afterSse, sseConfirmed, {
+      matchedOpKey: opKey,
+    });
+    expect(afterHttp.messages).toHaveLength(1);
+    expect(afterHttp.messages[0]).toEqual({
+      ...sseConfirmed,
+      _opKey: opKey,
+      _optimisticBlob: localBlob,
+    });
+  });
+
+  it("does not coalesce distinct attachment types on SSE arrival and reclaims matchedOpKey cleanly on HTTP confirmation", () => {
+    const opKey = "op_media_pending" as OperationKey;
+    const pngAttachment = { mimeType: "image/png", byteLength: 17 } as const;
+    const webpSticker = { mimeType: "image/webp", byteLength: 12, stickerName: "wave" } as const;
+    const optimistic = {
+      ...makeMessage(1, ""),
+      attachment: pngAttachment,
+      _opKey: opKey,
+      _optimisticPending: true as const,
+    };
+    const otherDeviceSticker = { ...makeMessage(1, ""), attachment: webpSticker };
+    const cache: RoomMessagesCacheData = {
+      ok: true,
+      messages: [optimistic],
+      latestSeq: 0,
+      governance: createDefaultGovernanceState(),
+    };
+
+    const afterSse = mergeConfirmedMessageIntoCache(cache, otherDeviceSticker);
+    expect(afterSse.messages).toEqual([otherDeviceSticker, optimistic]);
+
+    const confirmed = { ...makeMessage(2, ""), attachment: pngAttachment };
     const afterHttp = mergeConfirmedMessageIntoCache(afterSse, confirmed, { matchedOpKey: opKey });
-    expect(afterHttp.messages).toEqual([otherDevice, confirmed]);
+    expect(afterHttp.messages).toEqual([otherDeviceSticker, { ...confirmed, _opKey: opKey }]);
+  });
+
+  it("preserves _optimisticBlob across confirmation for zero-flicker double buffering and drops it on recall", () => {
+    const opKey = "op_img_double_buffer" as OperationKey;
+    const localBlob = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    const attachment = {
+      mimeType: "image/png",
+      byteLength: 4,
+      width: 1200,
+      height: 800,
+      fileName: "arch.png",
+    } as const;
+    const cache: RoomMessagesCacheData = {
+      ok: true,
+      messages: [
+        {
+          ...makeMessage(1, ""),
+          attachment,
+          _opKey: opKey,
+          _optimisticPending: true,
+          _optimisticBlob: localBlob,
+        },
+      ],
+      latestSeq: 0,
+      governance: createDefaultGovernanceState(),
+    };
+
+    const confirmed = { ...makeMessage(5, ""), attachment };
+    const afterConfirm = mergeConfirmedMessageIntoCache(cache, confirmed, { matchedOpKey: opKey });
+    expect(afterConfirm.messages).toHaveLength(1);
+    expect(afterConfirm.messages[0]?.seq).toBe(5);
+    expect(afterConfirm.messages[0]?._optimisticPending).toBeUndefined();
+    expect(afterConfirm.messages[0]?._optimisticBlob).toBe(localBlob);
+
+    // 重复 SSE 帧到达仍保留本地缓冲源
+    const afterDuplicateSse = mergeConfirmedMessageIntoCache(afterConfirm, confirmed);
+    expect(afterDuplicateSse.messages[0]?._optimisticBlob).toBe(localBlob);
+
+    // 消息被撤回时清理本地缓冲源引用
+    const recalled = { ...confirmed, recalledAtIso: "2026-11-12T10:02:00.000Z" };
+    const afterRecall = mergeConfirmedMessageIntoCache(afterDuplicateSse, recalled);
+    expect(afterRecall.messages[0]?._optimisticBlob).toBeUndefined();
   });
 });

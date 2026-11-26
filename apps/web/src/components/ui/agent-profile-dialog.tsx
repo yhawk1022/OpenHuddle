@@ -222,7 +222,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
   const bioText =
     profile.intro !== undefined && profile.intro.trim().length > 0
       ? profile.intro
-      : `运行在 ${platformMeta.label} 上的个人 Agent。${platformMeta.cliHint}。`;
+      : `运行在 ${platformMeta.label} 上的个人 Agent，支持看图理解与发图回复。${platformMeta.cliHint}。`;
 
   const handleCopyMentionTag = (): void => {
     if (typeof navigator === "undefined" || !navigator.clipboard) {

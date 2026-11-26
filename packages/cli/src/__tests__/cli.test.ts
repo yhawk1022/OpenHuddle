@@ -26,7 +26,6 @@ import {
   FAST_FALLBACK_TURN_TIMEOUT_MS,
   RoomWakeQueue,
   type WakeEventPayload,
-  buildFastFallbackWakePrompt,
   buildLinuxSystemdUnit,
   buildMacLaunchdPlist,
   buildWakeProcessEnv,
@@ -1169,7 +1168,9 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       });
       for (const payload of postedPayloads) {
         expect(payload.attachment).toEqual(
-          mayOutputImage ? { mimeType: "image/png", data: imageData } : undefined,
+          mayOutputImage
+            ? { mimeType: "image/png", fileName: "reply.png", data: imageData }
+            : undefined,
         );
         expect(payload.mentions).toEqual(
           mayOutputImage
@@ -2484,19 +2485,20 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
         onLog: () => undefined,
       });
 
-      // 第 1 次：90s 主回合遭遇冷代理 EOF -> 等待 1.2s 热身重试
-      // 第 2 次：90s 主回合因慢工具超时 -> 不再傻等重跑同一提示词，立即切换 45s 零工具纯文本极速降级
-      // 第 3 次：45s 纯文本降级成功返回群聊回复并提取 @庞彦-OpenAICodex 提及，无报错气泡！
+      // 第 1 次：120s 主回合（antigravity 开启主人授权发图沙箱）遭遇冷代理 EOF -> 等待 1.2s 热身重试
+      // 第 2 次：120s 主回合因慢工具超时 -> 立即关闭发图沙箱并切换 90s 零工具纯文本极速降级
+      // 第 3 次：90s 纯文本降级成功返回群聊回复并提取 @庞彦-OpenAICodex 提及，无报错气泡！
       expect(sleepDelays).toEqual([1_200]);
       expect(recordedCalls).toHaveLength(3);
       expect(recordedCalls[0]?.timeoutMs).toBe(DEFAULT_PRESET_TURN_TIMEOUT_MS);
-      expect(recordedCalls[0]?.prompt).toContain("PURE TEXT / MARKDOWN CHAT MEDIUM ONLY");
-      expect(recordedCalls[0]?.prompt).toContain("NEVER write files to disk");
+      expect(recordedCalls[0]?.prompt).toContain("IMAGE REPLY:");
       expect(recordedCalls[0]?.prompt).not.toContain("URGENT SYSTEM OVERRIDE");
       expect(recordedCalls[1]?.timeoutMs).toBe(DEFAULT_PRESET_TURN_TIMEOUT_MS);
       expect(recordedCalls[2]?.timeoutMs).toBe(FAST_FALLBACK_TURN_TIMEOUT_MS);
-      expect(recordedCalls[2]?.prompt).toBe(
-        buildFastFallbackWakePrompt(recordedCalls[0]?.prompt ?? ""),
+      expect(recordedCalls[2]?.prompt).toContain("PURE TEXT / MARKDOWN CHAT MEDIUM ONLY");
+      expect(recordedCalls[2]?.prompt).toContain("NEVER write files to disk");
+      expect(recordedCalls[2]?.prompt).toContain(
+        "The image attempt timed out. Tell the owner that no image was attached.",
       );
       expect(recordedCalls[2]?.prompt).toContain(
         "URGENT SYSTEM OVERRIDE (FAST PURE-TEXT FALLBACK)",

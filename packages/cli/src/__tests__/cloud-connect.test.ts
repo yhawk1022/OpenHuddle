@@ -601,8 +601,9 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       "claude_code",
       "claude",
       [
-        '[ "$1" = -p ] && [ "$6" = none ] || exit 1',
+        '[ "$1" = -p ] && [ -z "${OPENHUDDLE_TOKEN_FILE:-}" ] || exit 1',
         '[ -z "${CLAUDECODE:-}" ] || exit 1',
+        'case "$*" in *"--strict-mcp-config --tools"*) ;; *) exit 1;; esac',
         'case "$(/bin/cat)" in *"Private transcript fragment"*) printf "%s" "Runner reply";; *) exit 2;; esac',
       ],
     ],
@@ -610,7 +611,7 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       "antigravity",
       "agy",
       [
-        '[ "$1" = --output-format ] && [ "$8" = --print ] || exit 1',
+        '[ "$1" = --output-format ] && [ "$8" = --print ] && [ -z "${OPENHUDDLE_TOKEN_FILE:-}" ] || exit 1',
         'case "$9" in *"Private transcript fragment"*) printf "%s" "Runner reply";; *) exit 2;; esac',
       ],
     ],
@@ -618,7 +619,7 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       "gemini",
       "gemini",
       [
-        '[ "$1" = -p ] && [ "$3" = -o ] && [ "$4" = text ] || exit 1',
+        '[ "$1" = --skip-trust ] && [ "$2" = --policy ] && [ -f "$3" ] && [ -z "${OPENHUDDLE_TOKEN_FILE:-}" ] || exit 1',
         'case "$(/bin/cat)" in *"Private transcript fragment"*) printf "%s" "Runner reply";; *) exit 2;; esac',
       ],
     ],
@@ -626,7 +627,7 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
       "deepseek",
       "dsh",
       [
-        '[ "$#" -eq 2 ] && [ "$1" = --profile ] && [ "$2" = headless ] || exit 1',
+        '[ "$#" -eq 2 ] && [ "$1" = --profile ] && [ "$2" = headless ] && [ "${DSH_PERMISSION_MODE:-}" = read-only ] && [ -z "${OPENHUDDLE_TOKEN_FILE:-}" ] || exit 1',
         'case "$(/bin/cat)" in *"Private transcript fragment"*) printf "%s" "Runner reply";; *) exit 2;; esac',
       ],
     ],
@@ -717,19 +718,39 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
     async () => {
       const scriptPath = join(tempHome, "custom runner.sh");
       const tokenPath = join(tempHome, "tokens", "custom.token");
+      const samplePng = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFzsAAAAASUVORK5CYII=",
+        "base64",
+      );
       writeFileSync(
         scriptPath,
         [
           "#!/bin/sh",
-          'printf "%s\\n" "$OPENHUDDLE_ROOM_ID" "$OPENHUDDLE_LATEST_SEQ" "$OPENHUDDLE_WAKE_REASON" "$OPENHUDDLE_TOKEN_FILE" "$OPENHUDDLE_URL" > "$0.context"',
+          'printf "%s\\n" "$OPENHUDDLE_ROOM_ID" "$OPENHUDDLE_LATEST_SEQ" "$OPENHUDDLE_WAKE_REASON" "$OPENHUDDLE_TOKEN_FILE" "$OPENHUDDLE_URL" "${OPENHUDDLE_ATTACHMENTS_DIR:-none}" "${OPENHUDDLE_ATTACHMENTS_JSON:-none}" > "$0.context"',
+          'if [ -n "${OPENHUDDLE_ATTACHMENTS_DIR:-}" ] && [ -f "$OPENHUDDLE_ATTACHMENTS_DIR/inbound-seq-7.png" ]; then',
+          '  cp "$OPENHUDDLE_ATTACHMENTS_DIR/inbound-seq-7.png" "$0.seen.png"',
+          "fi",
         ].join("\n"),
       );
-      const fetchImpl = vi.fn<typeof fetch>(
-        async () =>
-          new Response(
+      const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/api/v1/events")) {
+          return new Response(
             'event: wake\ndata: {"type":"wake","roomId":"rom_cloud","latestSeq":7,"reason":"direct_mention"}\n\n',
-          ),
-      );
+          );
+        }
+        if (url.endsWith("/api/v1/rooms/rom_cloud/messages/7/attachment")) {
+          return new Response(samplePng, {
+            status: 200,
+            headers: {
+              "content-type": "image/png",
+              "x-openhuddle-author-trust": "external_participant",
+              "x-openhuddle-author-kind": "human",
+            },
+          });
+        }
+        return jsonResponse(404, { ok: false });
+      });
 
       await startSseListener({
         serverUrl: "https://huddle.example.com",
@@ -742,17 +763,28 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
         onLog: () => undefined,
       });
 
-      expect(readFileSync(`${scriptPath}.context`, "utf8").trim().split("\n")).toEqual([
+      const ctxLines = readFileSync(`${scriptPath}.context`, "utf8").trim().split("\n");
+      expect(ctxLines.slice(0, 5)).toEqual([
         "rom_cloud",
         "7",
         "direct_mention",
         tokenPath,
         "https://huddle.example.com",
       ]);
-      expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
-        "https://huddle.example.com/api/v1/events",
-        expect.any(Object),
-      );
+      const visionDirSeen = ctxLines[5] ?? "";
+      expect(visionDirSeen).toContain("openhuddle-vision-");
+      expect(existsSync(visionDirSeen)).toBe(false); // 100% cleaned up after custom runner exits!
+      expect(readFileSync(`${scriptPath}.seen.png`)).toEqual(samplePng);
+      expect(JSON.parse(ctxLines[6] ?? "[]")).toMatchObject([
+        {
+          seq: 7,
+          mimeType: "image/png",
+          fileName: "inbound-seq-7.png",
+          authorTrustLevel: "external_participant",
+          authorKind: "human",
+        },
+      ]);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
     },
   );
 
@@ -851,6 +883,10 @@ describe("@openhuddle/cli — cloud & container agile connect", () => {
     });
     const tools = advertised.map((tool) => tool.name);
     expect(tools).toContain("openhuddle_send_message");
+    expect(tools).toContain("openhuddle_get_attachment");
+    for (const tool of advertised) {
+      expect(JSON.stringify(tool.inputSchema)).not.toMatch(/"(?:filePath|outputPath|outPath|url)"/);
+    }
     expect(tools).toEqual(
       expect.arrayContaining([
         "openhuddle_list_workspaces",

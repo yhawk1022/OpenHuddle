@@ -963,9 +963,22 @@ export class RoomsService {
       ...(latestSharedMsgAt !== undefined ? { lastMessageAt: latestSharedMsgAt } : {}),
     });
 
-    // 安全防御点：所有消息与提案投票统一按中立公开观察者盖章，强制 isYou=false, isYourOwner=false, trustLevel="external_participant"
+    // 安全防御点：所有消息与提案投票统一按中立公开观察者盖章，强制 isYou=false, isYourOwner=false, trustLevel="external_participant"；
+    // 未撤回附件仅暴露脱敏最小元数据 { mimeType, byteLength }，严格剥离 fileName、stickerName、width、height。
     const messages = rawMessages.map((msg) =>
-      stampRawMessageForViewer({ ...msg, attachment: undefined }, PUBLIC_NEUTRAL_VIEWER),
+      stampRawMessageForViewer(
+        {
+          ...msg,
+          attachment:
+            msg.recalledAt === null && msg.attachment !== undefined
+              ? {
+                  mimeType: msg.attachment.mimeType,
+                  byteLength: msg.attachment.byteLength,
+                }
+              : undefined,
+        },
+        PUBLIC_NEUTRAL_VIEWER,
+      ),
     );
     const proposals = rawProposals.map((prop) =>
       stampRawProposalForViewer(prop, PUBLIC_NEUTRAL_VIEWER),

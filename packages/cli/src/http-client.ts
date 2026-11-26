@@ -7,6 +7,7 @@
  * 2. 统一错误信封收敛：所有非 2xx 响应均经由严格类型守卫解析为 `OpenHuddleApiError`；针对 `409 CONFLICT_UNREAD_MESSAGES` 专门展开打印漏读增量消息与 `trustLevel` 安全标记。
  */
 import type {
+  ActorKind,
   AgentId,
   AgentPlatform,
   ApiErrorEnvelope,
@@ -45,12 +46,27 @@ import type {
   RoomVisibility,
   RoomWorkspacesResponse,
   SingleWorkItemResponse,
+  TrustLevel,
   UnreadConflictDetails,
   UpdateMeBody,
   WorkItemId,
   WorkSliceId,
 } from "@openhuddle/protocol";
 import { normalizeServerUrl } from "./token-store.js";
+
+const DEFAULT_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * `GET /api/v1/rooms/:roomId/messages/:seq/attachment` 流式下载结果。
+ */
+export interface DownloadedRoomAttachment {
+  readonly bytes: Buffer;
+  readonly byteLength: number;
+  readonly mimeType: string;
+  readonly fileName?: string;
+  readonly authorTrustLevel: TrustLevel;
+  readonly authorKind: ActorKind | "system";
+}
 
 /**
  * 客户端异常码：涵盖服务端标准 `ErrorCode` 以及网络/报文层异常。
@@ -271,6 +287,48 @@ export class OpenHuddleApiError extends Error {
   }
 }
 
+function parseDispositionFileName(headerValue: string | null): string | undefined {
+  if (!headerValue) {
+    return undefined;
+  }
+  const utf8Match = /filename\*\s*=\s*UTF-8''([^;\s]+)/i.exec(headerValue);
+  if (utf8Match?.[1] !== undefined) {
+    try {
+      const decoded = decodeURIComponent(utf8Match[1]).trim();
+      if (decoded.length > 0 && !/[/\\\p{Cc}\p{Cs}\u202a-\u202e\u2066-\u2069]/u.test(decoded)) {
+        return decoded.slice(0, 255);
+      }
+    } catch {
+      // ignore malformed percent encoding
+    }
+  }
+  const plainMatch = /filename\s*=\s*"([^"]+)"/i.exec(headerValue);
+  const plain = plainMatch?.[1]?.trim();
+  if (
+    plain !== undefined &&
+    plain.length > 0 &&
+    plain !== "download" &&
+    !/[/\\\p{Cc}\p{Cs}\u202a-\u202e\u2066-\u2069]/u.test(plain)
+  ) {
+    return plain.slice(0, 255);
+  }
+  return undefined;
+}
+
+function parseAuthorTrustHeader(raw: string | null): TrustLevel {
+  if (raw === "owner_command" || raw === "owner_sibling_agent" || raw === "external_participant") {
+    return raw;
+  }
+  return "external_participant";
+}
+
+function parseAuthorKindHeader(raw: string | null): ActorKind | "system" {
+  if (raw === "human" || raw === "agent" || raw === "system") {
+    return raw;
+  }
+  return "human";
+}
+
 /**
  * 将 `OpenHuddleApiError`（或未知异常）格式化为面向人类与 AI Agent 高可读的诊断文本。
  *
@@ -297,8 +355,12 @@ export function formatOpenHuddleError(error: unknown): string {
         const ownerTag = msg.author.isYourOwner
           ? "OWNER_COMMAND"
           : msg.author.trustLevel.toUpperCase();
+        const attSuffix =
+          msg.attachment !== undefined
+            ? ` [Attachment: ${msg.attachment.mimeType}, ${msg.attachment.byteLength} bytes${msg.attachment.fileName !== undefined ? `, fileName=${msg.attachment.fileName}` : ""}]`
+            : "";
         lines.push(
-          `  [#${msg.seq}] ${msg.author.displayName} (${msg.author.kind}, trust=${ownerTag}): ${msg.content}`,
+          `  [#${msg.seq}] ${msg.author.displayName} (${msg.author.kind}, trust=${ownerTag}): ${msg.content}${attSuffix}`,
         );
       }
       lines.push(
@@ -590,6 +652,126 @@ export class OpenHuddleHttpClient {
       `/api/v1/rooms/${encodeURIComponent(roomId)}/messages`,
       { body },
     );
+  }
+
+  /**
+   * 调用 `GET /api/v1/rooms/:roomId/messages/:seq/attachment` 流式下载消息附件，绝不推进房间 `lastReadSeq`。
+   *
+   * @param roomId - 房间 ID
+   * @param seq - 消息序号
+   * @param options - 可选最大读取字节上限（默认 8 MiB）与中止信号
+   * @returns 二进制字节、媒体类型、文件名与服务端权威作者印章响应头
+   */
+  public async downloadRoomAttachment(
+    roomId: RoomId | string,
+    seq: MessageSeq | number,
+    options?: {
+      readonly maxBytes?: number;
+      readonly signal?: AbortSignal | undefined;
+    },
+  ): Promise<DownloadedRoomAttachment> {
+    const maxBytes = options?.maxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES;
+    const pathWithQuery = `/api/v1/rooms/${encodeURIComponent(roomId)}/messages/${seq}/attachment`;
+    const url = `${this.baseUrl}${pathWithQuery}`;
+    const headers: Record<string, string> = {
+      Accept: "*/*",
+    };
+    if (this.token !== undefined && this.token.length > 0) {
+      headers.Authorization = `Bearer ${this.token}`;
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetchFn(url, {
+        method: "GET",
+        headers,
+        ...(options?.signal !== undefined ? { signal: options.signal } : {}),
+      });
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      throw new OpenHuddleApiError({
+        status: 0,
+        code: "NETWORK_ERROR",
+        message: `Failed to reach OpenHuddle server at ${this.baseUrl}: ${detail}`,
+        details: cause,
+      });
+    }
+
+    if (!response.ok) {
+      const rawText = await response.text();
+      let parsedBody: unknown;
+      try {
+        parsedBody = rawText.length > 0 ? JSON.parse(rawText) : undefined;
+      } catch {
+        throw new OpenHuddleApiError({
+          status: response.status,
+          code: "INTERNAL_SERVER_ERROR",
+          message: `HTTP ${response.status} ${response.statusText}: ${rawText.slice(0, 240)}`,
+        });
+      }
+      if (isApiErrorEnvelope(parsedBody)) {
+        throw new OpenHuddleApiError({
+          status: response.status,
+          code: parsedBody.error.code,
+          message: parsedBody.error.message,
+          requestId: parsedBody.error.requestId,
+          ...(parsedBody.error.details !== undefined ? { details: parsedBody.error.details } : {}),
+        });
+      }
+      throw new OpenHuddleApiError({
+        status: response.status,
+        code: "INTERNAL_SERVER_ERROR",
+        message: `HTTP ${response.status} ${response.statusText}`,
+        ...(parsedBody !== undefined ? { details: parsedBody } : {}),
+      });
+    }
+
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    if (response.body !== null) {
+      const reader = response.body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          if (value !== undefined && value.byteLength > 0) {
+            totalBytes += value.byteLength;
+            if (totalBytes > maxBytes) {
+              await reader.cancel().catch(() => undefined);
+              throw new OpenHuddleApiError({
+                status: 413,
+                code: "VALIDATION_ERROR",
+                message: `Attachment #${seq} exceeds maximum allowed size (${maxBytes} bytes).`,
+              });
+            }
+            chunks.push(Buffer.from(value));
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+
+    const bytes = Buffer.concat(chunks, totalBytes);
+    const rawContentType = response.headers.get("content-type") ?? "application/octet-stream";
+    const mimeType =
+      rawContentType.split(";")[0]?.trim().toLowerCase() || "application/octet-stream";
+    const fileName = parseDispositionFileName(response.headers.get("content-disposition"));
+    const authorTrustLevel = parseAuthorTrustHeader(
+      response.headers.get("x-openhuddle-author-trust"),
+    );
+    const authorKind = parseAuthorKindHeader(response.headers.get("x-openhuddle-author-kind"));
+
+    return {
+      bytes,
+      byteLength: bytes.byteLength,
+      mimeType,
+      ...(fileName !== undefined ? { fileName } : {}),
+      authorTrustLevel,
+      authorKind,
+    };
   }
 
   /**

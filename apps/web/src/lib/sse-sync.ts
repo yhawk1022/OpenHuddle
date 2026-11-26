@@ -57,13 +57,23 @@ export function subscribeWorkRealtimeSignals(
   };
 }
 
+function isSameAttachmentShape(a: MessageDto["attachment"], b: MessageDto["attachment"]): boolean {
+  if (Boolean(a) !== Boolean(b)) {
+    return false;
+  }
+  if (a === undefined || b === undefined) {
+    return true;
+  }
+  return a.mimeType === b.mimeType && a.stickerName === b.stickerName;
+}
+
 /**
  * 将一条服务端权威确认的 `MessageDto` 幂等合并进 `RoomMessagesCacheData`。
  *
  * @remarks
  * 并发防重核心算法：
- * - 若收到消息带有 `matchedOpKey`，优先精准剔除对应的客户端乐观占位气泡；
- * - 若 SSE 帧早于 HTTP `POST /messages` 响应抵达，则按同作者、同正文匹配纯文本待确认气泡。媒体消息等待 HTTP 回执以幂等键确认，避免误匹配同一用户在不同端发送的无正文附件；
+ * - 若收到消息带有 `matchedOpKey`，优先精准替换对应的客户端乐观占位气泡并继承 `_opKey` 与 `_optimisticBlob`；
+ * - 若 SSE 帧早于 HTTP `POST /messages` 响应抵达，则按同作者、同正文且同附件形态匹配最早一条待确认气泡，继承其 `_opKey` 与 `_optimisticBlob`，确保后续 HTTP 201 抵达时保持同一稳定 React `key`；
  * - 按 `seq` 严格升序去重排列，保证任何乱序推送下消息流单调连续。
  *
  * @param prev - 当前缓存快照
@@ -79,38 +89,72 @@ export function mergeConfirmedMessageIntoCache(
     readonly nextGovernance?: RoomGovernanceState;
   },
 ): RoomMessagesCacheData {
+  let matchedPendingIndex = -1;
+  if (options?.matchedOpKey !== undefined) {
+    matchedPendingIndex = prev.messages.findIndex(
+      (item) => item._optimisticPending === true && item._opKey === options.matchedOpKey,
+    );
+  } else if (incoming.author.isYou) {
+    matchedPendingIndex = prev.messages.findIndex(
+      (item) =>
+        item._optimisticPending === true &&
+        item.content.trim() === incoming.content.trim() &&
+        isSameAttachmentShape(item.attachment, incoming.attachment),
+    );
+  }
+
+  const matchedPending = matchedPendingIndex >= 0 ? prev.messages[matchedPendingIndex] : undefined;
+  const existingAtSeq = prev.messages.find(
+    (item) => item._optimisticPending !== true && item.seq === incoming.seq,
+  );
+  // 若多端极端并发下此前另一 seq 曾借用过该 matchedOpKey，将其 _opKey 与本地预览源交还给权威命中的当前 seq
+  const displacedOwner =
+    options?.matchedOpKey !== undefined
+      ? prev.messages.find(
+          (item) =>
+            item._optimisticPending !== true &&
+            item.seq !== incoming.seq &&
+            item._opKey === options.matchedOpKey,
+        )
+      : undefined;
+
+  const preservedOpKey = options?.matchedOpKey ?? matchedPending?._opKey ?? existingAtSeq?._opKey;
+  const preservedOptimisticBlob =
+    matchedPending?._optimisticBlob ??
+    existingAtSeq?._optimisticBlob ??
+    displacedOwner?._optimisticBlob;
+
+  const resolvedIncoming: OptimisticMessageItem = {
+    ...incoming,
+    ...(preservedOpKey !== undefined ? { _opKey: preservedOpKey } : {}),
+    ...(preservedOptimisticBlob !== undefined && incoming.recalledAtIso === undefined
+      ? { _optimisticBlob: preservedOptimisticBlob }
+      : {}),
+  };
+
   const nextList: OptimisticMessageItem[] = [];
-  let replacedOptimisticByHeuristic = false;
   let foundExistingSeq = false;
 
-  for (const item of prev.messages) {
-    // 1. 若通过 HTTP 响应携带的 matchedOpKey 精确命中乐观气泡，则跳过旧占位，由权威消息接替
-    if (
-      options?.matchedOpKey !== undefined &&
-      item._optimisticPending === true &&
-      item._opKey === options.matchedOpKey
-    ) {
+  for (let index = 0; index < prev.messages.length; index += 1) {
+    const item = prev.messages[index];
+    if (item === undefined || index === matchedPendingIndex) {
       continue;
     }
 
-    // 2. 若 SSE 广播比 HTTP 响应先到 5ms，启发式消解最早一条同作者同内容的待确认乐观气泡
-    if (
-      options?.matchedOpKey === undefined &&
-      !replacedOptimisticByHeuristic &&
-      item._optimisticPending === true &&
-      incoming.author.isYou &&
-      incoming.attachment === undefined &&
-      item.attachment === undefined &&
-      item.content.trim() === incoming.content.trim()
-    ) {
-      replacedOptimisticByHeuristic = true;
-      continue;
-    }
-
-    // 3. 同一 seq 幂等覆盖（例如撤回消息更新 recalledAtIso 或 HTTP/SSE 双重送达）
     if (item._optimisticPending !== true && item.seq === incoming.seq) {
-      nextList.push(incoming);
+      nextList.push(resolvedIncoming);
       foundExistingSeq = true;
+      continue;
+    }
+
+    if (
+      preservedOpKey !== undefined &&
+      item._optimisticPending !== true &&
+      item.seq !== incoming.seq &&
+      item._opKey === preservedOpKey
+    ) {
+      const { _opKey: _dropKey, _optimisticBlob: _dropBlob, ...plainItem } = item;
+      nextList.push(plainItem);
       continue;
     }
 
@@ -118,7 +162,7 @@ export function mergeConfirmedMessageIntoCache(
   }
 
   if (!foundExistingSeq) {
-    nextList.push(incoming);
+    nextList.push(resolvedIncoming);
   }
 
   // 正式消息按 seq 严格单调升序排列，尚未获得真实 seq 的乐观发送中气泡排在尾部

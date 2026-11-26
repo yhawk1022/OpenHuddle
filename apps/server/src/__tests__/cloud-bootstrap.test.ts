@@ -3,10 +3,19 @@
  * @description 全环境安装器（`/install.sh`、`/install.ps1`）、动态公网根地址推导与远程 MCP 鉴权边界测试。
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ManagedDatabase, createDatabaseClient, ensureCoreSchema } from "@openhuddle/db";
+import { MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH } from "@openhuddle/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServerApp } from "../app.js";
 import { parseServerEnv } from "../infra/env.js";
@@ -89,7 +98,7 @@ describe("@openhuddle/server — universal installer & cloud access", () => {
     );
   });
 
-  it("rejects anonymous and human callers on remote MCP endpoint", async () => {
+  it("rejects anonymous, human, and oversized (>8MiB Base64) payloads on remote MCP endpoint", async () => {
     const env = parseServerEnv({
       NODE_ENV: "test",
       LOG_LEVEL: "silent",
@@ -102,11 +111,104 @@ describe("@openhuddle/server — universal installer & cloud access", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
     expect(anon.status).toBe(401);
+
+    // Register human + pair an agent to obtain a valid oh_agt_ token
+    const otpReq = await app.request("/api/v1/auth/otp/request", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "mcp-limit@example.com", displayName: "MCP Owner" }),
+    });
+    const { devOtpCode } = (await otpReq.json()) as { devOtpCode: string };
+    const verifyRes = await app.request("/api/v1/auth/otp/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "mcp-limit@example.com",
+        code: devOtpCode,
+        displayName: "MCP Owner",
+      }),
+    });
+    const { sessionToken } = (await verifyRes.json()) as { sessionToken: string };
+
+    // Human bearer session must be rejected with 403 on /api/v1/mcp
+    const humanMcp = await app.request("/api/v1/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${sessionToken}`,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(humanMcp.status).toBe(403);
+    const codeRes = await app.request("/api/v1/pairing-codes", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${sessionToken}`,
+      },
+      body: JSON.stringify({}),
+    });
+    const { code } = (await codeRes.json()) as { code: string };
+    const pairRes = await app.request("/api/v1/pair", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code, name: "MCP Guard Bot", platform: "custom" }),
+    });
+    const { token: agentToken } = (await pairRes.json()) as { token: string };
+
+    // Oversized JSON-RPC request (> MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH + 256 KiB) must be rejected with 413
+    const hugeBody = `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"pad":"${"A".repeat(
+      MAX_MESSAGE_ATTACHMENT_BASE64_LENGTH + 300 * 1024,
+    )}"}}`;
+    const oversized = await app.request("/api/v1/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${agentToken}`,
+      },
+      body: hugeBody,
+    });
+    expect(oversized.status).toBe(413);
+    const errJson = (await oversized.json()) as { error: { code: string } };
+    expect(errJson.error.code).toBe("VALIDATION_ERROR");
+
+    // Reclaiming the agent rotates its token -> old token immediately rejected with 401 on /api/v1/mcp
+    const codeRes2 = await app.request("/api/v1/pairing-codes", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${sessionToken}`,
+      },
+      body: JSON.stringify({}),
+    });
+    const { code: code2 } = (await codeRes2.json()) as { code: string };
+    const reclaimRes = await app.request("/api/v1/pair", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        code: code2,
+        name: "MCP Guard Bot",
+        platform: "custom",
+        reclaim: true,
+      }),
+    });
+    expect(reclaimRes.status).toBe(201);
+
+    const revokedMcp = await app.request("/api/v1/mcp", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${agentToken}`,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }),
+    });
+    expect(revokedMcp.status).toBe(401);
   });
 });
 
 it.skipIf(process.platform === "win32")(
-  "connects in the POSIX fallback, keeps credentials on their issuer, and uses the persisted read cursor",
+  "connects in the POSIX fallback, streams --image/--file via --data-binary @-, and downloads 0600 attachments safely",
   () => {
     const tempDir = mkdtempSync(join(tmpdir(), "openhuddle-fallback-"));
     try {
@@ -127,6 +229,7 @@ it.skipIf(process.platform === "win32")(
       }
       writeFileSync(installed, fallback);
       for (const utility of [
+        "base64",
         "cat",
         "chmod",
         "date",
@@ -134,6 +237,7 @@ it.skipIf(process.platform === "win32")(
         "mkdir",
         "mktemp",
         "mv",
+        "od",
         "rm",
         "sed",
         "tr",
@@ -143,6 +247,14 @@ it.skipIf(process.platform === "win32")(
         }).trim();
         symlinkSync(executable, join(tools, utility));
       }
+
+      const samplePng = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFzsAAAAASUVORK5CYII=",
+        "base64",
+      );
+      const storedAttachmentFile = join(tempDir, "server-stored.png");
+      writeFileSync(storedAttachmentFile, samplePng);
+
       writeFileSync(
         join(tools, "curl"),
         [
@@ -152,11 +264,14 @@ it.skipIf(process.platform === "win32")(
           '  *"$ISSUER/api/v1/agent-connections/redeem"*)',
           '    cat > "$CAPTURE"',
           '    printf \'%s\' \'{"token":"oh_agt_test","autoJoinedRoomId":"rom_example"}\' ;;',
+          '  *"$ISSUER/api/v1/rooms/rom_example/messages/9/attachment"*"Authorization: Bearer oh_agt_test"*)',
+          '    cat "$STORED_ATT" ;;',
           '  *"$ISSUER/api/v1/rooms/rom_example/messages?limit=30"*"Authorization: Bearer oh_agt_test"*)',
           '    : > "$READ_CURSOR"',
           '    printf \'%s\' \'{"messages":[{"seq":1,"content":"Owner request"}]}\' ;;',
-          '  *"$ISSUER/api/v1/rooms/rom_example/messages"*"Authorization: Bearer oh_agt_test"*)',
-          '    case "$*" in *\'"ignoreUnread":true\'*) exit 1 ;; esac',
+          '  *"$ISSUER/api/v1/rooms/rom_example/messages"*"Authorization: Bearer oh_agt_test"*"--data-binary @-"*)',
+          '    cat > "$CAPTURE"',
+          '    case "$(cat "$CAPTURE")" in *\'"ignoreUnread":true\'*) exit 1 ;; esac',
           '    [ -f "$READ_CURSOR" ] || exit 22',
           "    printf '%s' '{\"message\":{\"seq\":2}}' ;;",
           '  *"$ISSUER/api/v1/rooms"*"Authorization: Bearer oh_agt_test"*)',
@@ -179,6 +294,7 @@ it.skipIf(process.platform === "win32")(
         CAPTURE: capture,
         REQUEST_ARGS: requestArgs,
         READ_CURSOR: readCursor,
+        STORED_ATT: storedAttachmentFile,
       };
       const connectionToken = `oh_connect_ng_${"a".repeat(43)}`;
       const output = execFileSync(
@@ -208,14 +324,108 @@ it.skipIf(process.platform === "win32")(
       expect(spawnSync("/bin/sh", [installed, "reply", "Before reading"], { env }).status).toBe(22);
       execFileSync("/bin/sh", [installed, "read"], { env });
       execFileSync("/bin/sh", [installed, "reply", "Read and replied"], { env });
-      const replyBody = readFileSync(requestArgs, "utf8").trimEnd().split("\n").at(-1) ?? "";
-      expect(JSON.parse(replyBody)).toEqual({
+      expect(readFileSync(requestArgs, "utf8")).toContain("--data-binary\n@-");
+      expect(JSON.parse(readFileSync(capture, "utf8"))).toEqual({
         content: "Read and replied",
         opKey: expect.any(String),
       });
       execFileSync("/bin/sh", [installed, "send", "rom_example", "Direct send"], { env });
-      const sendBody = readFileSync(requestArgs, "utf8").trimEnd().split("\n").at(-1) ?? "";
-      expect(JSON.parse(sendBody)).toEqual({ content: "Direct send", opKey: expect.any(String) });
+      expect(JSON.parse(readFileSync(capture, "utf8"))).toEqual({
+        content: "Direct send",
+        opKey: expect.any(String),
+      });
+
+      // Test POSIX sh --image, fake PNG rejection, --sticker, and --file without python3
+      const validImgPath = join(tempDir, "diagram.png");
+      writeFileSync(validImgPath, samplePng);
+      execFileSync(
+        "/bin/sh",
+        [installed, "reply", "Chart", "--image", validImgPath, "--reply", "1"],
+        {
+          env,
+        },
+      );
+      expect(JSON.parse(readFileSync(capture, "utf8"))).toEqual({
+        content: "Chart",
+        replyToSeq: 1,
+        opKey: expect.any(String),
+        attachment: {
+          mimeType: "image/png",
+          fileName: "diagram.png",
+          data: samplePng.toString("base64"),
+        },
+      });
+
+      const fakePngPath = join(tempDir, "spoof.png");
+      writeFileSync(fakePngPath, "<svg><script>alert(1)</script></svg>");
+      expect(
+        spawnSync("/bin/sh", [installed, "reply", "--image", fakePngPath], { env }).status,
+      ).toBe(1);
+
+      const docPath = join(tempDir, "notes.txt");
+      writeFileSync(docPath, "hello posix attachment");
+      execFileSync("/bin/sh", [installed, "send", "rom_example", "--file", docPath], { env });
+      expect(JSON.parse(readFileSync(capture, "utf8"))).toEqual({
+        content: "",
+        opKey: expect.any(String),
+        attachment: {
+          mimeType: "application/octet-stream",
+          fileName: "notes.txt",
+          data: Buffer.from("hello posix attachment").toString("base64"),
+        },
+      });
+
+      // Test POSIX sh `attachment` subcommand: 0600 mode, overwrite protection, --force, and symlink rejection
+      const downloadedOut = join(tempDir, "downloaded.png");
+      execFileSync("/bin/sh", [installed, "attachment", "9", "--out", downloadedOut], { env });
+      expect(readFileSync(downloadedOut)).toEqual(samplePng);
+      expect(statSync(downloadedOut).mode & 0o777).toBe(0o600);
+
+      writeFileSync(downloadedOut, "keep-me");
+      expect(
+        spawnSync("/bin/sh", [installed, "attachment", "9", "--out", downloadedOut], { env })
+          .status,
+      ).toBe(1);
+      expect(readFileSync(downloadedOut, "utf8")).toBe("keep-me");
+
+      execFileSync("/bin/sh", [installed, "attachment", "9", "--out", downloadedOut, "--force"], {
+        env,
+      });
+      expect(readFileSync(downloadedOut)).toEqual(samplePng);
+
+      const symlinkOut = join(tempDir, "symlink.png");
+      symlinkSync(docPath, symlinkOut);
+      expect(
+        spawnSync("/bin/sh", [installed, "attachment", "9", "--out", symlinkOut, "--force"], {
+          env,
+        }).status,
+      ).toBe(1);
+      expect(readFileSync(docPath, "utf8")).toBe("hello posix attachment");
+
+      // Also verify the python3 branch of POSIX fallback (--image + --sticker)
+      const py3Bin = execFileSync("/bin/sh", ["-c", "command -v python3 || true"], {
+        encoding: "utf8",
+      }).trim();
+      if (py3Bin.length > 0) {
+        symlinkSync(py3Bin, join(tools, "python3"));
+        execFileSync(
+          "/bin/sh",
+          [installed, "reply", "--image", validImgPath, "--sticker", " 赞 "],
+          { env },
+        );
+        expect(JSON.parse(readFileSync(capture, "utf8"))).toEqual({
+          content: "",
+          opKey: expect.any(String),
+          attachment: {
+            mimeType: "image/png",
+            stickerName: "赞",
+            data: samplePng.toString("base64"),
+          },
+        });
+        expect(
+          spawnSync("/bin/sh", [installed, "reply", "--image", fakePngPath], { env }).status,
+        ).toBe(1);
+      }
 
       writeFileSync(separateTokenPath, "oh_agt_separate\n");
       const explicitEnv = { ...env, OPENHUDDLE_TOKEN_FILE: separateTokenPath };

@@ -1047,7 +1047,9 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                   松开鼠标添加至「{roomDisplayName}」
                 </p>
                 <p className="text-xs text-[#687082] dark:text-[#8E8E96]">
-                  支持图片自动压缩预览、音频与文件附件
+                  {room.kind === "direct_human"
+                    ? "支持图片自动压缩预览、语音与文件附件"
+                    : "支持发图让 Agent 看图分析（超大图自动压缩），也支持语音与文件附件"}
                 </p>
               </motion.div>
             </motion.div>
@@ -1172,11 +1174,11 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                 <p className="mx-auto mt-2 text-[13.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                   {room.kind === "direct_agent"
                     ? room.peer?.kind === "agent" && room.peer.ownerUserId !== props.currentUser.id
-                      ? `这是 ${room.peer.ownerDisplayName} 的 Agent。你可以和它聊天，你的消息仅供参考。`
-                      : "直接发消息就好，不用 @ 它。"
+                      ? `这是 ${room.peer.ownerDisplayName} 的 Agent。你可以发文字或图片和它交流，你的消息仅作协作参考。`
+                      : "直接发消息或粘贴截图就好，不用 @ 它；它也能直接发图回复。"
                     : room.kind === "direct_human"
-                      ? "发条消息打个招呼吧。"
-                      : "邀请好友或 Agent 进群，输入 @ 可以点名。"}
+                      ? "发条消息或图片打个招呼吧。"
+                      : "邀请好友或 Agent 进群，发文字或图片并输入 @ 即可点名讨论。"}
                 </p>
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
                   {room.kind === "group" ? (
@@ -1220,6 +1222,9 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                   message.author.agentId !== undefined
                     ? memberByAgentId.get(message.author.agentId)
                     : undefined;
+                if (message._optimisticPending !== true && message._opKey !== undefined) {
+                  stableKeyBySeqRef.current.set(message.seq, message._opKey);
+                }
                 const key =
                   message._opKey ??
                   stableKeyBySeqRef.current.get(message.seq) ??
