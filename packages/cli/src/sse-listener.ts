@@ -50,6 +50,7 @@ import {
   requestsReplyImage,
 } from "./reply-image.js";
 import { normalizeServerUrl, updateRoomLastReadSeq } from "./token-store.js";
+import { isOwnerRetryRequest, resolveWakeRetrySource } from "./wake-retry-source.js";
 import { DeviceWorkListener, supportsDeviceWork } from "./work-listener.js";
 
 /** 单轮入站视觉图片最大张数（主人/兄弟触发） */
@@ -186,6 +187,7 @@ export interface BrokeredWakePromptInput {
   readonly messages: readonly MessageDto[];
   readonly wake: Readonly<WakeEventPayload>;
   readonly replyToSeq: MessageSeq;
+  readonly retryOfSeq?: MessageSeq;
   readonly allowImageReply?: boolean;
   readonly preset?: WakeAgentPreset;
   readonly inboundImages?: readonly InboundVisionAttachmentMeta[];
@@ -818,6 +820,11 @@ export function buildBrokeredWakePrompt(input: Readonly<BrokeredWakePromptInput>
     "",
     "## Response Instructions",
     `- Respond to message #${input.replyToSeq} in your own voice. A reply from another Agent does not fulfill your turn. Later messages are context for that response.`,
+    ...(input.retryOfSeq !== undefined
+      ? [
+          `- Message #${input.replyToSeq} asks you to retry the owner's request #${input.retryOfSeq}. Perform that request now with its original references. Your earlier response is context about the previous attempt.`,
+        ]
+      : []),
     "- Reply naturally, directly, and concisely like a sharp teammate in a real IM group chat (match the language used in the conversation, e.g. natural Chinese when spoken to in Chinese).",
     ...(input.allowImageReply === true
       ? [
@@ -825,7 +832,7 @@ export function buildBrokeredWakePrompt(input: Readonly<BrokeredWakePromptInput>
           "- Use tools only for this image. Keep intermediate files in the current directory. Do not copy existing local files into the attachment or include local paths, secrets, or base64 in your reply. If you cannot produce the image file, say so in your reply.",
         ]
       : [
-          "- PURE TEXT / MARKDOWN CHAT MEDIUM ONLY for automatic replies: the listener posts your stdout as Markdown (including code blocks, Mermaid, and tables). NEVER write files to disk or run image/SVG rendering commands to answer a chat message.",
+          "- Reply in Markdown for this turn. OpenHuddle group chats support image attachments on image-generation and editing turns. No image output directory was allocated for this turn. NEVER write files to disk for a text reply. If an image request is ambiguous, ask which image or request to use.",
           "- ZERO-TOOL SINGLE-TURN DEFAULT: For greetings, discussions, coding challenges, creative/ASCII art challenges, brainstorming, and peer critiques, reply directly in a single turn with ZERO tool calls. Only invoke read-only tools if trust=OWNER_COMMAND explicitly asks you to inspect the local machine/codebase or verify live external facts, and cap yourself at 1-2 fast tool calls (<20s total).",
         ]),
     ...visionInstructionLines,
@@ -1888,44 +1895,61 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       }
     };
 
-    // P0: replyAnchorMsg
-    addCandidate(replyAnchorMsg);
-
-    // P1: replyAnchorMsg.replyToSeq（若不在当前窗口内则单条补拉）
-    if (replyAnchorMsg.replyToSeq !== undefined) {
-      let repliedTarget = visibleMessages.find((m) => m.seq === replyAnchorMsg.replyToSeq);
-      if (repliedTarget === undefined) {
-        try {
-          const singleRes = await client.readRoomMessages(wake.roomId, {
-            afterSeq: replyAnchorMsg.replyToSeq - 1,
-            limit: 1,
-          });
-          repliedTarget = singleRes.messages.find(
-            (m) => m.seq === replyAnchorMsg.replyToSeq && m.recalledAtIso === undefined,
-          );
-          if (
-            repliedTarget !== undefined &&
-            !visibleMessages.some((m) => m.seq === repliedTarget?.seq)
-          ) {
-            visibleMessages.unshift(repliedTarget);
-            visibleMessages.sort((a, b) => a.seq - b.seq);
-          }
-        } catch {
-          // 单条补拉失败不阻塞主回合
+    const loadSourceHistory = async (
+      seq: MessageSeq,
+      limit = 30,
+    ): Promise<readonly MessageDto[]> => {
+      // Fetch a single quoted attachment, or the context preceding an older retry source.
+      try {
+        const page = await client.readRoomMessages(wake.roomId, {
+          afterSeq: Math.max(0, seq - limit),
+          limit,
+        });
+        const messages = page.messages.filter((m) => m.roomId === wake.roomId && m.seq <= seq);
+        const known = new Set(visibleMessages.map((m) => m.seq));
+        for (const m of messages) {
+          if (!m.recalledAtIso && !known.has(m.seq)) visibleMessages.push(m);
         }
+        visibleMessages.sort((a, b) => a.seq - b.seq);
+        return messages;
+      } catch (err) {
+        if (options.signal?.aborted) throw err;
+        log(`[openhuddle:wake:history] room=${wake.roomId} could not load reference #${seq}`);
+        return [];
       }
-      addCandidate(repliedTarget);
+    };
+    const retrySource = await resolveWakeRetrySource(
+      replyAnchorMsg,
+      readRes.messages,
+      selfAgent,
+      loadSourceHistory,
+    );
+    const request = retrySource ?? replyAnchorMsg;
+    addCandidate(request);
+    if (request.replyToSeq !== undefined && request.replyToSeq < request.seq) {
+      const seq = request.replyToSeq;
+      const target =
+        visibleMessages.find((m) => m.seq === seq) ??
+        (await loadSourceHistory(seq, 1)).find((m) => m.seq === seq);
+      addCandidate(target);
     }
+    if (
+      retrySource &&
+      windowAfterSeq > 0 &&
+      request.seq > windowAfterSeq &&
+      request.seq < windowAfterSeq + 30
+    )
+      await loadSourceHistory(request.seq);
 
     // Bind edit intent to the owner's attachment, reply target, or immediately preceding image.
     // A stale photo elsewhere in the room must not turn an ordinary instruction into an edit.
-    const previousMessages = visibleMessages.filter((msg) => msg.seq < replyAnchorMsg.seq);
+    const previousMessages = visibleMessages.filter((msg) => msg.seq < request.seq);
     const previous = previousMessages.at(-1);
     const followsImage =
       isUnrecalledImage(previous) && previous.author.trustLevel !== "external_participant";
     const referenceSeqs = new Set(candidateMessages.map((msg) => msg.seq));
     if (referenceSeqs.size === 0 && followsImage) referenceSeqs.add(previous.seq);
-    if (referenceSeqs.size < 2 && referencesEarlierImage(replyAnchorMsg.content)) {
+    if (referenceSeqs.size < 2 && referencesEarlierImage(request.content)) {
       const recentReference = previousMessages.findLast(
         (msg) =>
           isUnrecalledImage(msg) &&
@@ -1937,7 +1961,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     const allowImageReply =
       triggerTrustLevel === "owner_command" &&
       canPresetOutputImageOnPlatform(preset) &&
-      requestsReplyImage(replyAnchorMsg.content, referenceSeqs.size);
+      requestsReplyImage(request.content, referenceSeqs.size);
 
     const referencedOutput = allowImageReply && referenceSeqs.size > 0;
 
@@ -1946,7 +1970,7 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
     // 2. allowImageReply === true 时 P2 绝不混入 external_participant 历史图片，防止毒化发图回合上下文）
     if (!isExternalTrigger) {
       const recentWindowDesc = visibleMessages
-        .filter((m) => m.seq <= replyAnchorMsg.seq && !seenCandidateSeqs.has(m.seq))
+        .filter((m) => m.seq <= request.seq && !seenCandidateSeqs.has(m.seq))
         .sort((a, b) => b.seq - a.seq);
       for (const msg of recentWindowDesc) {
         if (allowImageReply && msg.author.trustLevel === "external_participant") {
@@ -2038,11 +2062,12 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
       messages: visibleMessages,
       wake,
       replyToSeq: replyAnchorMsg.seq,
+      ...(retrySource ? { retryOfSeq: retrySource.seq } : {}),
       preset,
     };
 
     log(
-      `[openhuddle:wake] room=${wake.roomId} seq=${readRes.latestSeq} reason=${wake.reason} preset=${preset} vision=${fetchedVisionItems.length} allowImageReply=${allowImageReply} -> generating reply`,
+      `[openhuddle:wake] room=${wake.roomId} seq=${replyAnchorMsg.seq} sourceSeq=${request.seq} reason=${wake.reason} preset=${preset} vision=${fetchedVisionItems.length} allowImageReply=${allowImageReply} -> generating reply`,
     );
 
     const runAttempt = async (
@@ -2183,7 +2208,9 @@ export async function startSseListener(options: Readonly<SseListenerOptions>): P
           (msg) =>
             referenceSeqs.has(msg.seq) && !fetchedVisionItems.some((img) => img.seq === msg.seq),
         );
-        if (referencedOutput && missingSource) {
+        if (!retrySource && isOwnerRetryRequest(replyAnchorMsg, selfAgent)) {
+          reply = { content: "请引用你想重试的那条原消息，我会按原要求再试一次。" };
+        } else if (referencedOutput && missingSource) {
           reply = {
             content: `未能载入第 ${missingSource.seq} 条消息的参考图。请重新上传该图后再试。`,
           };

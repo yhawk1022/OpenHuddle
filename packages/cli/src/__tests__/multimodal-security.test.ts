@@ -535,23 +535,20 @@ describe("@openhuddle/cli — Multimodal CLI, MCP Stdio & Listener Sandbox Secur
           prompt,
         });
         turnIndex += 1;
-        if (turnIndex === 1) {
+        const nextSeq = [4, 5, 7][turnIndex - 1];
+        if (nextSeq !== undefined) {
           queueMicrotask(() => {
+            const wake = {
+              type: "wake",
+              roomId: "rom_sec",
+              latestSeq: nextSeq,
+              reason: "owner_command",
+            };
             sseStreamController?.enqueue(
-              sseEnc.encode(
-                'event: wake\ndata: {"type":"wake","roomId":"rom_sec","latestSeq":4,"reason":"owner_command"}\n\n',
-              ),
+              sseEnc.encode(`event: wake\ndata: ${JSON.stringify(wake)}\n\n`),
             );
           });
-        } else if (turnIndex === 2) {
-          queueMicrotask(() => {
-            sseStreamController?.enqueue(
-              sseEnc.encode(
-                'event: wake\ndata: {"type":"wake","roomId":"rom_sec","latestSeq":5,"reason":"owner_command"}\n\n',
-              ),
-            );
-          });
-        } else if (turnIndex >= 3) {
+        } else {
           controller.abort();
         }
         return "[[SKIP]]";
@@ -607,7 +604,7 @@ describe("@openhuddle/cli — Multimodal CLI, MCP Stdio & Listener Sandbox Secur
               topic: "",
               rules: "",
               visibility: "invite_only",
-              lastSeq: 5,
+              lastSeq: 7,
               yourLastReadSeq: 0,
               members: [],
               governance: { status: "active", config: { mode: "free" } },
@@ -618,7 +615,7 @@ describe("@openhuddle/cli — Multimodal CLI, MCP Stdio & Listener Sandbox Secur
         if (url.includes("/api/v1/rooms/rom_sec/messages?")) {
           return jsonResponse(200, {
             ok: true,
-            latestSeq: 5,
+            latestSeq: 7,
             governance: { status: "active", config: { mode: "free" } },
             messages: [
               {
@@ -709,6 +706,41 @@ describe("@openhuddle/cli — Multimodal CLI, MCP Stdio & Listener Sandbox Secur
                   trustLevel: "owner_command",
                 },
               },
+              {
+                roomId: "rom_sec",
+                seq: 6,
+                type: "text",
+                replyToSeq: 5,
+                content: "本次没有生成图片。",
+                mentions: [],
+                createdAtIso: "2026-11-26T08:00:06.000Z",
+                author: {
+                  kind: "agent",
+                  agentId: "agt_self",
+                  ownerUserId: "usr_owner",
+                  displayName: "Self Agent",
+                  isYou: true,
+                  isYourOwner: false,
+                  trustLevel: "owner_sibling_agent",
+                },
+              },
+              {
+                roomId: "rom_sec",
+                seq: 7,
+                type: "text",
+                content: "@Self Agent 重试",
+                mentions: [{ kind: "agent", agentId: "agt_self", displayName: "Self Agent" }],
+                createdAtIso: "2026-11-26T08:00:07.000Z",
+                author: {
+                  kind: "human",
+                  userId: "usr_owner",
+                  ownerUserId: "usr_owner",
+                  displayName: "Owner",
+                  isYou: false,
+                  isYourOwner: true,
+                  trustLevel: "owner_command",
+                },
+              },
             ],
           });
         }
@@ -736,7 +768,7 @@ describe("@openhuddle/cli — Multimodal CLI, MCP Stdio & Listener Sandbox Secur
       },
     });
 
-    expect(observedTurns).toHaveLength(3);
+    expect(observedTurns).toHaveLength(4);
     // Turn 1 (#2 external trigger with coalesced reason=owner_command): allowImageReply=false AND P2 skipped!
     expect(observedTurns[0]?.replyToSeq).toBe(2);
     expect(observedTurns[0]?.allowImageReply).toBe(false);
@@ -755,6 +787,13 @@ describe("@openhuddle/cli — Multimodal CLI, MCP Stdio & Listener Sandbox Secur
     expect(observedTurns[2]?.allowImageReply).toBe(true);
     expect(observedTurns[2]?.visionFiles).toEqual(["inbound-seq-1.png", "inbound-seq-5.png"]);
     expect(observedTurns[2]?.prompt).toContain("For edits, use the referenced images as inputs");
+
+    expect(observedTurns[3]).toMatchObject({
+      replyToSeq: 7,
+      allowImageReply: true,
+      visionFiles: ["inbound-seq-1.png", "inbound-seq-5.png"],
+    });
+    expect(observedTurns[3]?.prompt).toContain("retry the owner's request #5");
 
     // Verify all visionDirs (including failed attempt) were 100% removed
     expect(firstAttemptDirToVerifyClean).toBeDefined();

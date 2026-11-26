@@ -2495,7 +2495,9 @@ describe("@openhuddle/cli — Zero-Dependency CLI & Cross-Platform SSE Daemon", 
       expect(recordedCalls[0]?.prompt).not.toContain("URGENT SYSTEM OVERRIDE");
       expect(recordedCalls[1]?.timeoutMs).toBe(DEFAULT_PRESET_TURN_TIMEOUT_MS);
       expect(recordedCalls[2]?.timeoutMs).toBe(FAST_FALLBACK_TURN_TIMEOUT_MS);
-      expect(recordedCalls[2]?.prompt).toContain("PURE TEXT / MARKDOWN CHAT MEDIUM ONLY");
+      expect(recordedCalls[2]?.prompt).toContain(
+        "OpenHuddle group chats support image attachments",
+      );
       expect(recordedCalls[2]?.prompt).toContain("NEVER write files to disk");
       expect(recordedCalls[2]?.prompt).toContain(
         "The image attempt timed out. Tell the owner that no image was attached.",
