@@ -1,8 +1,9 @@
 /**
  * @module web/features/auth-pairing/portal-showcase-sections
  * @description OpenHuddle 首页门户展示模块集合：
- * 包含首屏双模实景预览器（多 Agent 群聊 ⇄ 工作台协作与审阅）、核心协作能力 2×2 矩阵、
- * 连接性能与移动端体验分区、MIT 开源自托管与联系作者分区、页脚及全页右键菜单纯函数构建器。
+ * 包含首屏双模实景预览器（多 Agent 群聊 ⇄ 工作台协作与审阅）、MIT 开源自托管与联系作者分区、
+ * 页脚及全页右键菜单纯函数构建器。核心能力与性能多端两个分区见 portal-feature-sections，
+ * 滚动剧场见 portal-story-section。
  *
  * 光学与性能不变量：
  * 1. 首屏预览器外框挂载单层 `relative liquid-glass-modal`，内部严禁任何嵌套 `backdrop-blur`。
@@ -25,14 +26,10 @@ import {
   KeyRound,
   Layers,
   Link2,
-  ListTodo,
   Mail,
-  MessageCircle,
   Moon,
-  Smartphone,
   Sun,
   Terminal,
-  Users,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { BrandMark } from "../../../components/brand-mark.js";
@@ -54,11 +51,11 @@ import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { PlatformGlyph } from "../../../components/ui/platform-icons.js";
 import {
   PortalEyebrow,
-  PortalSectionHeader,
   PortalTitleReveal,
   portalRevealItem,
   portalRevealTrigger,
 } from "./portal-reveal.js";
+import { PORTAL_DIFF_ROWS } from "./portal-visuals.js";
 
 /** 作者公开联系邮箱 */
 export const AUTHOR_CONTACT_EMAIL = "impangyan@outlook.com";
@@ -452,45 +449,6 @@ const PREVIEW_HUDDLE_BUBBLES: ReadonlyArray<PreviewBubbleItem> = [
   },
 ];
 
-interface PreviewDiffRow {
-  readonly id: string;
-  readonly kind: "context" | "del" | "add";
-  readonly oldNum: string;
-  readonly newNum: string;
-  readonly code: string;
-}
-
-const PREVIEW_WORKBENCH_DIFF_ROWS: ReadonlyArray<PreviewDiffRow> = [
-  {
-    id: "ctx-1",
-    kind: "context",
-    oldNum: "41",
-    newNum: "41",
-    code: "const order = await findOrder(event.orderId);",
-  },
-  {
-    id: "del-1",
-    kind: "del",
-    oldNum: "42",
-    newNum: "",
-    code: "await creditBalance(order.userId, event.amount);",
-  },
-  {
-    id: "add-1",
-    kind: "add",
-    oldNum: "",
-    newNum: "42",
-    code: "if (order.paidAt) return order.receipt;",
-  },
-  {
-    id: "add-2",
-    kind: "add",
-    oldNum: "",
-    newNum: "43",
-    code: "await creditBalance(order.userId, event.amount, { requestId: event.id });",
-  },
-];
-
 /**
  * 首屏块 C：双模实景预览器（`多 Agent 群聊` ⇄ `工作台协作与审阅`）。
  *
@@ -716,7 +674,7 @@ export function PortalHeroPreview() {
                 </div>
                 <div className="overflow-x-auto py-1 font-mono text-[11.5px] leading-[1.6]">
                   <div className="min-w-fit">
-                    {PREVIEW_WORKBENCH_DIFF_ROWS.map((row) => {
+                    {PORTAL_DIFF_ROWS.map((row) => {
                       const isAdd = row.kind === "add";
                       const isDel = row.kind === "del";
                       return (
@@ -793,506 +751,8 @@ export function PortalHeroPreview() {
  * 3. 核心协作能力（#portal-capabilities，2×2 卡片网格）
  * ───────────────────────────────────────────────────────────── */
 
-const SUPPORTED_AGENT_PLATFORMS: ReadonlyArray<{
-  readonly platform: AgentPlatform;
-  readonly label: string;
-  readonly chipClass: string;
-}> = [
-  {
-    platform: "claude_code",
-    label: "Claude Code",
-    chipClass: "bg-[#F4ECDD] text-[#5C4528] dark:bg-[#2F261C] dark:text-[#F3CFA2]",
-  },
-  {
-    platform: "codex",
-    label: "Codex",
-    chipClass: "bg-[#E1ECFF] text-[#244375] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
-  },
-  {
-    platform: "cursor",
-    label: "Cursor",
-    chipClass: "bg-[#FFF1C2] text-[#5C4813] dark:bg-[#2F2816] dark:text-[#F5D687]",
-  },
-  {
-    platform: "antigravity",
-    label: "Antigravity",
-    chipClass: "bg-[#EFEAFF] text-[#3F3368] dark:bg-[#25213A] dark:text-[#C9BEFF]",
-  },
-  {
-    platform: "gemini",
-    label: "Gemini",
-    chipClass: "bg-[#E1ECFF] text-[#244375] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
-  },
-  {
-    platform: "openclaw",
-    label: "OpenClaw",
-    chipClass: "bg-[#E4F4EA] text-[#215236] dark:bg-[#162C24] dark:text-[#86E5BA]",
-  },
-  {
-    platform: "deepseek",
-    label: "DeepSeek",
-    chipClass: "bg-[#FBE3D9] text-[#663523] dark:bg-[#32201E] dark:text-[#F7B6A8]",
-  },
-  {
-    platform: "chatgpt",
-    label: "ChatGPT",
-    chipClass: "bg-[#E4F4EA] text-[#215236] dark:bg-[#162C24] dark:text-[#86E5BA]",
-  },
-];
-
-const CONNECT_METHODS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "一句话指令接入",
-    detail: "复制一句指令发给 Agent，自动装好 CLI 并绑定令牌。",
-  },
-  {
-    title: "本机 CLI 自动识别绑定",
-    detail: "自动识别本机已装的 Agent 命令并拉起后台监听。",
-  },
-  {
-    title: "MCP 与 HTTPS 接入",
-    detail: "本机与远程的 Agent 客户端均可直连。",
-  },
-];
-
-const HUDDLE_GOVERNANCE_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "Agent 不会互相刷屏",
-    detail: "连续发言到上限自动暂停，等你发话再继续。",
-  },
-  {
-    title: "不抢话、不答非所问",
-    detail: "先读完最新消息才能发言。",
-  },
-  {
-    title: "结构化提案与拍板",
-    detail: "讨论收敛为备选方案卡，Agent 投票，拍板只属于人类。",
-  },
-  {
-    title: "只读分享回放",
-    detail: "一条链接只读回放完整讨论与决议。",
-  },
-];
-
-const WORKBENCH_TOPOLOGIES: ReadonlyArray<{
-  readonly title: string;
-  readonly subtitle: string;
-}> = [
-  { title: "单人执行", subtitle: "独立闭环" },
-  { title: "双人复核", subtitle: "主写 + 验审" },
-  { title: "多路并行", subtitle: "分片协同" },
-];
-
-const WORKBENCH_CAPABILITY_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "单问澄清机制",
-    detail: "遇到关键分歧时挂起并给出选项，你点选后即刻继续。",
-  },
-  {
-    title: "Unified Diff 代码审阅",
-    detail: "实时步骤追踪与增删对比，可一键在 Cursor 或 VS Code 打开。",
-  },
-  {
-    title: "一键拉群会诊",
-    detail: "复杂取舍时带着任务与分支上下文拉群会诊。",
-  },
-];
-
-const SANDBOX_BOUNDARY_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "三种目录形态",
-    detail: "单仓库、多目录工作区、非 Git 文件夹均可。",
-  },
-  {
-    title: "三级隔离围栏",
-    detail: "分支副本改码、原地修改或只读审阅，并行互不干扰。",
-  },
-  {
-    title: "多端运行宿主",
-    detail: "本机目录、云端沙箱与团队容器，同一套协议。",
-  },
-  {
-    title: "Agent 只听主人的",
-    detail: "只执行主人的指令，其他人的发言仅作参考。",
-  },
-];
-
-/**
- * 核心协作能力分区（`#portal-capabilities`）。
- */
-export function PortalCapabilitiesSection() {
-  const reducedMotion = usePrefersReducedMotion();
-  return (
-    <section id="portal-capabilities" className="shrink-0 scroll-mt-20">
-      <PortalSectionHeader eyebrow="核心协作能力" title="从连通 Agent 到群聊拍板与代码交付" />
-
-      <div className="mt-6 grid grid-cols-1 gap-4 sm:gap-5 md:grid-cols-2">
-        {/* 卡片 1：一键连通各类个人 Agent */}
-        <motion.article
-          {...portalRevealTrigger(reducedMotion)}
-          className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}
-        >
-          <PortalTitleReveal className="mt-0" delay={0.06}>
-            <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              一键连通各类个人 Agent
-            </h3>
-          </PortalTitleReveal>
-
-          {/* 8 平台官方矢量图标阵列 */}
-          <div className="mt-4 grid grid-cols-2 gap-1.5 xl:grid-cols-4">
-            {SUPPORTED_AGENT_PLATFORMS.map((item, idx) => (
-              <motion.div
-                key={item.platform}
-                {...portalRevealItem(0.08 + idx * 0.022)}
-                className="flex min-w-0 items-center gap-1.5 rounded-[12px] border border-black/[0.05] bg-[#F4F6F8] px-2 py-1.5 dark:border-white/[0.06] dark:bg-[#141417]"
-              >
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full ring-1 ring-inset ring-black/[0.06] dark:ring-white/[0.08]",
-                    item.chipClass,
-                  )}
-                >
-                  <PlatformGlyph platform={item.platform} className="h-3 w-3" />
-                </span>
-                <span className="truncate text-[11.5px] font-medium tracking-[-0.015em] text-[#1F2430] dark:text-[#E6E8EE]">
-                  {item.label}
-                </span>
-              </motion.div>
-            ))}
-          </div>
-
-          <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {CONNECT_METHODS.map((item, idx) => (
-              <motion.div
-                key={item.title}
-                {...portalRevealItem(0.18 + idx * 0.04)}
-                className="py-2.5 first:pt-3 last:pb-0"
-              >
-                <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                  {item.title}
-                </dt>
-                <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-                  {item.detail}
-                </dd>
-              </motion.div>
-            ))}
-          </dl>
-        </motion.article>
-
-        {/* 卡片 2：多 Agent 群聊、单聊与人类拍板 */}
-        <motion.article
-          {...portalRevealTrigger(reducedMotion, 0.08)}
-          className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}
-        >
-          <PortalTitleReveal className="mt-0" delay={0.06}>
-            <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              多 Agent 群聊、单聊与人类拍板
-            </h3>
-          </PortalTitleReveal>
-          <motion.p
-            {...portalRevealItem(0.14)}
-            className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]"
-          >
-            也支持与 Agent 单聊、与好友私聊，Agent 能看图也能发图。
-          </motion.p>
-
-          <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {HUDDLE_GOVERNANCE_ITEMS.map((item, idx) => (
-              <motion.div
-                key={item.title}
-                {...portalRevealItem(0.18 + idx * 0.04)}
-                className="py-3 first:pt-3.5 last:pb-0"
-              >
-                <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                  {item.title}
-                </dt>
-                <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-                  {item.detail}
-                </dd>
-              </motion.div>
-            ))}
-          </dl>
-        </motion.article>
-
-        {/* 卡片 3：面向代码交付的多 Agent 工作台 */}
-        <motion.article
-          {...portalRevealTrigger(reducedMotion)}
-          className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}
-        >
-          <PortalTitleReveal className="mt-0" delay={0.06}>
-            <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              面向代码交付的多 Agent 工作台
-            </h3>
-          </PortalTitleReveal>
-
-          {/* 三种协作拓扑等宽条 */}
-          <div className="mt-4 grid grid-cols-3 gap-1.5">
-            {WORKBENCH_TOPOLOGIES.map((topo, idx) => (
-              <motion.div
-                key={topo.title}
-                {...portalRevealItem(0.12 + idx * 0.05)}
-                className="min-w-0 rounded-[12px] border border-black/[0.05] bg-[#F4F6F8] px-2.5 py-2 text-center dark:border-white/[0.06] dark:bg-[#141417]"
-              >
-                <p className="font-mono text-[10.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                  0{String(idx + 1)}
-                </p>
-                <p className="mt-0.5 text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                  {topo.title}
-                </p>
-                <p className="mt-0.5 text-[11px] text-[#5A6272] dark:text-[#9898A2]">
-                  {topo.subtitle}
-                </p>
-              </motion.div>
-            ))}
-          </div>
-
-          <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {WORKBENCH_CAPABILITY_ITEMS.map((item, idx) => (
-              <motion.div
-                key={item.title}
-                {...portalRevealItem(0.18 + idx * 0.04)}
-                className="py-2.5 first:pt-3 last:pb-0"
-              >
-                <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                  {item.title}
-                </dt>
-                <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-                  {item.detail}
-                </dd>
-              </motion.div>
-            ))}
-          </dl>
-        </motion.article>
-
-        {/* 卡片 4：工作区沙箱围栏与归属边界 */}
-        <motion.article
-          {...portalRevealTrigger(reducedMotion, 0.08)}
-          className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}
-        >
-          <PortalTitleReveal className="mt-0" delay={0.06}>
-            <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              工作区沙箱围栏与归属边界
-            </h3>
-          </PortalTitleReveal>
-
-          <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {SANDBOX_BOUNDARY_ITEMS.map((item, idx) => (
-              <motion.div
-                key={item.title}
-                {...portalRevealItem(0.18 + idx * 0.04)}
-                className="py-3 first:pt-3.5 last:pb-0"
-              >
-                <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                  {item.title}
-                </dt>
-                <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-                  {item.detail}
-                </dd>
-              </motion.div>
-            ))}
-          </dl>
-        </motion.article>
-      </div>
-    </section>
-  );
-}
-
 /* ─────────────────────────────────────────────────────────────
- * 4. 连接性能与多端体验（#portal-architecture，左 7 右 5）
- * ───────────────────────────────────────────────────────────── */
-
-const ARCHITECTURE_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly badge: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "消息实时送达",
-    badge: "秒级唤醒",
-    detail: "@ 一下即唤醒，回复实时出现，无需刷新。",
-  },
-  {
-    title: "断线重连不丢消息",
-    badge: "重连即同步",
-    detail: "切后台、换网络或休眠后，重连即补齐错过的消息，不重不漏。",
-  },
-  {
-    title: "连续追问响应更快",
-    badge: "免冷启动",
-    detail: "活跃 Agent 保持待命 15 分钟，追问无需重新启动。",
-  },
-  {
-    title: "Agent 掉线任务不中断",
-    badge: "自动接管",
-    detail: "任务安全转交继续，迟到的旧结果不覆盖新进度。",
-  },
-  {
-    title: "高刷屏上同样顺滑",
-    badge: "最高 120Hz",
-    detail: "自动适配 60 / 90 / 120Hz，并遵循系统减动效设置。",
-  },
-];
-
-const MOBILE_DESKTOP_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "键盘不挡输入框",
-    detail: "输入框始终贴在键盘上方，选词回车不误发。",
-  },
-  {
-    title: "侧滑返回符合习惯",
-    detail: "先关弹窗再退页面，刷新后停在原位。",
-  },
-  {
-    title: "添加到手机主屏幕",
-    detail: "全屏打开，适配刘海屏与手势条。",
-  },
-  {
-    title: "桌面端高效操作",
-    detail: "⌘K 搜索、快捷键与右键菜单。",
-  },
-];
-
-export interface PortalArchitectureSectionProps {
-  readonly onOpenPwaGuide: () => void;
-}
-
-/**
- * 连接性能与多端体验分区（`#portal-architecture`）。
- */
-export function PortalArchitectureSection(props: PortalArchitectureSectionProps) {
-  const reducedMotion = usePrefersReducedMotion();
-  return (
-    <section id="portal-architecture" className="shrink-0 scroll-mt-20">
-      <PortalSectionHeader eyebrow="性能与多端体验" title="连接快而稳，桌面与手机皆如原生应用" />
-
-      <div className="mt-6 grid grid-cols-1 gap-4 sm:gap-5 lg:grid-cols-12">
-        {/* 左卡（7 列）：低延迟持久连接与无损容错 */}
-        <motion.article
-          {...portalRevealTrigger(reducedMotion)}
-          className={cn(
-            PORTAL_SURFACE_CARD_CLASS,
-            "flex min-w-0 flex-col p-5 sm:p-6 lg:col-span-7",
-          )}
-        >
-          <PortalTitleReveal className="mt-0" delay={0.06}>
-            <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              连接快、断线不丢、任务不中断
-            </h3>
-          </PortalTitleReveal>
-
-          {/* 左卡与右侧卡片等高：条目均分纵向空间，避免内容较短时底部留白 */}
-          <dl className="mt-4 flex flex-1 flex-col divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {ARCHITECTURE_ITEMS.map((item, idx) => (
-              <motion.div
-                key={item.title}
-                {...portalRevealItem(0.18 + idx * 0.04)}
-                className="flex flex-1 flex-col justify-center py-3"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                    {item.title}
-                  </dt>
-                  <span className="shrink-0 rounded-full bg-black/[0.045] px-2.5 py-0.5 font-mono text-[11px] font-medium text-[#4B5565] dark:bg-white/[0.07] dark:text-[#C4C4CA]">
-                    {item.badge}
-                  </span>
-                </div>
-                <dd className="mt-1 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-                  {item.detail}
-                </dd>
-              </motion.div>
-            ))}
-          </dl>
-        </motion.article>
-
-        {/* 右卡（5 列）：手机端体验 */}
-        <motion.article
-          {...portalRevealTrigger(reducedMotion, 0.08)}
-          className={cn(
-            PORTAL_SURFACE_CARD_CLASS,
-            "flex min-w-0 flex-col justify-between p-5 sm:p-6 lg:col-span-5",
-          )}
-        >
-          <div>
-            <PortalTitleReveal className="mt-0" delay={0.06}>
-              <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-                手机上用起来像原生 App
-              </h3>
-            </PortalTitleReveal>
-
-            {/* 移动端底部三栏胶囊导航微缩示意条 */}
-            <motion.div
-              {...portalRevealItem(0.14)}
-              aria-hidden="true"
-              className="mt-4 rounded-[16px] border border-black/[0.06] bg-[#EFF1F4] p-2.5 dark:border-white/[0.07] dark:bg-[#141417]"
-            >
-              <div className="mx-auto grid max-w-[260px] grid-cols-3 items-center rounded-full border border-black/[0.06] bg-white/80 p-1 shadow-[0_2px_10px_rgba(15,23,42,0.05)] dark:border-white/[0.08] dark:bg-[#1E1F24]">
-                <div className="flex flex-col items-center justify-center gap-0.5 rounded-full py-1 text-[#5E6678] dark:text-[#9696A0]">
-                  <MessageCircle className="h-3.5 w-3.5" />
-                  <span className="text-[10.5px] font-medium leading-none">聊天</span>
-                </div>
-                <div className="flex flex-col items-center justify-center gap-0.5 rounded-full py-1 text-[#5E6678] dark:text-[#9696A0]">
-                  <Users className="h-3.5 w-3.5" />
-                  <span className="text-[10.5px] font-medium leading-none">通讯录</span>
-                </div>
-                <div className="flex flex-col items-center justify-center gap-0.5 rounded-full bg-white py-1 text-[#111318] shadow-[0_1px_4px_rgba(15,23,42,0.08)] ring-1 ring-black/[0.05] dark:bg-white/[0.14] dark:text-[#F8F8FA] dark:ring-white/[0.16]">
-                  <ListTodo className="h-3.5 w-3.5" />
-                  <span className="text-[10.5px] font-semibold leading-none">工作台</span>
-                </div>
-              </div>
-            </motion.div>
-
-            <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-              {MOBILE_DESKTOP_ITEMS.map((item, idx) => (
-                <motion.div
-                  key={item.title}
-                  {...portalRevealItem(0.18 + idx * 0.04)}
-                  className="py-2.5 first:pt-3"
-                >
-                  <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                    {item.title}
-                  </dt>
-                  <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-                    {item.detail}
-                  </dd>
-                </motion.div>
-              ))}
-            </dl>
-          </div>
-
-          <div className="mt-4 pt-1">
-            <AppButton
-              variant="secondary"
-              size="sm"
-              leadingIcon={<Smartphone aria-hidden="true" className="h-3.5 w-3.5" />}
-              onClick={props.onOpenPwaGuide}
-            >
-              查看添加到主屏幕步骤
-            </AppButton>
-          </div>
-        </motion.article>
-      </div>
-    </section>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────
- * 5. 开源自托管与联系作者（#portal-open-source & #portal-contact）+ 页脚
+ * 4. 开源自托管与联系作者（#portal-open-source & #portal-contact）+ 页脚
  * ───────────────────────────────────────────────────────────── */
 
 export interface PortalOpenSourceContactSectionProps {
@@ -1369,7 +829,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
         <div>
           <PortalEyebrow>开源与私有化部署</PortalEyebrow>
           <PortalTitleReveal>
-            <h2 className="mt-1.5 text-balance text-[20px] font-semibold leading-snug tracking-[-0.02em] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
+            <h2 className="mt-1.5 text-balance text-[24px] font-semibold leading-snug tracking-[-0.025em] sm:text-[27px] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
               MIT 开源协议，几分钟内私有化部署
             </h2>
           </PortalTitleReveal>
@@ -1454,8 +914,8 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
         <div>
           <PortalEyebrow>联系作者</PortalEyebrow>
           <PortalTitleReveal>
-            <h2 className="mt-1.5 text-balance text-[20px] font-semibold leading-snug tracking-[-0.02em] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
-              问题反馈与建议
+            <h2 className="mt-1.5 text-balance text-[24px] font-semibold leading-snug tracking-[-0.025em] sm:text-[27px] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
+              有问题？聊聊。
             </h2>
           </PortalTitleReveal>
           <motion.p

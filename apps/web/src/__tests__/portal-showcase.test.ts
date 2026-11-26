@@ -11,6 +11,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppTooltipProvider, normalizeContextMenuEntries } from "../components/primitives/index.js";
 import { AuthScreen } from "../features/auth-pairing/components/otp-sign-in-screen.js";
 import {
+  PortalArchitectureSection,
+  PortalCapabilitiesSection,
+} from "../features/auth-pairing/components/portal-feature-sections.js";
+import { splitTitleTokens } from "../features/auth-pairing/components/portal-reveal.js";
+import {
   AUTHOR_CONTACT_EMAIL,
   DEFAULT_PORTAL_CONTEXT_HIT,
   OPENHUDDLE_GITHUB_URL,
@@ -21,6 +26,7 @@ import {
   copyPortalText,
   inspectPortalContextTarget,
 } from "../features/auth-pairing/components/portal-showcase-sections.js";
+import { PortalStorySection } from "../features/auth-pairing/components/portal-story-section.js";
 import type { HumanMeResponseDto } from "../lib/api-client.js";
 import { huddleQueryKeys } from "../lib/query-keys.js";
 
@@ -315,6 +321,7 @@ describe("@openhuddle/web — portal SSR rendering & optical invariants", () => 
     expect(html).toContain(OPENHUDDLE_GITHUB_URL);
     expect(html).toContain('id="portal-hero"');
     expect(html).toContain('id="portal-preview"');
+    expect(html).toContain('id="portal-story"');
     expect(html).toContain('id="portal-capabilities"');
     expect(html).toContain('id="portal-architecture"');
     expect(html).toContain('id="portal-open-source"');
@@ -395,5 +402,74 @@ describe("@openhuddle/web — portal SSR rendering & optical invariants", () => 
     const html = renderToStaticMarkup(createElement(PortalHeroPreview));
     expect(html).toContain("relative liquid-glass-modal");
     expect(html).not.toContain("backdrop-blur");
+  });
+});
+
+describe("@openhuddle/web — portal scrollytelling & visual cards", () => {
+  it("renders the story stage with four beats, a single liquid-glass layer and no nested backdrop-blur", () => {
+    const html = renderToStaticMarkup(createElement(PortalStorySection));
+
+    expect(html).toContain('id="portal-story"');
+    for (const title of [
+      "一句指令，进群。",
+      "各抒己见，不抢话。",
+      "越聊，越清楚。",
+      "最后，你说了算。",
+    ]) {
+      expect(html).toContain(title);
+    }
+    expect(html.match(/liquid-glass-modal/g)).toHaveLength(1);
+    expect(html).not.toContain("backdrop-blur");
+
+    // 舞台是纯演绎：对读屏器隐藏，等价信息由四幕文字承载
+    expect(html).toMatch(/aria-hidden="true" class="[^"]*relative liquid-glass-modal/);
+    // 滚动驱动而非时间驱动：不得出现任何定时类动画类名
+    expect(html).not.toMatch(/animate-(bounce|spin|pulse|ping)/);
+  });
+
+  it("splits titles into tokens that keep Latin words whole and attach punctuation to the previous token", () => {
+    expect(splitTitleTokens("从连通 Agent 到群聊拍板，该干的干。")).toEqual([
+      "从",
+      "连",
+      "通",
+      " ",
+      "Agent",
+      " ",
+      "到",
+      "群",
+      "聊",
+      "拍",
+      "板，",
+      "该",
+      "干",
+      "的",
+      "干。",
+    ]);
+    // 还原后必须与原文逐字一致（逐字上浮不能吞掉或改写任何字符）
+    const title = "快，而且稳。120 Hz 高刷适配。";
+    expect(splitTitleTokens(title).join("")).toBe(title);
+  });
+
+  it("renders ten illustrated capability cards and four stat tiles without nested backdrop-blur", () => {
+    const capabilities = renderToStaticMarkup(createElement(PortalCapabilitiesSection));
+
+    expect(capabilities).toContain('id="portal-capabilities"');
+    expect(capabilities.match(/<article/g)).toHaveLength(10);
+    // 每张卡片顶部都有一幅对读屏器隐藏的示意图
+    expect(capabilities.match(/aria-hidden="true" class="[^"]*h-40/g)).toHaveLength(10);
+    expect(capabilities).not.toContain("backdrop-blur");
+    for (const topo of ["单人执行", "双人复核", "多路并行"]) {
+      expect(capabilities).toContain(topo);
+    }
+
+    const architecture = renderToStaticMarkup(
+      createElement(PortalArchitectureSection, { onOpenPwaGuide: vi.fn() }),
+    );
+    expect(architecture).toContain('id="portal-architecture"');
+    expect(architecture.match(/<article/g)).toHaveLength(2);
+    expect(architecture).not.toContain("backdrop-blur");
+    for (const stat of ["秒级", "分钟", "Hz", "遗漏"]) {
+      expect(architecture).toContain(stat);
+    }
   });
 });
