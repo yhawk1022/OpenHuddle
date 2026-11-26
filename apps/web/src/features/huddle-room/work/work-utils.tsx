@@ -10,6 +10,7 @@ import { type OwnedAgentSummaryDto, type WorkSliceRole, assertNever } from "@ope
 import { CheckCircle2, Circle, CircleAlert, Loader2 } from "lucide-react";
 import { cn, toast } from "../../../components/primitives/index.js";
 import { defaultAgentReplyMode } from "../../auth-pairing/connect-instructions.js";
+import type { UpsertAgentWorkspaceInput } from "./solo-workbench-store.js";
 import type { WorkStage, WorkTopology } from "./work-types.js";
 
 /**
@@ -29,6 +30,100 @@ export function getWorkTopologyLabel(topology: WorkTopology): string {
     default:
       return assertNever(topology);
   }
+}
+
+/**
+ * 判断工作区当前配置是否支持「多路并行（swarm）」按目录拆分写入。
+ *
+ * @remarks
+ * 写入路径需能唯一定位到根目录，名称匹配与执行器均忽略大小写。
+ */
+export function workspaceSupportsSwarm(ws: {
+  readonly roots: readonly { readonly name: string }[];
+  readonly sandboxMode: string;
+}): boolean {
+  const names = ws.roots.map((root) => root.name.trim().toLowerCase());
+  return (
+    ws.sandboxMode !== "read_only" &&
+    names.length >= 2 &&
+    !names.includes("") &&
+    new Set(names).size === names.length
+  );
+}
+
+/**
+ * 将工作区名称清洗为安全的单级默认目录段（禁止 `/`, `\`, `..` 与前导 `.`，非法输入回退为 `"workspace"`）。
+ */
+export function sanitizeWorkspaceDirSegment(rawName: string): string {
+  const cleaned = rawName
+    .trim()
+    .replace(/\p{Cc}/gu, "")
+    .replace(/[\\/]+/g, "-")
+    .replace(/\.{2,}/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[.\-\s]+/, "")
+    .replace(/[.\-\s]+$/, "");
+  return cleaned || "workspace";
+}
+
+/**
+ * 从受控目录路径末尾段推导根目录短名（与服务端 `normalizeRootInputs` 保持同源规则）。
+ */
+export function inferWorkspaceRootName(localPath: string, index: number): string {
+  const normalized = localPath.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const lastSegment = normalized.split("/").pop()?.trim() ?? "";
+  return lastSegment.slice(0, 120) || `root-${index + 1}`;
+}
+
+/** Resolve the editor and both save paths from the same set of nonempty roots. */
+export function normalizeWorkspaceRoots(
+  input: Pick<UpsertAgentWorkspaceInput, "name" | "kind" | "roots">,
+) {
+  const segment = sanitizeWorkspaceDirSegment(input.name);
+  const base = input.kind === "folder" ? `~/Documents/${segment}` : `~/Developer/${segment}`;
+  const filled = input.roots.filter((root) => root.localPath.trim().length > 0);
+  const defaults = input.kind === "multi_root" ? [`${base}-api`, `${base}-web`] : [base];
+  const effective =
+    filled.length > 0
+      ? filled
+      : defaults.map((localPath, index) => ({
+          ...input.roots[index],
+          localPath,
+        }));
+  const roots = effective.map((root, index) => ({
+    localPath: root.localPath.trim(),
+    name: root.name?.trim() || inferWorkspaceRootName(root.localPath, index),
+    ...(input.kind !== "folder" ? { defaultBranch: root.defaultBranch?.trim() || "main" } : {}),
+  }));
+  const kind = roots.length > 1 ? "multi_root" : input.kind === "folder" ? "folder" : "git_repo";
+  return { roots, kind } as const;
+}
+
+/**
+ * 在 `swarm` 不可用时统一计算安全回退拓扑：
+ * 当 Agent 数 `<= 1` 或工作区为普通文件夹时收敛为 `"direct"`，否则收敛为 `"verify_loop"`。
+ */
+export function resolveEffectiveDispatchTopology(params: {
+  readonly requested: WorkTopology;
+  readonly workspace:
+    | {
+        readonly kind?: string | undefined;
+        readonly roots: readonly { readonly name: string }[];
+        readonly sandboxMode: string;
+      }
+    | undefined;
+  readonly agentCount: number;
+}): WorkTopology {
+  if (params.requested !== "swarm") {
+    return params.requested;
+  }
+  if (params.workspace !== undefined && workspaceSupportsSwarm(params.workspace)) {
+    return "swarm";
+  }
+  if (params.agentCount <= 1 || params.workspace?.kind === "folder") {
+    return "direct";
+  }
+  return "verify_loop";
 }
 
 /** 等待中的执行和复核分片只有在各自阶段才能认领。 */

@@ -121,6 +121,13 @@ function getRoomBucket(roomId: RoomId): RoomWorkBucket {
   return bucketsByRoom.get(roomId) ?? EMPTY_BUCKET;
 }
 
+/**
+ * 读取指定房间当前内存中的协作工单列表快照。
+ */
+export function getRoomWorkItems(roomId: RoomId): ReadonlyArray<RoomWorkItemView> {
+  return getRoomBucket(roomId).items;
+}
+
 function setRoomBucket(roomId: RoomId, next: RoomWorkBucket): void {
   bucketsByRoom.set(roomId, next);
   syncRoomTicker();
@@ -471,20 +478,24 @@ export function stopRoomWorkItem(roomId: RoomId, workItemId: string): void {
   const nowIso = new Date().toISOString();
   setRoomBucket(roomId, {
     ...bucket,
-    items: bucket.items.map((item) =>
-      item.id === workItemId
-        ? {
-            ...item,
-            stage: "cancelled" as WorkStage,
-            updatedAtIso: nowIso,
-            slices: item.slices.map((s) =>
-              s.status === "running" || s.status === "waiting" || s.status === "verifying"
-                ? { ...s, status: "blocked", liveSummary: "已由主人手动中止运行" }
-                : s,
-            ),
-          }
-        : item,
-    ),
+    items: bucket.items.map((item) => {
+      if (item.id !== workItemId) {
+        return item;
+      }
+      const { attention: _pendingAttention, ...itemWithoutAttention } = item;
+      const hasPendingAttention =
+        item.attention !== undefined && item.attention.answeredChoice === undefined;
+      return {
+        ...(hasPendingAttention ? itemWithoutAttention : item),
+        stage: "cancelled" as WorkStage,
+        updatedAtIso: nowIso,
+        slices: item.slices.map((s) =>
+          s.status === "running" || s.status === "waiting" || s.status === "verifying"
+            ? { ...s, status: "blocked", liveSummary: "已由主人手动中止运行" }
+            : s,
+        ),
+      };
+    }),
   });
   if (matched?.linkedSoloTaskId !== undefined) {
     notifyMirror({ type: "stop", soloTaskId: matched.linkedSoloTaskId });

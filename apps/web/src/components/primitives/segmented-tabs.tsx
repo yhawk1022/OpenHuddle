@@ -26,6 +26,8 @@ export interface SegmentedTabItem<T extends string = string> {
   readonly icon?: ReactNode | undefined;
   /** 标签右侧紧凑计数或状态徽章 */
   readonly badge?: ReactNode | undefined;
+  /** 悬停原生提示文本（含禁用原因说明） */
+  readonly title?: string | undefined;
   /** 是否禁用该分段 */
   readonly disabled?: boolean | undefined;
 }
@@ -149,22 +151,28 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
             type="button"
             role="tab"
             aria-selected={isActive}
+            aria-disabled={isDisabled || undefined}
             tabIndex={isActive ? 0 : -1}
             disabled={isDisabled}
+            {...(item.title !== undefined ? { title: item.title } : {})}
             onClick={() => {
               if (!isDisabled && item.value !== value) {
                 onValueChange(item.value);
               }
             }}
             className={cn(
-              "relative z-0 inline-flex cursor-pointer items-center justify-center font-medium tracking-[-0.01em] outline-none touch-manipulation transition-[color,transform] duration-150 ease-out active:scale-[0.975] active:duration-[60ms]",
+              "relative z-0 inline-flex items-center justify-center font-medium tracking-[-0.01em] outline-none touch-manipulation transition-[color,transform] duration-150 ease-out",
               "focus-visible:ring-2 focus-visible:ring-black/[0.15] dark:focus-visible:ring-white/[0.22]",
-              "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-45",
+              isDisabled
+                ? "cursor-not-allowed opacity-45"
+                : "cursor-pointer active:scale-[0.975] active:duration-[60ms]",
               TAB_SIZE_CLASS[size],
               fullWidth && "min-w-0 flex-1",
               isActive
                 ? "font-semibold text-[#111318] dark:text-[#F2F2F4]"
-                : "text-[#687082] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]",
+                : isDisabled
+                  ? "text-[#687082] dark:text-[#8E8E96]"
+                  : "text-[#687082] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]",
             )}
           >
             {isActive ? (

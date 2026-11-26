@@ -6,9 +6,16 @@
  * 1. 最小暴露面：严禁将操作系统根目录（`/`、`/etc`、`/System`、`/usr`）、用户主目录根（`~` 本身）或高危凭据目录（`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.kube`、`~/.openhuddle/tokens`）注册为工作区。
  * 2. 真实资产探测：在本机回环模式下自动探测目录真实 Git 状态、默认分支、`CLAUDE.md` / `AGENTS.md` 规则文件与 `.agents/skills` 技能数量，杜绝返回虚假占位上下文。
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import {
+  WorkspacePathError,
+  assertAutomatableWorkspacePath,
+  ensureWorkspaceDirectory,
+  inspectWorkspacePath,
+} from "@openhuddle/core-governance/workspace-path";
+export { removeEmptyCreatedDirs } from "@openhuddle/core-governance/workspace-path";
 import type {
   WorkspaceContextAssets,
   WorkspaceKind,
@@ -29,6 +36,7 @@ const POSIX_SYSTEM_PREFIXES: readonly string[] = [
   "/etc",
   "/private/etc",
   "/var/root",
+  "/private/var/root",
   "/System",
   "/usr",
   "/bin",
@@ -46,62 +54,55 @@ const SENSITIVE_HOME_SUBDIRS: readonly string[] = [
   ".docker",
   ".npmrc",
   ".netrc",
-  ".config/gcloud",
-  ".config/gh",
-  ".openhuddle/tokens",
-  "Library/Keychains",
+  ".config",
+  ".openhuddle",
+  "Library",
 ];
 
-/**
- * 展开前导 `~` 并规范化为绝对路径（若目标或父目录已存在则解析真实符号链接路径，防止软链绕过敏感目录黑名单）。
- */
-export function resolveCanonicalLocalPath(rawPath: string, homeDir = homedir()): string {
-  const trimmed = rawPath.trim();
-  if (trimmed.length === 0 || trimmed.includes("\0")) {
+function withPathErrors<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (err) {
+    if (!(err instanceof WorkspacePathError)) throw err;
     throw new AppError({
-      code: "VALIDATION_ERROR",
-      statusCode: 400,
-      message: "Workspace localPath must be a non-empty valid path.",
+      code: err.invalidInput ? "VALIDATION_ERROR" : "FORBIDDEN_WORKSPACE_ACCESS",
+      statusCode: err.invalidInput ? 400 : 403,
+      message: err.message,
     });
   }
+}
 
-  const expanded =
-    trimmed === "~"
-      ? homeDir
-      : trimmed.startsWith("~/") || trimmed.startsWith("~\\")
-        ? path.join(homeDir, trimmed.slice(2))
-        : path.resolve(trimmed);
+export function resolveCanonicalLocalPath(rawPath: string, homeDir = homedir()): string {
+  return withPathErrors(() => inspectWorkspacePath(rawPath, homeDir).target);
+}
 
-  const normalized = path.resolve(expanded);
-  if (existsSync(normalized)) {
-    try {
-      return realpathSync(normalized);
-    } catch {
-      return normalized;
-    }
-  }
-  const parentDir = path.dirname(normalized);
-  if (existsSync(parentDir)) {
-    try {
-      return path.join(realpathSync(parentDir), path.basename(normalized));
-    } catch {
-      return normalized;
-    }
-  }
-  return normalized;
+function comparablePath(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "darwin" || process.platform === "win32"
+    ? resolved.toLowerCase()
+    : resolved;
 }
 
 function isSameOrSubpath(candidate: string, base: string): boolean {
-  const normCandidate = path.resolve(candidate);
-  const normBase = path.resolve(base);
+  const normCandidate = comparablePath(candidate);
+  const normBase = comparablePath(base);
   return normCandidate === normBase || normCandidate.startsWith(`${normBase}${path.sep}`);
+}
+
+export function ensureAutoCreatableLocalWorkspaceDir(rawPath: string, homeDir = homedir()) {
+  return withPathErrors(() => {
+    const plan = inspectWorkspacePath(rawPath, homeDir);
+    assertAutomatableWorkspacePath(homeDir, plan.target);
+    assertSafeLocalWorkspacePath(plan.target, homeDir);
+    return ensureWorkspaceDirectory(plan);
+  });
 }
 
 /**
  * 校验本机工作区目录是否落在允许的安全项目/文档路径内；命中系统根或敏感凭据目录时立即以 `403 FORBIDDEN_WORKSPACE_ACCESS` 拒绝。
  */
 export function assertSafeLocalWorkspacePath(rawPath: string, homeDir = homedir()): string {
-  const canonicalHome = existsSync(homeDir) ? realpathSync(homeDir) : path.resolve(homeDir);
+  const canonicalHome = existsSync(homeDir) ? realpathSync.native(homeDir) : path.resolve(homeDir);
   const resolved = resolveCanonicalLocalPath(rawPath, canonicalHome);
   const parsedRoot = path.parse(resolved).root;
 
@@ -113,7 +114,7 @@ export function assertSafeLocalWorkspacePath(rawPath: string, homeDir = homedir(
     });
   }
 
-  if (resolved === canonicalHome) {
+  if (comparablePath(resolved) === comparablePath(canonicalHome)) {
     throw new AppError({
       code: "FORBIDDEN_WORKSPACE_ACCESS",
       statusCode: 403,
@@ -250,15 +251,10 @@ export function inspectAndPrepareLocalWorkspace(params: {
 
   const enrichedRoots: WorkspaceRootEntry[] = params.roots.map((root) => {
     const rawPath = root.localPath ?? "";
-    const resolved = assertSafeLocalWorkspacePath(rawPath, effectiveHome);
+    let resolved = assertSafeLocalWorkspacePath(rawPath, effectiveHome);
 
-    if (
-      params.kind === "folder" &&
-      params.sandboxMode !== "read_only" &&
-      !existsSync(resolved) &&
-      existsSync(path.dirname(resolved))
-    ) {
-      mkdirSync(resolved, { recursive: true, mode: 0o755 });
+    if (params.kind === "folder" && params.sandboxMode !== "read_only" && !existsSync(resolved)) {
+      resolved = ensureAutoCreatableLocalWorkspaceDir(rawPath, effectiveHome).dir;
     }
 
     const exists = existsSync(resolved);

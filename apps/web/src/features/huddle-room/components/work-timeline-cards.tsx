@@ -28,6 +28,7 @@ import {
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import type { RoomWorkItemView } from "../work/work-types.js";
 import { WorkStageGlyph, formatWorkStageLabel, getWorkTopologyLabel } from "../work/work-utils.js";
+import { WorkAttentionCard } from "./work-attention-card.js";
 
 export { getWorkTopologyLabel };
 
@@ -187,7 +188,8 @@ export function LiveRunFloatingBar(props: LiveRunFloatingBarProps) {
 export interface WorkTimelineMilestoneCardProps {
   readonly item: RoomWorkItemView;
   readonly onOpenInInspector: (workItemId: string) => void;
-  readonly onAnswerAttention: (workItemId: string, choice: string) => void;
+  readonly onAnswerAttention: (workItemId: string, choice: string) => Promise<void> | void;
+  readonly onStop?: ((workItemId: string) => Promise<void> | void) | undefined;
   readonly onDecideReview: (
     workItemId: string,
     decision: "approve" | "rework",
@@ -204,6 +206,7 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
   const [filesExpanded, setFilesExpanded] = useState<boolean>(false);
   const [reworkOpen, setReworkOpen] = useState<boolean>(false);
   const [reworkDraft, setReworkDraft] = useState<string>("");
+  const [isStopping, setIsStopping] = useState<boolean>(false);
 
   return (
     <div className="my-2.5 pl-0 sm:pl-11">
@@ -217,14 +220,41 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
             </h4>
           </div>
 
-          <button
-            type="button"
-            onClick={() => props.onOpenInInspector(item.id)}
-            className="inline-flex shrink-0 cursor-pointer items-center gap-1 text-[12px] text-[#687082] transition hover:text-[#111318] dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
-          >
-            <span>{formatWorkStageLabel(item.stage)}</span>
-            <ChevronRight className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {item.stage === "awaiting_answer" && props.onStop !== undefined ? (
+              <AppButton
+                size="xs"
+                variant="ghost"
+                isLoading={isStopping}
+                disabled={isStopping}
+                leadingIcon={<Square className="h-2.5 w-2.5 fill-current" />}
+                className="h-7 shrink-0 whitespace-nowrap px-2 text-[#687082] hover:text-[#DC2626] dark:text-[#8E8E96] dark:hover:text-[#F87171]"
+                onClick={() => {
+                  if (isStopping || props.onStop === undefined) {
+                    return;
+                  }
+                  setIsStopping(true);
+                  void Promise.resolve(props.onStop(item.id))
+                    .then(() => toast.info("已停止任务"))
+                    .catch((err: unknown) =>
+                      toast.error(err instanceof Error ? err.message : "停止任务失败"),
+                    )
+                    .finally(() => setIsStopping(false));
+                }}
+              >
+                停止
+              </AppButton>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => props.onOpenInInspector(item.id)}
+              className="inline-flex shrink-0 cursor-pointer items-center gap-1 text-[12px] text-[#687082] transition hover:text-[#111318] dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
+            >
+              <span>{formatWorkStageLabel(item.stage)}</span>
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </header>
 
         <div className="space-y-3 px-4 py-3">
@@ -267,29 +297,16 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
             ))}
           </ul>
 
-          {/* 待确认问题（原生单选列表样式） */}
+          {/* 待确认问题（统一确认与自定义回复卡片） */}
           {item.attention !== undefined && item.stage === "awaiting_answer" ? (
-            <div className="overflow-hidden rounded-xl border border-black/[0.07] bg-[#F8F9FA] dark:border-white/[0.09] dark:bg-[#161619]">
-              <p className="border-b border-black/[0.05] px-3 py-2 text-[12.5px] font-medium text-[#111318] dark:border-white/[0.06] dark:text-[#F2F2F4]">
-                {item.attention.askedBy.displayName}：{item.attention.question}
-              </p>
-              <div className="divide-y divide-black/[0.05] dark:divide-white/[0.06]">
-                {item.attention.options.map((opt) => (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => {
-                      props.onAnswerAttention(item.id, opt);
-                      toast.success("已确认并继续");
-                    }}
-                    className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-2 text-left text-[12px] text-[#181B22] transition hover:bg-black/[0.03] dark:text-[#ECECEF] dark:hover:bg-white/[0.04]"
-                  >
-                    <span className="whitespace-normal break-words">{opt}</span>
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#94A3B8]" />
-                  </button>
-                ))}
-              </div>
-            </div>
+            <WorkAttentionCard
+              variant="timeline"
+              key={`${item.id}:${item.attention.question}`}
+              askedByName={item.attention.askedBy.displayName}
+              question={item.attention.question}
+              options={item.attention.options}
+              onSubmitAnswer={(choice) => props.onAnswerAttention(item.id, choice)}
+            />
           ) : null}
 
           {/* 变更汇总与签收 */}

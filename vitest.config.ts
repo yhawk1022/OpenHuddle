@@ -16,6 +16,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@openhuddle/protocol": resolve(rootDir, "packages/protocol/src/index.ts"),
+      "@openhuddle/core-governance/workspace-path": resolve(
+        rootDir,
+        "packages/core-governance/src/workspace-path.ts",
+      ),
       "@openhuddle/core-governance/workspace-diff": resolve(
         rootDir,
         "packages/core-governance/src/workspace-diff.ts",

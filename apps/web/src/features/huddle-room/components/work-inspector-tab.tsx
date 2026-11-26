@@ -11,7 +11,6 @@ import {
   ArrowUpRight,
   Check,
   ChevronDown,
-  ChevronRight,
   CornerDownLeft,
   FolderGit2,
   MoreHorizontal,
@@ -44,6 +43,7 @@ import type {
   WorkShowcasePreset,
 } from "../work/work-types.js";
 import { WorkStageGlyph, getWorkTopologyLabel } from "../work/work-utils.js";
+import { WorkAttentionCard } from "./work-attention-card.js";
 
 const SECTION_CARD_CLASS =
   "overflow-hidden rounded-[16px] bg-white/72 ring-1 ring-inset ring-black/[0.055] dark:bg-white/[0.045] dark:ring-white/[0.075]";
@@ -69,9 +69,9 @@ export interface WorkInspectorTabProps {
   readonly focusedWorkItemId: string | null;
   readonly onUpdateDefaults: (patch: Partial<RoomOrchestrationDefaults>) => void;
   readonly onSteerSlice: (workItemId: string, note: string, sliceId?: string | undefined) => void;
-  readonly onStopItem: (workItemId: string) => void;
+  readonly onStopItem: (workItemId: string) => Promise<void> | void;
   readonly onRetryItem: (workItemId: string) => void;
-  readonly onAnswerAttention: (workItemId: string, choice: string) => void;
+  readonly onAnswerAttention: (workItemId: string, choice: string) => Promise<void> | void;
   readonly onDecideReview: (workItemId: string, decision: "approve" | "rework") => void;
   readonly onOpenComposerDispatch: () => void;
   readonly onOpenWorkbench?: ((workspaceId?: string | undefined) => void) | undefined;
@@ -87,6 +87,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
   const [steerTargetKey, setSteerTargetKey] = useState<string | null>(null);
   const [steerInput, setSteerInput] = useState<string>("");
   const [defaultsOpen, setDefaultsOpen] = useState<boolean>(false);
+  const [stoppingId, setStoppingId] = useState<string | null>(null);
 
   const workbenchSnap = useWorkspaceDirectory();
   const boundWorkspaceId = workbenchSnap.roomBindings[props.roomId] ?? null;
@@ -164,6 +165,17 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
     toast.success("已发送补充说明");
     setSteerInput("");
     setSteerTargetKey(null);
+  };
+
+  const handleStopItem = (workItemId: string): void => {
+    if (stoppingId === workItemId) {
+      return;
+    }
+    setStoppingId(workItemId);
+    void Promise.resolve(props.onStopItem(workItemId))
+      .then(() => toast.info("已停止任务"))
+      .catch((err: unknown) => toast.error(err instanceof Error ? err.message : "停止任务失败"))
+      .finally(() => setStoppingId((cur) => (cur === workItemId ? null : cur)));
   };
 
   return (
@@ -283,36 +295,40 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
           >
             {props.needsHumanItems.map((item) => (
               <div key={`needs-${item.id}`} className="space-y-2.5 p-3 text-xs">
-                <div className="flex items-start gap-2">
-                  <span className="mt-0.5">
-                    <WorkStageGlyph stage={item.stage} />
-                  </span>
-                  <p className="min-w-0 flex-1 font-medium leading-snug text-[#111318] dark:text-[#F2F2F4]">
-                    {item.title}
-                  </p>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex min-w-0 flex-1 items-start gap-2">
+                    <span className="mt-0.5">
+                      <WorkStageGlyph stage={item.stage} />
+                    </span>
+                    <p className="min-w-0 flex-1 font-medium leading-snug text-[#111318] dark:text-[#F2F2F4]">
+                      {item.title}
+                    </p>
+                  </div>
+
+                  {item.stage === "awaiting_answer" ? (
+                    <button
+                      type="button"
+                      title="停止任务"
+                      aria-label="停止任务"
+                      disabled={stoppingId === item.id}
+                      onClick={() => handleStopItem(item.id)}
+                      className="relative inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#8E96A6] transition hover:bg-black/[0.05] hover:text-[#DC2626] disabled:cursor-not-allowed disabled:opacity-45 [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-2.5 dark:hover:bg-white/[0.08] dark:hover:text-[#F87171]"
+                    >
+                      <Square className="h-2.5 w-2.5 fill-current" />
+                    </button>
+                  ) : null}
                 </div>
 
                 {item.stage === "awaiting_answer" && item.attention !== undefined ? (
-                  <div className="space-y-1.5 pl-5">
-                    <p className="text-[11.5px] leading-relaxed text-[#4B5565] dark:text-[#A1A1AA]">
-                      {item.attention.askedBy.displayName}：{item.attention.question}
-                    </p>
-                    <div className="overflow-hidden rounded-xl border border-black/[0.07] bg-white/85 divide-y divide-black/[0.05] dark:border-white/[0.09] dark:bg-[#18181C] dark:divide-white/[0.06]">
-                      {item.attention.options.map((opt) => (
-                        <button
-                          key={opt}
-                          type="button"
-                          onClick={() => {
-                            props.onAnswerAttention(item.id, opt);
-                            toast.success("已确认并继续");
-                          }}
-                          className="flex w-full cursor-pointer items-center justify-between gap-2 px-2.5 py-2 text-left text-[11.5px] text-[#181B22] transition hover:bg-black/[0.03] dark:text-[#ECECEF] dark:hover:bg-white/[0.05]"
-                        >
-                          <span className="whitespace-normal break-words leading-snug">{opt}</span>
-                          <ChevronRight className="h-3 w-3 shrink-0 text-[#94A3B8]" />
-                        </button>
-                      ))}
-                    </div>
+                  <div className="pl-5">
+                    <WorkAttentionCard
+                      variant="inspector"
+                      key={`${item.id}:${item.attention.question}`}
+                      askedByName={item.attention.askedBy.displayName}
+                      question={item.attention.question}
+                      options={item.attention.options}
+                      onSubmitAnswer={(choice) => props.onAnswerAttention(item.id, choice)}
+                    />
                   </div>
                 ) : null}
 
@@ -402,12 +418,11 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
 
                   <button
                     type="button"
+                    title="停止任务"
                     aria-label="停止任务"
-                    onClick={() => {
-                      props.onStopItem(item.id);
-                      toast.info("已停止任务");
-                    }}
-                    className="inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#8E96A6] transition hover:bg-black/[0.05] hover:text-[#DC2626] dark:hover:bg-white/[0.08] dark:hover:text-[#F87171]"
+                    disabled={stoppingId === item.id}
+                    onClick={() => handleStopItem(item.id)}
+                    className="relative inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#8E96A6] transition hover:bg-black/[0.05] hover:text-[#DC2626] disabled:cursor-not-allowed disabled:opacity-45 [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-2.5 dark:hover:bg-white/[0.08] dark:hover:text-[#F87171]"
                   >
                     <Square className="h-2.5 w-2.5 fill-current" />
                   </button>

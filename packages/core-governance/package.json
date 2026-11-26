@@ -6,6 +6,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./workspace-path": {
+      "types": "./dist/workspace-path.d.ts",
+      "import": "./dist/workspace-path.js"
+    },
     "./workspace-diff": {
       "types": "./dist/workspace-diff.d.ts",
       "import": "./dist/workspace-diff.js"

@@ -11,7 +11,7 @@
  * 4. 全链路动态追踪、运行中热纠偏（Mid-Flight Steer）与三层溯源：实时流式推送 `work.trace` SSE，执行期间到达的补充指令自动触发增量修补回合，完工后原子更新仓外 `.jsonl`、定长 `MEMORY.md`（≤200 行）与零污染 `refs/notes/openhuddle`。
  */
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   constants,
   accessSync,
@@ -20,22 +20,29 @@ import {
   copyFileSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
+  rmdirSync,
   writeSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
+import type { Readable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
   type AgentAttention,
   WORK_AGENT_STOP_INSTRUCTION,
   WorkAgentAttention,
   checkAgentWorkOutput,
+  parseWorkVerdict,
   scrubWorkText,
 } from "@openhuddle/core-governance";
 import {
@@ -45,19 +52,25 @@ import {
   collectWorkingTreeDiff,
   diffPlainFolderSnapshots,
   isGitWorkingTree,
+  workspaceGitEnv,
+  workspaceProcessEnv,
 } from "@openhuddle/core-governance/workspace-diff";
 import type {
   AgentExecutionTier,
   AgentPlatform,
   AuthenticatedCaller,
   WorkDiffFileDto,
-  WorkItemId,
   WorkSliceId,
   WorkSliceRole,
   WorkspaceRootEntry,
 } from "@openhuddle/protocol";
 import type { Logger } from "pino";
-import { assertSafeLocalWorkspacePath } from "./workspace-fs-guard.js";
+import { AppError } from "../../infra/errors.js";
+import {
+  assertSafeLocalWorkspacePath,
+  ensureAutoCreatableLocalWorkspaceDir,
+  removeEmptyCreatedDirs,
+} from "./workspace-fs-guard.js";
 import type { HydratedWorkItemRecord, HydratedWorkspaceRecord } from "./workspaces.mapper.js";
 import type { WorkspacesRepository } from "./workspaces.repo.js";
 import type { WorkspacesService } from "./workspaces.service.js";
@@ -70,6 +83,132 @@ const CLI_TURN_TIMEOUT_MS = 240_000;
 const HOOK_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_ROLLING_MEMORY_LINES = 200;
 const MAX_ROLLING_MEMORY_BYTES = 24 * 1024;
+const TRANSIENT_NODE_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EPIPE",
+]);
+
+function extractErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const direct = (err as { readonly code?: unknown }).code;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  const cause = (err as { readonly cause?: unknown }).cause;
+  if (cause && typeof cause === "object") {
+    const nested = (cause as { readonly code?: unknown }).code;
+    if (typeof nested === "string" && nested.length > 0) return nested;
+  }
+  return undefined;
+}
+
+function isTransientCliError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  if (err instanceof WorkAgentAttention) return false;
+  if (err instanceof Error && err.name === "AbortError") return false;
+
+  const code = extractErrorCode(err);
+  if (code === "ENOENT") return false;
+
+  const message = err instanceof Error ? err.message : "";
+  if (
+    /ABORTED_BY_OWNER|operation was aborted|\baborted\b/i.test(message) ||
+    /\b(?:401|403)\b|invalid[_\s-]?api[_\s-]?key|unauthorized|forbidden|authentication\s+failed|insufficient[_\s-]?quota|\bbilling\b|credit\s+balance|account\s+suspended|permission\s+denied/i.test(
+      message,
+    ) ||
+    /\bENOENT\b|未在本机 PATH 中检测到|工作区|已有工作树|工作分支名称无效|未返回明确的最终判定|未提交文件/i.test(
+      message,
+    ) ||
+    /\b(?:400|402|404|405|409|410|413|415|422)\b/.test(message)
+  ) {
+    return false;
+  }
+
+  if (code && (TRANSIENT_NODE_ERROR_CODES.has(code) || code.startsWith("UND_ERR_"))) {
+    return true;
+  }
+
+  return /\b(?:429|502|503|504|529)\b|rate[\s_-]?limit|too\s+many\s+requests|overloaded|temporarily\s+unavailable|service\s+unavailable|bad\s+gateway|gateway\s+timeout|fetch\s+failed|socket\s+hang\s+up|connection\s+reset|network\s+error|econnreset|etimedout|econnrefused|eai_again|enetunreach|epipe|und_err_/i.test(
+    message,
+  );
+}
+
+function isRateLimitCliError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : "";
+  return /\b429\b|rate[\s_-]?limit|too\s+many\s+requests/i.test(message);
+}
+
+async function gitExec(
+  cwd: string,
+  args: readonly string[],
+  signal?: AbortSignal | undefined,
+): Promise<string> {
+  const result = await execFileAsync(
+    "git",
+    ["-c", `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`, ...args],
+    {
+      cwd,
+      timeout: 25_000,
+      env: workspaceGitEnv(),
+      maxBuffer: 1024 * 1024,
+      ...(signal !== undefined ? { signal } : {}),
+    },
+  );
+  return result.stdout.trim();
+}
+
+async function createEmptyInitialCommit(
+  rootDir: string,
+  signal?: AbortSignal | undefined,
+): Promise<void> {
+  await gitExec(
+    rootDir,
+    [
+      "-c",
+      "user.name=OpenHuddle",
+      "-c",
+      "user.email=openhuddle@localhost",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "--no-verify",
+      "-qm",
+      "Initialize OpenHuddle workspace",
+    ],
+    signal,
+  );
+}
+
+async function initializeEmptyGitBase(
+  rootDir: string,
+  defaultBranch: string | undefined,
+  signal?: AbortSignal | undefined,
+): Promise<void> {
+  const gitDir = path.join(rootDir, ".git");
+  mkdirSync(gitDir);
+  try {
+    await gitExec(rootDir, ["init", "-q", "--template="], signal);
+    if (defaultBranch && /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(defaultBranch)) {
+      const validBranch = await gitExec(
+        rootDir,
+        ["check-ref-format", "--branch", defaultBranch],
+        signal,
+      )
+        .then(() => true)
+        .catch(() => false);
+      if (validBranch) {
+        await gitExec(rootDir, ["symbolic-ref", "HEAD", `refs/heads/${defaultBranch}`], signal);
+      }
+    }
+    await createEmptyInitialCommit(rootDir, signal);
+  } catch (err) {
+    rmSync(gitDir, { recursive: true, force: true });
+    throw err;
+  }
+}
 
 export interface LocalCliExecutionInput {
   readonly platform: AgentPlatform;
@@ -101,6 +240,7 @@ export interface LocalWorkspaceRunnerDeps {
   readonly homeDir?: string | undefined;
   readonly pathEnv?: string | undefined;
   readonly cliExecutor?: LocalCliExecutorFn | undefined;
+  readonly transientRetryDelayMs?: number | undefined;
 }
 
 export interface LocalWorkspaceRunnerHandle {
@@ -394,6 +534,7 @@ async function tryAttachGitProvenanceNote(params: {
     await execFileAsync("git", ["notes", "--ref=openhuddle", "add", "-f", "-m", payload, "HEAD"], {
       cwd: params.repoDir,
       timeout: 4_000,
+      env: workspaceGitEnv(),
     });
     return true;
   } catch {
@@ -425,6 +566,38 @@ function selectWorkspaceRootForSlice(
     }
   }
   return workspace.roots[0];
+}
+
+function sliceWorktreeLocation(
+  homeDir: string,
+  workspace: Readonly<HydratedWorkspaceRecord>,
+  item: Readonly<HydratedWorkItemRecord>,
+  sliceId: WorkSliceId,
+  matchedRoot: WorkspaceRootEntry,
+) {
+  const sliceHash = createHash("sha256").update(sliceId).digest("hex").slice(0, 10);
+  const effectiveBranch =
+    item.topology === "swarm"
+      ? `${item.worktreeBranch.slice(0, 140)}-${sliceHash}`
+      : item.worktreeBranch;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(effectiveBranch)) {
+    throw new Error("工作分支名称无效。");
+  }
+
+  const rootSuffix = workspace.roots.length > 1 ? `-${sanitizeSegment(matchedRoot.name)}` : "";
+  const sliceDirSuffix = item.topology === "swarm" ? `-${sliceHash}` : "";
+  const worktreeParent = path.join(
+    homeDir,
+    ".openhuddle",
+    "worktrees",
+    sanitizeSegment(workspace.id),
+  );
+  const worktreeDir = path.join(
+    worktreeParent,
+    `${sanitizeSegment(item.worktreeBranch)}${rootSuffix}${sliceDirSuffix}`,
+  );
+
+  return { effectiveBranch, worktreeDir, worktreeParent };
 }
 
 function buildExecutionPrompt(params: {
@@ -471,7 +644,6 @@ function buildExecutionPrompt(params: {
       "## Independent Verification Instructions",
       "- Do NOT modify source files. Inspect the working tree changes and verification command results below.",
       "- Check correctness, edge cases, type safety, and adherence to the task brief.",
-      "- Give concise, actionable findings. For a completed review end with exactly VERDICT: PASSED or VERDICT: CHANGES_REQUESTED.",
       ...(params.item.review?.verifierNote
         ? [`Previous review: ${params.item.review.verifierNote}`]
         : []),
@@ -487,6 +659,24 @@ function buildExecutionPrompt(params: {
           (f) => `- ${f.path} (+${String(f.additions)} / -${String(f.deletions)})`,
         ),
       );
+      if (params.item.topology === "swarm") {
+        const diff = params.diffFiles
+          .map((file) =>
+            [
+              `--- ${file.path}`,
+              ...file.lines.map(
+                (line) =>
+                  (line.kind === "add" ? "+" : line.kind === "del" ? "-" : " ") + line.content,
+              ),
+            ].join("\n"),
+          )
+          .join("\n");
+        lines.push(
+          "",
+          "## Submitted Diff Preview (inspect the writer directories for the full changes)",
+          scrubWorkText(diff).slice(0, 24_000),
+        );
+      }
     }
   } else if (params.role === "read") {
     lines.push(
@@ -505,11 +695,16 @@ function buildExecutionPrompt(params: {
   }
 
   lines.push("", WORK_AGENT_STOP_INSTRUCTION);
+  if (params.role === "verify") {
+    lines.push(
+      "For a completed review give concise findings and end with exactly VERDICT: PASSED or VERDICT: CHANGES_REQUESTED.",
+    );
+  }
   return lines.join("\n");
 }
 
 function summarizeCliOutput(rawOutput: string, fallback: string): string {
-  const meaningfulLines = rawOutput
+  const meaningfulLines = scrubWorkText(rawOutput)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(
@@ -526,10 +721,24 @@ function summarizeCliOutput(rawOutput: string, fallback: string): string {
   return tail.length > 260 ? `${tail.slice(0, 257)}…` : tail;
 }
 
-function parseVerifierVerdict(rawOutput: string): "passed" | "changes_requested" {
-  const verdict = /(?:^|\n)VERDICT:\s*(PASSED|CHANGES_REQUESTED)\s*$/i.exec(rawOutput);
-  if (!verdict) throw new Error("复核 Agent 未返回明确的最终判定。");
-  return verdict[1]?.toUpperCase() === "PASSED" ? "passed" : "changes_requested";
+/** Keep each stream's PEM state across lines and trace flushes. */
+function streamRedactedLines(stream: Readable, onLine: (line: string) => void): void {
+  let insidePrivateKey = false;
+  createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY }).on(
+    "line",
+    (line: string) => {
+      if (/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(line)) {
+        insidePrivateKey = true;
+        onLine("[REDACTED_PRIVATE_KEY]");
+      }
+      if (insidePrivateKey) {
+        if (/-----END [A-Z0-9 ]*PRIVATE KEY-----/.test(line)) insidePrivateKey = false;
+        return;
+      }
+      const clean = scrubWorkText(line.trim());
+      if (clean) onLine(clean);
+    },
+  );
 }
 
 async function runShellHookCommand(params: {
@@ -539,37 +748,26 @@ async function runShellHookCommand(params: {
   readonly signal: AbortSignal;
   readonly onOutputLine: (line: string) => void;
 }): Promise<{ readonly passed: boolean; readonly outputTail: string }> {
+  params.signal.throwIfAborted();
   return new Promise((resolve) => {
     const shellBin = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
     const shellArgs =
       process.platform === "win32" ? ["/d", "/s", "/c", params.command] : ["-lc", params.command];
     const child = spawn(shellBin, shellArgs, {
       cwd: params.cwd,
-      env: params.env,
+      env: workspaceProcessEnv(params.env),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
 
     const tailLines: string[] = [];
-    let partial = "";
-    const ingestChunk = (chunk: Buffer): void => {
-      partial += chunk.toString("utf8");
-      const lines = partial.split(/\r?\n/);
-      partial = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.length > 0) {
-          tailLines.push(trimmed);
-          if (tailLines.length > 24) {
-            tailLines.shift();
-          }
-          params.onOutputLine(trimmed);
-        }
-      }
+    const onLine = (line: string): void => {
+      tailLines.push(line);
+      if (tailLines.length > 24) tailLines.shift();
+      params.onOutputLine(line);
     };
-
-    child.stdout.on("data", ingestChunk);
-    child.stderr.on("data", ingestChunk);
+    streamRedactedLines(child.stdout, onLine);
+    streamRedactedLines(child.stderr, onLine);
 
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
@@ -578,7 +776,7 @@ async function runShellHookCommand(params: {
     const onAbort = (): void => {
       child.kill("SIGTERM");
       setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       }, 1_500).unref();
     };
     params.signal.addEventListener("abort", onAbort, { once: true });
@@ -586,10 +784,6 @@ async function runShellHookCommand(params: {
     child.on("close", (code) => {
       clearTimeout(timer);
       params.signal.removeEventListener("abort", onAbort);
-      if (partial.trim().length > 0) {
-        tailLines.push(partial.trim());
-        params.onOutputLine(partial.trim());
-      }
       resolve({
         passed: code === 0,
         outputTail: tailLines.slice(-12).join("\n"),
@@ -696,7 +890,7 @@ async function defaultLocalCliExecutor(
   })();
 
   const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...workspaceProcessEnv(),
     HOME: input.homeDir,
     PATH: searchDirs.join(process.platform === "win32" ? ";" : ":"),
   };
@@ -716,25 +910,17 @@ async function defaultLocalCliExecutor(
     }
 
     let collected = "";
-    let partial = "";
-    const onData = (chunk: Buffer): void => {
-      const text = chunk.toString("utf8");
-      partial += text;
-      const lines = partial.split(/\r?\n/);
-      partial = lines.pop() ?? "";
-      for (const line of lines) {
-        const clean = line.trim();
-        if (clean.length > 0) {
-          input.onOutputLine(clean);
-        }
-      }
-    };
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      collected += chunk.toString("utf8");
-      onData(chunk);
+    let stderrTail = "";
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      collected += chunk;
     });
-    child.stderr?.on("data", onData);
+    if (child.stdout) streamRedactedLines(child.stdout, input.onOutputLine);
+    if (child.stderr)
+      streamRedactedLines(child.stderr, (line) => {
+        stderrTail = `${stderrTail}\n${line}`.slice(-2_000);
+        input.onOutputLine(line);
+      });
 
     let timedOut = false;
     const onAbort = (): void => {
@@ -759,9 +945,6 @@ async function defaultLocalCliExecutor(
     child.on("close", (code) => {
       clearTimeout(timeout);
       input.signal.removeEventListener("abort", onAbort);
-      if (partial.trim().length > 0) {
-        input.onOutputLine(partial.trim());
-      }
 
       let finalOutput = collected;
       if (codexReplyFile && existsSync(codexReplyFile)) {
@@ -783,24 +966,34 @@ async function defaultLocalCliExecutor(
       }
 
       if (timedOut || code !== 0) {
+        const detail = scrubWorkText((stderrTail || collected).trim()).slice(-380);
         reject(
           new Error(
             timedOut
               ? "本机 Agent 执行超时。"
-              : `${resolved.binary} exited with status ${String(code)}`,
+              : `${resolved.binary} exited with status ${String(code)}${detail.length > 0 ? `: ${detail}` : ""}`,
           ),
         );
         return;
       }
       try {
         checkAgentWorkOutput(finalOutput);
-        const summary = summarizeCliOutput(
-          finalOutput,
-          input.role === "verify" ? "已完成独立代码复核。" : "已完成工作区分片执行。",
-        );
+        if (input.role === "verify") {
+          const parsedVerdict = parseWorkVerdict(finalOutput);
+          const summarySource = parsedVerdict
+            ? finalOutput.slice(0, parsedVerdict.summaryEndIndex)
+            : finalOutput;
+          const summary = summarizeCliOutput(summarySource, "");
+          resolve({
+            summary,
+            ...(parsedVerdict !== undefined ? { verdict: parsedVerdict.verdict } : {}),
+            commandLabel: invocation.label,
+          });
+          return;
+        }
+        const summary = summarizeCliOutput(finalOutput, "已完成工作区分片执行。");
         resolve({
           summary,
-          ...(input.role === "verify" ? { verdict: parseVerifierVerdict(finalOutput) } : {}),
           commandLabel: invocation.label,
         });
       } catch (err) {
@@ -823,16 +1016,77 @@ export function startLocalWorkspaceRunner(
     if ("attention" in result) throw new WorkAgentAttention(result.attention);
     return result;
   };
+  const runCliWithTransientRetry = async (
+    input: LocalCliExecutionInput,
+  ): Promise<LocalCliExecutionResult> => {
+    for (let attempt = 0; ; attempt += 1) {
+      if (input.signal.aborted) {
+        throw new Error("ABORTED_BY_OWNER");
+      }
+      try {
+        return await cliExecutor(input);
+      } catch (err) {
+        if (attempt >= 1 || input.signal.aborted || !isTransientCliError(err)) {
+          throw err;
+        }
+        const waitMs = deps.transientRetryDelayMs ?? (isRateLimitCliError(err) ? 5_000 : 3_000);
+        if (waitMs > 0) {
+          await delay(waitMs, undefined, { signal: input.signal });
+        }
+      }
+    }
+  };
   const activeSlices = new Map<
     WorkSliceId,
-    { readonly workItemId: WorkItemId; readonly controller: AbortController }
+    {
+      readonly controller: AbortController;
+      queuedItem?: Readonly<HydratedWorkItemRecord> | undefined;
+    }
   >();
+  const rootInitChains = new Map<string, Promise<void>>();
   const worktreeInitLocks = new Map<string, Promise<string>>();
   // 原地目录（in_place）单写 FIFO 互斥链：防止多个任务在同一非隔离目录并发写踩踏
   const inPlaceWriteChains = new Map<string, Promise<void>>();
   // 非 Git 普通文件夹按工单缓存首轮写前快照，使后续 verify 分片也能看到完整前后差异
   const folderBaseSnapshots = new Map<string, PlainFolderSnapshot>();
   let stopped = false;
+
+  const withRootInitLock = async <T>(
+    rootKey: string,
+    signal: AbortSignal,
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    const predecessor = rootInitChains.get(rootKey);
+    let releaseCurrent!: () => void;
+    const currentGate = new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    const chained = (predecessor ?? Promise.resolve()).then(() => currentGate);
+    rootInitChains.set(rootKey, chained);
+
+    try {
+      if (predecessor !== undefined) {
+        await Promise.race([
+          predecessor,
+          new Promise<never>((_resolve, reject) => {
+            if (signal.aborted) {
+              reject(new Error("ABORTED_BY_OWNER"));
+              return;
+            }
+            signal.addEventListener("abort", () => reject(new Error("ABORTED_BY_OWNER")), {
+              once: true,
+            });
+          }),
+        ]);
+      }
+      return await fn();
+    } finally {
+      releaseCurrent();
+      if (rootInitChains.get(rootKey) === chained) {
+        rootInitChains.delete(rootKey);
+      }
+    }
+  };
 
   const acquireDirectoryWriteLock = async (
     dirKey: string,
@@ -904,10 +1158,37 @@ export function startLocalWorkspaceRunner(
     }
   };
 
+  const isValidExistingWorktree = async (
+    worktreeDir: string,
+    worktreeParent: string,
+    repoRoot: string,
+    expectedBranch: string,
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    try {
+      const st = lstatSync(worktreeDir);
+      if (st.isSymbolicLink() || !st.isDirectory()) return false;
+      const destReal = realpathSync(worktreeDir);
+      const parentReal = realpathSync(worktreeParent);
+      if (destReal !== path.join(parentReal, path.basename(worktreeDir))) return false;
+      const toplevel = await gitExec(worktreeDir, ["rev-parse", "--show-toplevel"], signal);
+      if (!toplevel || realpathSync(toplevel) !== destReal) return false;
+      const [wtCommon, rootCommon, wtBranch] = await Promise.all([
+        gitExec(worktreeDir, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+        gitExec(repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+        gitExec(worktreeDir, ["symbolic-ref", "--short", "HEAD"], signal),
+      ]);
+      return realpathSync(wtCommon) === realpathSync(rootCommon) && wtBranch === expectedBranch;
+    } catch {
+      return false;
+    }
+  };
+
   const prepareSandboxDir = async (params: {
     readonly workspace: Readonly<HydratedWorkspaceRecord>;
     readonly item: Readonly<HydratedWorkItemRecord>;
     readonly sliceId: WorkSliceId;
+    readonly leaseRole: WorkSliceRole;
     readonly ownedPaths: readonly string[];
     readonly actorName: string;
     readonly signal: AbortSignal;
@@ -915,68 +1196,209 @@ export function startLocalWorkspaceRunner(
     readonly workingDir: string;
     readonly usedWorktree: boolean;
     readonly isGitRepo: boolean;
+    readonly worktreeBranch: string;
   }> => {
     const matchedRoot = selectWorkspaceRootForSlice(params.workspace, params.ownedPaths);
     if (!matchedRoot?.localPath) {
       throw new Error(`工作区「${params.workspace.name}」未配置有效的本地目录路径。`);
     }
 
-    const rootDir = assertSafeLocalWorkspacePath(matchedRoot.localPath, homeDir);
-    if (!existsSync(rootDir)) {
-      if (
-        params.workspace.kind === "folder" &&
-        params.workspace.sandboxMode !== "read_only" &&
-        existsSync(path.dirname(rootDir))
-      ) {
-        mkdirSync(rootDir, { recursive: true, mode: 0o755 });
-      } else {
-        throw new Error(`工作区目录不存在：${rootDir}`);
+    const initialRootDir = assertSafeLocalWorkspacePath(matchedRoot.localPath, homeDir);
+    const rootDir = await withRootInitLock(initialRootDir, params.signal, async () => {
+      let resolvedRoot = initialRootDir;
+      let createdDirs: readonly string[] = [];
+      if (!existsSync(resolvedRoot)) {
+        if (params.leaseRole !== "write" || params.workspace.sandboxMode === "read_only") {
+          throw new Error(`工作区目录不存在：${resolvedRoot}`);
+        }
+        const ensured = ensureAutoCreatableLocalWorkspaceDir(matchedRoot.localPath ?? "", homeDir);
+        resolvedRoot = ensured.dir;
+        createdDirs = ensured.createdDirs;
       }
-    }
+
+      if (params.workspace.kind !== "folder" && params.workspace.sandboxMode === "worktree_pool") {
+        try {
+          const toplevel = await gitExec(
+            resolvedRoot,
+            ["rev-parse", "--show-toplevel"],
+            params.signal,
+          ).catch((err: unknown) => {
+            if (/not a git repository/i.test((err as { stderr?: string }).stderr ?? "")) return "";
+            throw err;
+          });
+          if (toplevel && realpathSync.native(toplevel) !== realpathSync.native(resolvedRoot)) {
+            throw new Error("工作区位于已有 Git 仓库内部，请选择仓库根目录或使用原地模式。");
+          }
+          if (params.leaseRole === "write") {
+            if (!toplevel && createdDirs.includes(resolvedRoot)) {
+              await initializeEmptyGitBase(resolvedRoot, matchedRoot.defaultBranch, params.signal);
+            } else if (toplevel) {
+              const hasHead = await gitExec(
+                resolvedRoot,
+                ["rev-parse", "--verify", "--quiet", "HEAD"],
+                params.signal,
+              )
+                .then(() => true)
+                .catch((err: unknown) => {
+                  if ((err as { code?: number }).code === 1) return false;
+                  throw err;
+                });
+              if (!hasHead) {
+                const [status, tracked] = await Promise.all([
+                  gitExec(resolvedRoot, ["status", "--porcelain", "-uall"], params.signal),
+                  gitExec(resolvedRoot, ["ls-files"], params.signal),
+                ]);
+                if (status || tracked) {
+                  throw new Error(
+                    "Git 仓库尚无初始提交且目录已有未提交文件，请先提交初始 commit 或切换为原地模式。",
+                  );
+                }
+                await createEmptyInitialCommit(resolvedRoot, params.signal);
+              }
+            }
+          }
+        } catch (err) {
+          removeEmptyCreatedDirs(createdDirs);
+          throw err;
+        }
+      }
+
+      return resolvedRoot;
+    });
 
     const gitRepo = params.workspace.kind !== "folder" && (await isGitWorkingTree(rootDir));
-    if (params.workspace.sandboxMode !== "worktree_pool" || !gitRepo) {
-      return { workingDir: rootDir, usedWorktree: false, isGitRepo: gitRepo };
+    if (
+      params.workspace.sandboxMode !== "worktree_pool" ||
+      !gitRepo ||
+      params.leaseRole === "read" ||
+      (params.leaseRole === "verify" && params.item.topology === "swarm")
+    ) {
+      return {
+        workingDir: rootDir,
+        usedWorktree: false,
+        isGitRepo: gitRepo,
+        worktreeBranch: params.item.worktreeBranch,
+      };
     }
 
-    const rootSuffix =
-      params.workspace.roots.length > 1 ? `-${sanitizeSegment(matchedRoot.name)}` : "";
-    const worktreeDir = path.join(
+    const { effectiveBranch, worktreeDir, worktreeParent } = sliceWorktreeLocation(
       homeDir,
-      ".openhuddle",
-      "worktrees",
-      sanitizeSegment(params.workspace.id),
-      `${sanitizeSegment(params.item.worktreeBranch)}${rootSuffix}`,
+      params.workspace,
+      params.item,
+      params.sliceId,
+      matchedRoot,
     );
+    await gitExec(rootDir, ["check-ref-format", "--branch", effectiveBranch], params.signal);
 
-    if (existsSync(worktreeDir)) {
-      return { workingDir: worktreeDir, usedWorktree: true, isGitRepo: true };
+    if (params.leaseRole === "verify") {
+      if (
+        !(await isValidExistingWorktree(
+          worktreeDir,
+          worktreeParent,
+          rootDir,
+          effectiveBranch,
+          params.signal,
+        ))
+      ) {
+        throw new Error("未找到写分片的隔离工作树，请恢复工作树后再复核。");
+      }
+      return {
+        workingDir: worktreeDir,
+        usedWorktree: true,
+        isGitRepo: true,
+        worktreeBranch: effectiveBranch,
+      };
     }
 
-    const lockKey = `${params.workspace.id}:${params.item.worktreeBranch}${rootSuffix}`;
+    const lockKey = worktreeDir;
     const existingInit = worktreeInitLocks.get(lockKey);
     if (existingInit !== undefined) {
-      return { workingDir: await existingInit, usedWorktree: true, isGitRepo: true };
+      return {
+        workingDir: await existingInit,
+        usedWorktree: true,
+        isGitRepo: true,
+        worktreeBranch: effectiveBranch,
+      };
     }
 
     const initTask = (async () => {
       try {
+        mkdirSync(worktreeParent, { recursive: true, mode: 0o700 });
+
+        let existingStat: ReturnType<typeof lstatSync> | undefined;
+        try {
+          existingStat = lstatSync(worktreeDir);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw err;
+          }
+        }
+
+        if (existingStat !== undefined) {
+          if (existingStat.isSymbolicLink() || !existingStat.isDirectory()) {
+            throw new Error("已有工作树与工单分支不一致，请检查工作树后重试。");
+          }
+          if (
+            await isValidExistingWorktree(
+              worktreeDir,
+              worktreeParent,
+              rootDir,
+              effectiveBranch,
+              params.signal,
+            )
+          ) {
+            return worktreeDir;
+          }
+          const destReal = realpathSync(worktreeDir);
+          const parentReal = realpathSync(worktreeParent);
+          if (destReal !== path.join(parentReal, path.basename(worktreeDir))) {
+            throw new Error("已有工作树与工单分支不一致，请检查工作树后重试。");
+          }
+          try {
+            rmdirSync(worktreeDir);
+          } catch {
+            throw new Error("已有工作树与工单分支不一致，请检查工作树后重试。");
+          }
+        }
+
         await deps.workspacesService.appendLiveTrace({
           workItemId: params.item.id,
           sliceId: params.sliceId,
           actorName: params.actorName,
           kind: "sandbox",
-          message: `正在创建隔离 Git Worktree（分支 ${params.item.worktreeBranch}）…`,
-          liveSummary: `正在准备隔离工作树 ${params.item.worktreeBranch}…`,
+          message: `正在创建隔离 Git Worktree（分支 ${effectiveBranch}）…`,
+          liveSummary: `正在准备隔离工作树 ${effectiveBranch}…`,
         });
 
-        mkdirSync(path.dirname(worktreeDir), { recursive: true, mode: 0o700 });
-        await execFileAsync("git", ["worktree", "prune"], { cwd: rootDir }).catch(() => undefined);
-        await execFileAsync(
-          "git",
-          ["worktree", "add", "-B", params.item.worktreeBranch, worktreeDir, "HEAD"],
-          { cwd: rootDir, timeout: 25_000 },
-        );
+        await gitExec(rootDir, ["worktree", "prune"], params.signal).catch(() => undefined);
+        const branchExists = await gitExec(
+          rootDir,
+          ["show-ref", "--verify", "--quiet", `refs/heads/${effectiveBranch}`],
+          params.signal,
+        )
+          .then(() => true)
+          .catch(() => false);
+        if (branchExists) {
+          await gitExec(
+            rootDir,
+            ["worktree", "add", "--", worktreeDir, effectiveBranch],
+            params.signal,
+          );
+          const checkedOutBranch = await gitExec(
+            worktreeDir,
+            ["symbolic-ref", "--short", "HEAD"],
+            params.signal,
+          );
+          if (checkedOutBranch !== effectiveBranch) {
+            throw new Error("已有工作树与工单分支不一致，请检查工作树后重试。");
+          }
+        } else {
+          await gitExec(
+            rootDir,
+            ["worktree", "add", "-b", effectiveBranch, "--", worktreeDir, "HEAD"],
+            params.signal,
+          );
+        }
 
         copyConfiguredEnvFiles(rootDir, worktreeDir, params.workspace.hooks.copyEnvGlobs);
 
@@ -1009,7 +1431,12 @@ export function startLocalWorkspaceRunner(
     })();
 
     worktreeInitLocks.set(lockKey, initTask);
-    return { workingDir: await initTask, usedWorktree: true, isGitRepo: true };
+    return {
+      workingDir: await initTask,
+      usedWorktree: true,
+      isGitRepo: true,
+      worktreeBranch: effectiveBranch,
+    };
   };
 
   const executeSingleSlice = async (
@@ -1025,7 +1452,8 @@ export function startLocalWorkspaceRunner(
     }
 
     const controller = new AbortController();
-    activeSlices.set(sliceId, { workItemId: initialItem.id, controller });
+    let releaseDirLock: (() => void) | undefined;
+    activeSlices.set(sliceId, { controller });
 
     try {
       const [workspace, agentIdentity] = await Promise.all([
@@ -1047,6 +1475,7 @@ export function startLocalWorkspaceRunner(
         platform: agentIdentity.platform,
       };
 
+      controller.signal.throwIfAborted();
       const claimed = await deps.workspacesService.claimSlice(
         agentCaller,
         initialItem.id,
@@ -1071,17 +1500,20 @@ export function startLocalWorkspaceRunner(
         readonly workingDir: string;
         readonly usedWorktree: boolean;
         readonly isGitRepo: boolean;
+        readonly worktreeBranch: string;
       };
       try {
         sandbox = await prepareSandboxDir({
           workspace,
           item: initialItem,
           sliceId,
+          leaseRole: targetSlice.leaseRole,
           ownedPaths: targetSlice.ownedPaths,
           actorName: agentIdentity.displayName,
           signal: controller.signal,
         });
       } catch (sandboxErr) {
+        if (controller.signal.aborted) return;
         const reason = sandboxErr instanceof Error ? sandboxErr.message : String(sandboxErr);
         await deps.workspacesService.appendLiveTrace({
           workItemId: initialItem.id,
@@ -1098,7 +1530,7 @@ export function startLocalWorkspaceRunner(
         return;
       }
 
-      let releaseDirLock: (() => void) | undefined;
+      controller.signal.throwIfAborted();
       if (!sandbox.usedWorktree && targetSlice.leaseRole === "write") {
         releaseDirLock = await acquireDirectoryWriteLock(
           sandbox.workingDir,
@@ -1116,8 +1548,10 @@ export function startLocalWorkspaceRunner(
         );
       }
 
+      const staticSwarmReview =
+        initialItem.topology === "swarm" && targetSlice.leaseRole === "verify";
       const folderSnapKey = `${initialItem.id}:${sandbox.workingDir}`;
-      if (!sandbox.isGitRepo && !folderBaseSnapshots.has(folderSnapKey)) {
+      if (!staticSwarmReview && !sandbox.isGitRepo && !folderBaseSnapshots.has(folderSnapKey)) {
         folderBaseSnapshots.set(
           folderSnapKey,
           await capturePlainFolderSnapshot(sandbox.workingDir),
@@ -1125,6 +1559,10 @@ export function startLocalWorkspaceRunner(
       }
 
       const collectCurrentDiff = async (): Promise<WorkingTreeDiffSnapshot> => {
+        if (staticSwarmReview) {
+          // This directory is only the reviewer's starting location. Its diff belongs to the owner.
+          return { changedFiles: [], diffAdded: 0, diffRemoved: 0, diffFiles: [] };
+        }
         if (sandbox.isGitRepo) {
           return collectWorkingTreeDiff(sandbox.workingDir);
         }
@@ -1187,9 +1625,16 @@ export function startLocalWorkspaceRunner(
               diffAdded: liveDiff.diffAdded,
               diffRemoved: liveDiff.diffRemoved,
             })
-            .catch(() => undefined);
+            .catch((err: unknown) => {
+              if (
+                err instanceof AppError &&
+                ([401, 403, 404, 409].includes(err.statusCode) || err.code === "WORK_LEASE_EXPIRED")
+              ) {
+                controller.abort(err);
+              }
+            });
 
-          if (diffChanged) {
+          if (diffChanged && !controller.signal.aborted) {
             await deps.workspacesService
               .appendLiveTrace({
                 workItemId: initialItem.id,
@@ -1207,11 +1652,55 @@ export function startLocalWorkspaceRunner(
       }, SLICE_HEARTBEAT_INTERVAL_MS);
 
       try {
-        let verifyHookPassed = true;
+        let verifyHookPassed: boolean | undefined;
         let verifyHookReport: string | undefined;
         let currentDiff = await collectCurrentDiff();
 
-        if (targetSlice.leaseRole === "verify" && workspace.hooks.verifyCommand) {
+        if (staticSwarmReview) {
+          const writeSources: string[] = [];
+          for (const writer of initialItem.slices.filter((slice) => slice.leaseRole === "write")) {
+            const root = selectWorkspaceRootForSlice(workspace, writer.ownedPaths);
+            if (!root?.localPath) throw new Error("写分片缺少可复核的工作目录。");
+            let dir = assertSafeLocalWorkspacePath(root.localPath, homeDir);
+            if (writer.worktreeBranch && workspace.sandboxMode === "worktree_pool") {
+              const loc = sliceWorktreeLocation(
+                homeDir,
+                workspace,
+                initialItem,
+                writer.sliceId,
+                root,
+              );
+              if (
+                writer.worktreeBranch !== loc.effectiveBranch ||
+                !(await isValidExistingWorktree(
+                  loc.worktreeDir,
+                  loc.worktreeParent,
+                  dir,
+                  loc.effectiveBranch,
+                  controller.signal,
+                ))
+              ) {
+                throw new Error(`写分片「${writer.title}」的工作树不可用，请恢复后复核。`);
+              }
+              dir = loc.worktreeDir;
+            }
+            if (!existsSync(dir)) throw new Error(`写分片「${writer.title}」的工作目录不存在。`);
+            writeSources.push(
+              `- ${writer.title}: ${dir} (files: ${writer.changedFiles.join(", ") || "none reported"})`,
+            );
+          }
+          verifyHookReport = [
+            "Static review: inspect each writer's actual files and diffs in the directories below. The base checkout does not contain the combined changes. No automated verify command ran.",
+            ...writeSources,
+          ].join("\n");
+          await deps.workspacesService.appendLiveTrace({
+            workItemId: initialItem.id,
+            sliceId,
+            actorName: agentIdentity.displayName,
+            kind: "review",
+            message: "多路变更分属不同写分片，本次基于各分片提交的差异进行静态复核。",
+          });
+        } else if (targetSlice.leaseRole === "verify" && workspace.hooks.verifyCommand) {
           const verifyCmd = workspace.hooks.verifyCommand;
           await deps.workspacesService.appendLiveTrace({
             workItemId: initialItem.id,
@@ -1269,6 +1758,10 @@ export function startLocalWorkspaceRunner(
               : `正在 ${path.basename(sandbox.workingDir)} 中执行任务…`,
         });
 
+        const promptDiffFiles =
+          currentDiff.diffFiles.length > 0
+            ? currentDiff.diffFiles
+            : (freshItem ?? initialItem).diffFiles;
         const prompt = buildExecutionPrompt({
           item: freshItem ?? initialItem,
           sliceTitle: freshSlice.title,
@@ -1277,10 +1770,10 @@ export function startLocalWorkspaceRunner(
           steerNotes: freshSlice.steerNotes,
           rollingMemory,
           verifyHookReport,
-          diffFiles: currentDiff.diffFiles,
+          diffFiles: promptDiffFiles,
         });
 
-        let cliResult = await cliExecutor({
+        let cliResult = await runCliWithTransientRetry({
           platform: agentIdentity.platform,
           agentName: agentIdentity.displayName,
           role: freshSlice.leaseRole,
@@ -1292,6 +1785,65 @@ export function startLocalWorkspaceRunner(
           signal: controller.signal,
           onOutputLine: pushOutputLine,
         });
+
+        if (freshSlice.leaseRole === "verify" && !controller.signal.aborted) {
+          if (cliResult.verdict === undefined) {
+            const parsedInline = parseWorkVerdict(cliResult.summary);
+            if (parsedInline !== undefined) {
+              cliResult = {
+                ...cliResult,
+                summary:
+                  cliResult.summary.slice(0, parsedInline.summaryEndIndex).trim() ||
+                  "已完成独立代码复核。",
+                verdict: parsedInline.verdict,
+              };
+            }
+          }
+          if (cliResult.verdict === undefined) {
+            const draftSummary = scrubWorkText(cliResult.summary.trim()).slice(-1000);
+            const followup = await runCliWithTransientRetry({
+              platform: agentIdentity.platform,
+              agentName: agentIdentity.displayName,
+              role: freshSlice.leaseRole,
+              tier: (freshItem ?? initialItem).tier,
+              workingDir: sandbox.workingDir,
+              prompt: [
+                prompt,
+                "Your previous independent verification response did not end with a clear final verdict line.",
+                ...(draftSummary.length > 0 ? [`Previous review draft:\n${draftSummary}`] : []),
+                "Provide a concise summary of your review findings and end the last non-empty line with exactly VERDICT: PASSED or VERDICT: CHANGES_REQUESTED (or use NEEDS_INPUT if owner input is truly required).",
+              ].join("\n\n"),
+              homeDir,
+              pathEnv: deps.pathEnv,
+              signal: controller.signal,
+              onOutputLine: pushOutputLine,
+            });
+            const resolvedFollowup =
+              followup.verdict !== undefined
+                ? { verdict: followup.verdict, summary: followup.summary }
+                : (() => {
+                    const parsed = parseWorkVerdict(followup.summary);
+                    if (!parsed) return undefined;
+                    return {
+                      verdict: parsed.verdict,
+                      summary: followup.summary.slice(0, parsed.summaryEndIndex).trim(),
+                    };
+                  })();
+            if (resolvedFollowup !== undefined) {
+              cliResult = {
+                summary: resolvedFollowup.summary.trim() || draftSummary || "已完成独立代码复核。",
+                verdict: resolvedFollowup.verdict,
+                commandLabel: followup.commandLabel,
+              };
+            }
+          }
+          if (cliResult.verdict === undefined) {
+            throw new Error("复核 Agent 未返回明确的最终判定。");
+          }
+          if (cliResult.summary.trim().length === 0) {
+            cliResult = { ...cliResult, summary: "已完成独立代码复核。" };
+          }
+        }
 
         // 检查执行期间人类主人是否注入了新的实时补充指令（Mid-Flight Steer），若有则在同一沙盒目录立即增量落地
         if (freshSlice.leaseRole === "write" && !controller.signal.aborted) {
@@ -1308,7 +1860,7 @@ export function startLocalWorkspaceRunner(
               detail: newlyArrivedSteer.join("\n"),
               liveSummary: "正在按补充指令增量调整…",
             });
-            cliResult = await cliExecutor({
+            cliResult = await runCliWithTransientRetry({
               platform: agentIdentity.platform,
               agentName: agentIdentity.displayName,
               role: freshSlice.leaseRole,
@@ -1336,7 +1888,9 @@ export function startLocalWorkspaceRunner(
         }
         await flushOutputTrace();
 
+        controller.signal.throwIfAborted();
         currentDiff = await collectCurrentDiff();
+        controller.signal.throwIfAborted();
         // 心跳周期内未捕捉到的最终变更（短任务常见）在收尾时补记，保证追踪时间线与审阅 Diff 一致
         const finalDiffSignature = `${String(currentDiff.diffAdded)}:${String(currentDiff.diffRemoved)}`;
         if (currentDiff.diffFiles.length > 0 && finalDiffSignature !== lastDiffSignature) {
@@ -1375,21 +1929,22 @@ export function startLocalWorkspaceRunner(
           changedFiles: currentDiff.changedFiles,
         });
 
-        const gitNotesAttached = sandbox.isGitRepo
-          ? await tryAttachGitProvenanceNote({
-              repoDir: sandbox.workingDir,
-              workItemId: initialItem.id,
-              workspaceId: workspace.id,
-              agentSlug: agentIdentity.slug,
-              summary: cliResult.summary,
-            })
-          : false;
+        const gitNotesAttached =
+          sandbox.isGitRepo && freshSlice.leaseRole === "write"
+            ? await tryAttachGitProvenanceNote({
+                repoDir: sandbox.workingDir,
+                workItemId: initialItem.id,
+                workspaceId: workspace.id,
+                agentSlug: agentIdentity.slug,
+                summary: cliResult.summary,
+              })
+            : false;
 
         const finalVerdict =
           freshSlice.leaseRole === "verify"
-            ? !verifyHookPassed
+            ? verifyHookPassed === false
               ? ("changes_requested" as const)
-              : (cliResult.verdict ?? "passed")
+              : cliResult.verdict
             : undefined;
 
         await deps.workspacesService.completeSlice(agentCaller, initialItem.id, sliceId, {
@@ -1402,8 +1957,8 @@ export function startLocalWorkspaceRunner(
             ...file,
             lines: [...file.lines],
           })),
-          ...(sandbox.usedWorktree ? { worktreeBranch: initialItem.worktreeBranch } : {}),
-          ...(verifyHookReport !== undefined && workspace.hooks.verifyCommand !== undefined
+          ...(sandbox.usedWorktree ? { worktreeBranch: sandbox.worktreeBranch } : {}),
+          ...(verifyHookPassed !== undefined && workspace.hooks.verifyCommand !== undefined
             ? {
                 testCommand: workspace.hooks.verifyCommand,
                 testPassed: verifyHookPassed,
@@ -1459,7 +2014,6 @@ export function startLocalWorkspaceRunner(
           .catch(() => undefined);
       } finally {
         clearInterval(heartbeatInterval);
-        releaseDirLock?.();
       }
     } catch (outerErr) {
       deps.logger?.debug(
@@ -1467,7 +2021,10 @@ export function startLocalWorkspaceRunner(
         "LocalWorkspaceRunner skipped or aborted slice claim",
       );
     } finally {
+      releaseDirLock?.();
+      const queuedItem = activeSlices.get(sliceId)?.queuedItem;
       activeSlices.delete(sliceId);
+      if (queuedItem && !stopped) void executeSingleSlice(queuedItem, sliceId);
     }
   };
 
@@ -1484,14 +2041,16 @@ export function startLocalWorkspaceRunner(
       }
     }
 
-    if (item.stage === "cancelled") {
-      for (const [sliceId, active] of activeSlices.entries()) {
-        if (active.workItemId === item.id) {
-          active.controller.abort();
-          activeSlices.delete(sliceId);
-        }
-      }
-      return;
+    for (const slice of item.slices) {
+      const active = activeSlices.get(slice.sliceId);
+      if (!active) continue;
+      const runnableStage = item.stage === (slice.leaseRole === "verify" ? "verifying" : "working");
+      if (!runnableStage) active.controller.abort();
+      // A fast resume can requeue a slice while the previous process is still stopping.
+      active.queuedItem =
+        runnableStage && active.controller.signal.aborted && slice.status === "waiting"
+          ? item
+          : undefined;
     }
 
     if (item.stage === "working") {

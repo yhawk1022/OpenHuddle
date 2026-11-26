@@ -170,6 +170,7 @@ import {
   resetSoloWorkbenchMemory,
   useSoloWorkbenchCounts,
   useSoloWorkbenchState,
+  useWorkspaceDirectory,
 } from "../work/solo-workbench-store.js";
 import {
   answerWorkAttentionOnServer,
@@ -365,6 +366,15 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
   } | null>(null);
   const [replyTarget, setReplyTarget] = useState<MessageDto | null>(null);
   const workState = useRoomWorkState(props.roomId);
+  const workspaceDirectory = useWorkspaceDirectory();
+  const boundWorkspaceId = workspaceDirectory.roomBindings[props.roomId] ?? null;
+  const boundWorkspace = useMemo(
+    () =>
+      boundWorkspaceId !== null
+        ? (workspaceDirectory.workspaces.find((w) => w.id === boundWorkspaceId) ?? null)
+        : null,
+    [boundWorkspaceId, workspaceDirectory.workspaces],
+  );
   const [pendingQuickMention, setPendingQuickMention] = useState<MessageMention | null>(null);
   const [droppedFilesSignal, setDroppedFilesSignal] = useState<{
     readonly nonce: number;
@@ -888,15 +898,15 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
       onSteerWorkSlice={(wid, note, sid) => {
         void steerWorkTaskOnServer(wid, sid, note, props.roomId);
       }}
-      onStopWorkItem={(wid) => {
-        void controlWorkTaskOnServer(wid, "stop", { roomId: props.roomId });
-      }}
+      onStopWorkItem={(wid) =>
+        controlWorkTaskOnServer(wid, "stop", { roomId: props.roomId }).then(() => undefined)
+      }
       onRetryWorkItem={(wid) => {
         void controlWorkTaskOnServer(wid, "retry", { roomId: props.roomId });
       }}
-      onAnswerWorkAttention={(wid, choice) => {
-        void answerWorkAttentionOnServer(wid, choice, props.roomId);
-      }}
+      onAnswerWorkAttention={(wid, choice) =>
+        answerWorkAttentionOnServer(wid, choice, props.roomId)
+      }
       onDecideWorkReview={(wid, decision) => {
         void decideWorkReviewOnServer(
           wid,
@@ -1284,9 +1294,14 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                     key={workItem.id}
                     item={workItem}
                     onOpenInInspector={handleOpenWorkItemInInspector}
-                    onAnswerAttention={(wid, choice) => {
-                      void answerWorkAttentionOnServer(wid, choice, props.roomId);
-                    }}
+                    onAnswerAttention={(wid, choice) =>
+                      answerWorkAttentionOnServer(wid, choice, props.roomId)
+                    }
+                    onStop={(wid) =>
+                      controlWorkTaskOnServer(wid, "stop", { roomId: props.roomId }).then(
+                        () => undefined,
+                      )
+                    }
                     onDecideReview={(wid, decision, note) => {
                       void decideWorkReviewOnServer(
                         wid,
@@ -1355,6 +1370,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
             members={room.members}
             currentUserId={props.currentUser.id}
             currentUserDisplayName={props.currentUser.displayName}
+            boundWorkspace={boundWorkspace}
             orchestrationDefaults={workState.defaults}
             pendingDispatchSeed={pendingDispatchSeed}
             onConsumeDispatchSeed={() => setPendingDispatchSeed(null)}

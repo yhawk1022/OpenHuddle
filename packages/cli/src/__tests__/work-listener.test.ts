@@ -1,4 +1,4 @@
-import { WorkAgentAttention } from "@openhuddle/core-governance";
+import { MAX_SLICE_ATTEMPTS, WorkAgentAttention } from "@openhuddle/core-governance";
 import type { OwnedAgentSummaryDto } from "@openhuddle/protocol";
 import { afterEach, expect, it, vi } from "vitest";
 import { OpenHuddleHttpClient } from "../http-client.js";
@@ -457,3 +457,211 @@ it.each(["initial-inbox", "attention-event"] as const)(
     }
   },
 );
+
+it("tolerates up to 2 consecutive transient 502 heartbeat failures at 5s intervals and aborts on the 3rd", async () => {
+  vi.useFakeTimers();
+  let turnSignal: AbortSignal | undefined;
+  let releaseTurn: (() => void) | undefined;
+  let heartbeatCount = 0;
+
+  const { listener, calls } = setup(
+    (path) => {
+      if (path.includes("claimableOnly")) return Response.json({ items: [item] });
+      if (path === "/workspaces") return Response.json({ workspaces: [workspace] });
+      if (path.endsWith("/claim")) return Response.json({ item, claimedSlice: claimed });
+      if (path.endsWith("/heartbeat")) {
+        heartbeatCount += 1;
+        if (heartbeatCount <= 2) return Response.json({ ok: false }, { status: 502 });
+        return Response.json({ item });
+      }
+      if (path.endsWith("/complete")) return Response.json({ item: { ...item, stage: "done" } });
+      throw Error(`unexpected ${path}`);
+    },
+    async ({ signal }) => {
+      turnSignal = signal;
+      await new Promise<void>((resolve) => {
+        releaseTurn = resolve;
+      });
+      return result;
+    },
+  );
+  try {
+    listener.connected();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(turnSignal?.aborted).toBe(false);
+
+    // 1st heartbeat at 20s -> 502 (tolerated 1/2)
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(heartbeatCount).toBe(1);
+    expect(turnSignal?.aborted).toBe(false);
+
+    // Retry at +5s -> 502 (tolerated 2/2)
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(heartbeatCount).toBe(2);
+    expect(turnSignal?.aborted).toBe(false);
+
+    // Retry at +5s -> 200 (recovered, counter reset)
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(heartbeatCount).toBe(3);
+    expect(turnSignal?.aborted).toBe(false);
+
+    releaseTurn?.();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(calls.some((c) => c.path.endsWith("/complete"))).toBe(true);
+  } finally {
+    await listener.stop();
+  }
+
+  // Now verify 3 consecutive 502s abort execution
+  let failSignal: AbortSignal | undefined;
+  let failCount = 0;
+  const second = setup(
+    (path) => {
+      if (path.includes("claimableOnly")) return Response.json({ items: [item] });
+      if (path === "/workspaces") return Response.json({ workspaces: [workspace] });
+      if (path.endsWith("/claim")) return Response.json({ item, claimedSlice: claimed });
+      if (path.endsWith("/heartbeat")) {
+        failCount += 1;
+        return Response.json({ ok: false }, { status: 502 });
+      }
+      throw Error(`unexpected ${path}`);
+    },
+    async ({ signal }) => {
+      failSignal = signal;
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      return result;
+    },
+  );
+  try {
+    second.listener.connected();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(failSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(failSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(failCount).toBe(3);
+    expect(failSignal?.aborted).toBe(true);
+  } finally {
+    await second.listener.stop();
+  }
+});
+
+it("defers transient errors via 15s short-TTL heartbeat on isolated/verify slices within budget, and raises attention on in_place write or exhausted budget", async () => {
+  // 1. worktree_pool write with attemptCount=1 + transient 503 -> 15_000ms heartbeat, no attention
+  {
+    const { listener, calls } = setup(
+      (path) => {
+        if (path.endsWith(item.id)) return Response.json({ item });
+        if (path === "/workspaces")
+          return Response.json({ workspaces: [{ ...workspace, sandboxMode: "worktree_pool" }] });
+        if (path.endsWith("/claim"))
+          return Response.json({ item, claimedSlice: { ...claimed, attemptCount: 1 } });
+        if (path.endsWith("/heartbeat")) return Response.json({ item });
+        throw Error(`unexpected ${path}`);
+      },
+      async () => {
+        throw new Error("Agent CLI 退出（1）：HTTP 503 Service Unavailable");
+      },
+    );
+    try {
+      listener.updated(
+        JSON.stringify({ type: "work.updated", workItemId: item.id, stage: "working", version: 2 }),
+      );
+      await vi.waitFor(() => expect(calls.some((c) => c.path.endsWith("/heartbeat"))).toBe(true));
+      expect(calls.find((c) => c.path.endsWith("/heartbeat"))?.body).toMatchObject({
+        leaseVersion: 1,
+        leaseTtlMs: 15_000,
+      });
+      expect(calls.some((c) => c.path.endsWith("/attention"))).toBe(false);
+    } finally {
+      await listener.stop();
+    }
+  }
+
+  // 2. in_place verify with attemptCount=1 + transient 429 -> 15_000ms heartbeat, no attention
+  {
+    const verifyItem = {
+      ...item,
+      stage: "verifying",
+      slices: [{ ...slice, leaseRole: "verify" }],
+    };
+    const { listener, calls } = setup(
+      (path) => {
+        if (path.endsWith(item.id)) return Response.json({ item: verifyItem });
+        if (path === "/workspaces")
+          return Response.json({ workspaces: [{ ...workspace, sandboxMode: "in_place" }] });
+        if (path.endsWith("/claim"))
+          return Response.json({
+            item: verifyItem,
+            claimedSlice: { ...claimed, leaseRole: "verify", attemptCount: 1 },
+          });
+        if (path.endsWith("/heartbeat")) return Response.json({ item: verifyItem });
+        throw Error(`unexpected ${path}`);
+      },
+      async () => {
+        throw new Error("Agent CLI 退出（1）：429 Too Many Requests");
+      },
+    );
+    try {
+      listener.updated(
+        JSON.stringify({
+          type: "work.updated",
+          workItemId: item.id,
+          stage: "verifying",
+          version: 3,
+        }),
+      );
+      await vi.waitFor(() => expect(calls.some((c) => c.path.endsWith("/heartbeat"))).toBe(true));
+      expect(calls.find((c) => c.path.endsWith("/heartbeat"))?.body).toMatchObject({
+        leaseVersion: 1,
+        leaseTtlMs: 15_000,
+      });
+      expect(calls.some((c) => c.path.endsWith("/attention"))).toBe(false);
+    } finally {
+      await listener.stop();
+    }
+  }
+
+  // 3. in_place write with attemptCount=1 -> immediately raises attention
+  // 4. worktree_pool write with attemptCount=MAX_SLICE_ATTEMPTS -> immediately raises attention
+  for (const scenario of [
+    { sandboxMode: "in_place", attemptCount: 1 },
+    { sandboxMode: "worktree_pool", attemptCount: MAX_SLICE_ATTEMPTS },
+  ] as const) {
+    const { listener, calls } = setup(
+      (path) => {
+        if (path.endsWith(item.id)) return Response.json({ item });
+        if (path === "/workspaces")
+          return Response.json({
+            workspaces: [{ ...workspace, sandboxMode: scenario.sandboxMode }],
+          });
+        if (path.endsWith("/claim"))
+          return Response.json({
+            item,
+            claimedSlice: { ...claimed, attemptCount: scenario.attemptCount },
+          });
+        if (path.endsWith("/attention"))
+          return Response.json({ item: { ...item, stage: "awaiting_answer" } });
+        throw Error(`unexpected ${path}`);
+      },
+      async () => {
+        throw new Error("Agent CLI 退出（1）：HTTP 503 Service Unavailable oh_agt_secret12345678");
+      },
+    );
+    try {
+      listener.updated(
+        JSON.stringify({ type: "work.updated", workItemId: item.id, stage: "working", version: 2 }),
+      );
+      await vi.waitFor(() => expect(calls.some((c) => c.path.endsWith("/attention"))).toBe(true));
+      const attention = calls.find((c) => c.path.endsWith("/attention"));
+      expect(attention?.body.question).toContain("HTTP 503");
+      expect(attention?.body.question).not.toContain("secret12345678");
+      expect(calls.some((c) => c.path.endsWith("/heartbeat"))).toBe(false);
+    } finally {
+      await listener.stop();
+    }
+  }
+});

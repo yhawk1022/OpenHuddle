@@ -8,7 +8,6 @@ import {
   ArrowUpRight,
   Check,
   ChevronDown,
-  ChevronRight,
   Copy,
   ExternalLink,
   FileCode2,
@@ -73,6 +72,7 @@ import {
   getSliceWaitLabel,
   stripAgentOwnerPrefix,
 } from "../work/work-utils.js";
+import { WorkAttentionCard } from "./work-attention-card.js";
 import { WorkbenchTraceEvents } from "./workbench-trace-events.js";
 
 type DetailSectionTab = "changes" | "steps";
@@ -230,41 +230,47 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
     typeof window !== "undefined" &&
     isLoopbackOrigin(window.location.origin);
   const isRunning = isSoloRunningStage(task.stage);
+  const isAwaitingAnswer = task.stage === "awaiting_answer";
   const hasDiff = task.diffFiles.length > 0;
   const reducedMotion = usePrefersReducedMotion();
 
   const [sectionTab, setSectionTab] = useState<DetailSectionTab>(() =>
-    hasDiff && !isRunning ? "changes" : "steps",
+    hasDiff && !isRunning && !isAwaitingAnswer ? "changes" : "steps",
   );
   const overviewId = useId();
   const [codeDetailsOpen, setCodeDetailsOpen] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
   const [steerNote, setSteerNote] = useState<string>("");
   const [sendingSteer, setSendingSteer] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [reworkOpen, setReworkOpen] = useState<boolean>(false);
   const [reworkText, setReworkText] = useState<string>("");
 
   const prevTaskIdRef = useRef<string>(task.id);
   const prevStageRef = useRef<SoloWorkTaskView["stage"]>(task.stage);
 
-  // 切换任务时：运行中任务优先聚焦「执行追踪」，已完成且带 Diff 的任务直接聚焦「代码变更」；
-  // 同一任务刚由运行态转入待审阅且产出真实 Diff 时，自动切至「代码变更」供签收检视。
+  // 切换任务时：运行中或待确认任务优先聚焦「执行追踪」，已完成且带 Diff 的任务直接聚焦「代码变更」；
+  // 同一任务进入 `awaiting_answer` 时自动切回「执行追踪」，由运行态转入待审阅且产出真实 Diff 时自动切至「代码变更」。
   useEffect(() => {
     if (prevTaskIdRef.current !== task.id) {
       prevTaskIdRef.current = task.id;
       prevStageRef.current = task.stage;
       setCodeDetailsOpen(false);
       setSelectedFileIndex(0);
-      setSectionTab(hasDiff && !isRunning ? "changes" : "steps");
+      setIsStopping(false);
+      setSectionTab(hasDiff && !isRunning && !isAwaitingAnswer ? "changes" : "steps");
       return;
     }
 
-    const wasRunning = isSoloRunningStage(prevStageRef.current);
+    const prevStage = prevStageRef.current;
+    const wasRunning = isSoloRunningStage(prevStage);
     prevStageRef.current = task.stage;
-    if (wasRunning && task.stage === "awaiting_review" && hasDiff) {
+    if (prevStage !== "awaiting_answer" && task.stage === "awaiting_answer") {
+      setSectionTab("steps");
+    } else if (wasRunning && task.stage === "awaiting_review" && hasDiff) {
       setSectionTab("changes");
     }
-  }, [hasDiff, isRunning, task.id, task.stage]);
+  }, [hasDiff, isAwaitingAnswer, isRunning, task.id, task.stage]);
 
   const traceEntries: ReadonlyArray<WorkTraceEntry> = task.trace ?? [];
 
@@ -431,7 +437,8 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
     <div className="oh-workbench-task-pane @container flex min-h-0 flex-1 flex-col overflow-hidden">
       <div
         data-code-view={(sectionTab === "changes" && hasDiff) || undefined}
-        data-collapsed={!codeDetailsOpen || undefined}
+        data-collapsed={(sectionTab === "changes" && !codeDetailsOpen) || undefined}
+        data-awaiting-answer={isAwaitingAnswer ? "true" : undefined}
         className="oh-workbench-task-summary shrink-0 border-b border-black/[0.06] px-4 py-3.5 @[640px]:px-5 @[640px]:py-4 dark:border-white/[0.07]"
       >
         <div id={overviewId} className="oh-workbench-task-overview">
@@ -512,21 +519,28 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                 </AppButton>
               )}
 
-              {isRunning ? (
+              {isRunning || isAwaitingAnswer ? (
                 <AppButton
                   size="xs"
                   variant="secondary"
+                  isLoading={isStopping}
+                  disabled={isStopping}
                   leadingIcon={<Square className="h-2.5 w-2.5 fill-current" />}
                   className="shrink-0 whitespace-nowrap"
                   onClick={() => {
+                    if (isStopping) {
+                      return;
+                    }
+                    setIsStopping(true);
                     void controlWorkTaskOnServer(task.id, "stop")
                       .then(() => toast.info("已停止任务"))
                       .catch((err: unknown) =>
                         toast.error(err instanceof Error ? err.message : "停止任务失败"),
-                      );
+                      )
+                      .finally(() => setIsStopping(false));
                   }}
                 >
-                  停止
+                  {isStopping ? "停止中…" : "停止"}
                 </AppButton>
               ) : null}
 
@@ -622,37 +636,19 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
             {task.brief}
           </p>
 
-          {task.attention !== undefined && task.stage === "awaiting_answer" ? (
-            <div className="mt-3.5 ml-0 @[640px]:ml-6 overflow-hidden rounded-xl border border-black/[0.08] bg-white dark:border-white/[0.1] dark:bg-[#1E1E22]">
-              <div className="border-b border-black/[0.05] px-3.5 py-2.5 dark:border-white/[0.07]">
-                <p className="text-[12.5px] font-medium text-[#111318] dark:text-[#F2F2F4]">
-                  {stripAgentOwnerPrefix(
-                    task.attention.askedBy.displayName,
-                    props.ownerDisplayName,
-                  )}{" "}
-                  请你确认：{task.attention.question}
-                </p>
-              </div>
-              <div className="divide-y divide-black/[0.05] dark:divide-white/[0.06]">
-                {task.attention.options.map((opt) => (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => {
-                      void answerWorkAttentionOnServer(task.id, opt)
-                        .then(() => toast.success("已确认并继续执行"))
-                        .catch((err: unknown) =>
-                          toast.error(err instanceof Error ? err.message : "提交确认失败"),
-                        );
-                    }}
-                    className="flex w-full cursor-pointer items-center justify-between gap-3 px-3.5 py-2.5 text-left text-[12.5px] text-[#181B22] transition hover:bg-black/[0.03] dark:text-[#ECECEF] dark:hover:bg-white/[0.04]"
-                  >
-                    <span className="whitespace-normal break-words">{opt}</span>
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#94A3B8]" />
-                  </button>
-                ))}
-              </div>
-            </div>
+          {task.attention !== undefined && isAwaitingAnswer ? (
+            <WorkAttentionCard
+              variant="detail"
+              key={`${task.id}:${task.attention.question}`}
+              askedByName={stripAgentOwnerPrefix(
+                task.attention.askedBy.displayName,
+                props.ownerDisplayName,
+              )}
+              question={task.attention.question}
+              options={task.attention.options}
+              onSubmitAnswer={(choice) => answerWorkAttentionOnServer(task.id, choice)}
+              className="mt-3.5 ml-0 @[640px]:ml-6"
+            />
           ) : null}
         </div>
 
@@ -675,11 +671,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
               onClick={() => setCodeDetailsOpen((open) => !open)}
               className="oh-workbench-details-toggle hidden min-h-11 cursor-pointer items-center gap-1 rounded-lg px-2 text-xs font-medium text-[#4B5565] dark:text-[#C4C4CA]"
             >
-              {task.stage === "awaiting_answer"
-                ? "待确认事项"
-                : task.stage === "awaiting_review"
-                  ? "待审阅任务"
-                  : "任务详情"}
+              {task.stage === "awaiting_review" ? "待审阅任务" : "任务详情"}
               <ChevronDown
                 aria-hidden="true"
                 className={cn("size-3.5", codeDetailsOpen && "rotate-180")}

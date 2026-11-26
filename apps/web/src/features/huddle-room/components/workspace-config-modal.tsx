@@ -1,21 +1,27 @@
 /**
  * @module web/features/huddle-room/workspace-config-modal
- * @description 工作区新建与配置弹窗。管理受控目录列表、执行宿主来源、沙盒隔离策略与校验钩子命令。
+ * @description 工作区新建与配置弹窗。新建首屏采用「零配置、托管直达」极简表单，将宿主、分支、隔离策略与门禁命令收纳至可折叠高级设置区。
  */
 import type { AgentId, OwnedAgentSummaryDto } from "@openhuddle/protocol";
-import { Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ChevronDown, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AnimatePresence,
   AppButton,
   AppInput,
   AppSelect,
   type AppSelectOption,
+  INSTANT_TRANSITION,
   IconButton,
   type SegmentedTabItem,
   SegmentedTabs,
+  cn,
+  motion,
   toast,
+  usePrefersReducedMotion,
 } from "../../../components/primitives/index.js";
 import { ModalDialog } from "../../../components/ui/modal-dialog.js";
+import { isCoarsePointerDevice, isImeComposing } from "../../../lib/viewport-sync.js";
 import type {
   AgentWorkspace,
   WorkspaceHostMode,
@@ -24,10 +30,17 @@ import type {
 } from "../work/solo-workbench-store.js";
 import { deleteWorkspaceOnServer, saveWorkspaceOnServer } from "../work/work-server-sync.js";
 import type { WorkTopology } from "../work/work-types.js";
-import { stripAgentOwnerPrefix } from "../work/work-utils.js";
+import {
+  normalizeWorkspaceRoots,
+  resolveEffectiveDispatchTopology,
+  sanitizeWorkspaceDirSegment,
+  stripAgentOwnerPrefix,
+  workspaceSupportsSwarm,
+} from "../work/work-utils.js";
 
 interface EditableRootRow {
   readonly localId: string;
+  readonly name?: string | undefined;
   readonly localPath: string;
   readonly defaultBranch: string;
 }
@@ -43,6 +56,8 @@ export interface WorkspaceConfigModalProps {
   readonly onSaved: (workspace: AgentWorkspace) => void;
   readonly onDeleted: () => void;
 }
+
+const SWARM_DISABLED_REASON = "仅多目录组合且非只读工作区支持";
 
 const TOPOLOGY_OPTIONS: ReadonlyArray<AppSelectOption<WorkTopology>> = [
   { value: "direct", label: "单人执行", description: "单个 Agent 直接完成改动" },
@@ -73,11 +88,21 @@ const FOLDER_SANDBOX_TABS: ReadonlyArray<SegmentedTabItem<WorkspaceSandboxMode>>
   { value: "read_only", label: "只读围栏" },
 ];
 
+function inferSmartDefaultTopology(kind: WorkspaceKind, ownedAgentCount: number): WorkTopology {
+  if (kind === "folder" || ownedAgentCount <= 1) {
+    return "direct";
+  }
+  return "verify_loop";
+}
+
 /**
  * 新建或编辑工作区偏好弹窗。
  */
 export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
   const initWs = props.initialWorkspace;
+  const reducedMotion = usePrefersReducedMotion();
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+
   const [name, setName] = useState<string>(initWs?.name ?? "");
   const [kind, setKind] = useState<WorkspaceKind>(initWs?.kind ?? "git_repo");
   const [hostMode, setHostMode] = useState<WorkspaceHostMode>(initWs?.host.mode ?? "local_machine");
@@ -85,6 +110,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
     if (initWs && initWs.roots.length > 0) {
       return initWs.roots.map((r) => ({
         localId: r.id,
+        name: r.name,
         localPath: r.localPath,
         defaultBranch: r.defaultBranch ?? "main",
       }));
@@ -103,10 +129,29 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
   const [setupCommand, setSetupCommand] = useState<string>(initWs?.hooks.setupCommand ?? "");
   const [verifyCommand, setVerifyCommand] = useState<string>(initWs?.hooks.verifyCommand ?? "");
   const [defaultTopology, setDefaultTopology] = useState<WorkTopology>(
-    initWs?.defaultTopology ?? "verify_loop",
+    () =>
+      initWs?.defaultTopology ??
+      inferSmartDefaultTopology(initWs?.kind ?? "git_repo", props.ownedAgents.length),
   );
   const [defaultWorkerId, setDefaultWorkerId] = useState<string>(initWs?.defaultWorkerId ?? "auto");
+  const [advancedOpen, setAdvancedOpen] = useState<boolean>(() => initWs !== null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  // 桌面端新建工作区时自动聚焦名称输入框，一步回车完成创建
+  useEffect(() => {
+    if (
+      !props.open ||
+      initWs !== null ||
+      isCoarsePointerDevice() ||
+      typeof window === "undefined"
+    ) {
+      return;
+    }
+    const rafId = window.requestAnimationFrame(() => {
+      nameInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [initWs, props.open]);
 
   const handleChangeKind = (nextKind: WorkspaceKind): void => {
     setKind(nextKind);
@@ -119,18 +164,52 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
     } else if (nextKind === "git_repo") {
       setRoots((prev) => prev.slice(0, 1));
       setSandboxMode("worktree_pool");
-    } else if (nextKind === "multi_root" && roots.length < 2) {
-      setRoots((prev) => [
-        ...prev,
-        {
-          localId: `draft-root-${String(Date.now())}`,
-          localPath: "",
-          defaultBranch: "main",
-        },
-      ]);
+      if (initWs === null) {
+        setDefaultTopology(inferSmartDefaultTopology("git_repo", props.ownedAgents.length));
+      }
+    } else if (nextKind === "multi_root") {
+      if (roots.length < 2) {
+        setRoots((prev) => [
+          ...prev,
+          {
+            localId: `draft-root-${String(Date.now())}`,
+            localPath: "",
+            defaultBranch: "main",
+          },
+        ]);
+      }
       setSandboxMode("worktree_pool");
+      if (initWs === null) {
+        setDefaultTopology(inferSmartDefaultTopology("multi_root", props.ownedAgents.length));
+      }
     }
   };
+
+  const { roots: effectiveRoots, kind: effectiveKind } = normalizeWorkspaceRoots({
+    name,
+    kind,
+    roots,
+  });
+  const workspace = { roots: effectiveRoots, kind: effectiveKind, sandboxMode };
+  const supportsSwarm = workspaceSupportsSwarm(workspace);
+  const effectiveTopology = resolveEffectiveDispatchTopology({
+    requested: defaultTopology,
+    workspace,
+    agentCount: props.ownedAgents.length,
+  });
+  const topologyOptions = useMemo<ReadonlyArray<AppSelectOption<WorkTopology>>>(
+    () =>
+      TOPOLOGY_OPTIONS.map((opt) =>
+        opt.value === "swarm" && !supportsSwarm
+          ? {
+              ...opt,
+              disabled: true,
+              description: SWARM_DISABLED_REASON,
+            }
+          : opt,
+      ),
+    [supportsSwarm],
+  );
 
   const workerOptions: ReadonlyArray<AppSelectOption<string>> = useMemo(
     () => [
@@ -143,39 +222,47 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
     [props.ownedAgents, props.ownerDisplayName],
   );
 
+  const cleanName = name.trim();
+  const hostSummaryLabel =
+    HOST_MODE_TABS.find((item) => item.value === hostMode)?.label ?? "本机目录";
+  const sandboxSummaryLabel =
+    (kind === "folder" ? FOLDER_SANDBOX_TABS : GIT_SANDBOX_TABS).find(
+      (item) => item.value === sandboxMode,
+    )?.label ?? "Worktree 隔离";
+  const workerSummaryLabel =
+    workerOptions.find((item) => item.value === defaultWorkerId)?.label ?? "自动分配";
+  const advancedSummary = `${String(hostSummaryLabel)} · ${String(sandboxSummaryLabel)} · ${workerSummaryLabel}`;
+
+  const getPathPlaceholder = (idx: number): string => {
+    const projectPlaceholder = cleanName ? sanitizeWorkspaceDirSegment(cleanName) : "项目名";
+    if (kind === "folder") {
+      return `留空自动创建 ~/Documents/${projectPlaceholder}`;
+    }
+    if (kind === "multi_root") {
+      if (roots.some((row) => row.localPath.trim())) return "填写关联目录，留空则忽略";
+      const suffix = idx === 0 ? "api" : idx === 1 ? "web" : `part-${String(idx + 1)}`;
+      return `留空自动创建 ~/Developer/${cleanName ? `${projectPlaceholder}-${suffix}` : `service-${suffix}`}`;
+    }
+    return `留空自动创建 ~/Developer/${projectPlaceholder}`;
+  };
+
   const handleSave = async (): Promise<void> => {
     if (isSubmitting) {
       return;
     }
-    const cleanName = name.trim();
     if (cleanName.length === 0) {
       toast.info("请填写工作区名称");
+      nameInputRef.current?.focus();
       return;
     }
-    const validRoots = roots
-      .map((r) => ({
-        localPath: r.localPath.trim(),
-        defaultBranch: r.defaultBranch.trim() || "main",
-      }))
-      .filter((r) => r.localPath.length > 0);
-
     setIsSubmitting(true);
     try {
       const saved = await saveWorkspaceOnServer({
         ...(initWs !== null ? { id: initWs.id } : {}),
         name: cleanName,
-        kind,
+        kind: effectiveKind,
         hostMode,
-        roots:
-          validRoots.length > 0
-            ? validRoots
-            : [
-                {
-                  localPath:
-                    kind === "folder" ? `~/Documents/${cleanName}` : `~/Developer/${cleanName}`,
-                  defaultBranch: "main",
-                },
-              ],
+        roots: effectiveRoots,
         sandboxMode,
         ...(kind !== "folder" && sandboxMode !== "read_only"
           ? {
@@ -183,7 +270,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
               verifyCommand,
             }
           : {}),
-        defaultTopology,
+        defaultTopology: effectiveTopology,
         ...(defaultWorkerId !== "auto" ? { defaultWorkerId: defaultWorkerId as AgentId } : {}),
         ...(initWs?.defaultVerifierId !== undefined
           ? { defaultVerifierId: initWs.defaultVerifierId }
@@ -204,7 +291,11 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
       open={props.open}
       onClose={props.onClose}
       title={initWs ? `配置工作区 · ${initWs.name}` : "新建工作区"}
-      subtitle="定义受控本地目录边界、并发隔离策略与交付校验命令"
+      subtitle={
+        initWs
+          ? "定义受控本地目录边界、并发隔离策略与交付校验命令"
+          : "输入名称即可创建，目录将自动准备，高级策略可随时按需调整"
+      }
       maxWidthClass="max-w-lg"
       footer={
         <div className="flex w-full items-center justify-between gap-2">
@@ -258,9 +349,17 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
             工作区名称
           </span>
           <AppInput
+            ref={nameInputRef}
             size="sm"
+            autoFocus={initWs === null && !isCoarsePointerDevice()}
             value={name}
             onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !isImeComposing(e)) {
+                e.preventDefault();
+                void handleSave();
+              }
+            }}
             placeholder={
               kind === "multi_root"
                 ? "例如：前后端联调空间"
@@ -271,44 +370,22 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
           />
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-              目录形态
-            </span>
-            <SegmentedTabs
-              size="xs"
-              items={WORKSPACE_KIND_TABS}
-              value={kind}
-              onValueChange={handleChangeKind}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-              执行宿主来源
-            </span>
-            <SegmentedTabs
-              size="xs"
-              items={HOST_MODE_TABS}
-              value={hostMode}
-              onValueChange={setHostMode}
-            />
-          </div>
+        <div className="space-y-1.5">
+          <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
+            目录形态
+          </span>
+          <SegmentedTabs
+            size="xs"
+            items={WORKSPACE_KIND_TABS}
+            value={kind}
+            onValueChange={handleChangeKind}
+          />
         </div>
 
-        <p className="-mt-2 text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-          {hostMode === "local_machine"
-            ? "仅本机上的本人 Agent 访问；工作记录脱敏落盘至 ~/.openhuddle/ 仓外目录。"
-            : hostMode === "personal_remote"
-              ? "本人跨设备或远程环境 Agent 可连入同一沙箱接力；各环境同步保存脱敏会话记录与滚动记忆。"
-              : "运行于隔离容器且不含私人凭据，授权后允许群内协作者 Agent 按单写租约锁共同操作。"}
-        </p>
-
         <div className="space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-              {kind === "multi_root" ? "关联本机目录列表 (Multi-root)" : "本机受控目录路径"}
+              {kind === "multi_root" ? "关联本机目录路径（可选）" : "本机目录路径（可选）"}
             </span>
             {kind === "multi_root" ? (
               <button
@@ -323,7 +400,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
                     },
                   ])
                 }
-                className="inline-flex cursor-pointer items-center gap-1 text-[11.5px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
+                className="inline-flex shrink-0 cursor-pointer items-center gap-1 text-[11.5px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
               >
                 <Plus className="h-3 w-3" />
                 <span>添加关联目录</span>
@@ -342,38 +419,15 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
                     onChange={(e) =>
                       setRoots((prev) =>
                         prev.map((r) =>
-                          r.localId === rootRow.localId ? { ...r, localPath: e.target.value } : r,
+                          r.localId === rootRow.localId
+                            ? { ...r, name: undefined, localPath: e.target.value }
+                            : r,
                         ),
                       )
                     }
-                    placeholder={
-                      kind === "folder"
-                        ? "~/Documents/Product-Specs"
-                        : idx === 0
-                          ? "~/Developer/service-api"
-                          : "~/Developer/service-web"
-                    }
+                    placeholder={getPathPlaceholder(idx)}
                   />
                 </div>
-                {kind !== "folder" ? (
-                  <div className="w-24 shrink-0">
-                    <AppInput
-                      size="sm"
-                      className="font-mono text-[16px] md:text-[12px]"
-                      value={rootRow.defaultBranch}
-                      onChange={(e) =>
-                        setRoots((prev) =>
-                          prev.map((r) =>
-                            r.localId === rootRow.localId
-                              ? { ...r, defaultBranch: e.target.value }
-                              : r,
-                          ),
-                        )
-                      }
-                      placeholder="main"
-                    />
-                  </div>
-                ) : null}
                 {roots.length > 1 ? (
                   <IconButton
                     size="sm"
@@ -389,84 +443,195 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
               </div>
             ))}
           </div>
-        </div>
 
-        <div className="space-y-1.5">
-          <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-            沙盒与隔离策略
-          </span>
-          <SegmentedTabs
-            size="xs"
-            items={kind === "folder" ? FOLDER_SANDBOX_TABS : GIT_SANDBOX_TABS}
-            value={sandboxMode}
-            onValueChange={setSandboxMode}
-          />
           <p className="text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-            {sandboxMode === "worktree_pool"
-              ? "每个写任务分配独立 Git Worktree 分支目录，多 Agent 并发互不覆写。"
-              : sandboxMode === "in_place"
-                ? "直接在所选目录内执行，自动启用单写互斥锁防止并发覆写。"
-                : "仅允许 Agent 读取检索目录内容，拦截一切文件修改与写命令。"}
+            若目录尚不存在，将在首次执行时自动创建；任务派发后 Agent
+            会自主推进，仅在需要你决策时打扰。
           </p>
         </div>
 
-        {kind !== "folder" && sandboxMode !== "read_only" ? (
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-            <div className="space-y-1">
-              <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-                初始化命令 (Setup)
+        {/* 可折叠「高级环境与门禁设置」（新建默认收起并展示策略摘要，编辑默认展开） */}
+        <section className="overflow-hidden rounded-[16px] border border-black/[0.06] bg-black/[0.02] dark:border-white/[0.08] dark:bg-white/[0.03]">
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((prev) => !prev)}
+            aria-expanded={advancedOpen}
+            className="flex w-full cursor-pointer select-none items-center justify-between gap-2 px-3.5 py-2.5 text-left transition hover:bg-black/[0.025] dark:hover:bg-white/[0.04]"
+          >
+            <div className="min-w-0 flex-1">
+              <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
+                <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
+                <span>高级环境与门禁设置</span>
               </span>
-              <AppInput
-                size="sm"
-                className="font-mono text-[16px] md:text-[12px]"
-                value={setupCommand}
-                onChange={(e) => setSetupCommand(e.target.value)}
-                placeholder="pnpm install --prefer-offline"
-              />
+              {!advancedOpen ? (
+                <p className="mt-0.5 truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                  {advancedSummary}
+                </p>
+              ) : null}
             </div>
-
-            <div className="space-y-1">
-              <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-                交付校验命令 (Verify)
-              </span>
-              <AppInput
-                size="sm"
-                className="font-mono text-[16px] md:text-[12px]"
-                value={verifyCommand}
-                onChange={(e) => setVerifyCommand(e.target.value)}
-                placeholder="pnpm verify"
-              />
-            </div>
-          </div>
-        ) : null}
-
-        <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <div className="space-y-1">
-            <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-              默认协作方式
-            </span>
-            <AppSelect
-              size="sm"
-              ariaLabel="默认协作方式"
-              value={defaultTopology}
-              onValueChange={setDefaultTopology}
-              options={TOPOLOGY_OPTIONS}
+            <ChevronDown
+              className={cn(
+                "h-3.5 w-3.5 shrink-0 text-[#687082] transition-transform duration-200 dark:text-[#8E8E96]",
+                advancedOpen && "rotate-180",
+              )}
             />
-          </div>
+          </button>
 
-          <div className="space-y-1">
-            <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-              默认主力 Agent
-            </span>
-            <AppSelect
-              size="sm"
-              ariaLabel="默认主力 Agent"
-              value={defaultWorkerId}
-              onValueChange={setDefaultWorkerId}
-              options={workerOptions}
-            />
-          </div>
-        </div>
+          <AnimatePresence initial={false}>
+            {advancedOpen ? (
+              <motion.div
+                key="workspace-advanced-body"
+                initial={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                transition={
+                  reducedMotion ? INSTANT_TRANSITION : { duration: 0.18, ease: "easeOut" }
+                }
+                className="overflow-hidden border-t border-black/[0.06] dark:border-white/[0.07]"
+              >
+                <div className="space-y-3.5 p-3.5">
+                  <div className="space-y-1.5">
+                    <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
+                      执行宿主来源
+                    </span>
+                    <SegmentedTabs
+                      size="xs"
+                      items={HOST_MODE_TABS}
+                      value={hostMode}
+                      onValueChange={setHostMode}
+                    />
+                    <p className="text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                      {hostMode === "local_machine"
+                        ? "仅本机上的本人 Agent 访问；工作记录脱敏落盘至 ~/.openhuddle/ 仓外目录。"
+                        : hostMode === "personal_remote"
+                          ? "本人跨设备或远程环境 Agent 可连入同一沙箱接力；各环境同步保存脱敏会话记录与滚动记忆。"
+                          : "运行于隔离容器且不含私人凭据，授权后允许群内协作者 Agent 按单写租约锁共同操作。"}
+                    </p>
+                  </div>
+
+                  {kind !== "folder" ? (
+                    <div className="space-y-1.5">
+                      <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
+                        默认分支
+                      </span>
+                      <div className="space-y-2">
+                        {roots.map((rootRow, idx) => (
+                          <div
+                            key={`branch-${rootRow.localId}`}
+                            className="flex items-center gap-2"
+                          >
+                            {roots.length > 1 ? (
+                              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[#687082] dark:text-[#8E8E96]">
+                                {rootRow.localPath.trim() || `目录 ${String(idx + 1)}`}
+                              </span>
+                            ) : null}
+                            <div className={roots.length > 1 ? "w-28 shrink-0" : "w-full"}>
+                              <AppInput
+                                size="sm"
+                                aria-label={
+                                  roots.length > 1 ? `目录 ${String(idx + 1)} 默认分支` : "默认分支"
+                                }
+                                className="font-mono text-[16px] md:text-[12px]"
+                                value={rootRow.defaultBranch}
+                                onChange={(e) =>
+                                  setRoots((prev) =>
+                                    prev.map((r) =>
+                                      r.localId === rootRow.localId
+                                        ? { ...r, defaultBranch: e.target.value }
+                                        : r,
+                                    ),
+                                  )
+                                }
+                                placeholder="main"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="space-y-1.5">
+                    <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
+                      沙盒与隔离策略
+                    </span>
+                    <SegmentedTabs
+                      size="xs"
+                      items={kind === "folder" ? FOLDER_SANDBOX_TABS : GIT_SANDBOX_TABS}
+                      value={sandboxMode}
+                      onValueChange={setSandboxMode}
+                    />
+                    <p className="text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
+                      {sandboxMode === "worktree_pool"
+                        ? "每个写任务分配独立 Git Worktree 分支目录，多 Agent 并发互不覆写。"
+                        : sandboxMode === "in_place"
+                          ? "直接在所选目录内执行，自动启用单写互斥锁防止并发覆写。"
+                          : "仅允许 Agent 读取检索目录内容，拦截一切文件修改与写命令。"}
+                    </p>
+                  </div>
+
+                  {kind !== "folder" && sandboxMode !== "read_only" ? (
+                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                      <div className="space-y-1">
+                        <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
+                          初始化命令 (Setup)
+                        </span>
+                        <AppInput
+                          size="sm"
+                          className="font-mono text-[16px] md:text-[12px]"
+                          value={setupCommand}
+                          onChange={(e) => setSetupCommand(e.target.value)}
+                          placeholder="pnpm install --prefer-offline"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
+                          交付校验命令 (Verify)
+                        </span>
+                        <AppInput
+                          size="sm"
+                          className="font-mono text-[16px] md:text-[12px]"
+                          value={verifyCommand}
+                          onChange={(e) => setVerifyCommand(e.target.value)}
+                          placeholder="pnpm verify"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
+                        默认协作方式
+                      </span>
+                      <AppSelect
+                        size="sm"
+                        ariaLabel="默认协作方式"
+                        value={effectiveTopology}
+                        onValueChange={setDefaultTopology}
+                        options={topologyOptions}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
+                        默认主力 Agent
+                      </span>
+                      <AppSelect
+                        size="sm"
+                        ariaLabel="默认主力 Agent"
+                        value={defaultWorkerId}
+                        onValueChange={setDefaultWorkerId}
+                        options={workerOptions}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+        </section>
       </div>
     </ModalDialog>
   );

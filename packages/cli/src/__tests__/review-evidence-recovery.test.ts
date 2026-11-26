@@ -194,20 +194,41 @@ describe("recovering review evidence across a listener upgrade", () => {
     expect(git("worktree", "list", "--porcelain")).toBe(before);
   });
 
-  it("preserves permission, server and transport failures for the caller", async () => {
+  it("preserves permission, server and transport failures for the caller with bounded transient retries", async () => {
+    const forbidden = new OpenHuddleApiError({
+      status: 403,
+      code: "FORBIDDEN_WORKSPACE_ACCESS",
+      message: "denied",
+    });
+    const readForbidden = vi.fn().mockRejectedValue(forbidden);
+    await expect(executeWorkSlice({ ...asVerifier(readForbidden), retryDelayMs: 0 })).rejects.toBe(
+      forbidden,
+    );
+    expect(readForbidden).toHaveBeenCalledOnce();
+
     for (const failure of [
-      new OpenHuddleApiError({
-        status: 403,
-        code: "FORBIDDEN_WORKSPACE_ACCESS",
-        message: "denied",
-      }),
       new OpenHuddleApiError({ status: 503, code: "INTERNAL_ERROR", message: "unavailable" }),
       new Error("connection reset"),
     ]) {
-      const read = vi.fn().mockRejectedValueOnce(failure);
-      await expect(executeWorkSlice(asVerifier(read))).rejects.toBe(failure);
-      expect(read).toHaveBeenCalledOnce();
+      const read = vi.fn().mockRejectedValue(failure);
+      await expect(executeWorkSlice({ ...asVerifier(read), retryDelayMs: 0 })).rejects.toBe(
+        failure,
+      );
+      expect(read).toHaveBeenCalledTimes(3);
     }
-    expect(runWorkPrompt).not.toHaveBeenCalled();
+
+    const patch = await recoverReviewPatch(writer);
+    const flakyRead = vi
+      .fn<NonNullable<DeviceWorkInput["loadReviewEvidence"]>>()
+      .mockRejectedValueOnce(
+        new OpenHuddleApiError({ status: 503, code: "INTERNAL_ERROR", message: "unavailable" }),
+      )
+      .mockResolvedValueOnce(patch);
+    vi.mocked(runWorkPrompt).mockResolvedValueOnce("Verified after retry.\nVERDICT: PASSED");
+    expect(await executeWorkSlice({ ...asVerifier(flakyRead), retryDelayMs: 0 })).toMatchObject({
+      verdict: "passed",
+    });
+    expect(flakyRead).toHaveBeenCalledTimes(2);
+    expect(runWorkPrompt).toHaveBeenCalledOnce();
   });
 });

@@ -10,7 +10,7 @@ import type { WorkSliceProvenance } from "@openhuddle/protocol";
 
 const SECRET_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string]> = [
   [
-    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
     "[REDACTED_PRIVATE_KEY]",
   ],
   [/\boh_agt_[A-Za-z0-9_-]{8,}\b/g, "oh_agt_[REDACTED]"],
@@ -22,7 +22,11 @@ const SECRET_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bxox[baprs]-[0-9A-Za-z-]{12,}\b/g, "xox-[REDACTED]"],
   [/\bAKIA[0-9A-Z]{16}\b/g, "AKIA[REDACTED]"],
   [/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi, "$1[REDACTED]"],
-  [/(https?:\/\/[^/\s:@]+:)[^/\s@]+(@)/gi, "$1[REDACTED]$2"],
+  [/\b([a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:)[^\s/]+(@[^@\s/]+)/gi, "$1[REDACTED]$2"],
+  [
+    /\b([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|PRIVATE_KEY)[A-Z0-9_]*|DATABASE_URL)([ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\r\n])*"|'[^'\r\n]*'|[^\s'"\r\n]+)/gi,
+    "$1$2[REDACTED]",
+  ],
 ];
 
 /**

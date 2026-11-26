@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkAgentWorkOutput } from "@openhuddle/core-governance";
+import { workspaceProcessEnv } from "@openhuddle/core-governance/workspace-diff";
 import type { AgentPlatform, WorkSliceRole } from "@openhuddle/protocol";
 import { runCustomWorkPrompt } from "./custom-work-runner.js";
 import {
@@ -33,6 +34,7 @@ export interface WorkPromptInput {
 export class WorkProcessInterruptedError extends Error {
   constructor(signal: NodeJS.Signals) {
     super(`设备执行进程收到 ${signal} 信号，租约到期后将按现有次数限制重试。`);
+    this.name = "WorkProcessInterruptedError";
   }
 }
 
@@ -52,7 +54,7 @@ async function runPromptProcess(
   return new Promise((resolve, reject) => {
     const child = spawn(shim ? process.execPath : executable, shim ? [shim, ...args] : args, {
       cwd: input.cwd,
-      env,
+      env: workspaceProcessEnv(env),
       detached: !windows,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
@@ -74,11 +76,16 @@ async function runPromptProcess(
     };
     let stdout = "";
     let stderr = "";
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdoutTruncated ||= stdout.length + chunk.length > 1_048_576;
       stdout = (stdout + chunk).slice(-1_048_576);
     });
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-      stderr = (stderr + chunk).slice(-2_000);
+      if (stderrTruncated) return;
+      stderrTruncated = stderr.length + chunk.length > 65_536;
+      stderr = stderrTruncated ? "" : stderr + chunk;
     });
     child.once("error", reject);
     child.once("close", (code, terminationSignal) => {
@@ -86,13 +93,16 @@ async function runPromptProcess(
       if (stop.aborted) reject(new Error("设备执行已中止或超时"));
       else if (code === null && terminationSignal)
         reject(new WorkProcessInterruptedError(terminationSignal));
-      else if (code !== 0)
-        reject(
-          new Error(
-            `Agent CLI 退出（${String(code)}）：${scrubSensitiveText(stderr || stdout).slice(-380)}`,
-          ),
-        );
-      else resolve(stdout.trim());
+      else if (code !== 0) {
+        // A truncated stream may start in the middle of a credential or a PEM block.
+        const detail =
+          stderrTruncated || (!stderr && stdoutTruncated)
+            ? "诊断输出过长，已省略。"
+            : scrubSensitiveText(stderr || stdout).slice(-380);
+        reject(new Error(`Agent CLI 退出（${String(code)}）：${detail}`));
+      } else if (stdoutTruncated) {
+        reject(new Error("Agent CLI 输出超过单次回执容量，请缩短回执后重试。"));
+      } else resolve(stdout.trim());
     });
     stop.addEventListener("abort", terminate, { once: true });
     if (stop.aborted) terminate();

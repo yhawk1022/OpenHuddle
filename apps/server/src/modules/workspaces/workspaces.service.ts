@@ -173,6 +173,21 @@ function normalizeRootInputs(roots: readonly WorkspaceRootInput[]): readonly Wor
   });
 }
 
+function normalizeDefaultTopology(
+  topology: WorkspaceDto["defaultTopology"],
+  roots: readonly WorkspaceRootEntry[],
+  sandbox: WorkspaceDto["sandboxMode"],
+  kind: WorkspaceDto["kind"],
+): WorkspaceDto["defaultTopology"] {
+  if (topology !== "swarm") return topology;
+  const distinctNames = new Set(
+    roots.map((root) => root.name.trim().toLowerCase()).filter(Boolean),
+  );
+  if (sandbox !== "read_only" && distinctNames.size > 1 && distinctNames.size === roots.length)
+    return topology;
+  return kind === "folder" ? "direct" : "verify_loop";
+}
+
 function deriveWorkTitle(explicitTitle: string | undefined, brief: string): string {
   if (explicitTitle && explicitTitle.trim().length > 0) {
     return scrubWorkText(explicitTitle.trim()).slice(0, 200);
@@ -448,6 +463,12 @@ export class WorkspacesService {
 
     const prewarmedWorktrees =
       body.prewarmedWorktrees ?? (effectiveSandbox === "worktree_pool" ? 3 : 0);
+    const effectiveDefaultTopology = normalizeDefaultTopology(
+      body.defaultTopology,
+      prepared.roots,
+      effectiveSandbox,
+      body.kind,
+    );
 
     await this.repo.insertWorkspace({
       id,
@@ -462,7 +483,7 @@ export class WorkspacesService {
       prewarmedWorktrees,
       hooks: prepared.hooks,
       context: prepared.context,
-      defaultTopology: body.defaultTopology,
+      defaultTopology: effectiveDefaultTopology,
       ...(body.defaultWorkerAgentId !== undefined
         ? { defaultWorkerAgentId: body.defaultWorkerAgentId }
         : {}),
@@ -527,7 +548,10 @@ export class WorkspacesService {
     const preparedLocal =
       this.isLoopbackHost &&
       effectiveHostMode === "local_machine" &&
-      (body.roots !== undefined || body.kind !== undefined || body.sandboxMode !== undefined)
+      (body.roots !== undefined ||
+        body.kind !== undefined ||
+        body.sandboxMode !== undefined ||
+        body.hostMode !== undefined)
         ? inspectAndPrepareLocalWorkspace({
             roots: candidateRoots,
             kind: effectiveKind,
@@ -537,6 +561,15 @@ export class WorkspacesService {
             homeDir: this.localHomeDir,
           })
         : undefined;
+
+    const effectiveRoots = preparedLocal !== undefined ? preparedLocal.roots : candidateRoots;
+    const requestedTopology = body.defaultTopology ?? existing.defaultTopology;
+    const normalizedDefaultTopology = normalizeDefaultTopology(
+      requestedTopology,
+      effectiveRoots,
+      effectiveSandbox,
+      effectiveKind,
+    );
 
     await this.repo.updateWorkspaceRow(workspaceId, {
       ...(body.name !== undefined ? { name: scrubWorkText(body.name.trim()) } : {}),
@@ -563,7 +596,10 @@ export class WorkspacesService {
         : body.context !== undefined
           ? { context: body.context }
           : {}),
-      ...(body.defaultTopology !== undefined ? { defaultTopology: body.defaultTopology } : {}),
+      ...(body.defaultTopology !== undefined ||
+      normalizedDefaultTopology !== existing.defaultTopology
+        ? { defaultTopology: normalizedDefaultTopology }
+        : {}),
       ...(body.defaultWorkerAgentId !== undefined
         ? { defaultWorkerAgentId: body.defaultWorkerAgentId }
         : {}),
@@ -970,6 +1006,19 @@ export class WorkspacesService {
           message: "Only an owner-authorized coordinator agent may dispatch workspace tasks.",
         });
       }
+    }
+
+    if (
+      body.topology === "swarm" &&
+      workspace.sandboxMode === "in_place" &&
+      workspace.roots.length <= 1
+    ) {
+      throw new AppError({
+        code: "VALIDATION_ERROR",
+        statusCode: 400,
+        message:
+          "Single-root in-place workspaces do not support swarm topology; switch to verify_loop or direct, or use a Git worktree_pool workspace.",
+      });
     }
 
     const effectiveVerifierId =

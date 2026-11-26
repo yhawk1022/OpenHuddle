@@ -18,7 +18,9 @@ export {
   WORK_AGENT_STOP_INSTRUCTION,
   WorkAgentAttention,
   checkAgentWorkOutput,
+  parseWorkVerdict,
   type AgentAttention,
+  type ParsedWorkVerdict,
 } from "./work-agent-attention.js";
 
 export {

@@ -20,6 +20,25 @@ import { scrubReviewPatch, scrubWorkText } from "./secret-redact.js";
 
 const execFileAsync = promisify(execFile);
 
+export function workspaceProcessEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...source };
+  for (const key of [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_CEILING_DIRECTORIES",
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
+export function workspaceGitEnv(): NodeJS.ProcessEnv {
+  return { ...workspaceProcessEnv(), LC_ALL: "C" };
+}
+
 const MAX_DIFF_FILES = 30;
 const MAX_LINES_PER_FILE = 450;
 const MAX_UNTRACKED_FILE_BYTES = 128 * 1024;
@@ -177,6 +196,7 @@ export async function isGitWorkingTree(dirPath: string): Promise<boolean> {
   try {
     const { stdout } = await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], {
       cwd: dirPath,
+      env: workspaceGitEnv(),
       timeout: 4_000,
     });
     return stdout.trim() === "true";
@@ -200,6 +220,7 @@ export async function collectWorkingTreeDiff(
   try {
     const res = await execFileAsync("git", ["status", "--porcelain", "-z", "-uall"], {
       cwd: workingDir,
+      env: workspaceGitEnv(),
       timeout: 6_000,
       maxBuffer: 2 * 1024 * 1024,
     });
@@ -242,6 +263,7 @@ export async function collectWorkingTreeDiff(
       ],
       {
         cwd: workingDir,
+        env: workspaceGitEnv(),
         timeout: 8_000,
         maxBuffer: 4 * 1024 * 1024,
       },
@@ -263,6 +285,7 @@ export async function collectWorkingTreeDiff(
         ],
         {
           cwd: workingDir,
+          env: workspaceGitEnv(),
           timeout: 6_000,
           maxBuffer: 4 * 1024 * 1024,
         },
@@ -298,6 +321,7 @@ export async function collectWorkingTreeDiff(
         ],
         {
           cwd: workingDir,
+          env: workspaceGitEnv(),
           timeout: 4_000,
           maxBuffer: 512 * 1024,
         },

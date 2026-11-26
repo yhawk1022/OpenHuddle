@@ -578,6 +578,11 @@ html[data-keyboard-open="true"] .oh-mobile-main-nav {
     display: none;
   }
 
+  /* 待确认态概览区保持展开；软键盘弹起时放宽高度上限，确保问题与自定义回复框完整可见 */
+  html[data-keyboard-open="true"] .oh-workbench-task-summary[data-awaiting-answer="true"] {
+    max-height: 100%;
+  }
+
   :root {
     --oh-mobile-composer-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
   }

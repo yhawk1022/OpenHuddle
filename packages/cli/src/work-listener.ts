@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { WorkAgentAttention } from "@openhuddle/core-governance";
+import { MAX_SLICE_ATTEMPTS, WorkAgentAttention } from "@openhuddle/core-governance";
 import type {
   CompleteWorkSliceBody,
   OwnedAgentSummaryDto,
@@ -9,7 +9,11 @@ import type {
   WorkSliceId,
   WorkspaceDto,
 } from "@openhuddle/protocol";
-import { executeWorkSlice, recoverReviewPatch } from "./execute-work-slice.js";
+import {
+  executeWorkSlice,
+  isTransientExecutionError,
+  recoverReviewPatch,
+} from "./execute-work-slice.js";
 import { OpenHuddleApiError, type OpenHuddleHttpClient } from "./http-client.js";
 import { scrubSensitiveText } from "./secret-scrubber.js";
 import type { WakeExecutionTarget } from "./sse-listener.js";
@@ -17,7 +21,10 @@ import type { WakeExecutionTarget } from "./sse-listener.js";
 import { WorkProcessInterruptedError } from "./work-cli-process.js";
 
 const LEASE_MS = 90_000;
+const SHORT_RECOVERY_LEASE_MS = 15_000;
 const HEARTBEAT_MS = 20_000;
+const HEARTBEAT_RETRY_MS = 5_000;
+const MAX_HEARTBEAT_TRANSIENT_FAILURES = 2;
 const REQUEST_MS = 10_000;
 const CATCH_UP_MS = 60_000;
 
@@ -283,6 +290,8 @@ export class DeviceWorkListener {
     this.active = { item: claimedItem, controller };
     const signal = controller.signal;
     let heartbeat: ReturnType<typeof setTimeout> | undefined;
+    let leaseSettling = false;
+    let consecutiveHeartbeatFailures = 0;
     const renew = async (): Promise<void> => {
       try {
         const update = await client.renewWorkSlice(
@@ -294,11 +303,31 @@ export class DeviceWorkListener {
           },
           this.requestSignal(signal),
         );
+        consecutiveHeartbeatFailures = 0;
         if (update.item.stage !== claimedItem.stage) controller.abort();
-        if (!signal.aborted) heartbeat = setTimeout(() => void renew(), HEARTBEAT_MS);
+        if (!signal.aborted && !leaseSettling) {
+          heartbeat = setTimeout(() => void renew(), HEARTBEAT_MS);
+        }
       } catch (err) {
-        if (!signal.aborted)
-          this.options.log(`[openhuddle:work:lease] ${label}: ${diagnostic(err)}`);
+        if (signal.aborted || leaseSettling) return;
+        const isTerminalLeaseError =
+          err instanceof OpenHuddleApiError && [401, 403, 404, 409].includes(err.status);
+        const isTransientHeartbeatError =
+          !isTerminalLeaseError &&
+          (isTransientExecutionError(err) ||
+            (err instanceof OpenHuddleApiError && err.status >= 500));
+        if (
+          isTransientHeartbeatError &&
+          consecutiveHeartbeatFailures < MAX_HEARTBEAT_TRANSIENT_FAILURES
+        ) {
+          consecutiveHeartbeatFailures += 1;
+          this.options.log(
+            `[openhuddle:work:lease] ${label} transient heartbeat failure (${consecutiveHeartbeatFailures}/${MAX_HEARTBEAT_TRANSIENT_FAILURES}): ${diagnostic(err)}`,
+          );
+          heartbeat = setTimeout(() => void renew(), HEARTBEAT_RETRY_MS);
+          return;
+        }
+        this.options.log(`[openhuddle:work:lease] ${label}: ${diagnostic(err)}`);
         controller.abort(err);
       }
     };
@@ -347,11 +376,38 @@ export class DeviceWorkListener {
           signal,
         });
       } catch (err) {
+        leaseSettling = true;
+        clearTimeout(heartbeat);
+        heartbeat = undefined;
         if (err instanceof WorkProcessInterruptedError) {
           this.options.log(`[openhuddle:work:interrupted] ${label}: ${err.message}`);
           return;
         }
         if (!signal.aborted) {
+          const isInPlaceWrite =
+            workspace.sandboxMode === "in_place" && claimedSlice.leaseRole === "write";
+          const canDeferForLeaseRequeue =
+            !(err instanceof WorkAgentAttention) &&
+            isTransientExecutionError(err) &&
+            !isInPlaceWrite &&
+            typeof claimedSlice.attemptCount === "number" &&
+            claimedSlice.attemptCount > 0 &&
+            claimedSlice.attemptCount < MAX_SLICE_ATTEMPTS;
+          if (canDeferForLeaseRequeue) {
+            this.options.log(`[openhuddle:work:transient] ${label}: ${diagnostic(err)}`);
+            await client
+              .renewWorkSlice(
+                item.id,
+                slice.sliceId,
+                {
+                  leaseVersion,
+                  leaseTtlMs: SHORT_RECOVERY_LEASE_MS,
+                },
+                this.requestSignal(signal),
+              )
+              .catch(() => undefined);
+            return;
+          }
           await client.raiseWorkAttention(
             item.id,
             slice.sliceId,
@@ -369,6 +425,9 @@ export class DeviceWorkListener {
         }
         return;
       }
+      leaseSettling = true;
+      clearTimeout(heartbeat);
+      heartbeat = undefined;
       if (signal.aborted) return;
       const body = { ...result, leaseVersion };
       try {

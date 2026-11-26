@@ -58,9 +58,25 @@ describe("@openhuddle/cli — ADR-0010 secret scrubber & 3-tier local provenance
     expect(cleaned).not.toContain("9f8e7d6c5b4a3210secret");
     expect(cleaned).not.toContain("AbCdEfGhIjKlMnOpQrStUvWxYz");
     expect(cleaned).not.toContain("s3cr3tP@ss");
-    expect(cleaned).toContain("oh_agt_[REDACTED]");
+    expect(scrubSensitiveText("oh_agt_9f8e7d6c5b4a3210secret")).toBe("oh_agt_[REDACTED]");
     expect(cleaned).toContain("OPENAI_API_KEY=[REDACTED]");
-    expect(cleaned).toContain("postgres://admin:[REDACTED]@127.0.0.1:5432/openhuddle");
+    expect(cleaned).toContain("DATABASE_URL=[REDACTED]");
+  });
+
+  it("scrubs quoted values, non-HTTP URL passwords and incomplete private keys", () => {
+    const raw = [
+      'BUILD_TOKEN="two words"',
+      "postgres://admin:pass@word@db.local/test",
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "private key contents",
+    ].join("\n");
+    const cleaned = scrubSensitiveText(raw);
+    expect(cleaned.split("\n")).toEqual([
+      "BUILD_TOKEN=[REDACTED]",
+      "postgres://admin:[REDACTED]@db.local/test",
+      "[REDACTED_PRIVATE_KEY]",
+    ]);
+    expect(containsSensitiveSecret(cleaned)).toBe(false);
   });
 
   it("writes scrubbed out-of-repo JSONL events and enforces <=200 line rolling MEMORY.md cap", () => {
@@ -79,7 +95,7 @@ describe("@openhuddle/cli — ADR-0010 secret scrubber & 3-tier local provenance
 
     const events = readTaskSessionEvents(homeDir, "pangyan-codex", "ws_openhuddle", "task_001");
     expect(events.length).toBe(1);
-    expect(events[0]?.summary).toContain("postgres://u:[REDACTED]@localhost/db");
+    expect(events[0]?.summary).toContain("DATABASE_URL=[REDACTED]");
     expect(events[0]?.summary).not.toContain("mySecretPwd");
 
     // 连续写入 45 条长记忆，验证 MEMORY.md 严格遵守 200 行反 Context-Rot 上限

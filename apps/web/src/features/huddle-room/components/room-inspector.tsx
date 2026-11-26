@@ -145,9 +145,11 @@ export interface RoomInspectorProps {
   readonly onSteerWorkSlice?:
     | ((workItemId: string, note: string, sliceId?: string | undefined) => void)
     | undefined;
-  readonly onStopWorkItem?: ((workItemId: string) => void) | undefined;
+  readonly onStopWorkItem?: ((workItemId: string) => Promise<void> | void) | undefined;
   readonly onRetryWorkItem?: ((workItemId: string) => void) | undefined;
-  readonly onAnswerWorkAttention?: ((workItemId: string, choice: string) => void) | undefined;
+  readonly onAnswerWorkAttention?:
+    | ((workItemId: string, choice: string) => Promise<void> | void)
+    | undefined;
   readonly onDecideWorkReview?:
     | ((workItemId: string, decision: "approve" | "rework") => void)
     | undefined;

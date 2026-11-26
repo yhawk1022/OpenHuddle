@@ -58,7 +58,13 @@ import {
 } from "../work/solo-workbench-store.js";
 import { dispatchWorkbenchTaskOnServer } from "../work/work-server-sync.js";
 import type { WorkTopology } from "../work/work-types.js";
-import { WorkStageGlyph, getWorkTopologyLabel, stripAgentOwnerPrefix } from "../work/work-utils.js";
+import {
+  WorkStageGlyph,
+  getWorkTopologyLabel,
+  resolveEffectiveDispatchTopology,
+  stripAgentOwnerPrefix,
+  workspaceSupportsSwarm,
+} from "../work/work-utils.js";
 import { WorkbenchTaskDetailPane } from "./workbench-task-detail.js";
 import { WorkspaceConfigModal } from "./workspace-config-modal.js";
 
@@ -214,6 +220,8 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
 
   const [promptText, setPromptText] = useState<string>("");
   const [isDispatching, setIsDispatching] = useState<boolean>(false);
+  const promptInputRef = useRef<HTMLInputElement | null>(null);
+  const focusPromptTimerRef = useRef<number | null>(null);
   const initialWorkspace =
     props.repos.find((repo) => repo.id === props.initialWorkspaceId) ?? props.repos[0];
   const [dispatchRepoId, setDispatchRepoId] = useState<string>(
@@ -234,6 +242,37 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
     lastWorkspaceModalRef.current = workspaceModalState;
   }
   const reducedMotion = usePrefersReducedMotion();
+
+  useEffect(() => {
+    return () => {
+      if (focusPromptTimerRef.current !== null && typeof window !== "undefined") {
+        window.clearTimeout(focusPromptTimerRef.current);
+      }
+    };
+  }, []);
+
+  const focusPromptInput = useCallback((): void => {
+    const focusNow = (): void => {
+      const el = promptInputRef.current;
+      if (!el) {
+        return;
+      }
+      el.focus();
+      const len = el.value.length;
+      el.setSelectionRange(len, len);
+    };
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.requestAnimationFrame(focusNow);
+    if (focusPromptTimerRef.current !== null) {
+      window.clearTimeout(focusPromptTimerRef.current);
+    }
+    focusPromptTimerRef.current = window.setTimeout(() => {
+      focusPromptTimerRef.current = null;
+      focusNow();
+    }, 180);
+  }, []);
 
   useEffect(() => {
     if (props.initialWorkspaceId && props.repos.some((r) => r.id === props.initialWorkspaceId)) {
@@ -397,6 +436,26 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
   }, [props.tasks]);
 
   const activeRepo = props.repos.find((r) => r.id === dispatchRepoId) ?? props.repos[0];
+  const activeRepoSupportsSwarm =
+    activeRepo === undefined ? false : workspaceSupportsSwarm(activeRepo);
+  const topologyOptions = useMemo<ReadonlyArray<AppSelectOption<WorkTopology>>>(
+    () =>
+      TOPOLOGY_OPTIONS.map((opt) =>
+        opt.value === "swarm" && !activeRepoSupportsSwarm
+          ? {
+              ...opt,
+              disabled: true,
+              description: "仅多目录组合且非只读工作区支持",
+            }
+          : opt,
+      ),
+    [activeRepoSupportsSwarm],
+  );
+  const effectiveDispatchTopology = resolveEffectiveDispatchTopology({
+    requested: dispatchTopology,
+    workspace: activeRepo,
+    agentCount: props.ownedAgents.length,
+  });
 
   const repoSelectOptions: ReadonlyArray<AppSelectOption<string>> = useMemo(
     () => props.repos.map((r) => ({ value: r.id, label: r.name })),
@@ -503,7 +562,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
     try {
       const created = await dispatchWorkbenchTaskOnServer({
         rawPrompt: trimmed,
-        topology: dispatchTopology,
+        topology: effectiveDispatchTopology,
         workspace: activeRepo,
         ownedAgents: props.ownedAgents,
         ...(preferredWorkerId !== "auto" ? { preferredWorkerId } : {}),
@@ -964,6 +1023,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                   <div className="flex min-w-0 items-center gap-2">
                     <Plus className="h-4 w-4 shrink-0 text-[#8E96A6] dark:text-[#71717A]" />
                     <input
+                      ref={promptInputRef}
                       type="text"
                       enterKeyHint="send"
                       value={promptText}
@@ -995,6 +1055,21 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                     ) : null}
                   </div>
 
+                  {props.repos.length === 0 ? (
+                    <div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-2 pl-6 text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
+                      <span className="min-w-0">
+                        首次交办前需新建一个工作区（目录不存在将自动创建）
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setWorkspaceModalState("create")}
+                        className="relative shrink-0 cursor-pointer rounded-md px-2 py-0.5 text-[11.5px] font-medium text-[#2563EB] transition hover:bg-black/[0.05] [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-x-1 [@media(pointer:coarse)]:after:-inset-y-2 dark:text-[#60A5FA] dark:hover:bg-white/[0.07]"
+                      >
+                        新建工作区
+                      </button>
+                    </div>
+                  ) : null}
+
                   <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 pl-6">
                     {activeRepo !== undefined ? (
                       <AppSelect
@@ -1017,9 +1092,9 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                     <AppSelect
                       size="sm"
                       ariaLabel="选择协作方式"
-                      value={dispatchTopology}
+                      value={effectiveDispatchTopology}
                       onValueChange={setDispatchTopology}
-                      options={TOPOLOGY_OPTIONS}
+                      options={topologyOptions}
                       className="h-7 w-auto max-w-[124px] shrink-0 rounded-full px-2.5 text-[12px]"
                     />
 
@@ -1055,8 +1130,8 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                         </p>
                         <p className="mt-1 text-[12px] text-[#8E96A6] dark:text-[#71717A]">
                           {props.ownedAgents.length === 0
-                            ? "接入本机 CLI Agent 后，在上方输入任务描述即可真实执行并追踪过程"
-                            : "在上方输入任务描述并按回车即可在本机工作区真实执行"}
+                            ? "接入本机 CLI Agent 后，输入需求即可自动准备目录并托管执行，完成后通知你签收。"
+                            : "输入需求并回车，Agent 将在工作区自动准备目录并托管执行，完成后通知你签收。"}
                         </p>
                         <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                           {props.ownedAgents.length === 0 ? (
@@ -1186,9 +1261,13 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
             ownerDisplayName={props.currentUser.displayName}
             onClose={() => setWorkspaceModalState(null)}
             onSaved={(saved) => {
+              const wasCreating = workspaceModalState === "create";
               setSelectedRepoFilter(saved.id);
               applyWorkspaceDefaults(saved);
               setWorkspaceModalState(null);
+              if (wasCreating) {
+                focusPromptInput();
+              }
             }}
             onDeleted={() => {
               setSelectedRepoFilter("all");

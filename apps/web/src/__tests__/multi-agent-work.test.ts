@@ -14,8 +14,14 @@ import { WorkItemDtoSchema } from "@openhuddle/protocol";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AppTooltipProvider } from "../components/primitives/index.js";
+import { AppTooltipProvider, SegmentedTabs } from "../components/primitives/index.js";
 import { MarkdownContent } from "../components/ui/markdown-content.js";
+import {
+  WorkAttentionCard,
+  isCustomReplyPlaceholderOption,
+} from "../features/huddle-room/components/work-attention-card.js";
+import { WorkInspectorTab } from "../features/huddle-room/components/work-inspector-tab.js";
+import { WorkTimelineMilestoneCard } from "../features/huddle-room/components/work-timeline-cards.js";
 import {
   WorkbenchTaskDetailPane,
   observeWorkbenchTraceScroll,
@@ -27,6 +33,7 @@ import {
   clearRoomWorkItems,
   decideRoomWorkReview,
   dispatchRoomWorkItem,
+  getRoomWorkItems,
   loadRoomWorkShowcase,
   resetAllRoomWorkBuckets,
   steerRoomWorkSlice,
@@ -45,16 +52,21 @@ import {
   markSoloTaskEscalated,
   resetSoloWorkbenchMemory,
   resetSoloWorkbenchShowcase,
+  stopSoloWorkTask,
   upsertAgentWorkspace,
 } from "../features/huddle-room/work/solo-workbench-store.js";
 import {
+  buildSwarmDisjointSlices,
   pickWorkbenchAgent,
   toSoloWorkTaskView,
 } from "../features/huddle-room/work/work-server-sync.js";
 import {
   getClaimListenerHint,
+  normalizeWorkspaceRoots,
   parsePromptTopologyDirective,
+  resolveEffectiveDispatchTopology,
   stripAgentOwnerPrefix,
+  workspaceSupportsSwarm,
 } from "../features/huddle-room/work/work-utils.js";
 import {
   formatDaemonCapabilityCliFlags,
@@ -893,5 +905,323 @@ describe("shared external-store, work-utils, and workspace edit/logout invariant
     resetSoloWorkbenchMemory();
     resetAllRoomWorkBuckets();
     expect(getRoomBoundWorkspace(ROOM_ID)).toBeNull();
+  });
+
+  it("enables swarm topology only for multi-root non-read-only workspaces with distinct root names", () => {
+    expect(workspaceSupportsSwarm({ roots: [{ name: "r1" }], sandboxMode: "in_place" })).toBe(
+      false,
+    );
+    expect(workspaceSupportsSwarm({ roots: [{ name: "r1" }], sandboxMode: "worktree_pool" })).toBe(
+      false,
+    );
+    expect(workspaceSupportsSwarm({ roots: [{ name: "r1" }], sandboxMode: "read_only" })).toBe(
+      false,
+    );
+    expect(
+      workspaceSupportsSwarm({ roots: [{ name: "r1" }, { name: "r2" }], sandboxMode: "read_only" }),
+    ).toBe(false);
+    expect(
+      workspaceSupportsSwarm({ roots: [{ name: "r1" }, { name: "r2" }], sandboxMode: "in_place" }),
+    ).toBe(true);
+    expect(
+      workspaceSupportsSwarm({
+        roots: [{ name: "r1" }, { name: "r2" }],
+        sandboxMode: "worktree_pool",
+      }),
+    ).toBe(true);
+    expect(
+      workspaceSupportsSwarm({
+        roots: [{ name: "api" }, { name: "web" }],
+        sandboxMode: "worktree_pool",
+      }),
+    ).toBe(true);
+    expect(
+      workspaceSupportsSwarm({
+        roots: [{ name: "api" }, { name: "api" }],
+        sandboxMode: "worktree_pool",
+      }),
+    ).toBe(false);
+  });
+
+  it("normalizes editor rows and fallback topology consistently before saving and dispatch", () => {
+    const workspace = {
+      name: "../.a/b\\c",
+      kind: "multi_root" as const,
+      sandboxMode: "worktree_pool",
+    };
+    const defaults = normalizeWorkspaceRoots({ ...workspace, roots: [] });
+    expect(defaults.roots.map((r) => r.localPath)).toEqual([
+      "~/Developer/a-b-c-api",
+      "~/Developer/a-b-c-web",
+    ]);
+    expect(
+      normalizeWorkspaceRoots({ name: "../", kind: "folder", roots: [] }).roots[0]?.localPath,
+    ).toBe("~/Documents/workspace");
+    const single = normalizeWorkspaceRoots({
+      ...workspace,
+      roots: [{ localPath: "~/a" }, { localPath: " " }],
+    });
+    expect(single.kind).toBe("git_repo");
+    for (const [agentCount, expected] of [
+      [1, "direct"],
+      [2, "verify_loop"],
+    ] as const) {
+      expect(
+        resolveEffectiveDispatchTopology({
+          requested: "swarm",
+          workspace: { ...workspace, ...single },
+          agentCount,
+        }),
+      ).toBe(expected);
+    }
+    expect(
+      resolveEffectiveDispatchTopology({
+        requested: "swarm",
+        workspace: { ...workspace, ...single, kind: "folder" },
+        agentCount: 2,
+      }),
+    ).toBe("direct");
+    const duplicate = normalizeWorkspaceRoots({
+      ...workspace,
+      roots: [
+        { localPath: "~/client/api/" },
+        { localPath: "~/server/API" },
+        { localPath: "~/web" },
+      ],
+    });
+    expect(workspaceSupportsSwarm({ ...duplicate, sandboxMode: workspace.sandboxMode })).toBe(
+      false,
+    );
+  });
+
+  it("builds swarm disjoint slices strictly from multi-root names without hardcoded monorepo paths", () => {
+    const multiWs = upsertAgentWorkspace({
+      name: "前后端联动",
+      kind: "multi_root",
+      roots: [
+        { name: "service-api", localPath: "~/Developer/service-api", defaultBranch: "main" },
+        { name: "service-web", localPath: "~/Developer/service-web", defaultBranch: "main" },
+      ],
+      sandboxMode: "worktree_pool",
+    });
+    const slices = buildSwarmDisjointSlices({
+      workspace: multiWs,
+      title: "联调登录态",
+      workerAId: MY_CODEX_ID,
+      workerBId: MY_AGY_ID,
+      leaseRole: "write",
+    });
+    expect(slices).toHaveLength(2);
+    expect(slices[0]?.ownedPaths).toEqual(["service-api/**"]);
+    expect(slices[1]?.ownedPaths).toEqual(["service-web/**"]);
+
+    const singleWs = upsertAgentWorkspace({
+      name: "单仓项目",
+      kind: "git_repo",
+      roots: [{ name: "solo-app", localPath: "~/Developer/solo-app", defaultBranch: "main" }],
+      sandboxMode: "worktree_pool",
+    });
+    expect(
+      buildSwarmDisjointSlices({
+        workspace: singleWs,
+        title: "单仓任务",
+        workerAId: MY_CODEX_ID,
+        workerBId: MY_AGY_ID,
+        leaseRole: "write",
+      }),
+    ).toEqual([]);
+  });
+
+  it("identifies placeholder custom-reply options and renders unified WorkAttentionCard safely", () => {
+    expect(isCustomReplyPlaceholderOption("补充说明文档内容")).toBe(false);
+    expect(isCustomReplyPlaceholderOption("Other (specify)")).toBe(true);
+    expect(isCustomReplyPlaceholderOption("补充说明后继续")).toBe(true);
+    expect(isCustomReplyPlaceholderOption("补充说明：指定目录")).toBe(true);
+    expect(isCustomReplyPlaceholderOption("自定义回复其他方案")).toBe(true);
+    expect(isCustomReplyPlaceholderOption("手动输入分支名")).toBe(true);
+    expect(isCustomReplyPlaceholderOption("其他说明（下方填写）")).toBe(true);
+    expect(isCustomReplyPlaceholderOption("已处理设备或工作区问题，重试")).toBe(false);
+    expect(isCustomReplyPlaceholderOption("仅自动还原越界文件并保留合规改动（推荐）")).toBe(false);
+
+    const html = renderToStaticMarkup(
+      createElement(WorkAttentionCard, {
+        variant: "detail",
+        askedByName: "Codex",
+        question: "目录已存在文件，如何处理？",
+        options: ["在现有目录下继续（推荐）", "补充说明后继续"],
+        onSubmitAnswer() {},
+      }),
+    );
+
+    expect(html).toContain("Codex 请你确认：目录已存在文件，如何处理？");
+    expect(html).toContain('maxLength="240"');
+    expect(html).toContain("或直接回复说明，提交后继续…");
+    expect(html).toContain(">回复<");
+    expect(html).not.toContain("oh-workbench-note");
+    expect(html).toContain('data-attention-option="direct"');
+    expect(html).toContain('data-attention-option="custom-guide"');
+    // 占位项与直接提交项渲染不同图标（Pencil vs ChevronRight）
+    expect(html).toContain("lucide-pencil");
+    expect(html).toContain("lucide-chevron-right");
+  });
+
+  it("shows stop button, defaults to steps tab, and exposes WorkAttentionCard when awaiting_answer", () => {
+    const ownedAgents: ReadonlyArray<OwnedAgentSummaryDto> = [
+      {
+        id: MY_CODEX_ID,
+        ownerUserId: ME_ID,
+        displayName: "庞彦-Codex",
+        slug: "pangyan-codex",
+        platform: "codex",
+        reach: "online_sse",
+        allowExternalDm: false,
+        createdAtIso: "2026-11-24T00:00:00.000Z",
+      },
+    ];
+    resetSoloWorkbenchShowcase(ownedAgents, "庞彦");
+    const attnTask = getSoloWorkTaskById("solo_wrk_attn_02");
+    expect(attnTask).toBeDefined();
+    if (!attnTask) return;
+
+    // 即使已有 diffFiles，进入 awaiting_answer 时仍必须默认落在「执行追踪」且不折叠概览
+    const awaitingTaskWithDiff = {
+      ...attnTask,
+      stage: "awaiting_answer" as const,
+      diffFiles: [
+        {
+          path: "src/index.ts",
+          additions: 2,
+          deletions: 0,
+          lines: [{ kind: "add" as const, newLine: 1, content: "export const ok = true;" }],
+        },
+      ],
+    };
+
+    const detailHtml = renderToStaticMarkup(
+      createElement(
+        AppTooltipProvider,
+        null,
+        createElement(WorkbenchTaskDetailPane, {
+          task: awaitingTaskWithDiff,
+          ownedAgents,
+          ownerDisplayName: "庞彦",
+          isEscalating: false,
+          onEscalate() {},
+          onOpenEscalatedRoom() {},
+          onConfigureWorkspace() {},
+        }),
+      ),
+    );
+
+    expect(detailHtml).toContain('data-awaiting-answer="true"');
+    expect(detailHtml).not.toContain('data-collapsed="true"');
+    expect(detailHtml).toContain(">停止<");
+    expect(detailHtml).toContain('data-attention-card="detail"');
+    expect(detailHtml).toContain('maxLength="240"');
+    // 默认落在「执行追踪」页签（实时过程追踪可见，而非直接切入 diff 查看器）
+    expect(detailHtml).toContain("实时过程追踪");
+    expect(detailHtml).toMatch(/aria-selected="true"[^>]*>.*?执行追踪/);
+
+    // 聊天时间线与右侧任务抽屉的 awaiting_answer 均具备停止按钮与统一确认卡
+    loadRoomWorkShowcase({
+      roomId: ROOM_ID,
+      preset: "needs_you",
+      latestSeq: 22,
+      members: SAMPLE_MEMBERS,
+      currentUserId: ME_ID,
+    });
+
+    const roomAttnItem = getRoomWorkItems(ROOM_ID).find((i) => i.id === "wrk_showcase_attn");
+    expect(roomAttnItem).toBeDefined();
+    if (!roomAttnItem) return;
+
+    const timelineHtml = renderToStaticMarkup(
+      createElement(WorkTimelineMilestoneCard, {
+        item: roomAttnItem,
+        onOpenInInspector() {},
+        onAnswerAttention() {},
+        onStop() {},
+        onDecideReview() {},
+        onRetry() {},
+      }),
+    );
+    expect(timelineHtml).toContain(">停止<");
+    expect(timelineHtml).toContain('data-attention-card="timeline"');
+
+    const inspectorHtml = renderToStaticMarkup(
+      createElement(WorkInspectorTab, {
+        roomId: ROOM_ID,
+        members: SAMPLE_MEMBERS,
+        items: [roomAttnItem],
+        activeRunningItems: [],
+        needsHumanItems: [roomAttnItem],
+        defaults: { intakeMode: "off" },
+        observeLogs: [],
+        focusedWorkItemId: null,
+        onUpdateDefaults() {},
+        onSteerSlice() {},
+        onStopItem() {},
+        onRetryItem() {},
+        onAnswerAttention() {},
+        onDecideReview() {},
+        onOpenComposerDispatch() {},
+        onLoadShowcase() {},
+        onClearShowcase() {},
+      }),
+    );
+    expect(inspectorHtml).toContain('aria-label="停止任务"');
+    expect(inspectorHtml).toContain('data-attention-card="inspector"');
+  });
+
+  it("clears pending attention when stopping local solo and room work items and preserves disabled SegmentedTabs title", () => {
+    const ownedAgents: ReadonlyArray<OwnedAgentSummaryDto> = [
+      {
+        id: MY_CODEX_ID,
+        ownerUserId: ME_ID,
+        displayName: "庞彦-Codex",
+        slug: "pangyan-codex",
+        platform: "codex",
+        reach: "online_sse",
+        allowExternalDm: false,
+        createdAtIso: "2026-11-24T00:00:00.000Z",
+      },
+    ];
+    resetSoloWorkbenchShowcase(ownedAgents, "庞彦");
+    expect(getSoloWorkTaskById("solo_wrk_attn_02")?.attention).toBeDefined();
+    stopSoloWorkTask("solo_wrk_attn_02");
+    expect(getSoloWorkTaskById("solo_wrk_attn_02")?.stage).toBe("cancelled");
+    expect(getSoloWorkTaskById("solo_wrk_attn_02")?.attention).toBeUndefined();
+
+    loadRoomWorkShowcase({
+      roomId: ROOM_ID,
+      preset: "needs_you",
+      latestSeq: 22,
+      members: SAMPLE_MEMBERS,
+      currentUserId: ME_ID,
+    });
+    stopRoomWorkItem(ROOM_ID, "wrk_showcase_attn");
+    const stoppedRoomItem = getRoomWorkItems(ROOM_ID).find((i) => i.id === "wrk_showcase_attn");
+    expect(stoppedRoomItem?.stage).toBe("cancelled");
+    expect(stoppedRoomItem?.attention).toBeUndefined();
+
+    const tabsHtml = renderToStaticMarkup(
+      createElement(SegmentedTabs, {
+        value: "verify_loop",
+        onValueChange() {},
+        items: [
+          { value: "direct", label: "单人" },
+          { value: "verify_loop", label: "复核" },
+          {
+            value: "swarm",
+            label: "并行",
+            disabled: true,
+            title: "仅多目录组合且非只读工作区支持",
+          },
+        ],
+      }),
+    );
+    expect(tabsHtml).toContain('title="仅多目录组合且非只读工作区支持"');
+    expect(tabsHtml).toContain("cursor-not-allowed");
+    expect(tabsHtml).not.toContain("disabled:pointer-events-none");
   });
 });

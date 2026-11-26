@@ -63,7 +63,12 @@ import {
   upsertServerWorkspaceInStore,
 } from "./solo-workbench-store.js";
 import type { RoomWorkItemView, WorkAgentRef, WorkSliceNode, WorkTopology } from "./work-types.js";
-import { parsePromptTopologyDirective } from "./work-utils.js";
+import {
+  normalizeWorkspaceRoots,
+  parsePromptTopologyDirective,
+  resolveEffectiveDispatchTopology,
+  workspaceSupportsSwarm,
+} from "./work-utils.js";
 
 function toWebExecutionTier(tier: WorkItemDto["tier"]): AgentExecutionTier {
   if (tier === "chat_only" || tier === "workspace_read") {
@@ -310,17 +315,8 @@ export async function saveWorkspaceOnServer(
   const isFolder = input.kind === "folder";
   const effectiveSandbox =
     isFolder && input.sandboxMode === "worktree_pool" ? "in_place" : input.sandboxMode;
-  const normalizedRoots = (
-    input.roots.length > 0
-      ? input.roots
-      : [{ localPath: isFolder ? `~/Documents/${cleanName}` : `~/Developer/${cleanName}` }]
-  ).map((r) => ({
-    ...(r.name?.trim() ? { name: r.name.trim() } : {}),
-    localPath:
-      r.localPath.trim() || (isFolder ? `~/Documents/${cleanName}` : `~/Developer/${cleanName}`),
-    isGitRepo: !isFolder,
-    ...(!isFolder && r.defaultBranch?.trim() ? { defaultBranch: r.defaultBranch.trim() } : {}),
-  }));
+  const { roots, kind } = normalizeWorkspaceRoots(input);
+  const normalizedRoots = roots.map((root) => ({ ...root, isGitRepo: !isFolder }));
 
   const hooksPayload = {
     ...(input.setupCommand?.trim() ? { setupCommand: input.setupCommand.trim() } : {}),
@@ -330,7 +326,7 @@ export async function saveWorkspaceOnServer(
   if (input.id?.startsWith("wsp_")) {
     const res = await updateWorkspaceApi(input.id as WorkspaceId, {
       name: cleanName,
-      kind: normalizedRoots.length > 1 ? "multi_root" : input.kind,
+      kind,
       roots: normalizedRoots,
       ...(input.hostMode !== undefined ? { hostMode: input.hostMode } : {}),
       ...(input.hostLabel?.trim() ? { hostLabel: input.hostLabel.trim() } : {}),
@@ -353,7 +349,7 @@ export async function saveWorkspaceOnServer(
 
   const res = await createWorkspaceApi({
     name: cleanName,
-    kind: normalizedRoots.length > 1 ? "multi_root" : input.kind,
+    kind,
     roots: normalizedRoots,
     hostMode: input.hostMode ?? "local_machine",
     ...(input.hostLabel?.trim() ? { hostLabel: input.hostLabel.trim() } : {}),
@@ -399,38 +395,27 @@ export async function bindRoomWorkspaceOnServer(
   });
 }
 
-function buildSwarmDisjointSlices(params: {
+export function buildSwarmDisjointSlices(params: {
   readonly workspace: AgentWorkspace;
   readonly title: string;
   readonly workerAId: AgentId;
   readonly workerBId: AgentId;
   readonly leaseRole: "write" | "read";
 }): readonly CreateWorkSliceSpec[] {
-  const firstRoot = params.workspace.roots[0];
-  const secondRoot = params.workspace.roots[1];
-  const pathsA =
-    params.workspace.roots.length > 1 && firstRoot !== undefined
-      ? [`${firstRoot.name}/**`]
-      : ["packages/**", "docs/**"];
-  const pathsB =
-    params.workspace.roots.length > 1 && secondRoot !== undefined
-      ? [`${secondRoot.name}/**`]
-      : ["apps/**", "scripts/**"];
-
-  return [
-    {
-      title: `分片 A：核心与契约实现（${params.title.slice(0, 24)}）`,
-      assignedAgentId: params.workerAId,
+  if (!workspaceSupportsSwarm(params.workspace)) {
+    return [];
+  }
+  const workers = [params.workerAId, params.workerBId] as const;
+  return params.workspace.roots.map((root, index) => {
+    const rootName = root.name.trim();
+    const assignedAgentId = workers[index % workers.length] ?? params.workerAId;
+    return {
+      title: `分片 ${String.fromCharCode(65 + (index % 26))}：${rootName}（${params.title.slice(0, 24)}）`,
+      assignedAgentId,
       leaseRole: params.leaseRole,
-      ownedPaths: pathsA,
-    },
-    {
-      title: `分片 B：应用层联动与回归校验（${params.title.slice(0, 24)}）`,
-      assignedAgentId: params.workerBId,
-      leaseRole: params.leaseRole,
-      ownedPaths: pathsB,
-    },
-  ];
+      ownedPaths: [`${rootName}/**`],
+    };
+  });
 }
 
 /** 有实时监听连接的设备在自动分配时优先，同类候选保留配置和原有顺序。 */
@@ -474,10 +459,15 @@ export async function dispatchWorkbenchTaskOnServer(input: {
     throw new Error("请先接入至少 1 个本机 Agent 后再派发任务");
   }
 
-  const { topology: effectiveTopology, body } = parsePromptTopologyDirective(
+  const { topology: parsedTopology, body } = parsePromptTopologyDirective(
     input.rawPrompt,
     input.topology,
   );
+  const effectiveTopology = resolveEffectiveDispatchTopology({
+    requested: parsedTopology,
+    workspace: input.workspace,
+    agentCount: input.ownedAgents.length,
+  });
   const cleanBrief = body.trim() || input.rawPrompt.trim();
   const firstLine = cleanBrief.split(/\r?\n/)[0]?.trim() ?? "工作区任务";
   const title = firstLine.length > 64 ? `${firstLine.slice(0, 64)}…` : firstLine;
@@ -530,7 +520,7 @@ export async function dispatchWorkbenchTaskOnServer(input: {
     ...(effectiveTopology === "swarm" ? { coordinatorAgentId: primaryWorkerId } : {}),
     primaryWorkerAgentId: primaryWorkerId,
     ...(verifierAgentId !== undefined ? { verifierAgentId } : {}),
-    ...(slices !== undefined ? { slices: [...slices] } : {}),
+    ...(slices !== undefined && slices.length > 0 ? { slices: [...slices] } : {}),
     opKey,
   });
 

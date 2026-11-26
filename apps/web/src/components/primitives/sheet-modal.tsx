@@ -312,6 +312,18 @@ export function AppSheetDrawer(props: AppSheetDrawerProps) {
       <Drawer.Portal>
         <Drawer.Overlay className="app-no-drag fixed inset-0 z-[85] bg-[#090A0E]/32 dark:bg-[#050609]/62" />
         <Drawer.Content
+          onEscapeKeyDown={(event) => {
+            const active = document.activeElement;
+            if (
+              (active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement) &&
+              active.closest("[data-attention-card]") !== null
+            ) {
+              event.preventDefault();
+              if (!event.isComposing) {
+                active.blur();
+              }
+            }
+          }}
           className={cn(
             "app-no-drag fixed z-[86] flex flex-col overflow-hidden outline-none",
             "liquid-glass-modal text-[#111318]",

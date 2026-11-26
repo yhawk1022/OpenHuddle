@@ -58,6 +58,7 @@ import {
   SegmentedTabs,
   cn,
   motion,
+  toast,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { ImageLightboxDialog } from "../../../components/ui/message-attachment.js";
@@ -78,11 +79,13 @@ import {
   formatDraftAttachmentDisplayName,
 } from "../../../lib/message-media.js";
 import { isCoarsePointerDevice, isImeComposing } from "../../../lib/viewport-sync.js";
+import type { AgentWorkspace } from "../work/solo-workbench-store.js";
 import type {
   DispatchWorkPayload,
   RoomOrchestrationDefaults,
   WorkTopology,
 } from "../work/work-types.js";
+import { workspaceSupportsSwarm } from "../work/work-utils.js";
 import "./mobile-chat-composer.css";
 import { StickerPicker } from "./sticker-picker.js";
 import { useMessageMediaDraft } from "./use-message-media-draft.js";
@@ -116,6 +119,8 @@ export interface MessageComposerProps {
   readonly currentUserId: UserId;
   /** 当前登录用户的展示昵称（用于渲染输入舱内本人发言身份提示） */
   readonly currentUserDisplayName?: string | undefined;
+  /** 当前房间关联的受控工作区（用于动态决定是否启用「多路并行」） */
+  readonly boundWorkspace?: AgentWorkspace | null | undefined;
   readonly orchestrationDefaults?: RoomOrchestrationDefaults | undefined;
   /** 从右侧任务面板、消息右键菜单或已拍板提案卡传入的快捷派活预填意图 */
   readonly pendingDispatchSeed?:
@@ -582,6 +587,40 @@ export function MessageComposer(props: MessageComposerProps) {
     ? dispatchTier
     : "chat_only";
 
+  const hasEnoughAgentsForSwarm = agentMembers.length >= 2;
+  const workspaceBlocksSwarm =
+    props.boundWorkspace != null && !workspaceSupportsSwarm(props.boundWorkspace);
+  const supportsSwarm = hasEnoughAgentsForSwarm && !workspaceBlocksSwarm;
+  const swarmDisabledReason = !hasEnoughAgentsForSwarm
+    ? "群内至少需要 2 个 Agent 才能启用多路并行"
+    : workspaceBlocksSwarm
+      ? "仅多目录组合且非只读工作区支持"
+      : undefined;
+  const fallbackNonSwarmTopology: WorkTopology =
+    agentMembers.length >= 2 && props.boundWorkspace?.kind !== "folder" ? "verify_loop" : "direct";
+  const effectiveDispatchTopology: WorkTopology =
+    dispatchTopology === "swarm" && !supportsSwarm ? fallbackNonSwarmTopology : dispatchTopology;
+
+  const topologyTabItems = useMemo<ReadonlyArray<SegmentedTabItem<WorkTopology>>>(
+    () =>
+      TOPOLOGY_TAB_ITEMS.map((item) =>
+        item.value === "swarm" && !supportsSwarm
+          ? {
+              ...item,
+              disabled: true,
+              ...(swarmDisabledReason !== undefined ? { title: swarmDisabledReason } : {}),
+            }
+          : item,
+      ),
+    [supportsSwarm, swarmDisabledReason],
+  );
+
+  useEffect(() => {
+    if (dispatchTopology === "swarm" && !supportsSwarm) {
+      setDispatchTopology(fallbackNonSwarmTopology);
+    }
+  }, [dispatchTopology, fallbackNonSwarmTopology, supportsSwarm]);
+
   // 响应从「去派活」「提案派发执行」或「消息转为执行任务」传来的预填意图
   useEffect(() => {
     const seed = props.pendingDispatchSeed;
@@ -591,8 +630,10 @@ export function MessageComposer(props: MessageComposerProps) {
     setAskMode(false);
     setDispatchMode(true);
     if (seed.topology !== undefined) {
-      setDispatchTopology(seed.topology);
-    } else if (agentMembers.length >= 3) {
+      setDispatchTopology(
+        seed.topology === "swarm" && !supportsSwarm ? fallbackNonSwarmTopology : seed.topology,
+      );
+    } else if (agentMembers.length >= 3 && supportsSwarm) {
       setDispatchTopology("swarm");
     } else if (agentMembers.length >= 2) {
       setDispatchTopology("verify_loop");
@@ -618,10 +659,12 @@ export function MessageComposer(props: MessageComposerProps) {
     });
   }, [
     agentMembers.length,
+    fallbackNonSwarmTopology,
     getPref,
     props.onConsumeDispatchSeed,
     props.pendingDispatchSeed,
     resolvedExecutor,
+    supportsSwarm,
   ]);
 
   const resizeDraft = useCallback(() => {
@@ -945,7 +988,7 @@ export function MessageComposer(props: MessageComposerProps) {
         : undefined;
     const workDispatch: DispatchWorkPayload | undefined = dispatchMode
       ? {
-          topology: dispatchTopology,
+          topology: effectiveDispatchTopology,
           tier: effectiveDispatchTier,
           ...(resolvedCoordinator?.agentId !== undefined
             ? { coordinatorAgentId: resolvedCoordinator.agentId }
@@ -953,7 +996,7 @@ export function MessageComposer(props: MessageComposerProps) {
           ...(resolvedExecutor?.agentId !== undefined
             ? { executorAgentId: resolvedExecutor.agentId }
             : {}),
-          ...(dispatchTopology !== "direct" && resolvedVerifier?.agentId !== undefined
+          ...(effectiveDispatchTopology !== "direct" && resolvedVerifier?.agentId !== undefined
             ? { verifierAgentId: resolvedVerifier.agentId }
             : {}),
         }
@@ -974,7 +1017,7 @@ export function MessageComposer(props: MessageComposerProps) {
     const savedMentions = selectedMentions;
     const savedAsk = askMode;
     const savedDispatch = dispatchMode;
-    const savedTopology = dispatchTopology;
+    const savedTopology = effectiveDispatchTopology;
     const savedAttachment = attachment;
 
     setDraft("");
@@ -1335,9 +1378,15 @@ export function MessageComposer(props: MessageComposerProps) {
                       {effectiveKind === "group" ? (
                         <div className="shrink-0">
                           <SegmentedTabs
-                            value={dispatchTopology}
-                            onValueChange={setDispatchTopology}
-                            items={TOPOLOGY_TAB_ITEMS}
+                            value={effectiveDispatchTopology}
+                            onValueChange={(nextTopology) => {
+                              if (nextTopology === "swarm" && !supportsSwarm) {
+                                setDispatchTopology(fallbackNonSwarmTopology);
+                                return;
+                              }
+                              setDispatchTopology(nextTopology);
+                            }}
+                            items={topologyTabItems}
                             size="xs"
                             ariaLabel="选择协作方式"
                           />
@@ -1363,12 +1412,12 @@ export function MessageComposer(props: MessageComposerProps) {
                           }}
                           className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-full bg-black/[0.045] px-2.5 py-0.5 text-[#3B414E] transition hover:bg-black/[0.08] dark:bg-white/[0.07] dark:text-[#D4D4D8] dark:hover:bg-white/[0.12]"
                         >
-                          {dispatchTopology === "swarm" ? (
+                          {effectiveDispatchTopology === "swarm" ? (
                             <span className="truncate">
                               @{resolvedCoordinator?.displayName ?? "Agent"} 等{" "}
                               {Math.max(2, agentMembers.length)} 路并行
                             </span>
-                          ) : dispatchTopology === "verify_loop" ? (
+                          ) : effectiveDispatchTopology === "verify_loop" ? (
                             <span className="truncate">
                               @{resolvedExecutor?.displayName ?? "Agent"} 执行 · @
                               {resolvedVerifier?.displayName ?? "Agent"} 复核
@@ -1551,9 +1600,21 @@ export function MessageComposer(props: MessageComposerProps) {
                   const rest = slashMatch[2] ?? "";
                   setAskMode(false);
                   setDispatchMode(true);
-                  setDispatchTopology(
-                    cmd === "swarm" ? "swarm" : cmd === "verify" ? "verify_loop" : "direct",
-                  );
+                  if (cmd === "swarm") {
+                    if (supportsSwarm) {
+                      setDispatchTopology("swarm");
+                    } else {
+                      setDispatchTopology(fallbackNonSwarmTopology);
+                      toast.info(
+                        `当前暂不支持多路并行，已切换为${fallbackNonSwarmTopology === "verify_loop" ? "双人复核" : "单人执行"}`,
+                        ...(swarmDisabledReason !== undefined
+                          ? [{ description: swarmDisabledReason }]
+                          : []),
+                      );
+                    }
+                  } else {
+                    setDispatchTopology(cmd === "verify" ? "verify_loop" : "direct");
+                  }
                   setDraft(rest);
                   setCaretIndex(rest.length);
                   return;

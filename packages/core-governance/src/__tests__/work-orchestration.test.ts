@@ -4,6 +4,7 @@ import {
   MAX_SLICE_ATTEMPTS,
   type OrchestrationItemState,
   type OrchestrationSliceState,
+  WORK_AGENT_STOP_INSTRUCTION,
   detectOwnedPathConflicts,
   evaluateHumanReviewDecision,
   evaluateRaiseSliceAttention,
@@ -11,6 +12,7 @@ import {
   evaluateSliceCompletion,
   evaluateSliceHeartbeat,
   evaluateWorkspaceExecutionAccess,
+  parseWorkVerdict,
   scrubWorkText,
 } from "../index.js";
 
@@ -515,5 +517,56 @@ describe("@openhuddle/core-governance — work orchestration & durable leases", 
     if (!doneRetry.ok) return;
     expect(doneRetry.idempotentReplay).toBe(true);
     expect(doneRetry.wakeAgentIds).toEqual([]);
+  });
+
+  it("preserves WORK_AGENT_STOP_INSTRUCTION line 1 while adding autonomous hosting guidance and strict NEEDS_INPUT rules", () => {
+    const lines = WORK_AGENT_STOP_INSTRUCTION.split("\n");
+    expect(lines[0]).toBe(
+      "Choose your own completion and stopping criteria from the assigned goal and evidence. Finish when those criteria are met. Continue or request rework only when you can name a concrete next action that makes progress.",
+    );
+    expect(WORK_AGENT_STOP_INSTRUCTION).toContain("ownedPaths");
+    expect(WORK_AGENT_STOP_INSTRUCTION).toContain("NEEDS_INPUT:");
+    expect(WORK_AGENT_STOP_INSTRUCTION).toContain("owner’s language");
+  });
+
+  it("parses final VERDICT strictly from the last non-empty line while tolerating common Markdown wrappers", () => {
+    const passingCases: Array<[string, "passed" | "changes_requested", string]> = [
+      ["All checks look solid.\nVERDICT: PASSED", "passed", "All checks look solid."],
+      [
+        "Missing boundary check.\nVERDICT: CHANGES_REQUESTED",
+        "changes_requested",
+        "Missing boundary check.",
+      ],
+      ["Reviewed.\n**VERDICT: PASSED**\n\n", "passed", "Reviewed."],
+      ["Reviewed.\r\n__VERDICT: CHANGES_REQUESTED__\r\n", "changes_requested", "Reviewed."],
+      ["Reviewed.\n`VERDICT: PASSED`", "passed", "Reviewed."],
+      ["Reviewed.\n### **VERDICT：PASSED。**", "passed", "Reviewed."],
+      ["Reviewed.\n- **VERDICT**: **CHANGES_REQUESTED**.", "changes_requested", "Reviewed."],
+      ["Reviewed.\n* `verdict: passed`", "passed", "Reviewed."],
+      ["Reviewed.\n> **VERDICT:** `CHANGES_REQUESTED`。", "changes_requested", "Reviewed."],
+      ["VERDICT: PASSED", "passed", ""],
+    ];
+
+    for (const [raw, expectedVerdict, expectedSummary] of passingCases) {
+      const parsed = parseWorkVerdict(raw);
+      expect(parsed, raw).toBeDefined();
+      expect(parsed?.verdict, raw).toBe(expectedVerdict);
+      expect(raw.slice(0, parsed?.summaryEndIndex).trim(), raw).toBe(expectedSummary);
+    }
+
+    const rejectedCases = [
+      "",
+      "   \n  ",
+      "VERDICT: PASSED\nHowever, I noticed a bug in line 42.",
+      'Quoted example: "VERDICT: PASSED"\nNeeds further checks.',
+      "VERDICT: PASSED (looks good)",
+      "I think VERDICT: PASSED",
+      "VERDICT: APPROVED",
+      "PASSED",
+      'NEEDS_INPUT: {"question":"VERDICT: PASSED","options":["A","B"]}',
+    ];
+    for (const raw of rejectedCases) {
+      expect(parseWorkVerdict(raw), raw).toBeUndefined();
+    }
   });
 });

@@ -35,7 +35,7 @@ import type {
   WorkStage,
   WorkTopology,
 } from "./work-types.js";
-import { parsePromptTopologyDirective } from "./work-utils.js";
+import { normalizeWorkspaceRoots, parsePromptTopologyDirective } from "./work-utils.js";
 
 /**
  * 个人工作台侧栏状态筛选器。
@@ -558,20 +558,14 @@ export function upsertAgentWorkspace(input: UpsertAgentWorkspaceInput): AgentWor
   const existing =
     input.id !== undefined ? stateSnapshot.repos.find((w) => w.id === input.id) : undefined;
 
-  const normalizedRoots: ReadonlyArray<WorkspaceRootEntry> = (
-    input.roots.length > 0
-      ? input.roots
-      : [{ localPath: isFolderKind ? `~/Documents/${cleanName}` : `~/Developer/${cleanName}` }]
-  ).map((raw, index) => {
-    const cleanPath =
-      raw.localPath.trim() ||
-      (isFolderKind ? `~/Documents/${cleanName}` : `~/Developer/${cleanName}`);
+  const { roots, kind } = normalizeWorkspaceRoots(input);
+  const normalizedRoots: ReadonlyArray<WorkspaceRootEntry> = roots.map((raw, index) => {
+    const cleanPath = raw.localPath;
     const priorRoot = existing?.roots.find((r) => r.localPath === cleanPath);
     const inferredName =
-      raw.name?.trim() ||
+      input.roots.find((r) => r.localPath.trim() === cleanPath)?.name?.trim() ||
       priorRoot?.name ||
-      cleanPath.replace(/\/+$/, "").split("/").pop() ||
-      `root-${String(index + 1)}`;
+      raw.name;
     const branch = isFolderKind ? undefined : raw.defaultBranch?.trim() || "main";
     return {
       id:
@@ -595,9 +589,9 @@ export function upsertAgentWorkspace(input: UpsertAgentWorkspaceInput): AgentWor
   const workspace: AgentWorkspace = {
     id: existing?.id ?? `ws_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
     name: cleanName,
-    kind: normalizedRoots.length > 1 ? "multi_root" : input.kind,
+    kind,
     roots: normalizedRoots,
-    localPath: primaryRoot?.localPath ?? `~/Developer/${cleanName}`,
+    localPath: primaryRoot?.localPath ?? "",
     defaultBranch: isFolderKind ? "—" : (primaryRoot?.defaultBranch ?? "main"),
     host: {
       mode: input.hostMode ?? existing?.host.mode ?? "local_machine",
@@ -1009,20 +1003,24 @@ export function stopSoloWorkTask(taskId: string): void {
   const nowIso = new Date().toISOString();
   setSnapshot({
     ...stateSnapshot,
-    tasks: stateSnapshot.tasks.map((task) =>
-      task.id === taskId
-        ? {
-            ...task,
-            stage: "cancelled",
-            slices: task.slices.map((s) =>
-              s.status === "running" || s.status === "verifying" || s.status === "waiting"
-                ? { ...s, status: "blocked", liveSummary: "已手动停止并保留当前分支草稿" }
-                : s,
-            ),
-            updatedAtIso: nowIso,
-          }
-        : task,
-    ),
+    tasks: stateSnapshot.tasks.map((task) => {
+      if (task.id !== taskId) {
+        return task;
+      }
+      const { attention: _pendingAttention, ...taskWithoutAttention } = task;
+      const hasPendingAttention =
+        task.attention !== undefined && task.attention.answeredChoice === undefined;
+      return {
+        ...(hasPendingAttention ? taskWithoutAttention : task),
+        stage: "cancelled",
+        slices: task.slices.map((s) =>
+          s.status === "running" || s.status === "verifying" || s.status === "waiting"
+            ? { ...s, status: "blocked", liveSummary: "已手动停止并保留当前分支草稿" }
+            : s,
+        ),
+        updatedAtIso: nowIso,
+      };
+    }),
   });
   mirrorToLinkedRoomWork(targetTask, (roomId, roomWorkId) => {
     stopRoomWorkItem(roomId, roomWorkId);
