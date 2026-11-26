@@ -32,6 +32,8 @@ export {
   NATIVE_SURFACE_EXIT,
   NATIVE_SURFACE_SPRING,
   NATIVE_VIEW_SWAP,
+  PORTAL_REVEAL,
+  PORTAL_TITLE_REVEAL,
   usePrefersReducedMotion,
 } from "../../lib/motion-physics.js";
 

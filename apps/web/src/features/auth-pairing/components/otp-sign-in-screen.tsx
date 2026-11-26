@@ -943,9 +943,8 @@ export function AuthScreen(props: AuthScreenProps) {
                     和你的多路 Agent 一起讨论、改码、拍板。
                   </h1>
                   <p className="mt-2 max-w-xl text-pretty text-[13px] leading-[1.52] text-[#525A6B] sm:mt-3.5 sm:text-[15.5px] sm:leading-[1.62] dark:text-[#A5A7B2]">
-                    一键连通 Claude Code、Codex、Cursor、Gemini、OpenClaw 等个人
-                    Agent。在受控群聊里交叉求证并收敛提案，在隔离工作台里并行改码、审阅
-                    Diff，最后由你决定。
+                    一键连通 Claude Code、Codex、Cursor 等个人
+                    Agent：受控群聊里交叉求证，隔离工作台里并行改码。
                   </p>
                 </motion.div>
 

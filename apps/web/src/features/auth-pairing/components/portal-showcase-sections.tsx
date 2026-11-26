@@ -8,6 +8,8 @@
  * 1. 首屏预览器外框挂载单层 `relative liquid-glass-modal`，内部严禁任何嵌套 `backdrop-blur`。
  * 2. 首屏下方所有内容卡片均采用无 `backdrop-blur` 的清晰分层表面（`PORTAL_SURFACE_CARD_CLASS`），确保 120Hz 顺滑滚动。
  * 3. 暗夜模式下代码井、命令槽、迷你导航示意框与作者邮箱框恒定使用深中性烟熏石墨 `#141417`，杜绝刺眼白块。
+ * 4. 首屏以下分区经 `portal-reveal` 滚动渐进显现（眉标划线 → 标题遮罩上浮 → 卡片与条目错峰级联）：
+ *    仅驱动 `transform` / `opacity`、进入视口一次性触发，并遵循系统「减少动态效果」直接渲染终态。
  */
 import type { AgentPlatform } from "@openhuddle/protocol";
 import {
@@ -50,6 +52,13 @@ import {
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { PlatformGlyph } from "../../../components/ui/platform-icons.js";
+import {
+  PortalEyebrow,
+  PortalSectionHeader,
+  PortalTitleReveal,
+  portalRevealItem,
+  portalRevealTrigger,
+} from "./portal-reveal.js";
 
 /** 作者公开联系邮箱 */
 export const AUTHOR_CONTACT_EMAIL = "impangyan@outlook.com";
@@ -837,15 +846,15 @@ const CONNECT_METHODS: ReadonlyArray<{
 }> = [
   {
     title: "一句话指令接入",
-    detail: "复制引导指令发给云端或沙箱中的 Agent，自动安装单文件 CLI 并完成专属令牌绑定。",
+    detail: "复制一句指令发给 Agent，自动装好 CLI 并绑定令牌。",
   },
   {
     title: "本机 CLI 自动识别绑定",
-    detail: "自动识别本机已安装的 Claude、Codex、Antigravity、Gemini 等命令并拉起后台监听服务。",
+    detail: "自动识别本机已装的 Agent 命令并拉起后台监听。",
   },
   {
     title: "MCP 与 HTTPS 接入",
-    detail: "支持 MCP 协议与标准 HTTPS 接口，本机和远程的 Agent 客户端都能直接接入。",
+    detail: "本机与远程的 Agent 客户端均可直连。",
   },
 ];
 
@@ -855,19 +864,19 @@ const HUDDLE_GOVERNANCE_ITEMS: ReadonlyArray<{
 }> = [
   {
     title: "Agent 不会互相刷屏",
-    detail: "可设置 Agent 连续发言上限，到达后自动暂停，等你发话再继续，不会陷入无休止的互相 @。",
+    detail: "连续发言到上限自动暂停，等你发话再继续。",
   },
   {
     title: "不抢话、不答非所问",
-    detail: "Agent 必须先读完最新消息才能发言，不会基于过时的聊天内容抢着回复。",
+    detail: "先读完最新消息才能发言。",
   },
   {
     title: "结构化提案与拍板",
-    detail: "把多轮讨论收敛为含备选方案、利弊与风险的提案卡；Agent 投票表态，最终拍板仅限人类。",
+    detail: "讨论收敛为备选方案卡，Agent 投票，拍板只属于人类。",
   },
   {
     title: "只读分享回放",
-    detail: "按需开启公开只读分享链接，完整展示多 Agent 推演全过程与置顶人类决议。",
+    detail: "一条链接只读回放完整讨论与决议。",
   },
 ];
 
@@ -886,15 +895,15 @@ const WORKBENCH_CAPABILITY_ITEMS: ReadonlyArray<{
 }> = [
   {
     title: "单问澄清机制",
-    detail: "任务遇到关键边界分歧时挂起单问澄清卡片并给出备选项，人类点选后即刻恢复执行。",
+    detail: "遇到关键分歧时挂起并给出选项，你点选后即刻继续。",
   },
   {
     title: "Unified Diff 代码审阅",
-    detail: "内置实时步骤追踪流与代码增删对比审阅器，支持一键复制命令在 Cursor 或 VS Code 打开。",
+    detail: "实时步骤追踪与增删对比，可一键在 Cursor 或 VS Code 打开。",
   },
   {
     title: "一键拉群会诊",
-    detail: "单人工作台遇到复杂取舍时，可携任务摘要与分支上下文直接升级为多 Agent 群聊会诊。",
+    detail: "复杂取舍时带着任务与分支上下文拉群会诊。",
   },
 ];
 
@@ -904,20 +913,19 @@ const SANDBOX_BOUNDARY_ITEMS: ReadonlyArray<{
 }> = [
   {
     title: "三种目录形态",
-    detail: "支持单代码仓库、前后端多目录组合工作区，以及非 Git 普通文档文件夹。",
+    detail: "单仓库、多目录工作区、非 Git 文件夹均可。",
   },
   {
     title: "三级隔离围栏",
-    detail: "每个任务可在独立的分支副本里改码，也可原地修改或只读审阅，多个 Agent 并行互不干扰。",
+    detail: "分支副本改码、原地修改或只读审阅，并行互不干扰。",
   },
   {
     title: "多端运行宿主",
-    detail: "同一套协议覆盖本机开发目录、远程云端沙箱与团队多人容器环境。",
+    detail: "本机目录、云端沙箱与团队容器，同一套协议。",
   },
   {
     title: "Agent 只听主人的",
-    detail:
-      "每个 Agent 只执行自己主人的指令，群里其他人或别人的 Agent 说的话只作参考，防止被越权指挥。",
+    detail: "只执行主人的指令，其他人的发言仅作参考。",
   },
 ];
 
@@ -925,38 +933,29 @@ const SANDBOX_BOUNDARY_ITEMS: ReadonlyArray<{
  * 核心协作能力分区（`#portal-capabilities`）。
  */
 export function PortalCapabilitiesSection() {
+  const reducedMotion = usePrefersReducedMotion();
   return (
     <section id="portal-capabilities" className="shrink-0 scroll-mt-20">
-      <div className="max-w-2xl">
-        <p className="text-[12px] font-semibold tracking-wider text-[#5A6272] dark:text-[#8E8E96]">
-          核心协作能力
-        </p>
-        <h2 className="mt-1.5 text-balance text-[22px] font-semibold leading-[1.22] tracking-[-0.025em] text-[#111318] sm:text-[28px] dark:text-[#F2F2F4]">
-          从一键连通个人 Agent，到群聊拍板与工作台交付
-        </h2>
-        <p className="mt-2 text-pretty text-[14px] leading-relaxed text-[#525A6B] sm:text-[15px] dark:text-[#A0A2AC]">
-          保留你熟悉的代码仓与终端工作流，把不同平台的个人 Agent
-          组织成可讨论、可分工、可审阅的协作团队。
-        </p>
-      </div>
+      <PortalSectionHeader eyebrow="核心协作能力" title="从连通 Agent 到群聊拍板与代码交付" />
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:gap-5 md:grid-cols-2">
         {/* 卡片 1：一键连通各类个人 Agent */}
-        <article className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}>
-          <div>
+        <motion.article
+          {...portalRevealTrigger(reducedMotion)}
+          className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}
+        >
+          <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
               一键连通各类个人 Agent
             </h3>
-            <p className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-              不锁定单一模型厂商，把你手头最顺手的编码与推理 Agent 自由编入同一空间。
-            </p>
-          </div>
+          </PortalTitleReveal>
 
           {/* 8 平台官方矢量图标阵列 */}
           <div className="mt-4 grid grid-cols-2 gap-1.5 xl:grid-cols-4">
-            {SUPPORTED_AGENT_PLATFORMS.map((item) => (
-              <div
+            {SUPPORTED_AGENT_PLATFORMS.map((item, idx) => (
+              <motion.div
                 key={item.platform}
+                {...portalRevealItem(0.08 + idx * 0.022)}
                 className="flex min-w-0 items-center gap-1.5 rounded-[12px] border border-black/[0.05] bg-[#F4F6F8] px-2 py-1.5 dark:border-white/[0.06] dark:bg-[#141417]"
               >
                 <span
@@ -971,65 +970,80 @@ export function PortalCapabilitiesSection() {
                 <span className="truncate text-[11.5px] font-medium tracking-[-0.015em] text-[#1F2430] dark:text-[#E6E8EE]">
                   {item.label}
                 </span>
-              </div>
+              </motion.div>
             ))}
           </div>
 
           <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {CONNECT_METHODS.map((item) => (
-              <div key={item.title} className="py-2.5 first:pt-3 last:pb-0">
+            {CONNECT_METHODS.map((item, idx) => (
+              <motion.div
+                key={item.title}
+                {...portalRevealItem(0.18 + idx * 0.04)}
+                className="py-2.5 first:pt-3 last:pb-0"
+              >
                 <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
                   {item.title}
                 </dt>
                 <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
                   {item.detail}
                 </dd>
-              </div>
+              </motion.div>
             ))}
           </dl>
-        </article>
+        </motion.article>
 
         {/* 卡片 2：多 Agent 群聊、单聊与人类拍板 */}
-        <article className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}>
-          <div>
+        <motion.article
+          {...portalRevealTrigger(reducedMotion, 0.08)}
+          className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}
+        >
+          <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
               多 Agent 群聊、单聊与人类拍板
             </h3>
-            <p className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-              支持多 Agent 群聊、与 Agent 单聊以及好友私聊，讨论有秩序，结论由你决定。
-            </p>
-          </div>
+          </PortalTitleReveal>
+          <motion.p
+            {...portalRevealItem(0.14)}
+            className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]"
+          >
+            也支持与 Agent 单聊、与好友私聊。
+          </motion.p>
 
           <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {HUDDLE_GOVERNANCE_ITEMS.map((item) => (
-              <div key={item.title} className="py-3 first:pt-3.5 last:pb-0">
+            {HUDDLE_GOVERNANCE_ITEMS.map((item, idx) => (
+              <motion.div
+                key={item.title}
+                {...portalRevealItem(0.18 + idx * 0.04)}
+                className="py-3 first:pt-3.5 last:pb-0"
+              >
                 <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
                   {item.title}
                 </dt>
                 <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
                   {item.detail}
                 </dd>
-              </div>
+              </motion.div>
             ))}
           </dl>
-        </article>
+        </motion.article>
 
         {/* 卡片 3：面向代码交付的多 Agent 工作台 */}
-        <article className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}>
-          <div>
+        <motion.article
+          {...portalRevealTrigger(reducedMotion)}
+          className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}
+        >
+          <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
               面向代码交付的多 Agent 工作台
             </h3>
-            <p className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-              一个任务可指派单兵快速落地，也可由两位或多位 Agent 分片并行与交叉复核。
-            </p>
-          </div>
+          </PortalTitleReveal>
 
           {/* 三种协作拓扑等宽条 */}
           <div className="mt-4 grid grid-cols-3 gap-1.5">
             {WORKBENCH_TOPOLOGIES.map((topo, idx) => (
-              <div
+              <motion.div
                 key={topo.title}
+                {...portalRevealItem(0.12 + idx * 0.05)}
                 className="min-w-0 rounded-[12px] border border-black/[0.05] bg-[#F4F6F8] px-2.5 py-2 text-center dark:border-white/[0.06] dark:bg-[#141417]"
               >
                 <p className="font-mono text-[10.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
@@ -1041,48 +1055,56 @@ export function PortalCapabilitiesSection() {
                 <p className="mt-0.5 text-[11px] text-[#5A6272] dark:text-[#9898A2]">
                   {topo.subtitle}
                 </p>
-              </div>
+              </motion.div>
             ))}
           </div>
 
           <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {WORKBENCH_CAPABILITY_ITEMS.map((item) => (
-              <div key={item.title} className="py-2.5 first:pt-3 last:pb-0">
+            {WORKBENCH_CAPABILITY_ITEMS.map((item, idx) => (
+              <motion.div
+                key={item.title}
+                {...portalRevealItem(0.18 + idx * 0.04)}
+                className="py-2.5 first:pt-3 last:pb-0"
+              >
                 <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
                   {item.title}
                 </dt>
                 <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
                   {item.detail}
                 </dd>
-              </div>
+              </motion.div>
             ))}
           </dl>
-        </article>
+        </motion.article>
 
         {/* 卡片 4：工作区沙箱围栏与归属边界 */}
-        <article className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}>
-          <div>
+        <motion.article
+          {...portalRevealTrigger(reducedMotion, 0.08)}
+          className={cn(PORTAL_SURFACE_CARD_CLASS, "flex min-w-0 flex-col p-5 sm:p-6")}
+        >
+          <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
               工作区沙箱围栏与归属边界
             </h3>
-            <p className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-              灵活指定 Agent 能读写哪些目录，并行改码互不干扰，多人群聊也有清晰的权限边界。
-            </p>
-          </div>
+          </PortalTitleReveal>
 
           <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {SANDBOX_BOUNDARY_ITEMS.map((item) => (
-              <div key={item.title} className="py-3 first:pt-3.5 last:pb-0">
+            {SANDBOX_BOUNDARY_ITEMS.map((item, idx) => (
+              <motion.div
+                key={item.title}
+                {...portalRevealItem(0.18 + idx * 0.04)}
+                className="py-3 first:pt-3.5 last:pb-0"
+              >
                 <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
                   {item.title}
                 </dt>
                 <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
                   {item.detail}
                 </dd>
-              </div>
+              </motion.div>
             ))}
           </dl>
-        </article>
+        </motion.article>
       </div>
     </section>
   );
@@ -1100,30 +1122,27 @@ const ARCHITECTURE_ITEMS: ReadonlyArray<{
   {
     title: "消息实时送达",
     badge: "秒级唤醒",
-    detail: "在群里 @ 一下，对应的 Agent 立即被唤醒，回复实时出现在聊天里，不用手动刷新。",
+    detail: "@ 一下即唤醒，回复实时出现，无需刷新。",
   },
   {
     title: "断线重连不丢消息",
     badge: "重连即同步",
-    detail:
-      "手机切后台、换网络或电脑休眠后，一旦重新连上，期间错过的消息会立即同步过来，不重复也不遗漏。",
+    detail: "切后台、换网络或休眠后，重连即补齐错过的消息，不重不漏。",
   },
   {
     title: "连续追问响应更快",
     badge: "免冷启动",
-    detail: "最近活跃的 Agent 会保持待命 15 分钟，连续追问和多轮协作不必每次重新启动。",
+    detail: "活跃 Agent 保持待命 15 分钟，追问无需重新启动。",
   },
   {
     title: "Agent 掉线任务不中断",
     badge: "自动接管",
-    detail:
-      "执行中的 Agent 掉线或卡住时，任务会安全转交继续；掉线 Agent 迟到的旧结果不会覆盖新进度。",
+    detail: "任务安全转交继续，迟到的旧结果不覆盖新进度。",
   },
   {
     title: "高刷屏上同样顺滑",
     badge: "最高 120Hz",
-    detail:
-      "动画自动适配 60 / 90 / 120Hz 屏幕，滚动与切换跟手；开启系统「减少动态效果」后自动简化。",
+    detail: "自动适配 60 / 90 / 120Hz，并遵循系统减动效设置。",
   },
 ];
 
@@ -1133,19 +1152,19 @@ const MOBILE_DESKTOP_ITEMS: ReadonlyArray<{
 }> = [
   {
     title: "键盘不挡输入框",
-    detail: "键盘弹起时输入框始终贴在键盘上方，中文输入法选词时按回车不会误发消息。",
+    detail: "输入框始终贴在键盘上方，选词回车不误发。",
   },
   {
     title: "侧滑返回符合习惯",
-    detail: "侧滑返回会先关掉当前弹窗或抽屉，不会一下退出页面；刷新后也停留在原来的位置。",
+    detail: "先关弹窗再退页面，刷新后停在原位。",
   },
   {
     title: "添加到手机主屏幕",
-    detail: "像原生 App 一样从主屏幕全屏打开，适配刘海屏与底部手势条。",
+    detail: "全屏打开，适配刘海屏与手势条。",
   },
   {
     title: "桌面端高效操作",
-    detail: "支持 ⌘K 全局搜索、键盘快捷键与右键菜单，常用操作不必离开键盘。",
+    detail: "⌘K 搜索、快捷键与右键菜单。",
   },
 ];
 
@@ -1157,40 +1176,34 @@ export interface PortalArchitectureSectionProps {
  * 连接性能与多端体验分区（`#portal-architecture`）。
  */
 export function PortalArchitectureSection(props: PortalArchitectureSectionProps) {
+  const reducedMotion = usePrefersReducedMotion();
   return (
     <section id="portal-architecture" className="shrink-0 scroll-mt-20">
-      <div className="max-w-2xl">
-        <p className="text-[12px] font-semibold tracking-wider text-[#5A6272] dark:text-[#8E8E96]">
-          性能与多端体验
-        </p>
-        <h2 className="mt-1.5 text-balance text-[22px] font-semibold leading-[1.22] tracking-[-0.025em] text-[#111318] sm:text-[28px] dark:text-[#F2F2F4]">
-          连接快而稳，桌面与手机皆如原生应用
-        </h2>
-        <p className="mt-2 text-pretty text-[14px] leading-relaxed text-[#525A6B] sm:text-[15px] dark:text-[#A0A2AC]">
-          无论在电脑前并行审阅 Diff，还是出门在外用手机跟进讨论并拍板，都能获得连贯可靠的体验。
-        </p>
-      </div>
+      <PortalSectionHeader eyebrow="性能与多端体验" title="连接快而稳，桌面与手机皆如原生应用" />
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:gap-5 lg:grid-cols-12">
         {/* 左卡（7 列）：低延迟持久连接与无损容错 */}
-        <article
+        <motion.article
+          {...portalRevealTrigger(reducedMotion)}
           className={cn(
             PORTAL_SURFACE_CARD_CLASS,
             "flex min-w-0 flex-col p-5 sm:p-6 lg:col-span-7",
           )}
         >
-          <div>
+          <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
               连接快、断线不丢、任务不中断
             </h3>
-            <p className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-              无论网络波动、设备休眠还是 Agent 掉线，协作都能接着进行。
-            </p>
-          </div>
+          </PortalTitleReveal>
 
-          <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {ARCHITECTURE_ITEMS.map((item) => (
-              <div key={item.title} className="py-3 first:pt-3.5 last:pb-0">
+          {/* 左卡与右侧卡片等高：条目均分纵向空间，避免内容较短时底部留白 */}
+          <dl className="mt-4 flex flex-1 flex-col divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
+            {ARCHITECTURE_ITEMS.map((item, idx) => (
+              <motion.div
+                key={item.title}
+                {...portalRevealItem(0.18 + idx * 0.04)}
+                className="flex flex-1 flex-col justify-center py-3"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
                     {item.title}
@@ -1202,28 +1215,29 @@ export function PortalArchitectureSection(props: PortalArchitectureSectionProps)
                 <dd className="mt-1 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
                   {item.detail}
                 </dd>
-              </div>
+              </motion.div>
             ))}
           </dl>
-        </article>
+        </motion.article>
 
         {/* 右卡（5 列）：手机端体验 */}
-        <article
+        <motion.article
+          {...portalRevealTrigger(reducedMotion, 0.08)}
           className={cn(
             PORTAL_SURFACE_CARD_CLASS,
             "flex min-w-0 flex-col justify-between p-5 sm:p-6 lg:col-span-5",
           )}
         >
           <div>
-            <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              手机上用起来像原生 App
-            </h3>
-            <p className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
-              针对 iPhone 与安卓手机的输入法、浏览器地址栏和单手操作逐项打磨。
-            </p>
+            <PortalTitleReveal className="mt-0" delay={0.06}>
+              <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
+                手机上用起来像原生 App
+              </h3>
+            </PortalTitleReveal>
 
             {/* 移动端底部三栏胶囊导航微缩示意条 */}
-            <div
+            <motion.div
+              {...portalRevealItem(0.14)}
               aria-hidden="true"
               className="mt-4 rounded-[16px] border border-black/[0.06] bg-[#EFF1F4] p-2.5 dark:border-white/[0.07] dark:bg-[#141417]"
             >
@@ -1241,18 +1255,22 @@ export function PortalArchitectureSection(props: PortalArchitectureSectionProps)
                   <span className="text-[10.5px] font-semibold leading-none">工作台</span>
                 </div>
               </div>
-            </div>
+            </motion.div>
 
             <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-              {MOBILE_DESKTOP_ITEMS.map((item) => (
-                <div key={item.title} className="py-2.5 first:pt-3">
+              {MOBILE_DESKTOP_ITEMS.map((item, idx) => (
+                <motion.div
+                  key={item.title}
+                  {...portalRevealItem(0.18 + idx * 0.04)}
+                  className="py-2.5 first:pt-3"
+                >
                   <dt className="text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
                     {item.title}
                   </dt>
                   <dd className="mt-0.5 text-[12.5px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]">
                     {item.detail}
                   </dd>
-                </div>
+                </motion.div>
               ))}
             </dl>
           </div>
@@ -1267,7 +1285,7 @@ export function PortalArchitectureSection(props: PortalArchitectureSectionProps)
               查看添加到主屏幕步骤
             </AppButton>
           </div>
-        </article>
+        </motion.article>
       </div>
     </section>
   );
@@ -1290,6 +1308,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
   const [copiedEmail, setCopiedEmail] = useState<boolean>(false);
   const cmdTimerRef = useRef<number | null>(null);
   const emailTimerRef = useRef<number | null>(null);
+  const reducedMotion = usePrefersReducedMotion();
 
   useEffect(() => {
     return () => {
@@ -1340,27 +1359,31 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
       className="shrink-0 scroll-mt-20 grid grid-cols-1 gap-4 sm:gap-5 lg:grid-cols-12"
     >
       {/* 左卡（7 列）：MIT 开源协议，几分钟内私有化部署 */}
-      <article
+      <motion.article
+        {...portalRevealTrigger(reducedMotion)}
         className={cn(
           PORTAL_SURFACE_CARD_CLASS,
           "flex min-w-0 flex-col justify-between p-5 sm:p-6 lg:col-span-7",
         )}
       >
         <div>
-          <p className="text-[12px] font-semibold tracking-wider text-[#5A6272] dark:text-[#8E8E96]">
-            开源与私有化部署
-          </p>
-          <h2 className="mt-1.5 text-balance text-[20px] font-semibold leading-snug tracking-[-0.02em] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
-            MIT 开源协议，几分钟内私有化部署
-          </h2>
-          <p className="mt-2 text-[13.5px] leading-relaxed text-[#525A6B] dark:text-[#A0A2AC]">
-            群聊记录、决议、工作区配置与 Agent
-            凭据都保存在你自己的服务器上。本地一条命令即可启动体验，无需另装数据库；正式部署用
-            Docker Compose 一键拉起，一台 2 核 4G 云服务器即可稳定运行。
-          </p>
+          <PortalEyebrow>开源与私有化部署</PortalEyebrow>
+          <PortalTitleReveal>
+            <h2 className="mt-1.5 text-balance text-[20px] font-semibold leading-snug tracking-[-0.02em] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
+              MIT 开源协议，几分钟内私有化部署
+            </h2>
+          </PortalTitleReveal>
+          <motion.p
+            {...portalRevealItem(0.16)}
+            className="mt-2 text-[13.5px] leading-relaxed text-[#525A6B] dark:text-[#A0A2AC]"
+          >
+            聊天记录、决议与 Agent 凭据都保存在你自己的服务器。本地一条命令即可启动，正式部署用
+            Docker Compose，2 核 4G 云服务器即可运行。
+          </motion.p>
 
           {/* 带一键复制的快速启动命令槽（暗色底严格 #141417） */}
-          <div
+          <motion.div
+            {...portalRevealItem(0.2)}
             data-context-code={PORTAL_QUICK_START_COMMAND}
             className="mt-4 overflow-hidden rounded-[16px] border border-black/[0.07] bg-[#EFF1F4] dark:border-white/[0.08] dark:bg-[#141417]"
           >
@@ -1388,7 +1411,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
             <pre className="overflow-x-auto px-3.5 py-3 font-mono text-[12px] leading-[1.65] text-[#181B22] dark:text-[#E4E4E7]">
               <code>{PORTAL_QUICK_START_COMMAND}</code>
             </pre>
-          </div>
+          </motion.div>
         </div>
 
         <div className="mt-5 flex flex-wrap items-center gap-2.5">
@@ -1417,27 +1440,30 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
             {props.isAuthenticatedWelcome ? "返回工作台" : "回到顶部登录 / 注册"}
           </AppButton>
         </div>
-      </article>
+      </motion.article>
 
       {/* 右卡（5 列）：联系作者与问题反馈 */}
-      <article
+      <motion.article
         id="portal-contact"
+        {...portalRevealTrigger(reducedMotion, 0.08)}
         className={cn(
           PORTAL_SURFACE_CARD_CLASS,
           "flex min-w-0 scroll-mt-20 flex-col justify-between p-5 sm:p-6 lg:col-span-5",
         )}
       >
         <div>
-          <p className="text-[12px] font-semibold tracking-wider text-[#5A6272] dark:text-[#8E8E96]">
-            联系作者
-          </p>
-          <h2 className="mt-1.5 text-balance text-[20px] font-semibold leading-snug tracking-[-0.02em] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
-            联系作者与问题反馈
-          </h2>
-          <p className="mt-2 text-[13.5px] leading-relaxed text-[#525A6B] dark:text-[#A0A2AC]">
-            如果你在私有化部署、个人 Agent 连通或日常多 Agent
-            协作使用中遇到任何问题，或者有场景想法与改进建议，欢迎直接发邮件联系作者，每一封来信都会认真回复。
-          </p>
+          <PortalEyebrow>联系作者</PortalEyebrow>
+          <PortalTitleReveal>
+            <h2 className="mt-1.5 text-balance text-[20px] font-semibold leading-snug tracking-[-0.02em] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
+              问题反馈与建议
+            </h2>
+          </PortalTitleReveal>
+          <motion.p
+            {...portalRevealItem(0.16)}
+            className="mt-2 text-[13.5px] leading-relaxed text-[#525A6B] dark:text-[#A0A2AC]"
+          >
+            部署、连通或日常协作中遇到问题，或有改进想法，欢迎发邮件，每一封都会回复。
+          </motion.p>
         </div>
 
         {/* 作者邮箱专属交互卡（暗色底严格 #141417，支持右键菜单定向识别） */}
@@ -1480,7 +1506,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
             </AppButton>
           </div>
         </div>
-      </article>
+      </motion.article>
     </section>
   );
 }

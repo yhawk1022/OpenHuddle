@@ -125,3 +125,15 @@ export const NATIVE_DISCLOSURE_TRANSITION: Transition = {
   duration: 0.17,
   ease: [0.22, 1, 0.36, 1],
 };
+
+/** 门户滚动渐进显现：卡片与条目错峰淡入上浮（无过冲流体曲线） */
+export const PORTAL_REVEAL: Transition = {
+  duration: 0.55,
+  ease: [0.22, 1, 0.36, 1],
+};
+
+/** 门户章节标题遮罩上浮（略长、强减速，营造「浮出水面」的阅读节奏） */
+export const PORTAL_TITLE_REVEAL: Transition = {
+  duration: 0.75,
+  ease: [0.16, 1, 0.3, 1],
+};
