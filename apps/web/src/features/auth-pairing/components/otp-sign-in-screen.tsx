@@ -84,10 +84,9 @@ import {
 import { useAuthI18n } from "../i18n/index.js";
 import { AccountThemeMenu } from "./account-theme-menu.js";
 import { LocaleSwitcherMenu } from "./locale-switcher-menu.js";
+import { PortalArchitectureSection, PortalCapabilitiesSection } from "./portal-feature-sections.js";
 import {
   DEFAULT_PORTAL_CONTEXT_HIT,
-  PortalArchitectureSection,
-  PortalCapabilitiesSection,
   type PortalContextHitInfo,
   PortalFooter,
   PortalHeroPreview,
@@ -97,6 +96,7 @@ import {
   copyPortalText,
   inspectPortalContextTarget,
 } from "./portal-showcase-sections.js";
+import { PortalStorySection } from "./portal-story-section.js";
 
 const LABEL_CLASS = "block text-xs font-medium text-[#3A3A3C] dark:text-zinc-300";
 
@@ -982,6 +982,7 @@ export function AuthScreen(props: AuthScreenProps) {
       <AppContextMenu items={contextMenuEntries}>
         <main
           ref={mainScrollRef}
+          data-portal-scroller=""
           onScroll={handleMainScroll}
           onContextMenuCapture={handleContextMenuCapture}
           className="pb-safe relative z-10 min-h-0 flex-1 overflow-y-auto overscroll-contain"
@@ -1703,6 +1704,9 @@ export function AuthScreen(props: AuthScreenProps) {
                 </motion.div>
               </div>
             </section>
+
+            {/* 滚动剧场：整节钉住，随滚动演绎「连通 → 讨论 → 提案 → 拍板」 */}
+            <PortalStorySection />
 
             {/* 首屏下方三大门户分区 */}
             <PortalCapabilitiesSection />

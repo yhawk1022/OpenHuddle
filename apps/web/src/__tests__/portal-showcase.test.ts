@@ -11,6 +11,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppTooltipProvider, normalizeContextMenuEntries } from "../components/primitives/index.js";
 import { AuthScreen } from "../features/auth-pairing/components/otp-sign-in-screen.js";
 import {
+  PortalArchitectureSection,
+  PortalCapabilitiesSection,
+} from "../features/auth-pairing/components/portal-feature-sections.js";
+import { splitTitleTokens } from "../features/auth-pairing/components/portal-reveal.js";
+import {
   AUTHOR_CONTACT_EMAIL,
   DEFAULT_PORTAL_CONTEXT_HIT,
   OPENHUDDLE_GITHUB_URL,
@@ -21,6 +26,7 @@ import {
   copyPortalText,
   inspectPortalContextTarget,
 } from "../features/auth-pairing/components/portal-showcase-sections.js";
+import { PortalStorySection } from "../features/auth-pairing/components/portal-story-section.js";
 import type { HumanMeResponseDto } from "../lib/api-client.js";
 import { withLocale } from "../lib/i18n/index.js";
 import { huddleQueryKeys } from "../lib/query-keys.js";
@@ -451,6 +457,7 @@ describe("@openhuddle/web — portal SSR rendering & optical invariants (zh-CN &
     expect(html).toContain(OPENHUDDLE_GITHUB_URL);
     expect(html).toContain('id="portal-hero"');
     expect(html).toContain('id="portal-preview"');
+    expect(html).toContain('id="portal-story"');
     expect(html).toContain('id="portal-capabilities"');
     expect(html).toContain('id="portal-architecture"');
     expect(html).toContain('id="portal-open-source"');
@@ -572,5 +579,112 @@ describe("@openhuddle/web — portal SSR rendering & optical invariants (zh-CN &
       expect(html).toContain("relative liquid-glass-modal");
       expect(html).not.toContain("backdrop-blur");
     }
+  });
+});
+
+describe("@openhuddle/web — portal scrollytelling & visual cards", () => {
+  it("renders the story stage in zh-CN and en with four beats, a single liquid-glass layer, and zero Han leaks in en", () => {
+    const zhHtml = withLocale("zh-CN", () =>
+      renderToStaticMarkup(createElement(PortalStorySection)),
+    );
+
+    expect(zhHtml).toContain('id="portal-story"');
+    for (const title of [
+      "一句指令，进群。",
+      "各抒己见，不抢话。",
+      "越聊，越清楚。",
+      "最后，你说了算。",
+    ]) {
+      expect(zhHtml).toContain(title);
+    }
+    expect(zhHtml.match(/liquid-glass-modal/g)).toHaveLength(1);
+    expect(zhHtml).not.toContain("backdrop-blur");
+    expect(zhHtml).toMatch(/aria-hidden="true" class="[^"]*relative liquid-glass-modal/);
+    expect(zhHtml).not.toMatch(/animate-(bounce|spin|pulse|ping)/);
+
+    const enHtml = withLocale("en", () => renderToStaticMarkup(createElement(PortalStorySection)));
+
+    expect(enHtml).toContain('id="portal-story"');
+    for (const title of [
+      "One prompt, into the room.",
+      "Every voice heard, in order.",
+      "Noise turns into clear options.",
+      "In the end, you decide.",
+    ]) {
+      expect(enHtml).toContain(title);
+    }
+    expect(enHtml.match(/liquid-glass-modal/g)).toHaveLength(1);
+    expect(enHtml).not.toContain("backdrop-blur");
+    expect(/\p{Script=Han}/u.test(enHtml)).toBe(false);
+  });
+
+  it("splits titles into tokens that keep Latin words whole and attach punctuation to the previous token", () => {
+    expect(splitTitleTokens("从连通 Agent 到群聊拍板，该干的干。")).toEqual([
+      "从",
+      "连",
+      "通",
+      " ",
+      "Agent",
+      " ",
+      "到",
+      "群",
+      "聊",
+      "拍",
+      "板，",
+      "该",
+      "干",
+      "的",
+      "干。",
+    ]);
+    // 还原后必须与原文逐字一致（逐字上浮不能吞掉或改写任何字符）
+    const zhTitle = "快，而且稳。120 Hz 高刷适配。";
+    expect(splitTitleTokens(zhTitle).join("")).toBe(zhTitle);
+    const enTitle = "Fast, and resilient. 120 Hz motion.";
+    expect(splitTitleTokens(enTitle).join("")).toBe(enTitle);
+  });
+
+  it("renders ten illustrated capability cards and four stat tiles in zh-CN and en without nested backdrop-blur or Han leaks", () => {
+    const zhCapabilities = withLocale("zh-CN", () =>
+      renderToStaticMarkup(createElement(PortalCapabilitiesSection)),
+    );
+
+    expect(zhCapabilities).toContain('id="portal-capabilities"');
+    expect(zhCapabilities.match(/<article/g)).toHaveLength(10);
+    // 每张卡片顶部都有一幅对读屏器隐藏的示意图
+    expect(zhCapabilities.match(/aria-hidden="true" class="[^"]*h-40/g)).toHaveLength(10);
+    expect(zhCapabilities).not.toContain("backdrop-blur");
+    for (const topo of ["单人执行", "双人复核", "多路并行"]) {
+      expect(zhCapabilities).toContain(topo);
+    }
+
+    const zhArchitecture = withLocale("zh-CN", () =>
+      renderToStaticMarkup(createElement(PortalArchitectureSection, { onOpenPwaGuide: vi.fn() })),
+    );
+    expect(zhArchitecture).toContain('id="portal-architecture"');
+    expect(zhArchitecture.match(/<article/g)).toHaveLength(2);
+    expect(zhArchitecture).not.toContain("backdrop-blur");
+    for (const stat of ["秒级", "分钟", "Hz", "遗漏"]) {
+      expect(zhArchitecture).toContain(stat);
+    }
+
+    const enCapabilities = withLocale("en", () =>
+      renderToStaticMarkup(createElement(PortalCapabilitiesSection)),
+    );
+    expect(enCapabilities.match(/<article/g)).toHaveLength(10);
+    expect(enCapabilities).not.toContain("backdrop-blur");
+    for (const topo of ["Solo run", "Dual review", "Parallel"]) {
+      expect(enCapabilities).toContain(topo);
+    }
+    expect(/\p{Script=Han}/u.test(enCapabilities)).toBe(false);
+
+    const enArchitecture = withLocale("en", () =>
+      renderToStaticMarkup(createElement(PortalArchitectureSection, { onOpenPwaGuide: vi.fn() })),
+    );
+    expect(enArchitecture.match(/<article/g)).toHaveLength(2);
+    expect(enArchitecture).not.toContain("backdrop-blur");
+    for (const stat of ["&lt;1s", "min", "Hz", "lost"]) {
+      expect(enArchitecture).toContain(stat);
+    }
+    expect(/\p{Script=Han}/u.test(enArchitecture)).toBe(false);
   });
 });
