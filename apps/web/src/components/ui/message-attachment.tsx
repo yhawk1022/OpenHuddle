@@ -34,8 +34,10 @@ import {
 import { roomMessageAttachmentPath } from "../../lib/api-client.js";
 import { cn } from "../../lib/cn.js";
 import { formatAttachmentSize } from "../../lib/format.js";
+import { useCommonI18n } from "../../lib/i18n/index.js";
 import { canCopyImageToClipboard, copyImageUrlToClipboard } from "../../lib/message-media.js";
 import { useMobileOverlayBackGuard } from "../../lib/session-store.js";
+import { useComponentsI18n } from "../i18n/index.js";
 import { toast, useIsMobileViewport } from "../primitives/index.js";
 
 /** 超长竖图 / 长流程图判定阈值（高宽比超过 2.2 时启用顶对齐窗口裁切） */
@@ -62,6 +64,7 @@ export interface ImageLightboxDialogProps {
  * - 顶栏全动作按钮保证 `>= 40×40px` 触控热区，关闭后精确归还焦点并接入移动端侧滑返回守卫。
  */
 export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
+  const { locale, t } = useComponentsI18n();
   const isMobile = useIsMobileViewport();
   useMobileOverlayBackGuard(props.open && isMobile, () => {
     props.onOpenChange(false);
@@ -124,10 +127,10 @@ export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
   };
 
   const handleCopyImage = (): void => {
-    void copyImageUrlToClipboard(props.src)
+    void copyImageUrlToClipboard(props.src, locale)
       .then(() => {
         setCopiedImage(true);
-        toast.success("已复制图片");
+        toast.success(t("attachment.toastImageCopied"));
         if (copyTimerRef.current !== null) {
           window.clearTimeout(copyTimerRef.current);
         }
@@ -136,7 +139,7 @@ export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
         }, 1_800);
       })
       .catch(() => {
-        toast.error("复制图片失败，请尝试下载原图");
+        toast.error(t("attachment.toastCopyImageFailed"));
       });
   };
 
@@ -239,7 +242,7 @@ export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
         >
           <div className="sr-only">
             <Dialog.Title>{props.title}</Dialog.Title>
-            <Dialog.Description>消息图片高清沉浸预览</Dialog.Description>
+            <Dialog.Description>{t("attachment.lightbox.srDescription")}</Dialog.Description>
           </div>
 
           <header className="flex shrink-0 items-center justify-between gap-3 px-4 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-2 text-white">
@@ -250,8 +253,8 @@ export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
               <button
                 type="button"
-                aria-label="切换浅色衬底"
-                title="切换浅色衬底（便于阅读透明底深色线条图表）"
+                aria-label={t("attachment.lightbox.lightBackdropAria")}
+                title={t("attachment.lightbox.lightBackdropTitle")}
                 aria-pressed={lightBackdrop}
                 onClick={() => setLightBackdrop((v) => !v)}
                 className={cn(
@@ -266,8 +269,14 @@ export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
 
               <button
                 type="button"
-                aria-label={zoomed ? "适应窗口" : "放大查看细节"}
-                title={zoomed ? "适应窗口 (0)" : "放大查看细节 (+)"}
+                aria-label={
+                  zoomed ? t("attachment.lightbox.fitWindow") : t("attachment.lightbox.zoomIn")
+                }
+                title={
+                  zoomed
+                    ? t("attachment.lightbox.fitWindowShortcut")
+                    : t("attachment.lightbox.zoomInShortcut")
+                }
                 aria-pressed={zoomed}
                 onClick={toggleZoom}
                 className={cn(
@@ -283,8 +292,8 @@ export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
               {canCopyImage ? (
                 <button
                   type="button"
-                  aria-label="复制图片"
-                  title="复制图片"
+                  aria-label={t("attachment.lightbox.copyImage")}
+                  title={t("attachment.lightbox.copyImage")}
                   onClick={handleCopyImage}
                   className="inline-flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white/12 text-white transition-colors hover:bg-white/22 focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:outline-none"
                 >
@@ -299,8 +308,8 @@ export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
               <a
                 href={props.src}
                 download={props.downloadName}
-                aria-label="下载原图"
-                title="下载原图"
+                aria-label={t("attachment.lightbox.downloadOriginal")}
+                title={t("attachment.lightbox.downloadOriginal")}
                 className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/12 text-white transition-colors hover:bg-white/22 focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:outline-none"
               >
                 <Download className="h-4 w-4" />
@@ -309,8 +318,8 @@ export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
               <Dialog.Close asChild>
                 <button
                   type="button"
-                  aria-label="关闭预览"
-                  title="关闭预览 (Esc)"
+                  aria-label={t("attachment.lightbox.closePreview")}
+                  title={t("attachment.lightbox.closePreviewShortcut")}
                   className="inline-flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white/12 text-white transition-colors hover:bg-white/22 focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:outline-none"
                 >
                   <X className="h-4 w-4" />
@@ -356,7 +365,7 @@ export function ImageLightboxDialog(props: ImageLightboxDialogProps) {
             >
               <img
                 src={props.src}
-                alt={props.isSticker ? props.title : "消息原图"}
+                alt={props.isSticker ? props.title : t("attachment.lightbox.originalAlt")}
                 draggable={false}
                 onLoad={(event) => {
                   const { naturalWidth, naturalHeight } = event.currentTarget;
@@ -437,6 +446,8 @@ export interface MessageAttachmentProps {
  * @returns 消息附件展示节点
  */
 export function MessageAttachment(props: MessageAttachmentProps) {
+  const { t } = useComponentsI18n();
+  const { t: tc } = useCommonI18n();
   const [failed, setFailed] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
   const [internalLightboxOpen, setInternalLightboxOpen] = useState(false);
@@ -460,7 +471,11 @@ export function MessageAttachment(props: MessageAttachmentProps) {
   const isImage = mimeType.startsWith("image/");
   const isFile = mimeType === "application/octet-stream";
   const isSticker = stickerName !== undefined;
-  const label = isSticker ? `表情：${stickerName}` : isImage ? "图片" : "语音";
+  const label = isSticker
+    ? t("attachment.label.sticker", { name: stickerName })
+    : isImage
+      ? t("attachment.label.image")
+      : t("attachment.label.voice");
 
   const baseSrc = roomMessageAttachmentPath(message.roomId, message.seq);
   const remoteSrc =
@@ -490,10 +505,10 @@ export function MessageAttachment(props: MessageAttachmentProps) {
   // ── 1. 公开只读分享页隔离态：渲染安静的凹陷媒体占位小条 ──
   if (props.readOnly) {
     const readOnlyLabel = isImage
-      ? "图片附件（仅群成员可见）"
+      ? t("attachment.readOnly.image")
       : isFile
-        ? "文件附件（仅群成员可见）"
-        : "语音消息（仅群成员可见）";
+        ? t("attachment.readOnly.file")
+        : t("attachment.readOnly.voice");
     return (
       <div
         className={cn(
@@ -515,7 +530,7 @@ export function MessageAttachment(props: MessageAttachmentProps) {
 
   // ── 2. 通用下载文件附件 ──
   if (isFile) {
-    const name = fileName ?? "附件";
+    const name = fileName ?? tc("message.defaultAttachmentName");
     if (props.isPending) {
       return (
         <div
@@ -539,7 +554,7 @@ export function MessageAttachment(props: MessageAttachmentProps) {
       <a
         href={remoteSrc}
         download={name}
-        aria-label={`下载文件 ${name}`}
+        aria-label={t("attachment.file.downloadAria", { name })}
         title={name}
         className={cn(
           props.standalone ? "" : "mt-1.5",
@@ -581,7 +596,9 @@ export function MessageAttachment(props: MessageAttachmentProps) {
           )}
         >
           <RefreshCw aria-hidden="true" className="h-4 w-4 text-[#687082] dark:text-[#8E8E96]" />
-          <span>{isSticker ? "表情加载失败 · 点击重试" : "图片加载失败 · 点击重试"}</span>
+          <span>
+            {isSticker ? t("attachment.image.retrySticker") : t("attachment.image.retryImage")}
+          </span>
         </button>
       );
     }
@@ -605,7 +622,7 @@ export function MessageAttachment(props: MessageAttachmentProps) {
     const isDisplayLoaded =
       displaySrc !== null && (displaySrc === localUrl ? localLoaded : isRemoteLoaded);
     const downloadName = fileName ?? `openhuddle-image-${String(message.seq)}`;
-    const previewTitle = isSticker ? label : (fileName ?? "消息图片");
+    const previewTitle = isSticker ? label : (fileName ?? t("attachment.image.defaultTitle"));
 
     const handleImageLoad = (el: HTMLImageElement, isFromRemote: boolean): void => {
       if (el.naturalWidth > 0 && el.naturalHeight > 0) {
@@ -620,15 +637,15 @@ export function MessageAttachment(props: MessageAttachmentProps) {
 
     const statusBadge = props.isPending ? (
       <span
-        aria-label="图片发送中"
+        aria-label={t("attachment.image.sendingAria")}
         className="pointer-events-none absolute right-2 bottom-2 inline-flex items-center gap-1 rounded-full bg-[#181B22]/68 px-2 py-0.5 text-[11px] font-medium text-white"
       >
         <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" />
-        <span>发送中</span>
+        <span>{t("attachment.image.sending")}</span>
       </span>
     ) : isTallImage ? (
       <span className="pointer-events-none absolute right-2 bottom-2 rounded-full bg-[#181B22]/76 px-2 py-0.5 text-[11px] font-medium text-white">
-        长图 · 查看全图
+        {t("attachment.image.tallBadge")}
       </span>
     ) : null;
 
@@ -664,7 +681,7 @@ export function MessageAttachment(props: MessageAttachmentProps) {
                 setLightboxOpen(true);
               }
             }}
-            aria-label={`查看原图：${previewTitle}`}
+            aria-label={t("attachment.image.viewOriginalAria", { title: previewTitle })}
             className={cn(
               props.standalone ? "" : "mt-1",
               "app-no-drag relative block aspect-square w-28 max-w-full cursor-zoom-in rounded-lg focus-visible:ring-2 sm:w-32",
@@ -724,7 +741,7 @@ export function MessageAttachment(props: MessageAttachmentProps) {
                 setLightboxOpen(true);
               }
             }}
-            aria-label={`查看原图：${previewTitle}`}
+            aria-label={t("attachment.image.viewOriginalAria", { title: previewTitle })}
             className={cn(
               imageRadiusClass,
               "app-no-drag relative block h-64 w-[min(100%,15rem)] cursor-zoom-in overflow-hidden ring-1 ring-inset ring-black/[0.06] focus-visible:ring-2 after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:ring-1 after:ring-inset after:ring-black/[0.06] sm:h-72 sm:w-[min(100%,17rem)] dark:ring-white/[0.08] dark:after:ring-white/[0.08]",
@@ -787,7 +804,7 @@ export function MessageAttachment(props: MessageAttachmentProps) {
               setLightboxOpen(true);
             }
           }}
-          aria-label={`查看原图：${previewTitle}`}
+          aria-label={t("attachment.image.viewOriginalAria", { title: previewTitle })}
           className={cn(
             imageRadiusClass,
             "app-no-drag relative block max-h-[18rem] w-fit max-w-[min(100%,17.5rem)] cursor-zoom-in overflow-hidden ring-1 ring-inset ring-black/[0.06] focus-visible:ring-2 after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:ring-1 after:ring-inset after:ring-black/[0.06] sm:max-h-[22rem] sm:max-w-[min(100%,26rem)] dark:ring-white/[0.08] dark:after:ring-white/[0.08]",
@@ -871,7 +888,7 @@ export function MessageAttachment(props: MessageAttachmentProps) {
         )}
       >
         <RefreshCw aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-        <span>语音加载失败 · 点击重试</span>
+        <span>{t("attachment.voice.retry")}</span>
       </button>
     );
   }
@@ -885,7 +902,7 @@ export function MessageAttachment(props: MessageAttachmentProps) {
         )}
       >
         <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
-        <span>语音发送中…</span>
+        <span>{t("attachment.voice.sending")}</span>
       </div>
     );
   }
@@ -896,7 +913,7 @@ export function MessageAttachment(props: MessageAttachmentProps) {
       src={props.isPending && localUrl !== null ? localUrl : remoteSrc}
       controls
       preload="none"
-      aria-label="播放语音消息"
+      aria-label={t("attachment.voice.playAria")}
       onError={() => {
         if (!props.isPending) {
           setFailed(true);

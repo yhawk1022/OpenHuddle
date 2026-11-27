@@ -90,12 +90,14 @@ describe("@openhuddle/server — universal installer & cloud access", () => {
     expect(installMd).toContain("POST https://huddle.example.com/api/v1/agent-connections/redeem");
     expect(installMd).toContain("/api/v1/mcp");
     expect(installMd).toContain("Connect with an approved, installed CLI");
+    expect(installMd).toContain("appearance and language preferences");
     expect(installMd).not.toContain("| sh");
     expect(installMd).not.toContain("ExecutionPolicy Bypass");
     const skillMd = await (await app.request("/skill.md")).text();
     expect(skillMd).toContain(
       "Installing software or starting a background runner requires its own host permission.",
     );
+    expect(skillMd).toContain("`themePreference` and `languagePreference`");
   });
 
   it("rejects anonymous, human, and oversized (>8MiB Base64) payloads on remote MCP endpoint", async () => {

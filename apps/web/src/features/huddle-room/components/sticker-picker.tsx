@@ -8,23 +8,19 @@ import { Loader2, Plus, Sticker, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AppPopover, cn } from "../../../components/primitives/index.js";
+import { getChatDetailTranslator, useChatDetailI18n } from "../i18n/chat-detail.js";
 import {
+  BUILT_IN_STICKERS,
+  type BuiltInSticker,
+  STICKER_CATEGORIES,
   STICKER_FILE_ACCEPT,
   type SavedSticker,
+  type StickerCategoryId,
   type StickerImage,
   importSticker,
   listSavedStickers,
   removeSavedSticker,
 } from "../stickers/sticker-library.js";
-
-const BUILT_IN_STICKERS = [
-  { id: "thumbs-up", name: "收到" },
-  { id: "laugh", name: "笑出眼泪" },
-  { id: "wave", name: "打招呼" },
-  { id: "thinking", name: "我想想" },
-  { id: "heart", name: "比心" },
-  { id: "celebrate", name: "庆祝" },
-] as const;
 
 const STICKER_BUTTON_CLASS =
   "flex w-full min-w-0 cursor-pointer flex-col items-center gap-1 rounded-xl p-1.5 text-[11px] text-[#5C6575] transition-colors hover:bg-black/[0.05] focus-visible:ring-2 focus-visible:ring-black/25 focus-visible:outline-none disabled:cursor-wait dark:text-[#BFC2CC] dark:hover:bg-white/[0.09] dark:focus-visible:ring-white/35";
@@ -44,6 +40,7 @@ function SavedStickerTile(props: {
   readonly onSelect: (sticker: StickerImage) => void;
   readonly onRemove: (id: string) => void;
 }) {
+  const { t } = useChatDetailI18n();
   const { sticker } = props;
   const [url, setUrl] = useState<string>();
   useEffect(() => {
@@ -58,7 +55,7 @@ function SavedStickerTile(props: {
         type="button"
         className={STICKER_BUTTON_CLASS}
         disabled={props.disabled}
-        aria-label={`选择表情 ${sticker.name}`}
+        aria-label={t("sticker.aria.select", { name: sticker.name })}
         title={sticker.name}
         onClick={() => props.onSelect(sticker)}
       >
@@ -69,8 +66,8 @@ function SavedStickerTile(props: {
       </button>
       <button
         type="button"
-        aria-label={`移除表情 ${sticker.name}`}
-        title="移除表情"
+        aria-label={t("sticker.aria.remove", { name: sticker.name })}
+        title={t("sticker.removeTooltip")}
         disabled={props.disabled}
         className="absolute right-0.5 top-0.5 inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-full bg-white/90 text-[#687082] shadow-xs hover:text-red-600 focus-visible:ring-2 focus-visible:outline-none dark:bg-[#282B31] dark:text-[#C4C4CA] dark:hover:text-red-300"
         onClick={() => props.onRemove(sticker.id)}
@@ -88,9 +85,10 @@ export function StickerPicker(props: {
   readonly triggerClassName: string;
   readonly onSelect: (sticker: StickerImage) => void;
 }) {
+  const { t } = useChatDetailI18n();
   const { userId, disabled, onSelect } = props;
   const [open, setOpen] = useState(false);
-  const [category, setCategory] = useState<"built-in" | "saved">("built-in");
+  const [category, setCategory] = useState<StickerCategoryId>("built-in");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -121,7 +119,7 @@ export function StickerPicker(props: {
     setOpen(nextOpen);
   };
 
-  const chooseBuiltIn = async (sticker: (typeof BUILT_IN_STICKERS)[number]): Promise<void> => {
+  const chooseBuiltIn = async (sticker: BuiltInSticker): Promise<void> => {
     if (selection.current !== null) {
       return;
     }
@@ -132,19 +130,20 @@ export function StickerPicker(props: {
     try {
       const response = await fetch(builtInStickerPath(sticker.id), { signal: controller.signal });
       if (!response.ok) {
-        throw new Error("无法读取这张表情");
+        throw new Error(getChatDetailTranslator().t("sticker.err.readBuiltInFailed"));
       }
       const blob = await response.blob();
       if (blob.type !== "image/webp" || blob.size === 0) {
-        throw new Error("表情文件不可用");
+        throw new Error(getChatDetailTranslator().t("sticker.err.fileUnavailable"));
       }
       if (!controller.signal.aborted) {
-        onSelect({ blob, mimeType: "image/webp", name: sticker.name });
+        const displayName = getChatDetailTranslator().t(sticker.labelKey);
+        onSelect({ blob, mimeType: "image/webp", name: displayName });
         setOpen(false);
       }
     } catch {
       if (!controller.signal.aborted) {
-        setError("表情加载失败，请重新选择");
+        setError(getChatDetailTranslator().t("sticker.err.loadFailed"));
       }
     } finally {
       selection.current = null;
@@ -160,7 +159,11 @@ export function StickerPicker(props: {
       await queryClient.invalidateQueries({ queryKey });
       toast.success(success);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法保存表情，请检查浏览器存储权限");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : getChatDetailTranslator().t("sticker.err.savePermission"),
+      );
     } finally {
       setBusy(false);
     }
@@ -179,8 +182,8 @@ export function StickerPicker(props: {
       trigger={
         <button
           type="button"
-          aria-label="表情包"
-          title="表情包"
+          aria-label={t("sticker.triggerLabel")}
+          title={t("sticker.triggerLabel")}
           disabled={disabled}
           className={cn(
             props.triggerClassName,
@@ -193,27 +196,22 @@ export function StickerPicker(props: {
     >
       <div className="flex items-center justify-between gap-2">
         <div
-          aria-label="表情分类"
+          aria-label={t("sticker.categoryAriaLabel")}
           className="inline-flex gap-0.5 rounded-lg bg-black/[0.05] p-0.5 dark:bg-white/[0.08]"
         >
-          {(
-            [
-              ["built-in", "内置表情"],
-              ["saved", "我的表情"],
-            ] as const
-          ).map(([value, name]) => (
+          {STICKER_CATEGORIES.map((item) => (
             <button
-              key={value}
+              key={item.id}
               type="button"
-              aria-pressed={category === value}
+              aria-pressed={category === item.id}
               disabled={isBusy}
               onClick={() => {
-                setCategory(value);
+                setCategory(item.id);
                 setError(undefined);
               }}
-              className="cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium text-[#5C6575] transition-colors hover:text-[#111318] aria-pressed:bg-white aria-pressed:text-[#111318] aria-pressed:shadow-xs dark:text-[#BFC2CC] dark:hover:text-white dark:aria-pressed:bg-[#383B45] dark:aria-pressed:text-white"
+              className="cursor-pointer whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium text-[#5C6575] transition-colors hover:text-[#111318] aria-pressed:bg-white aria-pressed:text-[#111318] aria-pressed:shadow-xs dark:text-[#BFC2CC] dark:hover:text-white dark:aria-pressed:bg-[#383B45] dark:aria-pressed:text-white"
             >
-              {name}
+              {t(item.labelKey)}
             </button>
           ))}
         </div>
@@ -221,7 +219,7 @@ export function StickerPicker(props: {
           <>
             <input
               ref={fileInput}
-              aria-label="选择自定义表情图片"
+              aria-label={t("sticker.aria.chooseCustomFile")}
               hidden
               type="file"
               accept={STICKER_FILE_ACCEPT}
@@ -229,7 +227,7 @@ export function StickerPicker(props: {
                 const file = event.currentTarget.files?.[0];
                 event.currentTarget.value = "";
                 if (file !== undefined) {
-                  void updateLibrary(() => importSticker(userId, file), "已添加表情");
+                  void updateLibrary(() => importSticker(userId, file), t("sticker.toast.added"));
                 }
               }}
             />
@@ -237,9 +235,9 @@ export function StickerPicker(props: {
               type="button"
               disabled={isBusy}
               onClick={() => fileInput.current?.click()}
-              className="inline-flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium hover:bg-black/[0.05] disabled:opacity-50 dark:hover:bg-white/[0.08]"
+              className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg px-2 py-1.5 text-xs font-medium hover:bg-black/[0.05] disabled:opacity-50 dark:hover:bg-white/[0.08]"
             >
-              <Plus className="h-3.5 w-3.5" /> 添加图片
+              <Plus className="h-3.5 w-3.5" /> {t("sticker.addImageButton")}
             </button>
           </>
         ) : null}
@@ -247,39 +245,44 @@ export function StickerPicker(props: {
 
       {category === "built-in" ? (
         <ul className="mt-2 grid grid-cols-3 gap-1">
-          {BUILT_IN_STICKERS.map((sticker) => (
-            <li key={sticker.id}>
-              <button
-                type="button"
-                aria-label={`选择表情 ${sticker.name}`}
-                className={STICKER_BUTTON_CLASS}
-                disabled={isBusy}
-                onClick={() => void chooseBuiltIn(sticker)}
-              >
-                <img
-                  src={builtInStickerPath(sticker.id)}
-                  alt=""
-                  className="h-12 w-12 object-contain"
-                />
-                {sticker.name}
-              </button>
-            </li>
-          ))}
+          {BUILT_IN_STICKERS.map((sticker) => {
+            const label = t(sticker.labelKey);
+            return (
+              <li key={sticker.id}>
+                <button
+                  type="button"
+                  aria-label={t("sticker.aria.select", { name: label })}
+                  className={STICKER_BUTTON_CLASS}
+                  disabled={isBusy}
+                  onClick={() => void chooseBuiltIn(sticker)}
+                >
+                  <img
+                    src={builtInStickerPath(sticker.id)}
+                    alt=""
+                    className="h-12 w-12 object-contain"
+                  />
+                  <span className="w-full truncate text-center">{label}</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
       ) : saved.isPending ? (
-        <output className="block px-2 py-6 text-center text-xs">正在读取收藏…</output>
+        <output className="block px-2 py-6 text-center text-xs">{t("sticker.loadingSaved")}</output>
       ) : saved.isError ? (
         <button
           type="button"
           onClick={() => void saved.refetch()}
           className="w-full px-2 py-6 text-center text-xs underline"
         >
-          收藏加载失败，点击重试
+          {t("sticker.savedLoadError")}
         </button>
       ) : saved.data.length === 0 ? (
         <div className="px-2 py-6 text-center text-xs leading-relaxed text-[#687082] dark:text-[#ADADB6]">
-          <p className="font-medium text-[#181B22] dark:text-[#ECECEF]">还没有收藏</p>
-          <p className="mt-1">添加本地图片，或在聊天中收藏表情。</p>
+          <p className="font-medium text-[#181B22] dark:text-[#ECECEF]">
+            {t("sticker.emptyTitle")}
+          </p>
+          <p className="mt-1">{t("sticker.emptyHint")}</p>
         </div>
       ) : (
         <ul className="mt-2 grid max-h-[min(17rem,calc(var(--oh-vvh,100dvh)-9rem))] grid-cols-3 gap-1 overflow-y-auto overscroll-contain">
@@ -293,7 +296,7 @@ export function StickerPicker(props: {
                 setOpen(false);
               }}
               onRemove={(id) =>
-                void updateLibrary(() => removeSavedSticker(userId, id), "已移除表情")
+                void updateLibrary(() => removeSavedSticker(userId, id), t("sticker.toast.removed"))
               }
             />
           ))}
@@ -303,7 +306,7 @@ export function StickerPicker(props: {
       {busy ? (
         <Loader2
           role="status"
-          aria-label="正在处理表情"
+          aria-label={t("sticker.aria.processing")}
           className="mx-auto mt-1 h-4 w-4 animate-spin"
         />
       ) : null}

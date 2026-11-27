@@ -11,6 +11,7 @@ import {
   type HumanUserDto,
   type OwnedAgentSummaryDto,
   type RoomId,
+  type SupportedLocale,
   assertNever,
 } from "@openhuddle/protocol";
 import {
@@ -19,6 +20,7 @@ import {
   Folder,
   FolderGit2,
   Folders,
+  Languages,
   MoreHorizontal,
   Plus,
   SlidersHorizontal,
@@ -46,6 +48,7 @@ import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { getReachVisualMeta } from "../../../lib/format.js";
 import { navigateBackOr, navigateTo, useBrowserLocation } from "../../../lib/session-store.js";
 import { isImeComposing } from "../../../lib/viewport-sync.js";
+import { getWorkbenchTranslator, useWorkbenchI18n } from "../i18n/workbench.js";
 import {
   type AgentWorkspace,
   type SoloRepoTarget,
@@ -100,36 +103,32 @@ export interface SoloWorkbenchProps {
   readonly onSwitchToChats: () => void;
   readonly onOpenConnectAgent: () => void;
   readonly onInspectOwnedAgent: (agent: OwnedAgentSummaryDto) => void;
+  readonly onOpenAccountSecurity?: (() => void) | undefined;
 }
 
-const TOPOLOGY_OPTIONS: ReadonlyArray<AppSelectOption<WorkTopology>> = [
-  { value: "direct", label: "单人执行", description: "单个 Agent 直接完成改动" },
-  { value: "verify_loop", label: "双人复核", description: "完成后由另一 Agent 独立检查" },
-  { value: "swarm", label: "多路并行", description: "按目录拆分并行处理后汇总" },
-];
-
-function formatTaskSecondaryLine(task: SoloWorkTaskView): string {
+function formatTaskSecondaryLine(task: SoloWorkTaskView, locale: SupportedLocale): string {
+  const { t, tp } = getWorkbenchTranslator(locale);
   switch (task.stage) {
     case "awaiting_answer":
-      return `${task.repoName} · 等待确认 1 个问题`;
+      return t("workbench.secondary.awaitingAnswer", { repo: task.repoName });
     case "awaiting_review":
       return task.review !== undefined
-        ? `${task.repoName} · ${String(task.review.filesChanged)} 个文件变更`
-        : `${task.repoName} · 待审阅变更`;
+        ? tp("secondary.filesChanged", task.review.filesChanged, { repo: task.repoName })
+        : t("workbench.secondary.awaitingReviewFallback", { repo: task.repoName });
     case "blocked":
-      return `${task.repoName} · 执行暂停`;
+      return t("workbench.secondary.blocked", { repo: task.repoName });
     case "working": {
       const runningSlice = task.slices.find((s) => s.status === "running") ?? task.slices[0];
       return runningSlice !== undefined
         ? `${task.repoName} · ${runningSlice.liveSummary}`
-        : `${task.repoName} · 正在处理`;
+        : t("workbench.secondary.workingFallback", { repo: task.repoName });
     }
     case "verifying":
-      return `${task.repoName} · ${task.slices.find((s) => s.leaseRole === "verify")?.liveSummary ?? "正在复核代码与测试"}`;
+      return `${task.repoName} · ${task.slices.find((s) => s.leaseRole === "verify")?.liveSummary ?? t("workbench.secondary.verifyingFallback")}`;
     case "done":
-      return `${task.repoName} · 已签收`;
+      return t("workbench.secondary.done", { repo: task.repoName });
     case "cancelled":
-      return `${task.repoName} · 已停止`;
+      return t("workbench.secondary.cancelled", { repo: task.repoName });
     default:
       return assertNever(task.stage);
   }
@@ -148,16 +147,17 @@ function renderWorkspaceKindGlyph(kind: WorkspaceKind) {
   }
 }
 
-function formatSandboxSummary(ws: AgentWorkspace): string {
+function formatSandboxSummary(ws: AgentWorkspace, locale: SupportedLocale): string {
+  const { t } = getWorkbenchTranslator(locale);
   switch (ws.sandboxMode) {
     case "worktree_pool":
       return ws.prewarmedWorktrees > 0
-        ? `Worktree 隔离 (${String(ws.prewarmedWorktrees)} 就绪)`
-        : "Worktree 隔离";
+        ? t("sandbox.worktreePoolReady", { count: ws.prewarmedWorktrees })
+        : t("sandbox.worktreePool");
     case "in_place":
-      return "原地目录 (单写互斥)";
+      return t("sandbox.inPlaceExclusive");
     case "read_only":
-      return "只读围栏";
+      return t("sandbox.readOnly");
     default:
       return assertNever(ws.sandboxMode);
   }
@@ -166,19 +166,21 @@ function formatSandboxSummary(ws: AgentWorkspace): string {
 function resolveWorkbenchTitle(
   selectedWorkspace: AgentWorkspace | undefined,
   filter: WorkbenchAttentionFilter,
+  locale: SupportedLocale,
 ): string {
   if (selectedWorkspace !== undefined) {
     return selectedWorkspace.name;
   }
+  const { t } = getWorkbenchTranslator(locale);
   switch (filter) {
     case "board":
-      return "全部任务";
+      return t("filter.allTasks");
     case "needs_you":
-      return "待确认";
+      return t("filter.needsYou");
     case "running":
-      return "进行中";
+      return t("filter.running");
     case "done":
-      return "已完成";
+      return t("filter.done");
     default:
       return assertNever(filter);
   }
@@ -188,6 +190,7 @@ function resolveWorkbenchTitle(
  * 个人工作台主视图组件。
  */
 export function SoloWorkbench(props: SoloWorkbenchProps) {
+  const { locale, t } = useWorkbenchI18n();
   const isWideWorkbench = useSyncExternalStore(
     useCallback((cb) => subscribeWideWorkbench(cb), []),
     getWideWorkbenchSnapshot,
@@ -439,17 +442,27 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
   const activeRepoSupportsSwarm =
     activeRepo === undefined ? false : workspaceSupportsSwarm(activeRepo);
   const topologyOptions = useMemo<ReadonlyArray<AppSelectOption<WorkTopology>>>(
-    () =>
-      TOPOLOGY_OPTIONS.map((opt) =>
-        opt.value === "swarm" && !activeRepoSupportsSwarm
-          ? {
-              ...opt,
-              disabled: true,
-              description: "仅多目录组合且非只读工作区支持",
-            }
-          : opt,
-      ),
-    [activeRepoSupportsSwarm],
+    () => [
+      {
+        value: "direct",
+        label: t("topology.direct.label"),
+        description: t("topology.direct.description"),
+      },
+      {
+        value: "verify_loop",
+        label: t("topology.verifyLoop.label"),
+        description: t("topology.verifyLoop.description"),
+      },
+      {
+        value: "swarm",
+        label: t("topology.swarm.label"),
+        description: activeRepoSupportsSwarm
+          ? t("topology.swarm.description")
+          : t("topology.swarm.disabledReason"),
+        ...(!activeRepoSupportsSwarm ? { disabled: true } : {}),
+      },
+    ],
+    [activeRepoSupportsSwarm, t],
   );
   const effectiveDispatchTopology = resolveEffectiveDispatchTopology({
     requested: dispatchTopology,
@@ -464,39 +477,39 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
 
   const mobileWorkspaceFilterOptions: ReadonlyArray<AppSelectOption<string>> = useMemo(
     () => [
-      { value: "all", label: "全部工作区" },
+      { value: "all", label: t("filter.allWorkspaces") },
       ...props.repos.map((r) => ({ value: r.id, label: r.name })),
     ],
-    [props.repos],
+    [props.repos, t],
   );
 
   const workerSelectOptions: ReadonlyArray<AppSelectOption<string>> = useMemo(
     () => [
-      { value: "auto", label: "自动分配" },
+      { value: "auto", label: t("assign.auto") },
       ...props.ownedAgents.map((a) => ({
         value: a.id,
-        label: `${stripAgentOwnerPrefix(a.displayName, props.currentUser.displayName)} · ${a.workspaceListenerConnected ? "工单监听已连接" : getReachVisualMeta(a.reach).shortLabel}`,
+        label: `${stripAgentOwnerPrefix(a.displayName, props.currentUser.displayName)} · ${a.workspaceListenerConnected ? t("workbench.workerListenerConnected") : getReachVisualMeta(a.reach, locale).shortLabel}`,
       })),
     ],
-    [props.currentUser.displayName, props.ownedAgents],
+    [locale, props.currentUser.displayName, props.ownedAgents, t],
   );
 
   const compactFilterTabs: ReadonlyArray<SegmentedTabItem<WorkbenchAttentionFilter>> = useMemo(
     () => [
-      { value: "board", label: "全部" },
+      { value: "board", label: t("filter.all") },
       {
         value: "needs_you",
-        label: "待确认",
+        label: t("filter.needsYou"),
         ...(props.counts.needsYou > 0 ? { badge: String(props.counts.needsYou) } : {}),
       },
       {
         value: "running",
-        label: "进行中",
+        label: t("filter.running"),
         ...(props.counts.running > 0 ? { badge: String(props.counts.running) } : {}),
       },
-      { value: "done", label: "已完成" },
+      { value: "done", label: t("filter.done") },
     ],
-    [props.counts.needsYou, props.counts.running],
+    [props.counts.needsYou, props.counts.running, t],
   );
 
   const applyWorkspaceDefaults = useCallback((ws: AgentWorkspace): void => {
@@ -518,7 +531,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
     () => [
       {
         id: "wb-new-workspace",
-        label: "新建工作区…",
+        label: t("workbench.menu.newWorkspace"),
         icon: <Plus className="h-3.5 w-3.5" />,
         onSelect: () => setWorkspaceModalState("create"),
       },
@@ -526,7 +539,9 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
         ? [
             {
               id: "wb-edit-workspace",
-              label: `工作区设置（${(selectedWorkspace ?? activeRepo).name}）…`,
+              label: t("workbench.menu.editWorkspace", {
+                name: (selectedWorkspace ?? activeRepo).name,
+              }),
               icon: <SlidersHorizontal className="h-3.5 w-3.5" />,
               onSelect: () => setWorkspaceModalState(selectedWorkspace ?? activeRepo),
             } satisfies AppDropdownEntry,
@@ -534,12 +549,22 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
         : []),
       {
         id: "wb-connect-agent",
-        label: "接入本机 Agent…",
+        label: t("workbench.menu.connectAgent"),
         icon: <Plus className="h-3.5 w-3.5" />,
         onSelect: props.onOpenConnectAgent,
       },
+      ...(props.onOpenAccountSecurity !== undefined
+        ? [
+            {
+              id: "wb-account-security",
+              label: t("workbench.menu.accountSecurity"),
+              icon: <Languages className="h-3.5 w-3.5" />,
+              onSelect: props.onOpenAccountSecurity,
+            } satisfies AppDropdownEntry,
+          ]
+        : []),
     ],
-    [activeRepo, props.onOpenConnectAgent, selectedWorkspace],
+    [activeRepo, props.onOpenAccountSecurity, props.onOpenConnectAgent, selectedWorkspace, t],
   );
 
   const handleDispatchSubmit = async (): Promise<void> => {
@@ -548,12 +573,12 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
       return;
     }
     if (activeRepo === undefined) {
-      toast.info("请先新建并配置一个本地工作区");
+      toast.info(t("workbench.toast.needWorkspace"));
       setWorkspaceModalState("create");
       return;
     }
     if (props.ownedAgents.length === 0) {
-      toast.info("请先接入至少 1 个本机 Agent 后再交办任务");
+      toast.info(t("workbench.toast.needAgent"));
       props.onOpenConnectAgent();
       return;
     }
@@ -575,11 +600,11 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
       if (attentionFilter === "needs_you" || attentionFilter === "done") {
         setAttentionFilter("board");
       }
-      toast.success("已新建并交办任务", {
-        description: `${created.repoName} · ${getWorkTopologyLabel(created.topology)}`,
+      toast.success(t("workbench.toast.dispatched"), {
+        description: `${created.repoName} · ${getWorkTopologyLabel(created.topology, locale)}`,
       });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "派发任务失败，请稍后重试");
+      toast.error(err instanceof Error ? err.message : t("workbench.toast.dispatchFailed"));
     } finally {
       setIsDispatching(false);
     }
@@ -601,12 +626,12 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
     }
   };
 
-  const viewTitle = resolveWorkbenchTitle(selectedWorkspace, attentionFilter);
+  const viewTitle = resolveWorkbenchTitle(selectedWorkspace, attentionFilter, locale);
 
   return (
     <div className="flex h-full min-w-0 flex-1 gap-2.5 overflow-hidden">
       <aside
-        aria-label="工作台侧栏"
+        aria-label={t("workbench.sidebarAriaLabel")}
         className="relative liquid-glass-panel hidden h-full w-[216px] shrink-0 select-none flex-col overflow-hidden lg:flex lg:rounded-[22px]"
       >
         <div
@@ -614,14 +639,14 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
           className="app-drag-region flex h-[52px] shrink-0 items-center justify-between px-4"
         >
           <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-            工作台
+            {t("workbench.title")}
           </h2>
           <div className="app-no-drag">
             <AppDropdownMenu
               align="end"
               items={moreMenuEntries}
               trigger={
-                <IconButton size="sm" variant="ghost" label="工作台选项">
+                <IconButton size="sm" variant="ghost" label={t("workbench.optionsAriaLabel")}>
                   <MoreHorizontal className="h-4 w-4" />
                 </IconButton>
               }
@@ -630,18 +655,28 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
         </div>
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-2.5 pt-1 pb-3">
-          <nav aria-label="任务状态" className="space-y-0.5">
+          <nav aria-label={t("workbench.statusNavAriaLabel")} className="space-y-0.5">
             {(
               [
-                { id: "board", label: "全部", count: props.counts.total, highlight: false },
+                {
+                  id: "board",
+                  label: t("filter.all"),
+                  count: props.counts.total,
+                  highlight: false,
+                },
                 {
                   id: "needs_you",
-                  label: "待确认",
+                  label: t("filter.needsYou"),
                   count: props.counts.needsYou,
                   highlight: props.counts.needsYou > 0,
                 },
-                { id: "running", label: "进行中", count: props.counts.running, highlight: false },
-                { id: "done", label: "已完成", count: props.counts.done, highlight: false },
+                {
+                  id: "running",
+                  label: t("filter.running"),
+                  count: props.counts.running,
+                  highlight: false,
+                },
+                { id: "done", label: t("filter.done"), count: props.counts.done, highlight: false },
               ] as const
             ).map((item) => {
               const active = attentionFilter === item.id && selectedRepoFilter === "all";
@@ -687,14 +722,14 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
             })}
           </nav>
 
-          <section aria-label="工作区">
+          <section aria-label={t("workbench.workspacesSection")}>
             <div className="mb-1 flex items-center justify-between px-2.5">
               <span className="text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                工作区
+                {t("workbench.workspacesSection")}
               </span>
               <button
                 type="button"
-                aria-label="新建工作区"
+                aria-label={t("workbench.newWorkspaceAriaLabel")}
                 onClick={() => setWorkspaceModalState("create")}
                 className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-md text-[#687082] transition hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-white"
               >
@@ -751,14 +786,14 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
             </div>
           </section>
 
-          <section aria-label="我的 Agent">
+          <section aria-label={t("workbench.agentsSectionAriaLabel")}>
             <div className="mb-1 flex items-center justify-between px-2.5">
               <span className="text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                Agent
+                {t("workbench.agentsHeading")}
               </span>
               <button
                 type="button"
-                aria-label="接入新的 Agent"
+                aria-label={t("workbench.connectNewAgentAriaLabel")}
                 onClick={props.onOpenConnectAgent}
                 className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-md text-[#687082] transition hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-white"
               >
@@ -792,7 +827,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                         <span className="truncate">{shortName}</span>
                       </span>
                       <span
-                        title={isBusy ? "执行中" : "空闲"}
+                        title={isBusy ? t("workbench.agentBusy") : t("workbench.agentIdle")}
                         className={cn(
                           "h-1.5 w-1.5 shrink-0 rounded-full",
                           isBusy
@@ -811,7 +846,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                 className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-[9px] px-2.5 text-left text-[12.5px] text-[#687082] transition hover:bg-black/[0.035] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.04] dark:hover:text-white"
               >
                 <Plus className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">接入本机 Agent…</span>
+                <span className="truncate">{t("workbench.connectLocalAgentEllipsis")}</span>
               </button>
             )}
           </section>
@@ -828,7 +863,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
               <button
                 type="button"
                 onClick={closeCompactDetail}
-                aria-label={`返回${viewTitle}`}
+                aria-label={t("workbench.backToAriaLabel", { title: viewTitle })}
                 className="app-no-drag -ml-1.5 inline-flex h-8 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full px-2.5 text-[14px] font-medium text-[#3B414E] transition hover:bg-black/[0.05] hover:text-[#111318] xl:hidden dark:text-[#C4C4CA] dark:hover:bg-white/[0.07] dark:hover:text-white"
               >
                 <ArrowLeft className="h-4 w-4 shrink-0" />
@@ -855,7 +890,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                 <AppSelect
                   size="sm"
                   align="end"
-                  ariaLabel="按工作区筛选任务"
+                  ariaLabel={t("workbench.filterByWorkspaceAriaLabel")}
                   value={selectedRepoFilter}
                   onValueChange={(nextWsId) => {
                     setSelectedRepoFilter(nextWsId);
@@ -879,7 +914,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                 className="hidden shrink-0 cursor-pointer items-center gap-1 rounded-lg px-2 py-1 text-[12px] text-[#4B5565] transition hover:bg-black/[0.05] hover:text-[#111318] lg:inline-flex dark:text-[#A1A1AA] dark:hover:bg-white/[0.07] dark:hover:text-white"
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" />
-                <span>工作区设置</span>
+                <span>{t("workbench.workspaceSettings")}</span>
               </button>
             ) : null}
 
@@ -888,7 +923,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                 align="end"
                 items={moreMenuEntries}
                 trigger={
-                  <IconButton size="md" variant="ghost" label="更多操作">
+                  <IconButton size="md" variant="ghost" label={t("workbench.moreActionsAriaLabel")}>
                     <MoreHorizontal className="h-4 w-4" />
                   </IconButton>
                 }
@@ -901,7 +936,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
         {!compactDetailOpen ? (
           <div className="no-scrollbar shrink-0 overflow-x-auto overscroll-x-contain px-3.5 pb-2.5 lg:hidden">
             <fieldset className="flex min-w-0 items-center gap-1.5">
-              <legend className="sr-only">按任务状态筛选</legend>
+              <legend className="sr-only">{t("workbench.filterByStatusLegend")}</legend>
               {compactFilterTabs.map((item) => {
                 const selected = attentionFilter === item.value;
                 return (
@@ -990,11 +1025,13 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                         />
                         <span className="truncate">
                           {selectedWorkspace.host.hostLabel} ·{" "}
-                          {formatSandboxSummary(selectedWorkspace)}
+                          {formatSandboxSummary(selectedWorkspace, locale)}
                           {selectedWorkspace.context.ruleFiles.length > 0
                             ? ` · ${selectedWorkspace.context.ruleFiles.join(", ")}`
                             : ""}
-                          {selectedWorkspace.context.sharedMemoryActive ? " · 共享记忆" : ""}
+                          {selectedWorkspace.context.sharedMemoryActive
+                            ? ` · ${t("workbench.sharedMemory")}`
+                            : ""}
                         </span>
                       </div>
 
@@ -1003,7 +1040,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                         onClick={() => setWorkspaceModalState(selectedWorkspace)}
                         className="shrink-0 cursor-pointer rounded-md px-1.5 py-0.5 text-[11.5px] text-[#4B5565] transition hover:bg-black/[0.05] hover:text-[#111318] lg:hidden dark:text-[#A1A1AA] dark:hover:bg-white/[0.07] dark:hover:text-white"
                       >
-                        设置
+                        {t("workbench.settingsShort")}
                       </button>
                     </div>
 
@@ -1037,8 +1074,10 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                       disabled={isDispatching}
                       placeholder={
                         selectedWorkspace !== undefined
-                          ? `在「${selectedWorkspace.name}」新建任务，回车交办…`
-                          : "新建任务，回车交办…"
+                          ? t("workbench.promptPlaceholderInWorkspace", {
+                              name: selectedWorkspace.name,
+                            })
+                          : t("workbench.promptPlaceholderDefault")
                       }
                       className="min-w-0 flex-1 bg-transparent py-0.5 text-[16px] text-[#111318] placeholder:text-[14px] placeholder:text-[#8E96A6] focus:outline-none disabled:opacity-60 md:text-[13.5px] md:placeholder:text-[13.5px] dark:text-[#F2F2F4] dark:placeholder:text-[#71717A]"
                     />
@@ -1050,22 +1089,20 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                         className="shrink-0"
                         onClick={() => void handleDispatchSubmit()}
                       >
-                        {isDispatching ? "交办中…" : "交办"}
+                        {isDispatching ? t("workbench.dispatching") : t("workbench.dispatch")}
                       </AppButton>
                     ) : null}
                   </div>
 
                   {props.repos.length === 0 ? (
                     <div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-2 pl-6 text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
-                      <span className="min-w-0">
-                        首次交办前需新建一个工作区（目录不存在将自动创建）
-                      </span>
+                      <span className="min-w-0">{t("workbench.firstWorkspaceHint")}</span>
                       <button
                         type="button"
                         onClick={() => setWorkspaceModalState("create")}
                         className="relative shrink-0 cursor-pointer rounded-md px-2 py-0.5 text-[11.5px] font-medium text-[#2563EB] transition hover:bg-black/[0.05] [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-x-1 [@media(pointer:coarse)]:after:-inset-y-2 dark:text-[#60A5FA] dark:hover:bg-white/[0.07]"
                       >
-                        新建工作区
+                        {t("workbench.newWorkspace")}
                       </button>
                     </div>
                   ) : null}
@@ -1074,7 +1111,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                     {activeRepo !== undefined ? (
                       <AppSelect
                         size="sm"
-                        ariaLabel="选择工作区"
+                        ariaLabel={t("workbench.selectWorkspaceAriaLabel")}
                         value={activeRepo.id}
                         onValueChange={(nextWsId) => {
                           const nextWs = props.repos.find((r) => r.id === nextWsId);
@@ -1091,7 +1128,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
 
                     <AppSelect
                       size="sm"
-                      ariaLabel="选择协作方式"
+                      ariaLabel={t("workbench.selectTopologyAriaLabel")}
                       value={effectiveDispatchTopology}
                       onValueChange={setDispatchTopology}
                       options={topologyOptions}
@@ -1101,7 +1138,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                     {props.ownedAgents.length > 0 ? (
                       <AppSelect
                         size="sm"
-                        ariaLabel="选择执行 Agent"
+                        ariaLabel={t("workbench.selectAgentAriaLabel")}
                         value={preferredWorkerId}
                         onValueChange={(val) =>
                           setPreferredWorkerId(val === "auto" ? "auto" : (val as AgentId))
@@ -1125,13 +1162,13 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                       <div className="flex h-full min-h-[240px] flex-col items-center justify-center px-6 text-center">
                         <p className="text-[13.5px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
                           {selectedWorkspace !== undefined
-                            ? `「${selectedWorkspace.name}」暂无任务`
-                            : "暂无任务"}
+                            ? t("workbench.emptyInWorkspace", { name: selectedWorkspace.name })
+                            : t("workbench.emptyDefault")}
                         </p>
                         <p className="mt-1 text-[12px] text-[#8E96A6] dark:text-[#71717A]">
                           {props.ownedAgents.length === 0
-                            ? "接入本机 CLI Agent 后，输入需求即可自动准备目录并托管执行，完成后通知你签收。"
-                            : "输入需求并回车，Agent 将在工作区自动准备目录并托管执行，完成后通知你签收。"}
+                            ? t("workbench.emptyHintNoAgents")
+                            : t("workbench.emptyHintWithAgents")}
                         </p>
                         <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                           {props.ownedAgents.length === 0 ? (
@@ -1140,7 +1177,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                               onClick={props.onOpenConnectAgent}
                               className="cursor-pointer rounded-lg px-2.5 py-1 text-[12px] font-medium text-[#2563EB] transition hover:bg-black/[0.05] dark:text-[#60A5FA] dark:hover:bg-white/[0.07]"
                             >
-                              接入本机 Agent
+                              {t("workbench.connectLocalAgent")}
                             </button>
                           ) : null}
                           {selectedWorkspace !== undefined ? (
@@ -1149,7 +1186,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                               onClick={() => setWorkspaceModalState(selectedWorkspace)}
                               className="cursor-pointer rounded-lg px-2.5 py-1 text-[12px] font-medium text-[#3B414E] transition hover:bg-black/[0.05] dark:text-[#A1A1AA] dark:hover:bg-white/[0.07]"
                             >
-                              查看工作区配置
+                              {t("workbench.viewWorkspaceConfig")}
                             </button>
                           ) : (
                             <button
@@ -1157,7 +1194,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                               onClick={() => setWorkspaceModalState("create")}
                               className="cursor-pointer rounded-lg px-2.5 py-1 text-[12px] font-medium text-[#3B414E] transition hover:bg-black/[0.05] dark:text-[#A1A1AA] dark:hover:bg-white/[0.07]"
                             >
-                              新建工作区
+                              {t("workbench.newWorkspace")}
                             </button>
                           )}
                         </div>
@@ -1166,7 +1203,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                       <div className="pb-4">
                         {needsYouTasks.length > 0 ? (
                           <TaskListGroup
-                            heading="待确认"
+                            heading={t("filter.needsYou")}
                             tasks={needsYouTasks}
                             selectedId={resolvedSelectedTask?.id ?? null}
                             onSelect={handleSelectTaskRow}
@@ -1175,7 +1212,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
 
                         {runningTasks.length > 0 ? (
                           <TaskListGroup
-                            heading="进行中"
+                            heading={t("filter.running")}
                             tasks={runningTasks}
                             selectedId={resolvedSelectedTask?.id ?? null}
                             onSelect={handleSelectTaskRow}
@@ -1184,7 +1221,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
 
                         {settledTasks.length > 0 ? (
                           <TaskListGroup
-                            heading="已完成"
+                            heading={t("filter.done")}
                             tasks={settledTasks}
                             selectedId={resolvedSelectedTask?.id ?? null}
                             onSelect={handleSelectTaskRow}
@@ -1240,7 +1277,7 @@ export function SoloWorkbench(props: SoloWorkbenchProps) {
                   </motion.div>
                 ) : (
                   <div className="flex flex-1 items-center justify-center p-8 text-center text-[13px] text-[#8E96A6] dark:text-[#71717A]">
-                    选择左侧任务查看变更与执行详情
+                    {t("workbench.selectTaskPrompt")}
                   </div>
                 )}
               </motion.div>
@@ -1288,6 +1325,7 @@ interface TaskListGroupProps {
 }
 
 function TaskListGroup(props: TaskListGroupProps) {
+  const { locale, t } = useWorkbenchI18n();
   return (
     <section>
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-black/[0.045] bg-[#ECEEF0]/92 px-4 py-1.5 text-[11.5px] font-medium text-[#687082] dark:border-white/[0.055] dark:bg-[#19191D]/95 dark:text-[#8E8E96]">
@@ -1326,7 +1364,7 @@ function TaskListGroup(props: TaskListGroupProps) {
                   {task.title}
                 </p>
                 <p className="mt-1 truncate text-[12px] text-[#687082] dark:text-[#8E8E96]">
-                  {formatTaskSecondaryLine(task)}
+                  {formatTaskSecondaryLine(task, locale)}
                 </p>
               </div>
 
@@ -1350,7 +1388,7 @@ function TaskListGroup(props: TaskListGroupProps) {
                     return (
                       <span className="inline-flex items-center gap-1 font-mono text-[10.5px] text-[#16A34A] dark:text-[#4ADE80]">
                         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                        <span>执行中</span>
+                        <span>{t("slice.status.running")}</span>
                       </span>
                     );
                   }

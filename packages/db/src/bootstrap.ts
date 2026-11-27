@@ -21,6 +21,7 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
     role TEXT NOT NULL DEFAULT 'user',
     status TEXT NOT NULL DEFAULT 'active',
     theme_preference TEXT NOT NULL DEFAULT 'auto',
+    language_preference TEXT NOT NULL DEFAULT 'auto',
     suspended_at TIMESTAMPTZ,
     suspended_reason TEXT,
     last_login_at TIMESTAMPTZ,
@@ -32,6 +33,7 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
   "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'",
   "ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'",
   "ALTER TABLE users ADD COLUMN IF NOT EXISTS theme_preference TEXT NOT NULL DEFAULT 'auto'",
+  "ALTER TABLE users ADD COLUMN IF NOT EXISTS language_preference TEXT NOT NULL DEFAULT 'auto'",
   "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ",
   "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended_reason TEXT",
   "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ",
@@ -313,7 +315,7 @@ const CORE_DDL_STATEMENTS: readonly string[] = [
  * 在冷启动期主动触发核心表的列级解析，避免隐藏目录损坏留到用户登录时才抛出 HTTP 500。
  */
 const CORE_RELATION_PROBES: readonly string[] = [
-  "SELECT id, email, password_hash, role, status, theme_preference FROM users LIMIT 0",
+  "SELECT id, email, password_hash, role, status, theme_preference, language_preference FROM users LIMIT 0",
   "SELECT id, user_id, token_hash, expires_at FROM user_sessions LIMIT 0",
   "SELECT id, owner_user_id, token_hash, allow_external_dm FROM agents LIMIT 0",
   "SELECT room_id, member_key, remark FROM room_members LIMIT 0",

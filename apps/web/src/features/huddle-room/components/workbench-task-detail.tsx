@@ -2,7 +2,12 @@
  * @module web/features/huddle-room/workbench-task-detail
  * @description 个人工作台右侧详情、实时执行追踪流（Live Trace）与 Unified Diff 代码审阅面板。
  */
-import type { OwnedAgentSummaryDto, RoomId, WorkTraceEntry } from "@openhuddle/protocol";
+import type {
+  OwnedAgentSummaryDto,
+  RoomId,
+  SupportedLocale,
+  WorkTraceEntry,
+} from "@openhuddle/protocol";
 import {
   ArrowUp,
   ArrowUpRight,
@@ -50,6 +55,7 @@ import { HighlightedTokenLine } from "../../../components/ui/syntax-code.js";
 import { inferSyntaxLanguageFromPath, tokenizeCodeLines } from "../../../lib/syntax-highlight.js";
 import { isCoarsePointerDevice, isImeComposing } from "../../../lib/viewport-sync.js";
 import { isLoopbackOrigin } from "../../auth-pairing/connect-instructions.js";
+import { getWorkbenchTranslator, useWorkbenchI18n } from "../i18n/workbench.js";
 import {
   type AgentWorkspace,
   type SoloDiffFile,
@@ -169,39 +175,41 @@ export function quoteWorkbenchPath(path: string): string {
 function getSliceStatusBadge(
   slice: WorkSliceNode,
   stage: SoloWorkTaskView["stage"],
+  locale: SupportedLocale,
 ): {
   readonly label: string;
   readonly className: string;
   readonly pulsing: boolean;
 } {
+  const { t } = getWorkbenchTranslator(locale);
   switch (slice.status) {
     case "running":
       return {
-        label: "执行中",
+        label: t("slice.status.running"),
         className: "text-[#15803D] dark:text-[#4ADE80]",
         pulsing: true,
       };
     case "verifying":
       return {
-        label: "复核中",
+        label: t("slice.status.verifying"),
         className: "text-[#2563EB] dark:text-[#60A5FA]",
         pulsing: true,
       };
     case "waiting":
       return {
-        label: getSliceWaitLabel(stage, slice.leaseRole),
+        label: getSliceWaitLabel(stage, slice.leaseRole, locale),
         className: "text-[#B45309] dark:text-[#FBBF24]",
         pulsing: false,
       };
     case "ready":
       return {
-        label: "已完成",
+        label: t("slice.status.ready"),
         className: "text-[#687082] dark:text-[#8E8E96]",
         pulsing: false,
       };
     case "blocked":
       return {
-        label: "已停止",
+        label: t("slice.status.blocked"),
         className: "text-[#B91C1C] dark:text-[#F87171]",
         pulsing: false,
       };
@@ -224,6 +232,7 @@ export interface WorkbenchTaskDetailPaneProps {
  * 任务详情、实时动态追踪流与 Unified Diff 审阅视图。
  */
 export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
+  const { locale, t, tp } = useWorkbenchI18n();
   const { task } = props;
   const isLocalWorkspace =
     props.workspace?.host.mode === "local_machine" &&
@@ -318,16 +327,16 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
     () => [
       {
         value: "steps",
-        label: "执行追踪",
+        label: t("detail.tab.steps"),
         badge: traceEntries.length > 0 ? String(traceEntries.length) : String(task.slices.length),
       },
       {
         value: "changes",
-        label: "代码变更",
+        label: t("detail.tab.changes"),
         ...(task.diffFiles.length > 0 ? { badge: String(task.diffFiles.length) } : {}),
       },
     ],
-    [task.diffFiles.length, task.slices.length, traceEntries.length],
+    [t, task.diffFiles.length, task.slices.length, traceEntries.length],
   );
 
   const workerShort = stripAgentOwnerPrefix(task.primaryWorker.displayName, props.ownerDisplayName);
@@ -358,41 +367,41 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
         ? [
             {
               id: "open-cursor",
-              label: "在 Cursor 中打开",
+              label: t("detail.menu.openCursor"),
               icon: <ExternalLink className="h-3.5 w-3.5" />,
               onSelect: () =>
                 copyTextWithFeedback(
                   `cursor ${quoteWorkbenchPath(resolvedLocalPath)}`,
-                  "已复制 Cursor 打开命令",
+                  t("detail.toast.copiedCursor"),
                 ),
             },
             {
               id: "open-vscode",
-              label: "在 VS Code 中打开",
+              label: t("detail.menu.openVsCode"),
               icon: <ExternalLink className="h-3.5 w-3.5" />,
               onSelect: () =>
                 copyTextWithFeedback(
                   `code ${quoteWorkbenchPath(resolvedLocalPath)}`,
-                  "已复制 VS Code 打开命令",
+                  t("detail.toast.copiedVsCode"),
                 ),
             },
             {
               id: "copy-cd",
               label: /^(?:[A-Za-z]:[\\/]|\\\\)/.test(resolvedLocalPath)
-                ? "复制 PowerShell 进入命令"
-                : "复制终端进入命令 (cd)",
+                ? t("detail.menu.copyPowerShellCd")
+                : t("detail.menu.copyTerminalCd"),
               icon: <Terminal className="h-3.5 w-3.5" />,
               onSelect: () =>
                 copyTextWithFeedback(
                   `cd ${quoteWorkbenchPath(resolvedLocalPath)}`,
-                  "已复制终端进入命令",
+                  t("detail.toast.copiedCd"),
                 ),
             },
             {
               id: "copy-path",
-              label: "复制本地目录路径",
+              label: t("detail.menu.copyLocalPath"),
               icon: <Copy className="h-3.5 w-3.5" />,
-              onSelect: () => copyTextWithFeedback(resolvedLocalPath, "已复制本地目录路径"),
+              onSelect: () => copyTextWithFeedback(resolvedLocalPath, t("detail.toast.copiedPath")),
             },
           ]
         : []),
@@ -400,7 +409,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
         ? [
             {
               id: "open-ws-settings",
-              label: "工作区环境与门禁设置…",
+              label: t("detail.menu.workspaceSettings"),
               icon: <SlidersHorizontal className="h-3.5 w-3.5" />,
               onSelect: () => {
                 if (props.workspace !== undefined) {
@@ -411,7 +420,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
           ]
         : []),
     ],
-    [props.onConfigureWorkspace, props.workspace, resolvedLocalPath],
+    [props.onConfigureWorkspace, props.workspace, resolvedLocalPath, t],
   );
 
   const handleSendSteer = (): void => {
@@ -425,10 +434,10 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
     void steerWorkTaskOnServer(task.id, targetSlice.sliceId, clean)
       .then(() => {
         setSteerNote((draft) => (draft === steerNote ? "" : draft));
-        toast.success("已向执行器发送补充说明");
+        toast.success(t("detail.toast.steerSent"));
       })
       .catch((err: unknown) => {
-        toast.error(err instanceof Error ? err.message : "发送补充说明失败");
+        toast.error(err instanceof Error ? err.message : t("detail.toast.steerFailed"));
       })
       .finally(() => setSendingSteer(false));
   };
@@ -460,7 +469,9 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                 {showsWorktreeBranch ? (
                   <button
                     type="button"
-                    onClick={() => copyTextWithFeedback(displayedBranch, "已复制分支名")}
+                    onClick={() =>
+                      copyTextWithFeedback(displayedBranch, t("detail.toast.copiedBranch"))
+                    }
                     className="inline-flex max-w-[180px] min-w-0 shrink-0 cursor-pointer items-center gap-1 font-mono text-[11.5px] text-[#4B5565] transition hover:text-[#111318] dark:text-[#A1A1AA] dark:hover:text-white"
                   >
                     <GitBranch className="h-3 w-3 shrink-0" />
@@ -478,15 +489,23 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                         title={resolvedLocalPath}
                         className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 whitespace-nowrap text-[12px] text-[#4B5565] transition hover:text-[#111318] dark:text-[#A1A1AA] dark:hover:text-white"
                       >
-                        <span>{resolvedLocalPath ? "打开执行目录" : "工作区设置"}</span>
+                        <span>
+                          {resolvedLocalPath
+                            ? t("detail.openExecutionDir")
+                            : t("workbench.workspaceSettings")}
+                        </span>
                         <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
                       </button>
                     }
                   />
                 ) : null}
                 <span className="shrink-0 whitespace-nowrap">
-                  {workerShort} 执行
-                  {verifierShort !== null ? ` · ${verifierShort} 复核` : ""}
+                  {verifierShort !== null
+                    ? t("detail.runAndVerifiedBy", {
+                        worker: workerShort,
+                        verifier: verifierShort,
+                      })
+                    : t("detail.runBy", { worker: workerShort })}
                 </span>
               </div>
             </div>
@@ -504,7 +523,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                     }
                   }}
                 >
-                  进入群聊
+                  {t("detail.openHuddle")}
                 </AppButton>
               ) : (
                 <AppButton
@@ -515,7 +534,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                   className="shrink-0 whitespace-nowrap"
                   onClick={props.onEscalate}
                 >
-                  {props.isEscalating ? "创建中…" : "拉群讨论"}
+                  {props.isEscalating ? t("detail.escalating") : t("detail.escalateToHuddle")}
                 </AppButton>
               )}
 
@@ -533,14 +552,16 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                     }
                     setIsStopping(true);
                     void controlWorkTaskOnServer(task.id, "stop")
-                      .then(() => toast.info("已停止任务"))
+                      .then(() => toast.info(t("detail.toast.stopped")))
                       .catch((err: unknown) =>
-                        toast.error(err instanceof Error ? err.message : "停止任务失败"),
+                        toast.error(
+                          err instanceof Error ? err.message : t("detail.toast.stopFailed"),
+                        ),
                       )
                       .finally(() => setIsStopping(false));
                   }}
                 >
-                  {isStopping ? "停止中…" : "停止"}
+                  {isStopping ? t("detail.stopping") : t("detail.stop")}
                 </AppButton>
               ) : null}
 
@@ -552,13 +573,15 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                   className="shrink-0 whitespace-nowrap"
                   onClick={() => {
                     void controlWorkTaskOnServer(task.id, "retry")
-                      .then(() => toast.success("已重新加入执行队列"))
+                      .then(() => toast.success(t("detail.toast.requeued")))
                       .catch((err: unknown) =>
-                        toast.error(err instanceof Error ? err.message : "重试任务失败"),
+                        toast.error(
+                          err instanceof Error ? err.message : t("detail.toast.retryFailed"),
+                        ),
                       );
                   }}
                 >
-                  重新运行
+                  {t("detail.retry")}
                 </AppButton>
               ) : null}
 
@@ -576,22 +599,22 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                         variant="secondary"
                         className="shrink-0 whitespace-nowrap"
                       >
-                        退回修改
+                        {t("detail.requestChanges")}
                       </AppButton>
                     }
                   >
                     <p className="text-[12px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                      填写修改说明
+                      {t("detail.reworkHeading")}
                     </p>
                     <AppInput
                       size="sm"
                       value={reworkText}
                       onChange={(e) => setReworkText(e.target.value)}
-                      placeholder="说明需要调整的地方…"
+                      placeholder={t("detail.reworkPlaceholder")}
                     />
                     <div className="flex justify-end gap-1.5">
                       <AppButton size="sm" variant="ghost" onClick={() => setReworkOpen(false)}>
-                        取消
+                        {t("detail.cancel")}
                       </AppButton>
                       <AppButton
                         size="sm"
@@ -601,13 +624,17 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                           setReworkText("");
                           setReworkOpen(false);
                           void decideWorkReviewOnServer(task.id, "request_changes", note)
-                            .then(() => toast.info("已退回继续修改"))
+                            .then(() => toast.info(t("detail.toast.changesRequested")))
                             .catch((err: unknown) =>
-                              toast.error(err instanceof Error ? err.message : "退回修改失败"),
+                              toast.error(
+                                err instanceof Error
+                                  ? err.message
+                                  : t("detail.toast.requestChangesFailed"),
+                              ),
                             );
                         }}
                       >
-                        退回
+                        {t("detail.sendBack")}
                       </AppButton>
                     </div>
                   </AppPopover>
@@ -619,13 +646,15 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                     className="shrink-0 whitespace-nowrap"
                     onClick={() => {
                       void decideWorkReviewOnServer(task.id, "approve")
-                        .then(() => toast.success("已签收变更"))
+                        .then(() => toast.success(t("detail.toast.approved")))
                         .catch((err: unknown) =>
-                          toast.error(err instanceof Error ? err.message : "签收失败"),
+                          toast.error(
+                            err instanceof Error ? err.message : t("detail.toast.approveFailed"),
+                          ),
                         );
                     }}
                   >
-                    签收
+                    {t("detail.approve")}
                   </AppButton>
                 </>
               ) : null}
@@ -671,7 +700,9 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
               onClick={() => setCodeDetailsOpen((open) => !open)}
               className="oh-workbench-details-toggle hidden min-h-11 cursor-pointer items-center gap-1 rounded-lg px-2 text-xs font-medium text-[#4B5565] dark:text-[#C4C4CA]"
             >
-              {task.stage === "awaiting_review" ? "待审阅任务" : "任务详情"}
+              {task.stage === "awaiting_review"
+                ? t("detail.mobileToggleReview")
+                : t("detail.mobileToggleDetails")}
               <ChevronDown
                 aria-hidden="true"
                 className={cn("size-3.5", codeDetailsOpen && "rotate-180")}
@@ -681,13 +712,14 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
 
           {task.review?.testCommand ? (
             <span className="oh-workbench-task-status text-[12px] text-[#687082] dark:text-[#8E8E96]">
-              测试命令 <code className="font-mono text-[11.5px]">{task.review.testCommand}</code>{" "}
-              {task.review.testPassed ? "已通过" : "未通过"}
+              {t("detail.testCommandPrefix")}{" "}
+              <code className="font-mono text-[11.5px]">{task.review.testCommand}</code>{" "}
+              {task.review.testPassed ? t("detail.testPassed") : t("detail.testFailed")}
             </span>
           ) : isRunning ? (
             <span className="oh-workbench-task-status inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#15803D] dark:text-[#4ADE80]">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-              <span>实时追踪已连接</span>
+              <span>{t("detail.liveTraceConnected")}</span>
             </span>
           ) : null}
         </div>
@@ -752,7 +784,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                   animate={{ opacity: 1, y: 0 }}
                   exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
                   transition={reducedMotion ? INSTANT_TRANSITION : NATIVE_VIEW_SWAP}
-                  aria-label={`代码变更：${activeDiffFile.path}`}
+                  aria-label={t("detail.diffAriaLabel", { path: activeDiffFile.path })}
                   tabIndex={0}
                   className="oh-workbench-diff-lines min-h-0 flex-1 touch-pan-y touch-pinch-zoom overflow-y-auto overscroll-y-contain"
                 >
@@ -763,7 +795,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                           {activeDiffFile.path}
                         </span>
                         <span className="inline-flex shrink-0 items-center gap-1">
-                          复核说明
+                          {t("detail.verifierNote")}
                           <ChevronDown
                             aria-hidden="true"
                             className="size-3.5 group-open:rotate-180"
@@ -871,16 +903,14 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
               className="flex flex-1 flex-col items-center justify-center p-8 text-center"
             >
               <p className="text-[13px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-                {isRunning
-                  ? "任务正在本机沙盒中执行，完成后将自动生成代码 Diff"
-                  : "本次任务未产生文件改动"}
+                {isRunning ? t("detail.emptyDiffRunning") : t("detail.emptyDiffDone")}
               </p>
               <button
                 type="button"
                 onClick={() => setSectionTab("steps")}
                 className="mt-2 cursor-pointer text-[12px] text-[#2563EB] hover:underline dark:text-[#60A5FA]"
               >
-                切回实时执行追踪
+                {t("detail.switchToLiveTrace")}
               </button>
             </motion.div>
           )
@@ -900,8 +930,8 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
               {/* 1. 分片执行管线卡片 */}
               <div className="divide-y divide-black/[0.05] overflow-hidden rounded-[14px] border border-black/[0.06] bg-white/75 dark:divide-white/[0.06] dark:border-white/[0.075] dark:bg-white/[0.03]">
                 {task.slices.map((slice) => {
-                  const progress = getSliceProgressSummary(slice, task.stage);
-                  const statusMeta = getSliceStatusBadge(slice, task.stage);
+                  const progress = getSliceProgressSummary(slice, task.stage, locale);
+                  const statusMeta = getSliceStatusBadge(slice, task.stage, locale);
                   const waitingForClaim =
                     slice.leaseRole !== undefined &&
                     slice.status === "waiting" &&
@@ -911,6 +941,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                     waitingForClaim && !isLocalWorkspace
                       ? getClaimListenerHint(
                           props.ownedAgents.find((agent) => agent.id === slice.worker.agentId),
+                          locale,
                         )
                       : undefined;
                   return (
@@ -956,7 +987,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                                     target="_blank"
                                     rel="noreferrer"
                                   >
-                                    安装指引
+                                    {t("detail.installGuide")}
                                   </a>
                                 ) : null}
                               </p>
@@ -987,31 +1018,34 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                       (slice.liveSummary && slice.liveSummary !== progress) ? (
                         <details className="mt-1 pl-10 text-[12px] text-[#687082] dark:text-[#A1A1AA]">
                           <summary className="cursor-pointer py-1">
-                            查看详情
                             {slice.steerNotes.length > 0
-                              ? ` · ${slice.steerNotes.length} 条补充说明`
-                              : ""}
+                              ? tp("detail.detailsWithNotes", slice.steerNotes.length)
+                              : t("detail.viewDetails")}
                           </summary>
                           {slice.ownedPaths.length > 0 ? (
                             <p className="mt-1.5 font-mono text-[11px] text-[#8E96A6] dark:text-[#71717A]">
-                              范围：{slice.ownedPaths.join(", ")}
+                              {t("detail.scope", { paths: slice.ownedPaths.join(", ") })}
                             </p>
                           ) : null}
 
                           {slice.provenance !== undefined ? (
                             <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                              <span>环境：{slice.provenance.agentEnvironment}</span>
+                              <span>
+                                {t("detail.environment", {
+                                  env: slice.provenance.agentEnvironment,
+                                })}
+                              </span>
                               <button
                                 type="button"
                                 onClick={() =>
                                   copyTextWithFeedback(
                                     slice.provenance?.sessionJsonlPath ?? "",
-                                    "已复制仓外会话记录路径",
+                                    t("detail.toast.copiedSessionLog"),
                                   )
                                 }
                                 className="inline-flex cursor-pointer items-center gap-1 font-mono text-[10.5px] text-[#4B5565] transition hover:text-[#111318] dark:text-[#A1A1AA] dark:hover:text-white"
                               >
-                                <span>复制会话日志路径 (.jsonl)</span>
+                                <span>{t("detail.copySessionLog")}</span>
                                 <Copy className="h-2.5 w-2.5 opacity-60" />
                               </button>
                             </div>
@@ -1024,7 +1058,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                               key={`${slice.sliceId}-n-${String(idx)}`}
                               className="mt-1 whitespace-pre-wrap break-words"
                             >
-                              补充说明：{note}
+                              {t("detail.steerNoteItem", { note })}
                             </p>
                           ))}
                         </details>
@@ -1039,11 +1073,11 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                 <div className="mb-2 flex items-center justify-between px-0.5">
                   <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
                     <Terminal className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
-                    <span>实时过程追踪</span>
+                    <span>{t("detail.liveTraceTitle")}</span>
                   </span>
                   {traceEntries.length > 0 ? (
                     <span className="font-mono text-[11px] tabular-nums text-[#8E96A6] dark:text-[#71717A]">
-                      {traceEntries.length} 条记录
+                      {tp("detail.traceEntryCount", traceEntries.length)}
                     </span>
                   ) : null}
                 </div>
@@ -1055,7 +1089,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
                   />
                 ) : (
                   <div className="rounded-[14px] border border-black/[0.06] bg-white/60 px-4 py-6 text-center text-[12px] text-[#8E96A6] dark:border-white/[0.075] dark:bg-white/[0.02] dark:text-[#71717A]">
-                    {isRunning ? "正在等待本机执行器认领分片并回传实时过程…" : "暂无过程追踪记录"}
+                    {isRunning ? t("detail.emptyTraceRunning") : t("detail.emptyTraceIdle")}
                   </div>
                 )}
               </div>
@@ -1074,12 +1108,12 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
             }}
           >
             <textarea
-              aria-label="补充说明"
+              aria-label={t("detail.steerAriaLabel")}
               className="oh-workbench-note-text app-no-drag"
               rows={1}
               maxLength={1000}
               enterKeyHint="enter"
-              placeholder="补充说明给正在执行的 Agent…"
+              placeholder={t("detail.steerPlaceholder")}
               value={steerNote}
               onChange={(event) => setSteerNote(event.target.value)}
               onKeyDown={(event) => {
@@ -1092,7 +1126,7 @@ export function WorkbenchTaskDetailPane(props: WorkbenchTaskDetailPaneProps) {
             <IconButton
               type="submit"
               className="oh-workbench-note-submit"
-              label="发送补充说明"
+              label={t("detail.steerSubmitLabel")}
               size="sm"
               variant="secondary"
               disabled={!steerNote.trim() || task.slices.length === 0}

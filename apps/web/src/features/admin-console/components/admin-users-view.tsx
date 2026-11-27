@@ -22,7 +22,7 @@ import {
   UserCheck,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AppButton,
   AppInput,
@@ -32,6 +32,7 @@ import {
   IconButton,
 } from "../../../components/primitives/index.js";
 import { getPlatformVisualMeta, getReachVisualMeta } from "../../../lib/format.js";
+import { formatNumber } from "../../../lib/i18n/index.js";
 import {
   adminUserDetailQueryOptions,
   adminUsersQueryOptions,
@@ -41,6 +42,7 @@ import {
   useAdminRevokeUserSessionsMutation,
   useAdminUpdateUserMutation,
 } from "../api/admin-console.queries.js";
+import { getRoomMemberRoleLabel, resolveAdminErrorMessage, useAdminI18n } from "../i18n/index.js";
 import {
   AdminConfirmModal,
   AdminEmptyState,
@@ -54,18 +56,6 @@ import {
 type RoleFilterValue = "__all__" | UserRole;
 type StatusFilterValue = "__all__" | UserStatus;
 
-const ROLE_OPTIONS: ReadonlyArray<AppSelectOption<RoleFilterValue>> = [
-  { value: "__all__", label: "全部角色" },
-  { value: "admin", label: "管理员" },
-  { value: "user", label: "普通用户" },
-];
-
-const STATUS_OPTIONS: ReadonlyArray<AppSelectOption<StatusFilterValue>> = [
-  { value: "__all__", label: "全部状态" },
-  { value: "active", label: "正常活跃" },
-  { value: "suspended", label: "已封禁" },
-];
-
 /**
  * 单个用户全量档案与治理抽屉面板。
  */
@@ -74,6 +64,7 @@ function AdminUserDetailDrawerContent(props: {
   readonly currentUserId: UserId;
   readonly onDeletedClose: () => void;
 }) {
+  const { locale, t } = useAdminI18n();
   const detailQuery = useQuery(adminUserDetailQueryOptions(props.userId));
   const updateUserMutation = useAdminUpdateUserMutation();
   const deleteUserMutation = useAdminDeleteUserMutation();
@@ -101,8 +92,12 @@ function AdminUserDetailDrawerContent(props: {
   if (detailQuery.isError || !detailQuery.data) {
     return (
       <AdminErrorState
-        title="加载用户详情失败"
-        message={detailQuery.error instanceof Error ? detailQuery.error.message : "请稍后重试"}
+        title={t("users.detail.errorTitle")}
+        message={resolveAdminErrorMessage(
+          detailQuery.error,
+          t("shared.error.tryAgainLater"),
+          locale,
+        )}
         onRetry={() => void detailQuery.refetch()}
       />
     );
@@ -112,6 +107,7 @@ function AdminUserDetailDrawerContent(props: {
   const u = detail.user;
   const isSelf = u.id === props.currentUserId;
   const isProtectedAdmin = isSelf || u.isEnvPinnedAdmin;
+  const fmt = (value: number): string => formatNumber(value, undefined, locale);
 
   const handleSaveDisplayName = (): void => {
     const trimmed = displayNameDraft.trim();
@@ -153,55 +149,59 @@ function AdminUserDetailDrawerContent(props: {
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
             {u.role === "admin" ? (
-              <AdminStatusPill tone="accent">管理员</AdminStatusPill>
+              <AdminStatusPill tone="accent">{t("common.role.admin")}</AdminStatusPill>
             ) : (
-              <AdminStatusPill tone="neutral">普通用户</AdminStatusPill>
+              <AdminStatusPill tone="neutral">{t("common.role.user")}</AdminStatusPill>
             )}
             {u.isEnvPinnedAdmin ? (
               <AdminStatusPill tone="info">
                 <Lock className="mr-1 inline h-3 w-3" />
-                环境变量超管
+                {t("users.badge.envPinned")}
               </AdminStatusPill>
             ) : null}
             {u.status === "suspended" ? (
-              <AdminStatusPill tone="danger">已封禁</AdminStatusPill>
+              <AdminStatusPill tone="danger">{t("common.status.suspended")}</AdminStatusPill>
             ) : (
-              <AdminStatusPill tone="success">正常活跃</AdminStatusPill>
+              <AdminStatusPill tone="success">{t("common.status.active")}</AdminStatusPill>
             )}
           </div>
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-[#687082] sm:grid-cols-4 dark:text-[#8E96AB]">
           <div>
-            <span className="block text-[11px]">注册时间</span>
+            <span className="block text-[11px]">{t("users.detail.registeredAt")}</span>
             <strong className="font-mono text-[#111318] tabular-nums dark:text-[#ECEFF6]">
               {formatAdminDateTime(u.createdAtIso)}
             </strong>
           </div>
           <div>
-            <span className="block text-[11px]">最近登录</span>
+            <span className="block text-[11px]">{t("users.detail.lastLogin")}</span>
             <strong className="font-mono text-[#111318] tabular-nums dark:text-[#ECEFF6]">
               {formatAdminDateTime(u.lastLoginAtIso)}
             </strong>
           </div>
           <div>
-            <span className="block text-[11px]">Agent / 建群</span>
+            <span className="block text-[11px]">{t("users.detail.agentsRooms")}</span>
             <strong className="font-mono text-[#111318] tabular-nums dark:text-[#ECEFF6]">
-              {u.stats.agentCount} / {u.stats.ownedRoomCount}
+              {fmt(u.stats.agentCount)} / {fmt(u.stats.ownedRoomCount)}
             </strong>
           </div>
           <div>
-            <span className="block text-[11px]">活跃会话 / 消息</span>
+            <span className="block text-[11px]">{t("users.detail.sessionsMessages")}</span>
             <strong className="font-mono text-[#111318] tabular-nums dark:text-[#ECEFF6]">
-              {u.stats.activeSessionCount} / {u.stats.messageCount}
+              {fmt(u.stats.activeSessionCount)} / {fmt(u.stats.messageCount)}
             </strong>
           </div>
         </div>
 
         {u.status === "suspended" ? (
           <div className="mt-3 rounded-xl border border-[#E5484D]/25 bg-[#E5484D]/8 px-3 py-2 text-xs text-[#991B1B] dark:border-[#F05252]/30 dark:bg-[#F05252]/12 dark:text-[#FCA5A5]">
-            封禁时间：{formatAdminDateTime(u.suspendedAtIso)}
-            {u.suspendedReason ? ` · 原因：${u.suspendedReason}` : ""}
+            {u.suspendedReason
+              ? t("users.detail.suspendedWithReason", {
+                  time: formatAdminDateTime(u.suspendedAtIso),
+                  reason: u.suspendedReason,
+                })
+              : t("users.detail.suspendedAt", { time: formatAdminDateTime(u.suspendedAtIso) })}
           </div>
         ) : null}
       </div>
@@ -209,7 +209,7 @@ function AdminUserDetailDrawerContent(props: {
       {/* 2. 昵称修改与角色权限控制 */}
       <div className="space-y-3 rounded-2xl border border-black/[0.06] p-4 dark:border-white/[0.07]">
         <h4 className="text-xs font-semibold tracking-wide text-[#687082] uppercase dark:text-[#8E96AB]">
-          账号资料与权限治理
+          {t("users.detail.governanceHeading")}
         </h4>
 
         <div className="flex items-center gap-2">
@@ -218,8 +218,8 @@ function AdminUserDetailDrawerContent(props: {
             containerClassName="min-w-0 flex-1"
             value={displayNameDraft}
             onChange={(e) => setDisplayNameDraft(e.target.value)}
-            placeholder="输入用户展示昵称"
-            aria-label="修改用户展示昵称"
+            placeholder={t("users.detail.displayNamePlaceholder")}
+            aria-label={t("users.detail.displayNameAria")}
           />
           <AppButton
             variant="secondary"
@@ -231,7 +231,7 @@ function AdminUserDetailDrawerContent(props: {
             isLoading={updateUserMutation.isPending}
             onClick={handleSaveDisplayName}
           >
-            保存昵称
+            {t("users.detail.saveDisplayName")}
           </AppButton>
         </div>
 
@@ -250,7 +250,7 @@ function AdminUserDetailDrawerContent(props: {
             }
             onClick={handleToggleRole}
           >
-            {u.role === "admin" ? "撤销管理员权限" : "授予管理员权限"}
+            {u.role === "admin" ? t("users.detail.revokeAdmin") : t("users.detail.grantAdmin")}
           </AppButton>
 
           {u.status === "suspended" ? (
@@ -261,7 +261,7 @@ function AdminUserDetailDrawerContent(props: {
               leadingIcon={<CheckCircle2 className="h-3.5 w-3.5 text-[#16A34A]" />}
               onClick={handleUnsuspend}
             >
-              解除账号封禁
+              {t("users.detail.unsuspend")}
             </AppButton>
           ) : (
             <AppButton
@@ -271,7 +271,7 @@ function AdminUserDetailDrawerContent(props: {
               leadingIcon={<Ban className="h-3.5 w-3.5" />}
               onClick={() => setSuspendModalOpen(true)}
             >
-              封禁账号
+              {t("users.detail.suspend")}
             </AppButton>
           )}
 
@@ -283,7 +283,7 @@ function AdminUserDetailDrawerContent(props: {
             leadingIcon={<KeyRound className="h-3.5 w-3.5" />}
             onClick={() => revokeAllSessionsMutation.mutate(u.id)}
           >
-            踢下线全部会话
+            {t("users.detail.revokeAllSessions")}
           </AppButton>
 
           <AppButton
@@ -293,15 +293,13 @@ function AdminUserDetailDrawerContent(props: {
             leadingIcon={<Trash2 className="h-3.5 w-3.5" />}
             onClick={() => setDeleteModalOpen(true)}
           >
-            彻底删除用户
+            {t("users.detail.deleteUser")}
           </AppButton>
         </div>
 
         {isProtectedAdmin ? (
           <p className="text-[11.5px] text-[#687082] dark:text-[#7D869C]">
-            {isSelf
-              ? "安全护栏已启用：禁止对当前登录的管理员自身执行降权、封禁或删除操作。"
-              : "安全护栏已启用：该用户受服务端 ADMIN_EMAILS 环境变量白名单锁定，请先调整配置后再操作。"}
+            {isSelf ? t("users.detail.guardrailSelf") : t("users.detail.guardrailEnv")}
           </p>
         ) : null}
       </div>
@@ -310,17 +308,17 @@ function AdminUserDetailDrawerContent(props: {
       <div className="space-y-2.5">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-[#687082] dark:text-[#8E96AB]">
           <Bot className="h-3.5 w-3.5" />
-          <span>名下绑定 Agent ({detail.agents.length})</span>
+          <span>{t("users.detail.agentsHeading", { count: fmt(detail.agents.length) })}</span>
         </div>
         {detail.agents.length === 0 ? (
           <p className="rounded-xl bg-black/[0.025] px-3 py-3 text-xs text-[#939BAD] dark:bg-white/[0.03] dark:text-[#63636B]">
-            尚未绑定个人 Agent
+            {t("users.detail.agentsEmpty")}
           </p>
         ) : (
           <ul className="space-y-1.5">
             {detail.agents.map((agt) => {
-              const pMeta = getPlatformVisualMeta(agt.platform);
-              const rMeta = getReachVisualMeta(agt.reach);
+              const pMeta = getPlatformVisualMeta(agt.platform, locale);
+              const rMeta = getReachVisualMeta(agt.reach, locale);
               return (
                 <li
                   key={agt.id}
@@ -334,7 +332,10 @@ function AdminUserDetailDrawerContent(props: {
                       <AdminStatusPill dotClass={rMeta.dotClass}>{pMeta.label}</AdminStatusPill>
                     </div>
                     <p className="mt-0.5 truncate font-mono text-[11px] text-[#939BAD] dark:text-[#63636B]">
-                      {agt.id} · 最近心跳 {formatAdminDateTime(agt.lastSeenAtIso)}
+                      {t("users.detail.agentLastSeen", {
+                        id: agt.id,
+                        time: formatAdminDateTime(agt.lastSeenAtIso),
+                      })}
                     </p>
                   </div>
                   <AppButton
@@ -343,7 +344,7 @@ function AdminUserDetailDrawerContent(props: {
                     isLoading={deleteAgentMutation.isPending}
                     onClick={() => deleteAgentMutation.mutate(agt.id)}
                   >
-                    吊销
+                    {t("shared.action.revoke")}
                   </AppButton>
                 </li>
               );
@@ -356,11 +357,11 @@ function AdminUserDetailDrawerContent(props: {
       <div className="space-y-2.5">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-[#687082] dark:text-[#8E96AB]">
           <MessagesSquare className="h-3.5 w-3.5" />
-          <span>参与的群聊房间 ({detail.rooms.length})</span>
+          <span>{t("users.detail.roomsHeading", { count: fmt(detail.rooms.length) })}</span>
         </div>
         {detail.rooms.length === 0 ? (
           <p className="rounded-xl bg-black/[0.025] px-3 py-3 text-xs text-[#939BAD] dark:bg-white/[0.03] dark:text-[#63636B]">
-            暂未加入任何群聊
+            {t("users.detail.roomsEmpty")}
           </p>
         ) : (
           <ul className="space-y-1.5">
@@ -374,11 +375,13 @@ function AdminUserDetailDrawerContent(props: {
                     {rm.name}
                   </span>
                   <span className="block font-mono text-[11px] text-[#939BAD] dark:text-[#63636B]">
-                    {rm.id} · 最新序号 #{rm.lastSeq}
+                    {t("users.detail.roomMeta", { id: rm.id, seq: rm.lastSeq })}
                   </span>
                 </div>
                 <AdminStatusPill tone={rm.isRoomOwner ? "accent" : "neutral"}>
-                  {rm.isRoomOwner ? "群主" : rm.memberRole}
+                  {rm.isRoomOwner
+                    ? t("common.role.owner")
+                    : getRoomMemberRoleLabel(rm.memberRole, t)}
                 </AdminStatusPill>
               </li>
             ))}
@@ -390,11 +393,11 @@ function AdminUserDetailDrawerContent(props: {
       <div className="space-y-2.5">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-[#687082] dark:text-[#8E96AB]">
           <KeyRound className="h-3.5 w-3.5" />
-          <span>最近登录会话 ({detail.sessions.length})</span>
+          <span>{t("users.detail.sessionsHeading", { count: fmt(detail.sessions.length) })}</span>
         </div>
         {detail.sessions.length === 0 ? (
           <p className="rounded-xl bg-black/[0.025] px-3 py-3 text-xs text-[#939BAD] dark:bg-white/[0.03] dark:text-[#63636B]">
-            暂无登录会话记录
+            {t("users.detail.sessionsEmpty")}
           </p>
         ) : (
           <ul className="space-y-1.5">
@@ -409,12 +412,16 @@ function AdminUserDetailDrawerContent(props: {
                       {ses.id}
                     </span>
                     <AdminStatusPill tone={ses.isExpired ? "warning" : "success"}>
-                      {ses.isExpired ? "已过期" : "活跃中"}
+                      {ses.isExpired
+                        ? t("common.status.expired")
+                        : t("common.status.sessionActive")}
                     </AdminStatusPill>
                   </div>
                   <p className="mt-0.5 text-[11px] text-[#687082] dark:text-[#7D869C]">
-                    创建 {formatAdminDateTime(ses.createdAtIso)} · 过期{" "}
-                    {formatAdminDateTime(ses.expiresAtIso)}
+                    {t("users.detail.sessionMeta", {
+                      created: formatAdminDateTime(ses.createdAtIso),
+                      expires: formatAdminDateTime(ses.expiresAtIso),
+                    })}
                   </p>
                 </div>
                 <AppButton
@@ -423,7 +430,7 @@ function AdminUserDetailDrawerContent(props: {
                   isLoading={revokeSessionMutation.isPending}
                   onClick={() => revokeSessionMutation.mutate(ses.id)}
                 >
-                  下线
+                  {t("users.detail.sessionRevoke")}
                 </AppButton>
               </li>
             ))}
@@ -434,9 +441,9 @@ function AdminUserDetailDrawerContent(props: {
       {/* 封禁账号弹窗 */}
       <AdminConfirmModal
         open={suspendModalOpen}
-        title={`封禁账号「${u.displayName}」`}
-        description="封禁后将立即注销其全部 Web 登录会话，并同步阻断该用户名下所有 Agent 访问平台。"
-        confirmLabel="确认封禁"
+        title={t("users.modal.suspendTitle", { name: u.displayName })}
+        description={t("users.modal.suspendDescription")}
+        confirmLabel={t("users.modal.suspendConfirm")}
         isPending={updateUserMutation.isPending}
         onClose={() => setSuspendModalOpen(false)}
         onConfirm={() => {
@@ -458,15 +465,16 @@ function AdminUserDetailDrawerContent(props: {
       >
         <div className="space-y-2.5">
           <p className="text-xs leading-relaxed text-[#3B414E] dark:text-[#B4BCD0]">
-            封禁后该用户无法登录或申请验证码，其绑定的全部个人 Agent 也会即时失效（返回{" "}
-            <code className="font-mono">403 ACCOUNT_SUSPENDED</code>）。
+            {t("users.modal.suspendBodyPrefix")}
+            <code className="font-mono">403 ACCOUNT_SUSPENDED</code>
+            {t("users.modal.suspendBodySuffix")}
           </p>
           <AppInput
             size="md"
             value={suspendReasonDraft}
             onChange={(e) => setSuspendReasonDraft(e.target.value)}
-            placeholder="可选：填写封禁原因（将写入审计日志与账号备注）"
-            aria-label="封禁原因"
+            placeholder={t("users.modal.suspendReasonPlaceholder")}
+            aria-label={t("users.modal.suspendReasonAria")}
           />
         </div>
       </AdminConfirmModal>
@@ -474,9 +482,9 @@ function AdminUserDetailDrawerContent(props: {
       {/* 彻底删除用户弹窗 */}
       <AdminConfirmModal
         open={deleteModalOpen}
-        title={`彻底删除用户「${u.displayName}」`}
-        description="该操作不可恢复，将永久销毁账号、个人 Agent、登录会话、其创建的群聊及跨房历史发言。"
-        confirmLabel="确认永久删除"
+        title={t("users.modal.deleteTitle", { name: u.displayName })}
+        description={t("users.modal.deleteDescription")}
+        confirmLabel={t("users.modal.deleteConfirm")}
         isPending={deleteUserMutation.isPending}
         onClose={() => setDeleteModalOpen(false)}
         onConfirm={() => {
@@ -503,12 +511,31 @@ export interface AdminUsersViewProps {
  * 渲染全平台用户账号管理表格与详情抽屉。
  */
 export function AdminUsersView(props: AdminUsersViewProps) {
+  const { locale, t } = useAdminI18n();
   const [page, setPage] = useState<number>(1);
   const [searchInput, setSearchInput] = useState<string>("");
   const [roleFilter, setRoleFilter] = useState<RoleFilterValue>("__all__");
   const [statusFilter, setStatusFilter] = useState<StatusFilterValue>("__all__");
   const [selectedUserId, setSelectedUserId] = useState<UserId | null>(
     props.initialSelectedUserId ?? null,
+  );
+
+  const roleOptions = useMemo<ReadonlyArray<AppSelectOption<RoleFilterValue>>>(
+    () => [
+      { value: "__all__", label: t("users.filter.allRoles") },
+      { value: "admin", label: t("common.role.admin") },
+      { value: "user", label: t("common.role.user") },
+    ],
+    [t],
+  );
+
+  const statusOptions = useMemo<ReadonlyArray<AppSelectOption<StatusFilterValue>>>(
+    () => [
+      { value: "__all__", label: t("users.filter.allStatuses") },
+      { value: "active", label: t("common.status.active") },
+      { value: "suspended", label: t("common.status.suspended") },
+    ],
+    [t],
   );
 
   useEffect(() => {
@@ -527,6 +554,7 @@ export function AdminUsersView(props: AdminUsersViewProps) {
   };
 
   const usersQuery = useQuery(adminUsersQueryOptions(query));
+  const fmt = (value: number): string => formatNumber(value, undefined, locale);
 
   return (
     <div className="space-y-4">
@@ -542,15 +570,15 @@ export function AdminUsersView(props: AdminUsersViewProps) {
               setSearchInput(e.target.value);
               setPage(1);
             }}
-            placeholder="搜索用户邮箱、昵称或 usr_ ID…"
-            aria-label="搜索用户"
+            placeholder={t("users.search.placeholder")}
+            aria-label={t("users.search.aria")}
             leadingIcon={<Search className="h-3.5 w-3.5" />}
             trailingSlot={
               searchInput.length > 0 ? (
                 <IconButton
                   size="xs"
                   variant="ghost"
-                  label="清空搜索"
+                  label={t("shared.action.clearSearch")}
                   onClick={() => {
                     setSearchInput("");
                     setPage(1);
@@ -571,8 +599,8 @@ export function AdminUsersView(props: AdminUsersViewProps) {
               setRoleFilter(val);
               setPage(1);
             }}
-            options={ROLE_OPTIONS}
-            ariaLabel="按角色筛选"
+            options={roleOptions}
+            ariaLabel={t("users.filter.roleAria")}
           />
         </div>
 
@@ -584,8 +612,8 @@ export function AdminUsersView(props: AdminUsersViewProps) {
               setStatusFilter(val);
               setPage(1);
             }}
-            options={STATUS_OPTIONS}
-            ariaLabel="按状态筛选"
+            options={statusOptions}
+            ariaLabel={t("users.filter.statusAria")}
           />
         </div>
       </div>
@@ -596,15 +624,13 @@ export function AdminUsersView(props: AdminUsersViewProps) {
           <AdminTableSkeleton rows={6} />
         ) : usersQuery.isError || !usersQuery.data ? (
           <AdminErrorState
-            message={
-              usersQuery.error instanceof Error ? usersQuery.error.message : "加载用户列表失败"
-            }
+            message={resolveAdminErrorMessage(usersQuery.error, t("users.error.loadList"), locale)}
             onRetry={() => void usersQuery.refetch()}
           />
         ) : usersQuery.data.users.length === 0 ? (
           <AdminEmptyState
-            title="没有符合条件的用户"
-            description="尝试调整搜索关键词或角色/状态筛选条件"
+            title={t("users.empty.title")}
+            description={t("users.empty.description")}
           />
         ) : (
           <>
@@ -612,13 +638,13 @@ export function AdminUsersView(props: AdminUsersViewProps) {
               <table className="w-full min-w-[780px] border-collapse text-left text-[13px]">
                 <thead>
                   <tr className="border-b border-black/[0.06] bg-black/[0.02] text-[11.5px] font-semibold text-[#687082] dark:border-white/[0.07] dark:bg-white/[0.02] dark:text-[#8E96AB]">
-                    <th className="px-4 py-3">用户身份</th>
-                    <th className="px-3 py-3">权限角色</th>
-                    <th className="px-3 py-3">账号状态</th>
-                    <th className="px-3 py-3 text-right">Agent / 建群 / 消息</th>
-                    <th className="px-3 py-3 text-right">活跃会话</th>
-                    <th className="px-3 py-3">最近登录</th>
-                    <th className="px-4 py-3 text-right">操作</th>
+                    <th className="px-4 py-3">{t("users.table.identity")}</th>
+                    <th className="px-3 py-3">{t("users.table.role")}</th>
+                    <th className="px-3 py-3">{t("users.table.status")}</th>
+                    <th className="px-3 py-3 text-right">{t("users.table.counts")}</th>
+                    <th className="px-3 py-3 text-right">{t("users.table.activeSessions")}</th>
+                    <th className="px-3 py-3">{t("users.table.lastLogin")}</th>
+                    <th className="px-4 py-3 text-right">{t("users.table.actions")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-black/[0.05] dark:divide-white/[0.06]">
@@ -634,7 +660,9 @@ export function AdminUsersView(props: AdminUsersViewProps) {
                               {item.displayName}
                             </span>
                             {item.id === props.currentUserId ? (
-                              <AdminStatusPill tone="info">当前登录</AdminStatusPill>
+                              <AdminStatusPill tone="info">
+                                {t("users.badge.currentUser")}
+                              </AdminStatusPill>
                             ) : null}
                           </div>
                           <div className="text-xs text-[#687082] dark:text-[#8E96AB]">
@@ -645,21 +673,25 @@ export function AdminUsersView(props: AdminUsersViewProps) {
                       <td className="px-3 py-3">
                         <div className="flex flex-wrap items-center gap-1">
                           <AdminStatusPill tone={item.role === "admin" ? "accent" : "neutral"}>
-                            {item.role === "admin" ? "管理员" : "普通用户"}
+                            {item.role === "admin" ? t("common.role.admin") : t("common.role.user")}
                           </AdminStatusPill>
                           {item.isEnvPinnedAdmin ? (
-                            <AdminStatusPill tone="info">白名单</AdminStatusPill>
+                            <AdminStatusPill tone="info">
+                              {t("users.badge.envPinnedShort")}
+                            </AdminStatusPill>
                           ) : null}
                         </div>
                       </td>
                       <td className="px-3 py-3">
                         <AdminStatusPill tone={item.status === "suspended" ? "danger" : "success"}>
-                          {item.status === "suspended" ? "已封禁" : "正常"}
+                          {item.status === "suspended"
+                            ? t("common.status.suspended")
+                            : t("common.status.activeShort")}
                         </AdminStatusPill>
                       </td>
                       <td className="px-3 py-3 text-right font-mono text-xs text-[#3B414E] tabular-nums dark:text-[#B4BCD0]">
-                        {item.stats.agentCount} / {item.stats.ownedRoomCount} /{" "}
-                        {item.stats.messageCount}
+                        {fmt(item.stats.agentCount)} / {fmt(item.stats.ownedRoomCount)} /{" "}
+                        {fmt(item.stats.messageCount)}
                       </td>
                       <td className="px-3 py-3 text-right font-mono text-xs tabular-nums">
                         <span
@@ -669,7 +701,7 @@ export function AdminUsersView(props: AdminUsersViewProps) {
                               : "text-[#939BAD] dark:text-[#63636B]"
                           }
                         >
-                          {item.stats.activeSessionCount}
+                          {fmt(item.stats.activeSessionCount)}
                         </span>
                       </td>
                       <td className="px-3 py-3 font-mono text-xs text-[#687082] tabular-nums dark:text-[#8E96AB]">
@@ -682,7 +714,7 @@ export function AdminUsersView(props: AdminUsersViewProps) {
                           leadingIcon={<UserCheck className="h-3 w-3" />}
                           onClick={() => setSelectedUserId(item.id)}
                         >
-                          管理
+                          {t("users.action.manage")}
                         </AppButton>
                       </td>
                     </tr>
@@ -704,8 +736,8 @@ export function AdminUsersView(props: AdminUsersViewProps) {
             setSelectedUserId(null);
           }
         }}
-        title="用户账号治理详情"
-        subtitle="权限切换、会话下线、封禁控制与级联注销"
+        title={t("users.drawer.title")}
+        subtitle={t("users.drawer.subtitle")}
         side="right"
         className="sm:w-[min(94vw,660px)]"
       >

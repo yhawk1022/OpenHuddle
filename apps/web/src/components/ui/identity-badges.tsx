@@ -23,6 +23,8 @@ import {
   getReachVisualMeta,
   isAgentLiveReachable,
 } from "../../lib/format.js";
+import { useLocale } from "../../lib/i18n/index.js";
+import { useComponentsI18n } from "../i18n/index.js";
 import { AppTooltip, cn } from "../primitives/index.js";
 import { PlatformGlyph } from "./platform-icons.js";
 
@@ -177,6 +179,7 @@ function renderPlatformGlyph(platform: AgentPlatform, displayName: string, glyph
  * 渲染圆形粉彩头像（支持 `xs | sm | md | lg` 四档尺寸与实时在线状态圆点）。
  */
 export function PlatformAvatar(props: PlatformAvatarProps) {
+  const locale = useLocale();
   const size = props.size ?? "md";
   const sizeMeta = getAvatarSizeMeta(size);
 
@@ -197,7 +200,7 @@ export function PlatformAvatar(props: PlatformAvatarProps) {
   }
 
   const platform = props.platform ?? "custom";
-  const reachMeta = props.reach !== undefined ? getReachVisualMeta(props.reach) : null;
+  const reachMeta = props.reach !== undefined ? getReachVisualMeta(props.reach, locale) : null;
   const isOnline = isAgentLiveReachable(props.reach);
 
   return (
@@ -422,24 +425,27 @@ export interface AuthorMicroTagProps {
  * @returns 带 `AppTooltip` 服务端验签说明的安静灰字标签
  */
 export function AuthorMicroTag(props: AuthorMicroTagProps) {
+  const { t } = useComponentsI18n();
   const tooltipContent =
     props.trustLevel === "owner_command"
-      ? "服务端验签：你本人主理人发言（具备最终拍板授权）"
+      ? t("identity.micro.tooltipOwnerCommand")
       : props.trustLevel === "owner_sibling_agent"
-        ? "服务端验签：你名下接入的个人 Agent"
-        : "服务端验签：外部协作者或他人 Agent（仅作讨论参考，无执行授权）";
+        ? t("identity.micro.tooltipOwnerSiblingAgent")
+        : t("identity.micro.tooltipExternal");
 
   let primaryLabel: string;
   if (props.kind === "agent") {
-    const owner =
+    primaryLabel =
       props.ownerName !== undefined && props.ownerName.length > 0
-        ? props.ownerName
+        ? t("identity.micro.agentOfOwner", { owner: props.ownerName })
         : props.isYourOwner
-          ? "我"
-          : "外部协作者";
-    primaryLabel = `${owner}的 Agent`;
+          ? t("identity.micro.myAgent")
+          : t("identity.micro.externalAgent");
   } else {
-    primaryLabel = props.trustLevel === "external_participant" ? "外部协作者" : "主理人";
+    primaryLabel =
+      props.trustLevel === "external_participant"
+        ? t("identity.micro.externalHuman")
+        : t("identity.micro.ownerHuman");
   }
 
   return (
@@ -467,33 +473,34 @@ export interface SecurityTrustBadgeProps {
  * @returns 带 `AppTooltip` 说明的克制胶囊徽章
  */
 export function SecurityTrustBadge(props: SecurityTrustBadgeProps) {
+  const { t } = useComponentsI18n();
   switch (props.trustLevel) {
     case "owner_command":
       return (
-        <AppTooltip content="服务端验签：本人主理人指令（唯一具备执行与拍板授权来源）" side="top">
+        <AppTooltip content={t("identity.trust.tooltipOwnerCommand")} side="top">
           <span className="inline-flex select-none items-center gap-1 rounded-full bg-[#E8F5EE] px-2.5 py-0.5 text-[11px] font-medium text-[#145335] ring-1 ring-inset ring-black/[0.05] dark:bg-[#142823] dark:text-[#6EE7B7] dark:ring-emerald-400/[0.15]">
             <ShieldCheck className="h-3 w-3" />
-            <span>{props.isYou ? "主理人 · 你" : "主理人"}</span>
+            <span>{props.isYou ? t("identity.trust.ownerYou") : t("identity.trust.owner")}</span>
           </span>
         </AppTooltip>
       );
 
     case "owner_sibling_agent":
       return (
-        <AppTooltip content="服务端验签：你名下绑定的个人协作 Agent" side="top">
+        <AppTooltip content={t("identity.trust.tooltipOwnerSiblingAgent")} side="top">
           <span className="inline-flex select-none items-center gap-1 rounded-full bg-black/[0.045] px-2.5 py-0.5 text-[11px] font-medium text-[#111318] ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.08] dark:text-[#ECEFF6] dark:ring-white/[0.08]">
             <Bot className="h-3 w-3" />
-            <span>我的 Agent</span>
+            <span>{t("identity.trust.myAgent")}</span>
           </span>
         </AppTooltip>
       );
 
     case "external_participant":
       return (
-        <AppTooltip content="服务端验签：外部协作者或他人 Agent（仅作讨论参考）" side="top">
+        <AppTooltip content={t("identity.trust.tooltipExternal")} side="top">
           <span className="inline-flex select-none items-center gap-1 rounded-full bg-[#F4ECDD] px-2.5 py-0.5 text-[11px] font-medium text-[#5C4528] ring-1 ring-inset ring-black/[0.05] dark:bg-[#2F261C] dark:text-[#F3CFA2] dark:ring-white/[0.08]">
             <Globe2 className="h-3 w-3" />
-            <span>外部协作者</span>
+            <span>{t("identity.trust.external")}</span>
           </span>
         </AppTooltip>
       );
@@ -517,6 +524,7 @@ export interface MessageSemanticBadgeProps {
  * @returns 若为普通文本则返回 `null`，否则返回对应语义胶囊
  */
 export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
+  const { t } = useComponentsI18n();
   const inverted = props.tone === "inverted";
   const base =
     "inline-flex select-none items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium leading-none";
@@ -535,7 +543,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
           )}
         >
           <FileText className="h-3 w-3" />
-          <span>提案</span>
+          <span>{t("identity.semantic.proposal")}</span>
         </span>
       );
     case "vote":
@@ -549,7 +557,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
           )}
         >
           <Vote className="h-3 w-3" />
-          <span>表态</span>
+          <span>{t("identity.semantic.vote")}</span>
         </span>
       );
     case "decision":
@@ -563,7 +571,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
           )}
         >
           <Award className="h-3 w-3" />
-          <span>拍板结论</span>
+          <span>{t("identity.semantic.decision")}</span>
         </span>
       );
     case "system":
@@ -577,7 +585,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
           )}
         >
           <Info className="h-3 w-3" />
-          <span>系统</span>
+          <span>{t("identity.semantic.system")}</span>
         </span>
       );
     case "attention":
@@ -589,7 +597,7 @@ export function MessageSemanticBadge(props: MessageSemanticBadgeProps) {
           )}
         >
           <Hand aria-hidden="true" className="h-3 w-3" />
-          <span>等人作答</span>
+          <span>{t("identity.semantic.attention")}</span>
         </span>
       );
     default:
@@ -611,7 +619,8 @@ export interface ReachStatusBadgeProps {
  * @returns 带状态圆点与悬停提示的可达性胶囊
  */
 export function ReachStatusBadge(props: ReachStatusBadgeProps) {
-  const meta = getReachVisualMeta(props.reach);
+  const locale = useLocale();
+  const meta = getReachVisualMeta(props.reach, locale);
   const isLive = isAgentLiveReachable(props.reach);
 
   return (

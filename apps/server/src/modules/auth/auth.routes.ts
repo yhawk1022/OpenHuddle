@@ -369,7 +369,8 @@ const patchMeRoute = createRoute({
   method: "patch",
   path: "/me",
   tags: ["Auth"],
-  summary: "Update caller profile, including appearance preferences for signed-in humans",
+  summary:
+    "Update caller profile, including appearance and language preferences for signed-in humans",
   request: {
     body: {
       required: true,
@@ -391,7 +392,7 @@ const patchMeRoute = createRoute({
     },
     401: { description: "Missing or invalid credentials", content: errorJsonContent },
     403: {
-      description: "Agent cannot set human appearance preferences",
+      description: "Agent cannot set human appearance or language preferences",
       content: errorJsonContent,
     },
   },
@@ -426,7 +427,11 @@ export function createAuthRouter(deps: {
 
   router.openapi(requestRegisterCodeRoute, async (c) => {
     const body = c.req.valid("json");
-    const response = await deps.authService.requestRegisterCode(body, extractClientIp(c));
+    const response = await deps.authService.requestRegisterCode(
+      body,
+      extractClientIp(c),
+      c.req.header("accept-language"),
+    );
     return c.json(response, 200);
   });
 
@@ -446,7 +451,11 @@ export function createAuthRouter(deps: {
 
   router.openapi(requestPasswordResetCodeRoute, async (c) => {
     const body = c.req.valid("json");
-    const response = await deps.authService.requestPasswordResetCode(body, extractClientIp(c));
+    const response = await deps.authService.requestPasswordResetCode(
+      body,
+      extractClientIp(c),
+      c.req.header("accept-language"),
+    );
     return c.json(response, 200);
   });
 
@@ -468,7 +477,11 @@ export function createAuthRouter(deps: {
 
   router.openapi(requestOtpRoute, async (c) => {
     const body = c.req.valid("json");
-    const response = await deps.authService.requestOtp(body, extractClientIp(c));
+    const response = await deps.authService.requestOtp(
+      body,
+      extractClientIp(c),
+      c.req.header("accept-language"),
+    );
     return c.json(response, 200);
   });
 

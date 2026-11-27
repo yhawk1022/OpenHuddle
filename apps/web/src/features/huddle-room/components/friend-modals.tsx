@@ -36,8 +36,8 @@ import { AppButton, AppInput, cn, toast } from "../../../components/primitives/i
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { ModalDialog } from "../../../components/ui/modal-dialog.js";
 import { PlatformGlyph } from "../../../components/ui/platform-icons.js";
-import { ApiClientError } from "../../../lib/api-client.js";
 import { getPlatformVisualMeta } from "../../../lib/format.js";
+import { useCommonI18n } from "../../../lib/i18n/index.js";
 import { isCoarsePointerDevice } from "../../../lib/viewport-sync.js";
 import {
   useAcceptFriendRequestMutation,
@@ -47,13 +47,7 @@ import {
   useUpdateFriendRemarkMutation,
   userSearchQueryOptions,
 } from "../api/huddle-room.queries.js";
-
-function formatErrorMessage(err: unknown, fallback: string): string {
-  if (err instanceof ApiClientError || err instanceof Error) {
-    return err.message;
-  }
-  return fallback;
-}
+import { resolveChatDetailErrorMessage, useChatDetailI18n } from "../i18n/chat-detail.js";
 
 /** `AddFriendModal` 入参属性 */
 export interface AddFriendModalProps {
@@ -69,6 +63,8 @@ export interface AddFriendModalProps {
  * 站内用户搜索、发送好友申请与收发申请集中处理弹窗。
  */
 export function AddFriendModal(props: AddFriendModalProps) {
+  const { locale, t, tp } = useChatDetailI18n();
+  const { t: commonT } = useCommonI18n();
   const [queryText, setQueryText] = useState<string>("");
   const [noteText, setNoteText] = useState<string>("");
   const [pendingTargetId, setPendingTargetId] = useState<UserId | null>(null);
@@ -92,14 +88,16 @@ export function AddFriendModal(props: AddFriendModalProps) {
         onSuccess: (res) => {
           setPendingTargetId(null);
           if (res.autoAccepted || res.status === "accepted") {
-            toast.success(`你与「${displayName}」已成为好友，现在可以直接私聊`);
+            toast.success(t("friendModal.add.toastAutoAccepted", { name: displayName }));
           } else {
-            toast.success(`已向「${displayName}」发送好友申请`);
+            toast.success(t("friendModal.add.toastRequestSent", { name: displayName }));
           }
         },
         onError: (err) => {
           setPendingTargetId(null);
-          toast.error(formatErrorMessage(err, "发送好友申请失败"));
+          toast.error(
+            resolveChatDetailErrorMessage(err, locale) ?? t("friendModal.add.errSendFailed"),
+          );
         },
       },
     );
@@ -110,11 +108,13 @@ export function AddFriendModal(props: AddFriendModalProps) {
     acceptMutation.mutate(friendshipId, {
       onSuccess: () => {
         setPendingFriendshipId(null);
-        toast.success(`已通过「${displayName}」的好友申请`);
+        toast.success(t("friendModal.add.toastAccepted", { name: displayName }));
       },
       onError: (err) => {
         setPendingFriendshipId(null);
-        toast.error(formatErrorMessage(err, "同意申请失败"));
+        toast.error(
+          resolveChatDetailErrorMessage(err, locale) ?? t("friendModal.add.errAcceptFailed"),
+        );
       },
     });
   };
@@ -129,12 +129,16 @@ export function AddFriendModal(props: AddFriendModalProps) {
       onSuccess: () => {
         setPendingFriendshipId(null);
         toast.success(
-          isOutgoing ? `已撤回发给「${label}」的好友申请` : `已忽略「${label}」的好友申请`,
+          isOutgoing
+            ? t("friendModal.add.toastCanceled", { name: label })
+            : t("friendModal.add.toastDeclined", { name: label }),
         );
       },
       onError: (err) => {
         setPendingFriendshipId(null);
-        toast.error(formatErrorMessage(err, "操作失败"));
+        toast.error(
+          resolveChatDetailErrorMessage(err, locale) ?? t("friendModal.add.errActionFailed"),
+        );
       },
     });
   };
@@ -145,14 +149,14 @@ export function AddFriendModal(props: AddFriendModalProps) {
     <ModalDialog
       open={props.open}
       onClose={props.onClose}
-      title="添加好友"
-      subtitle="用昵称或邮箱找好友。加为好友后，就能发消息或邀请对方进群。"
+      title={t("friendModal.add.title")}
+      subtitle={t("friendModal.add.subtitle")}
       maxWidthClass="max-w-lg"
       icon={<UserPlus className="h-4 w-4" />}
       footer={
         <div className="flex justify-end">
           <AppButton variant="secondary" size="md" onClick={props.onClose}>
-            完成
+            {commonT("action.done")}
           </AppButton>
         </div>
       }
@@ -169,12 +173,12 @@ export function AddFriendModal(props: AddFriendModalProps) {
             value={queryText}
             onChange={(e) => setQueryText(e.target.value)}
             leadingIcon={<Search className="h-4 w-4" />}
-            placeholder="输入昵称或邮箱"
+            placeholder={t("friendModal.add.searchPlaceholder")}
             trailingSlot={
               queryText.length > 0 ? (
                 <button
                   type="button"
-                  aria-label="清空搜索词"
+                  aria-label={t("friendModal.add.clearSearchAria")}
                   onClick={() => setQueryText("")}
                   className="inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-full text-[#8E96A6] hover:bg-black/[0.06] hover:text-[#111318] dark:hover:bg-white/10 dark:hover:text-[#F2F2F4]"
                 >
@@ -191,7 +195,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
             value={noteText}
             onChange={(e) => setNoteText(e.target.value)}
             leadingIcon={<Mail className="h-3.5 w-3.5" />}
-            placeholder="给对方留句话（选填）"
+            placeholder={t("friendModal.add.notePlaceholder")}
           />
         </div>
 
@@ -199,7 +203,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
         {trimmedQuery.length > 0 ? (
           <div className="space-y-1.5">
             <div className="px-1 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-              搜索结果
+              {t("friendModal.add.resultsHeading")}
             </div>
             {searchQuery.isPending ? (
               <div className="space-y-1.5">
@@ -218,7 +222,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
               </div>
             ) : searchResults.length === 0 ? (
               <div className="rounded-2xl bg-black/[0.035] px-4 py-5 text-center text-xs text-[#687082] dark:bg-white/[0.04] dark:text-[#8E8E96]">
-                没找到与「{trimmedQuery}」匹配的用户
+                {t("friendModal.add.noResults", { query: trimmedQuery })}
               </div>
             ) : (
               <ul className="space-y-1.5 pr-0.5 sm:max-h-60 sm:overflow-y-auto">
@@ -243,7 +247,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                           <p className="truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
                             {u.email}
                             {item.sharedAgentCount > 0
-                              ? ` · 开放 ${String(item.sharedAgentCount)} 个私聊 Agent`
+                              ? tp("friendModal.add.sharedAgentsSuffix", item.sharedAgentCount)
                               : ""}
                           </p>
                         </div>
@@ -252,7 +256,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                       <div className="shrink-0">
                         {item.relationship === "self" ? (
                           <span className="rounded-full bg-black/[0.06] px-2.5 py-1 text-[11px] font-medium text-[#687082] dark:bg-white/[0.08] dark:text-[#8E8E96]">
-                            我自己
+                            {t("friendModal.add.selfBadge")}
                           </span>
                         ) : item.relationship === "friends" ? (
                           <AppButton
@@ -264,7 +268,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                               props.onClose();
                             }}
                           >
-                            发消息
+                            {t("friendModal.add.messageButton")}
                           </AppButton>
                         ) : item.relationship === "incoming_pending" &&
                           item.friendshipId !== undefined ? (
@@ -279,13 +283,13 @@ export function AddFriendModal(props: AddFriendModalProps) {
                               }
                             }}
                           >
-                            同意申请
+                            {t("friendModal.add.acceptRequestButton")}
                           </AppButton>
                         ) : item.relationship === "outgoing_pending" ? (
                           <div className="flex items-center gap-1.5">
                             <span className="inline-flex items-center gap-1 text-[11px] text-[#687082] dark:text-[#8E8E96]">
                               <Clock className="h-3 w-3" />
-                              等待通过
+                              {t("friendModal.add.pendingStatus")}
                             </span>
                             {item.friendshipId !== undefined ? (
                               <AppButton
@@ -298,7 +302,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                                   }
                                 }}
                               >
-                                撤回
+                                {t("friendModal.add.cancelRequestButton")}
                               </AppButton>
                             ) : null}
                           </div>
@@ -310,7 +314,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                             leadingIcon={<UserPlus className="h-3.5 w-3.5" />}
                             onClick={() => handleSendByUserId(u.userId, u.displayName)}
                           >
-                            加好友
+                            {t("friendModal.add.addFriendButton")}
                           </AppButton>
                         )}
                       </div>
@@ -327,7 +331,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
           <div className="space-y-1.5 border-t border-black/[0.06] pt-3 dark:border-white/[0.08]">
             <div className="flex items-center justify-between px-1">
               <span className="text-[11.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                收到的好友申请 · {props.incomingRequests.length}
+                {t("friendModal.add.incomingHeading", { count: props.incomingRequests.length })}
               </span>
             </div>
             <ul className="space-y-1.5 sm:max-h-48 sm:overflow-y-auto">
@@ -348,7 +352,9 @@ export function AddFriendModal(props: AddFriendModalProps) {
                         {req.peer.displayName}
                       </p>
                       <p className="truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                        {req.note !== undefined ? `留言：${req.note}` : req.peer.email}
+                        {req.note !== undefined
+                          ? t("friendModal.add.requestNote", { note: req.note })
+                          : req.peer.email}
                       </p>
                     </div>
                   </div>
@@ -361,7 +367,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                         handleDeclineOrCancel(req.friendshipId, req.peer.displayName, false)
                       }
                     >
-                      忽略
+                      {t("friendModal.add.declineButton")}
                     </AppButton>
                     <AppButton
                       variant="primary"
@@ -370,7 +376,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                       leadingIcon={<UserCheck className="h-3.5 w-3.5" />}
                       onClick={() => handleAccept(req.friendshipId, req.peer.displayName)}
                     >
-                      同意
+                      {t("friendModal.add.acceptButton")}
                     </AppButton>
                   </div>
                 </li>
@@ -383,7 +389,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
         {trimmedQuery.length === 0 && props.outgoingRequests.length > 0 ? (
           <div className="space-y-1.5 border-t border-black/[0.06] pt-3 dark:border-white/[0.08]">
             <span className="block px-1 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-              已发出的申请 · {props.outgoingRequests.length}
+              {t("friendModal.add.outgoingHeading", { count: props.outgoingRequests.length })}
             </span>
             <ul className="space-y-1 sm:max-h-36 sm:overflow-y-auto">
               {props.outgoingRequests.map((req) => (
@@ -402,7 +408,7 @@ export function AddFriendModal(props: AddFriendModalProps) {
                       handleDeclineOrCancel(req.friendshipId, req.peer.displayName, true)
                     }
                   >
-                    撤回
+                    {t("friendModal.add.cancelRequestButton")}
                   </AppButton>
                 </li>
               ))}
@@ -425,6 +431,8 @@ export function EditFriendRemarkModal(props: {
   readonly friend: FriendContactDto;
   readonly onClose: () => void;
 }) {
+  const { locale, t } = useChatDetailI18n();
+  const { t: commonT } = useCommonI18n();
   const { open = true, friend, onClose } = props;
   const [remark, setRemark] = useState(friend.remark ?? "");
   const mutation = useUpdateFriendRemarkMutation();
@@ -445,14 +453,14 @@ export function EditFriendRemarkModal(props: {
           onClose();
         }
       }}
-      title="编辑好友备注"
-      subtitle={`给 ${friend.user.displayName} 设置备注，仅自己可见。`}
+      title={t("friendModal.remark.title")}
+      subtitle={t("friendModal.remark.subtitle", { name: friend.user.displayName })}
       maxWidthClass="max-w-sm"
       icon={<Pencil className="h-4 w-4" />}
     >
       <form onSubmit={handleSubmit} className="space-y-3">
         <label htmlFor="friend-remark" className="text-[13px] font-medium">
-          备注名
+          {t("friendModal.remark.label")}
         </label>
         <AppInput
           id="friend-remark"
@@ -465,19 +473,20 @@ export function EditFriendRemarkModal(props: {
           aria-describedby="friend-remark-hint"
         />
         <p id="friend-remark-hint" className="text-xs text-[#687082] dark:text-[#8E8E96]">
-          留空并保存可恢复原昵称。
+          {t("friendModal.remark.hint")}
         </p>
         {mutation.isError ? (
           <p role="alert" className="text-xs text-[#C81E1E] dark:text-[#FCA5A5]">
-            {formatErrorMessage(mutation.error, "保存备注失败，请重试。")}
+            {resolveChatDetailErrorMessage(mutation.error, locale) ??
+              t("friendModal.remark.saveFailed")}
           </p>
         ) : null}
         <div className="flex justify-end gap-2">
           <AppButton variant="secondary" disabled={mutation.isPending} onClick={onClose}>
-            取消
+            {commonT("action.cancel")}
           </AppButton>
           <AppButton type="submit" isLoading={mutation.isPending}>
-            保存
+            {commonT("action.save")}
           </AppButton>
         </div>
       </form>
@@ -508,6 +517,8 @@ export interface InviteMembersModalProps {
  * @returns 群成员选择弹窗
  */
 export function InviteMembersModal(props: InviteMembersModalProps) {
+  const { locale, t } = useChatDetailI18n();
+  const { t: commonT } = useCommonI18n();
   const [selectedUserIds, setSelectedUserIds] = useState<ReadonlySet<UserId>>(new Set());
   const [selectedAgentIds, setSelectedAgentIds] = useState<ReadonlySet<AgentId>>(new Set());
   const [filterText, setFilterText] = useState<string>("");
@@ -602,11 +613,20 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
       },
       {
         onSuccess: () => {
-          toast.success(agentsOnly ? "已添加到群聊" : "已更新群成员");
+          toast.success(
+            agentsOnly
+              ? t("friendModal.invite.toastAgentsAdded")
+              : t("friendModal.invite.toastMembersUpdated"),
+          );
           props.onClose();
         },
         onError: (err) => {
-          toast.error(formatErrorMessage(err, agentsOnly ? "添加 Agent 失败" : "邀请成员失败"));
+          toast.error(
+            resolveChatDetailErrorMessage(err, locale) ??
+              (agentsOnly
+                ? t("friendModal.invite.errAddAgents")
+                : t("friendModal.invite.errInviteMembers")),
+          );
         },
       },
     );
@@ -620,14 +640,22 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
           props.onClose();
         }
       }}
-      title={agentsOnly ? "添加我的 Agent" : `邀请加入「${props.roomName}」`}
-      subtitle={agentsOnly ? `选择要加入「${props.roomName}」的 Agent。` : undefined}
+      title={
+        agentsOnly
+          ? t("friendModal.invite.titleAgentsOnly")
+          : t("friendModal.invite.titleMembers", { roomName: props.roomName })
+      }
+      subtitle={
+        agentsOnly
+          ? t("friendModal.invite.subtitleAgentsOnly", { roomName: props.roomName })
+          : undefined
+      }
       maxWidthClass="max-w-lg"
       icon={<Users className="h-4 w-4" />}
       footer={
         <div className="flex items-center justify-end gap-2">
           <AppButton variant="ghost" size="md" disabled={isSubmitting} onClick={props.onClose}>
-            取消
+            {commonT("action.cancel")}
           </AppButton>
           <AppButton
             type="submit"
@@ -637,7 +665,9 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
             disabled={totalSelected === 0}
             isLoading={isSubmitting}
           >
-            拉入群聊{totalSelected > 0 ? ` (${String(totalSelected)})` : ""}
+            {totalSelected > 0
+              ? t("friendModal.invite.submitWithCount", { count: totalSelected })
+              : t("friendModal.invite.submitButton")}
           </AppButton>
         </div>
       }
@@ -650,15 +680,23 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
           leadingIcon={<Search className="h-3.5 w-3.5" />}
-          aria-label={agentsOnly ? "筛选我的 Agent" : "筛选好友或我的 Agent"}
-          placeholder={agentsOnly ? "筛选我的 Agent…" : "筛选好友或我的 Agent…"}
+          aria-label={
+            agentsOnly
+              ? t("friendModal.invite.filterAgentsAria")
+              : t("friendModal.invite.filterAllAria")
+          }
+          placeholder={
+            agentsOnly
+              ? t("friendModal.invite.filterAgentsPlaceholder")
+              : t("friendModal.invite.filterAllPlaceholder")
+          }
         />
 
         {agentsOnly ? null : (
           <div className="space-y-2">
             <div className="flex items-center justify-between px-0.5 text-xs">
               <span className="font-semibold text-[#3B414E] dark:text-[#C4C4CA]">
-                我的好友（未在群内 · {candidateFriends.length}）
+                {t("friendModal.invite.friendsHeading", { count: candidateFriends.length })}
               </span>
               <button
                 type="button"
@@ -669,14 +707,16 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
                 }}
                 className="cursor-pointer text-[11.5px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
               >
-                + 添加新好友
+                {t("friendModal.invite.addNewFriendLink")}
               </button>
             </div>
             {candidateFriends.length === 0 ? (
               <p className="rounded-2xl bg-black/[0.03] px-3.5 py-3 text-xs text-[#687082] dark:bg-white/[0.04] dark:text-[#8E8E96]">
                 {props.friends.length === 0
-                  ? "你还没有好友。可以先加好友，也可以把群邀请码发给对方。"
-                  : "你的好友都在群里了。"}
+                  ? t("friendModal.invite.noFriends")
+                  : props.friends.every((friend) => existingHumanSet.has(friend.user.userId))
+                    ? t("friendModal.invite.allFriendsInRoom")
+                    : t("friendModal.invite.noMatchingFriends")}
               </p>
             ) : (
               <div className="flex flex-wrap gap-1.5 sm:max-h-40 sm:overflow-y-auto">
@@ -708,7 +748,9 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
 
         <div className="space-y-2">
           <div className="flex items-center justify-between px-0.5 text-xs">
-            <span className="font-semibold text-[#3B414E] dark:text-[#C4C4CA]">可添加的 Agent</span>
+            <span className="font-semibold text-[#3B414E] dark:text-[#C4C4CA]">
+              {t("friendModal.invite.agentsHeading")}
+            </span>
             <button
               type="button"
               disabled={isSubmitting}
@@ -718,21 +760,21 @@ export function InviteMembersModal(props: InviteMembersModalProps) {
               }}
               className="cursor-pointer text-[11.5px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
             >
-              + 配对新 Agent
+              {t("friendModal.invite.pairNewAgentLink")}
             </button>
           </div>
           {candidateAgents.length === 0 ? (
             <p className="rounded-2xl bg-black/[0.03] px-3.5 py-3 text-xs text-[#687082] dark:bg-white/[0.04] dark:text-[#8E8E96]">
               {props.ownedAgents.length === 0
-                ? "你还没有接入 Agent。点击「配对新 Agent」开始接入。"
+                ? t("friendModal.invite.noAgents")
                 : props.ownedAgents.every((agent) => existingAgentSet.has(agent.id))
-                  ? "你的 Agent 都在群里了。"
-                  : "没有符合筛选条件的 Agent。"}
+                  ? t("friendModal.invite.allAgentsInRoom")
+                  : t("friendModal.invite.noMatchingAgents")}
             </p>
           ) : (
             <div className="flex flex-wrap gap-1.5 sm:max-h-40 sm:overflow-y-auto">
               {candidateAgents.map((agent) => {
-                const meta = getPlatformVisualMeta(agent.platform);
+                const meta = getPlatformVisualMeta(agent.platform, locale);
                 const isSelected = selectedAgentIds.has(agent.id);
                 return (
                   <button

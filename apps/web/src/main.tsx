@@ -19,8 +19,17 @@ import { AuthScreen, currentMeQueryOptions } from "./features/auth-pairing/index
 import { WorkspaceShell } from "./features/huddle-room/components/workspace-shell.js";
 import { PublicSharePage } from "./features/public-share/index.js";
 import { startPwaInstallRuntime } from "./features/pwa-install/index.js";
+import {
+  readLastAccountLanguagePreference,
+  resolveAppRootLanguagePreference,
+  setLastAccountLanguagePreference,
+  startLocaleSync,
+  syncDocumentTitle,
+  useCommonI18n,
+  useGuestLanguagePreference,
+} from "./lib/i18n/index.js";
 import { createAppQueryClient } from "./lib/query-client.js";
-import { useBrowserLocation } from "./lib/session-store.js";
+import { useBrowserLocation, useSessionToken } from "./lib/session-store.js";
 import { startThemeSync, useGuestThemePreference } from "./lib/theme-store.js";
 import { startVisualViewportSync } from "./lib/viewport-sync.js";
 import "./styles.css";
@@ -50,9 +59,13 @@ function safeDecodeUriSegment(segment: string): string {
 export function AppRoot() {
   const location = useBrowserLocation();
   const shareMatch = /^\/share\/([^/?#]+)/.exec(location.pathname);
+  const isAdminRoute = /^\/admin(\/|$)/.test(location.pathname);
   // 只观察认证入口的自省结果，公开页面无需额外发起身份请求。
   const meQuery = useQuery({ ...currentMeQueryOptions(), enabled: false });
+  const sessionToken = useSessionToken();
   const guestPreference = useGuestThemePreference();
+  const guestLanguagePreference = useGuestLanguagePreference();
+  const lastAccountLanguagePreference = readLastAccountLanguagePreference();
   const authenticated =
     shareMatch === null && !meQuery.isError && meQuery.data?.callerKind === "human";
   const preference = authenticated
@@ -60,12 +73,40 @@ export function AppRoot() {
     : shareMatch !== null
       ? "dark"
       : guestPreference;
+  const accountLanguagePreference = authenticated
+    ? (meQuery.data?.languagePreference ?? "auto")
+    : null;
+  const languagePreference = resolveAppRootLanguagePreference({
+    isShareRoute: shareMatch !== null,
+    authenticatedLanguagePreference: accountLanguagePreference,
+    mePending: !meQuery.isError && meQuery.data === undefined,
+    sessionToken,
+    lastAccountLanguagePreference,
+    guestLanguagePreference,
+  });
+
+  const { t } = useCommonI18n();
+
+  useLayoutEffect(() => {
+    if (accountLanguagePreference !== null) {
+      setLastAccountLanguagePreference(accountLanguagePreference);
+    }
+  }, [accountLanguagePreference]);
+
+  useLayoutEffect(() => startLocaleSync(languagePreference), [languagePreference]);
   useLayoutEffect(() => startThemeSync(preference), [preference]);
   useLayoutEffect(() => startVisualViewportSync(), []);
   useLayoutEffect(() => startDisplayRefreshRuntime(), []);
   useEffect(() => {
     startPwaInstallRuntime();
   }, []);
+
+  useEffect(() => {
+    if (shareMatch !== null) {
+      return;
+    }
+    syncDocumentTitle(isAdminRoute ? t("title.admin") : t("title.main"));
+  }, [isAdminRoute, shareMatch, t]);
 
   if (shareMatch?.[1] !== undefined) {
     return <PublicSharePage inviteToken={safeDecodeUriSegment(shareMatch[1])} />;
@@ -75,13 +116,13 @@ export function AppRoot() {
     return <AuthScreen portalMode="welcome" />;
   }
 
-  if (/^\/admin(\/|$)/.test(location.pathname)) {
+  if (isAdminRoute) {
     return (
       <Suspense
         fallback={
           <main className="flex h-vvh flex-col items-center justify-center gap-2 bg-app-frame text-im-fg">
             <span className="text-[15px] font-semibold tracking-[-0.015em]">OpenHuddle</span>
-            <span className="text-xs text-im-muted">正在加载管理后台…</span>
+            <span className="text-xs text-im-muted">{t("loading.adminConsole")}</span>
           </main>
         }
       >

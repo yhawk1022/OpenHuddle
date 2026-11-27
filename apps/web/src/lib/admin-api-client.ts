@@ -3,7 +3,7 @@
  * @description OpenHuddle 运营与治理管理后台同源 `/api/v1/admin/*` 强类型 HTTP 客户端。
  *
  * 架构职责与关键不变量（Invariants）：
- * 1. 复用统一鉴权底座：全部请求经 `requestApiJson` 发送，自动携带 `oh_session` Cookie、备份 Bearer 令牌及超时保护。
+ * 1. 复用统一鉴权底座：全部请求经 `requestApiJson` 发送，自动携带 `oh_session` Cookie、备份 Bearer 令牌、`Accept-Language` 语种头及本地化超时保护。
  * 2. 参数安全序列化：通过 `buildQueryString` 跳过 `undefined` 与空字符串过滤项，防止将 `"undefined"` 拼入查询参数。
  */
 import type {

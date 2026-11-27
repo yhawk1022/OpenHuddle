@@ -22,6 +22,7 @@ import {
 } from "../../../components/primitives/index.js";
 import { ModalDialog } from "../../../components/ui/modal-dialog.js";
 import { isCoarsePointerDevice, isImeComposing } from "../../../lib/viewport-sync.js";
+import { useWorkbenchI18n } from "../i18n/workbench.js";
 import type {
   AgentWorkspace,
   WorkspaceHostMode,
@@ -57,37 +58,6 @@ export interface WorkspaceConfigModalProps {
   readonly onDeleted: () => void;
 }
 
-const SWARM_DISABLED_REASON = "仅多目录组合且非只读工作区支持";
-
-const TOPOLOGY_OPTIONS: ReadonlyArray<AppSelectOption<WorkTopology>> = [
-  { value: "direct", label: "单人执行", description: "单个 Agent 直接完成改动" },
-  { value: "verify_loop", label: "双人复核", description: "完成后由另一 Agent 独立检查" },
-  { value: "swarm", label: "多路并行", description: "按目录拆分并行处理后汇总" },
-];
-
-const WORKSPACE_KIND_TABS: ReadonlyArray<SegmentedTabItem<WorkspaceKind>> = [
-  { value: "git_repo", label: "单代码仓" },
-  { value: "multi_root", label: "多目录组合" },
-  { value: "folder", label: "普通文件夹" },
-];
-
-const HOST_MODE_TABS: ReadonlyArray<SegmentedTabItem<WorkspaceHostMode>> = [
-  { value: "local_machine", label: "本机目录" },
-  { value: "personal_remote", label: "远程沙箱" },
-  { value: "shared_container", label: "多人容器" },
-];
-
-const GIT_SANDBOX_TABS: ReadonlyArray<SegmentedTabItem<WorkspaceSandboxMode>> = [
-  { value: "worktree_pool", label: "Worktree 隔离" },
-  { value: "in_place", label: "原地目录" },
-  { value: "read_only", label: "只读围栏" },
-];
-
-const FOLDER_SANDBOX_TABS: ReadonlyArray<SegmentedTabItem<WorkspaceSandboxMode>> = [
-  { value: "in_place", label: "原地目录" },
-  { value: "read_only", label: "只读围栏" },
-];
-
 function inferSmartDefaultTopology(kind: WorkspaceKind, ownedAgentCount: number): WorkTopology {
   if (kind === "folder" || ownedAgentCount <= 1) {
     return "direct";
@@ -99,9 +69,45 @@ function inferSmartDefaultTopology(kind: WorkspaceKind, ownedAgentCount: number)
  * 新建或编辑工作区偏好弹窗。
  */
 export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
+  const { t } = useWorkbenchI18n();
   const initWs = props.initialWorkspace;
   const reducedMotion = usePrefersReducedMotion();
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const workspaceKindTabs = useMemo<ReadonlyArray<SegmentedTabItem<WorkspaceKind>>>(
+    () => [
+      { value: "git_repo", label: t("wsModal.kind.gitRepo") },
+      { value: "multi_root", label: t("wsModal.kind.multiRoot") },
+      { value: "folder", label: t("wsModal.kind.folder") },
+    ],
+    [t],
+  );
+
+  const hostModeTabs = useMemo<ReadonlyArray<SegmentedTabItem<WorkspaceHostMode>>>(
+    () => [
+      { value: "local_machine", label: t("wsModal.host.localMachine") },
+      { value: "personal_remote", label: t("wsModal.host.personalRemote") },
+      { value: "shared_container", label: t("wsModal.host.sharedContainer") },
+    ],
+    [t],
+  );
+
+  const gitSandboxTabs = useMemo<ReadonlyArray<SegmentedTabItem<WorkspaceSandboxMode>>>(
+    () => [
+      { value: "worktree_pool", label: t("sandbox.worktreePool") },
+      { value: "in_place", label: t("sandbox.inPlace") },
+      { value: "read_only", label: t("sandbox.readOnly") },
+    ],
+    [t],
+  );
+
+  const folderSandboxTabs = useMemo<ReadonlyArray<SegmentedTabItem<WorkspaceSandboxMode>>>(
+    () => [
+      { value: "in_place", label: t("sandbox.inPlace") },
+      { value: "read_only", label: t("sandbox.readOnly") },
+    ],
+    [t],
+  );
 
   const [name, setName] = useState<string>(initWs?.name ?? "");
   const [kind, setKind] = useState<WorkspaceKind>(initWs?.kind ?? "git_repo");
@@ -198,52 +204,68 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
     agentCount: props.ownedAgents.length,
   });
   const topologyOptions = useMemo<ReadonlyArray<AppSelectOption<WorkTopology>>>(
-    () =>
-      TOPOLOGY_OPTIONS.map((opt) =>
-        opt.value === "swarm" && !supportsSwarm
-          ? {
-              ...opt,
-              disabled: true,
-              description: SWARM_DISABLED_REASON,
-            }
-          : opt,
-      ),
-    [supportsSwarm],
+    () => [
+      {
+        value: "direct",
+        label: t("topology.direct.label"),
+        description: t("topology.direct.description"),
+      },
+      {
+        value: "verify_loop",
+        label: t("topology.verifyLoop.label"),
+        description: t("topology.verifyLoop.description"),
+      },
+      {
+        value: "swarm",
+        label: t("topology.swarm.label"),
+        description: supportsSwarm
+          ? t("topology.swarm.description")
+          : t("topology.swarm.disabledReason"),
+        ...(!supportsSwarm ? { disabled: true } : {}),
+      },
+    ],
+    [supportsSwarm, t],
   );
 
   const workerOptions: ReadonlyArray<AppSelectOption<string>> = useMemo(
     () => [
-      { value: "auto", label: "自动分配" },
+      { value: "auto", label: t("assign.auto") },
       ...props.ownedAgents.map((a) => ({
         value: a.id,
         label: stripAgentOwnerPrefix(a.displayName, props.ownerDisplayName),
       })),
     ],
-    [props.ownedAgents, props.ownerDisplayName],
+    [props.ownedAgents, props.ownerDisplayName, t],
   );
 
   const cleanName = name.trim();
   const hostSummaryLabel =
-    HOST_MODE_TABS.find((item) => item.value === hostMode)?.label ?? "本机目录";
+    hostModeTabs.find((item) => item.value === hostMode)?.label ?? t("wsModal.host.localMachine");
   const sandboxSummaryLabel =
-    (kind === "folder" ? FOLDER_SANDBOX_TABS : GIT_SANDBOX_TABS).find(
+    (kind === "folder" ? folderSandboxTabs : gitSandboxTabs).find(
       (item) => item.value === sandboxMode,
-    )?.label ?? "Worktree 隔离";
+    )?.label ?? t("sandbox.worktreePool");
   const workerSummaryLabel =
-    workerOptions.find((item) => item.value === defaultWorkerId)?.label ?? "自动分配";
+    workerOptions.find((item) => item.value === defaultWorkerId)?.label ?? t("assign.auto");
   const advancedSummary = `${String(hostSummaryLabel)} · ${String(sandboxSummaryLabel)} · ${workerSummaryLabel}`;
 
   const getPathPlaceholder = (idx: number): string => {
-    const projectPlaceholder = cleanName ? sanitizeWorkspaceDirSegment(cleanName) : "项目名";
+    const projectPlaceholder = cleanName
+      ? sanitizeWorkspaceDirSegment(cleanName)
+      : t("wsModal.pathPlaceholderProject");
     if (kind === "folder") {
-      return `留空自动创建 ~/Documents/${projectPlaceholder}`;
+      return t("wsModal.pathPlaceholderFolder", { project: projectPlaceholder });
     }
     if (kind === "multi_root") {
-      if (roots.some((row) => row.localPath.trim())) return "填写关联目录，留空则忽略";
+      if (roots.some((row) => row.localPath.trim())) {
+        return t("wsModal.pathPlaceholderMultiRootOptional");
+      }
       const suffix = idx === 0 ? "api" : idx === 1 ? "web" : `part-${String(idx + 1)}`;
-      return `留空自动创建 ~/Developer/${cleanName ? `${projectPlaceholder}-${suffix}` : `service-${suffix}`}`;
+      return t("wsModal.pathPlaceholderDev", {
+        project: cleanName ? `${projectPlaceholder}-${suffix}` : `service-${suffix}`,
+      });
     }
-    return `留空自动创建 ~/Developer/${projectPlaceholder}`;
+    return t("wsModal.pathPlaceholderDev", { project: projectPlaceholder });
   };
 
   const handleSave = async (): Promise<void> => {
@@ -251,7 +273,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
       return;
     }
     if (cleanName.length === 0) {
-      toast.info("请填写工作区名称");
+      toast.info(t("wsModal.toast.nameRequired"));
       nameInputRef.current?.focus();
       return;
     }
@@ -277,10 +299,14 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
           : {}),
       });
 
-      toast.success(initWs ? `已更新工作区「${saved.name}」` : `已新建工作区「${saved.name}」`);
+      toast.success(
+        initWs
+          ? t("wsModal.toast.updated", { name: saved.name })
+          : t("wsModal.toast.created", { name: saved.name }),
+      );
       props.onSaved(saved);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "保存工作区失败，请稍后重试");
+      toast.error(err instanceof Error ? err.message : t("wsModal.toast.saveFailed"));
     } finally {
       setIsSubmitting(false);
     }
@@ -290,12 +316,8 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
     <ModalDialog
       open={props.open}
       onClose={props.onClose}
-      title={initWs ? `配置工作区 · ${initWs.name}` : "新建工作区"}
-      subtitle={
-        initWs
-          ? "定义受控本地目录边界、并发隔离策略与交付校验命令"
-          : "输入名称即可创建，目录将自动准备，高级策略可随时按需调整"
-      }
+      title={initWs ? t("wsModal.titleEdit", { name: initWs.name }) : t("wsModal.titleCreate")}
+      subtitle={initWs ? t("wsModal.subtitleEdit") : t("wsModal.subtitleCreate")}
       maxWidthClass="max-w-lg"
       footer={
         <div className="flex w-full items-center justify-between gap-2">
@@ -311,25 +333,27 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
                   setIsSubmitting(true);
                   void deleteWorkspaceOnServer(initWs.id)
                     .then(() => {
-                      toast.info(`已移除工作区「${initWs.name}」`);
+                      toast.info(t("wsModal.toast.removed", { name: initWs.name }));
                       props.onDeleted();
                     })
                     .catch((err: unknown) => {
-                      toast.error(err instanceof Error ? err.message : "移除工作区失败");
+                      toast.error(
+                        err instanceof Error ? err.message : t("wsModal.toast.removeFailed"),
+                      );
                     })
                     .finally(() => {
                       setIsSubmitting(false);
                     });
                 }}
               >
-                移除工作区
+                {t("wsModal.removeWorkspace")}
               </AppButton>
             ) : null}
           </div>
 
           <div className="flex items-center gap-2">
             <AppButton size="sm" variant="ghost" disabled={isSubmitting} onClick={props.onClose}>
-              取消
+              {t("detail.cancel")}
             </AppButton>
             <AppButton
               size="sm"
@@ -337,7 +361,11 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
               disabled={isSubmitting}
               onClick={() => void handleSave()}
             >
-              {isSubmitting ? "保存中…" : initWs ? "保存修改" : "创建工作区"}
+              {isSubmitting
+                ? t("wsModal.saving")
+                : initWs
+                  ? t("wsModal.saveChanges")
+                  : t("wsModal.createWorkspace")}
             </AppButton>
           </div>
         </div>
@@ -346,7 +374,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
       <div className="space-y-4">
         <div className="space-y-1.5">
           <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-            工作区名称
+            {t("wsModal.nameLabel")}
           </span>
           <AppInput
             ref={nameInputRef}
@@ -362,21 +390,21 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
             }}
             placeholder={
               kind === "multi_root"
-                ? "例如：前后端联调空间"
+                ? t("wsModal.namePlaceholderMultiRoot")
                 : kind === "folder"
-                  ? "例如：产品需求与调研库"
-                  : "例如：OpenHuddle"
+                  ? t("wsModal.namePlaceholderFolder")
+                  : t("wsModal.namePlaceholderGitRepo")
             }
           />
         </div>
 
         <div className="space-y-1.5">
           <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-            目录形态
+            {t("wsModal.kindLabel")}
           </span>
           <SegmentedTabs
             size="xs"
-            items={WORKSPACE_KIND_TABS}
+            items={workspaceKindTabs}
             value={kind}
             onValueChange={handleChangeKind}
           />
@@ -385,7 +413,9 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-              {kind === "multi_root" ? "关联本机目录路径（可选）" : "本机目录路径（可选）"}
+              {kind === "multi_root"
+                ? t("wsModal.pathLabelMultiRoot")
+                : t("wsModal.pathLabelSingle")}
             </span>
             {kind === "multi_root" ? (
               <button
@@ -403,7 +433,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
                 className="inline-flex shrink-0 cursor-pointer items-center gap-1 text-[11.5px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
               >
                 <Plus className="h-3 w-3" />
-                <span>添加关联目录</span>
+                <span>{t("wsModal.addRoot")}</span>
               </button>
             ) : null}
           </div>
@@ -432,7 +462,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
                   <IconButton
                     size="sm"
                     variant="ghost"
-                    label="移除目录"
+                    label={t("wsModal.removeRootAriaLabel")}
                     onClick={() =>
                       setRoots((prev) => prev.filter((r) => r.localId !== rootRow.localId))
                     }
@@ -445,8 +475,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
           </div>
 
           <p className="text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-            若目录尚不存在，将在首次执行时自动创建；任务派发后 Agent
-            会自主推进，仅在需要你决策时打扰。
+            {t("wsModal.pathHelper")}
           </p>
         </div>
 
@@ -461,7 +490,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
             <div className="min-w-0 flex-1">
               <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
                 <SlidersHorizontal className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
-                <span>高级环境与门禁设置</span>
+                <span>{t("wsModal.advancedHeading")}</span>
               </span>
               {!advancedOpen ? (
                 <p className="mt-0.5 truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
@@ -492,27 +521,27 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
                 <div className="space-y-3.5 p-3.5">
                   <div className="space-y-1.5">
                     <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-                      执行宿主来源
+                      {t("wsModal.hostLabel")}
                     </span>
                     <SegmentedTabs
                       size="xs"
-                      items={HOST_MODE_TABS}
+                      items={hostModeTabs}
                       value={hostMode}
                       onValueChange={setHostMode}
                     />
                     <p className="text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                       {hostMode === "local_machine"
-                        ? "仅本机上的本人 Agent 访问；工作记录脱敏落盘至 ~/.openhuddle/ 仓外目录。"
+                        ? t("wsModal.hostDescLocal")
                         : hostMode === "personal_remote"
-                          ? "本人跨设备或远程环境 Agent 可连入同一沙箱接力；各环境同步保存脱敏会话记录与滚动记忆。"
-                          : "运行于隔离容器且不含私人凭据，授权后允许群内协作者 Agent 按单写租约锁共同操作。"}
+                          ? t("wsModal.hostDescRemote")
+                          : t("wsModal.hostDescShared")}
                     </p>
                   </div>
 
                   {kind !== "folder" ? (
                     <div className="space-y-1.5">
                       <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-                        默认分支
+                        {t("wsModal.defaultBranchLabel")}
                       </span>
                       <div className="space-y-2">
                         {roots.map((rootRow, idx) => (
@@ -522,14 +551,17 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
                           >
                             {roots.length > 1 ? (
                               <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                                {rootRow.localPath.trim() || `目录 ${String(idx + 1)}`}
+                                {rootRow.localPath.trim() ||
+                                  t("wsModal.directoryFallback", { index: idx + 1 })}
                               </span>
                             ) : null}
                             <div className={roots.length > 1 ? "w-28 shrink-0" : "w-full"}>
                               <AppInput
                                 size="sm"
                                 aria-label={
-                                  roots.length > 1 ? `目录 ${String(idx + 1)} 默认分支` : "默认分支"
+                                  roots.length > 1
+                                    ? t("wsModal.directoryBranchAriaLabel", { index: idx + 1 })
+                                    : t("wsModal.defaultBranchLabel")
                                 }
                                 className="font-mono text-[16px] md:text-[12px]"
                                 value={rootRow.defaultBranch}
@@ -553,20 +585,20 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
 
                   <div className="space-y-1.5">
                     <span className="block text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-                      沙盒与隔离策略
+                      {t("wsModal.sandboxLabel")}
                     </span>
                     <SegmentedTabs
                       size="xs"
-                      items={kind === "folder" ? FOLDER_SANDBOX_TABS : GIT_SANDBOX_TABS}
+                      items={kind === "folder" ? folderSandboxTabs : gitSandboxTabs}
                       value={sandboxMode}
                       onValueChange={setSandboxMode}
                     />
                     <p className="text-[11.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                       {sandboxMode === "worktree_pool"
-                        ? "每个写任务分配独立 Git Worktree 分支目录，多 Agent 并发互不覆写。"
+                        ? t("wsModal.sandboxDescWorktree")
                         : sandboxMode === "in_place"
-                          ? "直接在所选目录内执行，自动启用单写互斥锁防止并发覆写。"
-                          : "仅允许 Agent 读取检索目录内容，拦截一切文件修改与写命令。"}
+                          ? t("wsModal.sandboxDescInPlace")
+                          : t("wsModal.sandboxDescReadOnly")}
                     </p>
                   </div>
 
@@ -574,7 +606,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
                     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                       <div className="space-y-1">
                         <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-                          初始化命令 (Setup)
+                          {t("wsModal.setupCommandLabel")}
                         </span>
                         <AppInput
                           size="sm"
@@ -587,7 +619,7 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
 
                       <div className="space-y-1">
                         <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-                          交付校验命令 (Verify)
+                          {t("wsModal.verifyCommandLabel")}
                         </span>
                         <AppInput
                           size="sm"
@@ -603,11 +635,11 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
                   <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                     <div className="space-y-1">
                       <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-                        默认协作方式
+                        {t("wsModal.defaultTopologyLabel")}
                       </span>
                       <AppSelect
                         size="sm"
-                        ariaLabel="默认协作方式"
+                        ariaLabel={t("wsModal.defaultTopologyLabel")}
                         value={effectiveTopology}
                         onValueChange={setDefaultTopology}
                         options={topologyOptions}
@@ -616,11 +648,11 @@ export function WorkspaceConfigModal(props: WorkspaceConfigModalProps) {
 
                     <div className="space-y-1">
                       <span className="block text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-                        默认主力 Agent
+                        {t("wsModal.defaultWorkerLabel")}
                       </span>
                       <AppSelect
                         size="sm"
-                        ariaLabel="默认主力 Agent"
+                        ariaLabel={t("wsModal.defaultWorkerLabel")}
                         value={defaultWorkerId}
                         onValueChange={setDefaultWorkerId}
                         options={workerOptions}

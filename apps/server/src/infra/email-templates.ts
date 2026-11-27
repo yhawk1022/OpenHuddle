@@ -7,7 +7,7 @@
  * 2. XSS 与 HTML 注入免疫：所有动态插值均经过严格 HTML 实体转义。
  * 3. 双版本送达保证：`multipart/alternative` 同时包含简洁纯文本与温润编辑部风格 HTML，兼顾终端客户端与 Apple Mail / Gmail / QQ / 网易邮箱。
  */
-import type { OtpPurpose } from "@openhuddle/protocol";
+import type { OtpPurpose, SupportedLocale } from "@openhuddle/protocol";
 
 /**
  * 已渲染完成的验证邮件内容载体。
@@ -26,6 +26,7 @@ export interface VerificationEmailTemplateInput {
   readonly code: string;
   readonly expiresInMinutes: number;
   readonly publicBaseUrl: string;
+  readonly locale?: SupportedLocale;
 }
 
 function escapeHtml(raw: string): string {
@@ -37,18 +38,121 @@ function escapeHtml(raw: string): string {
     .replace(/'/g, "&#39;");
 }
 
+function renderEnglishVerificationEmail(
+  input: Readonly<VerificationEmailTemplateInput>,
+  safeCode: string,
+  minutes: number,
+  safeBaseUrl: string,
+): RenderedVerificationEmail {
+  const minutesLabel = minutes === 1 ? "1 minute" : `${String(minutes)} minutes`;
+  const safeMinutesLabel = escapeHtml(minutesLabel);
+
+  let actionTitle: string;
+  let subjectPrefix: string;
+  let leadSentence: string;
+  let securityNote: string;
+
+  switch (input.purpose) {
+    case "register":
+      actionTitle = "Verify your email to complete registration";
+      subjectPrefix = "Registration verification code";
+      leadSentence =
+        "You are registering for an OpenHuddle account. Enter the 6-digit verification code below to verify your email address:";
+      securityNote =
+        "If you did not request this registration, you can safely ignore this email. No account will be created.";
+      break;
+    case "password_reset":
+      actionTitle = "Reset your password";
+      subjectPrefix = "Password reset code";
+      leadSentence =
+        "You requested to reset your OpenHuddle password. Enter the 6-digit verification code below to continue:";
+      securityNote =
+        "Once your password is reset, active sessions on your other devices will be signed out automatically. If you did not request this, please ignore this email and review your account security.";
+      break;
+    case "login":
+      actionTitle = "One-time sign-in code";
+      subjectPrefix = "Sign-in verification code";
+      leadSentence = "Use the 6-digit verification code below to sign in to OpenHuddle:";
+      securityNote = "If you did not request this code, do not share it with anyone.";
+      break;
+  }
+
+  const subject = `[OpenHuddle] ${subjectPrefix}: ${input.code}`;
+
+  const text = [
+    `OpenHuddle · ${actionTitle}`,
+    "",
+    leadSentence,
+    "",
+    `Verification code: ${input.code}`,
+    `Expires in: ${minutesLabel} (single-use, up to 5 attempts)`,
+    "",
+    securityNote,
+    "",
+    `— OpenHuddle (${input.publicBaseUrl})`,
+  ].join("\n");
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${escapeHtml(subject)}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#F5F5F7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:#141414;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#F5F5F7;padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:520px;background-color:#FFFFFF;border-radius:20px;border:1px solid #E5E5EA;overflow:hidden;">
+          <tr>
+            <td style="padding:28px 32px 12px 32px;">
+              <div style="font-size:17px;font-weight:700;letter-spacing:-0.02em;color:#141414;">OpenHuddle</div>
+              <h1 style="margin:14px 0 0 0;font-size:20px;font-weight:600;line-height:1.35;color:#141414;">${escapeHtml(actionTitle)}</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 32px 20px 32px;font-size:14px;line-height:1.65;color:#52525B;">
+              <p style="margin:0 0 18px 0;">${escapeHtml(leadSentence)}</p>
+              <div style="margin:0 0 18px 0;padding:18px 20px;background-color:#F6F2EC;border-radius:14px;border:1px solid #E8DFD1;text-align:center;">
+                <span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:0.28em;color:#141414;">${safeCode}</span>
+              </div>
+              <p style="margin:0 0 10px 0;font-size:13px;color:#6E6E73;">This code expires in <strong>${safeMinutesLabel}</strong> and can only be used once.</p>
+              <p style="margin:0;font-size:12.5px;color:#8E8E93;line-height:1.6;">${escapeHtml(securityNote)}</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 32px 24px 32px;border-top:1px solid #F0F0F4;font-size:12px;color:#8E8E93;">
+              This is an automated message, please do not reply · <a href="${safeBaseUrl}" style="color:#52525B;text-decoration:none;">${safeBaseUrl}</a>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  return { subject, text, html };
+}
+
 /**
- * 按业务用途（`register` / `password_reset` / `login`）生成标准化的 6 位验证码邮件内容。
+ * 按业务用途（`register` / `password_reset` / `login`）与目标语言生成标准化的 6 位验证码邮件内容。
  *
- * @param input - 邮件用途、6 位验证码、有效分钟数与站点公开地址
+ * @param input - 邮件用途、6 位验证码、有效分钟数、站点公开地址与可选语言（缺省 `"zh-CN"`）
  * @returns 包含主题、纯文本与 HTML 正文的不可变邮件对象
  */
 export function renderVerificationEmail(
   input: Readonly<VerificationEmailTemplateInput>,
 ): RenderedVerificationEmail {
   const safeCode = escapeHtml(input.code);
-  const safeMinutes = String(Math.max(1, Math.round(input.expiresInMinutes)));
+  const minutes = Math.max(1, Math.round(input.expiresInMinutes));
+  const safeMinutes = String(minutes);
   const safeBaseUrl = escapeHtml(input.publicBaseUrl);
+  const locale: SupportedLocale = input.locale ?? "zh-CN";
+
+  if (locale === "en") {
+    return renderEnglishVerificationEmail(input, safeCode, minutes, safeBaseUrl);
+  }
 
   let actionTitle: string;
   let subjectPrefix: string;

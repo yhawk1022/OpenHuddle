@@ -31,7 +31,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   AppButton,
   AppInput,
@@ -45,6 +45,7 @@ import {
   SegmentedTabs,
 } from "../../../components/primitives/index.js";
 import { getPlatformVisualMeta, getReachVisualMeta } from "../../../lib/format.js";
+import { formatNumber } from "../../../lib/i18n/index.js";
 import {
   adminRoomDetailQueryOptions,
   adminRoomMessagesQueryOptions,
@@ -54,6 +55,14 @@ import {
   useAdminRecallMessageMutation,
   useAdminUpdateRoomMutation,
 } from "../api/admin-console.queries.js";
+import {
+  getGovernanceModeLabel,
+  getMessageTypeLabel,
+  getProposalStatusLabel,
+  getRoomMemberRoleLabel,
+  resolveAdminErrorMessage,
+  useAdminI18n,
+} from "../i18n/index.js";
 import {
   AdminConfirmModal,
   AdminEmptyState,
@@ -70,51 +79,6 @@ type AuthorFilter = "__all__" | ActorKind;
 type MsgTypeFilter = "__all__" | MessageType;
 type DrawerTab = "messages" | "members_proposals" | "governance";
 
-const VISIBILITY_FILTER_OPTIONS: ReadonlyArray<AppSelectOption<VisibilityFilter>> = [
-  { value: "__all__", label: "全部可见性" },
-  { value: "invite_only", label: "仅邀请加入" },
-  { value: "public_shareable", label: "公开可分享" },
-];
-
-const VISIBILITY_EDIT_OPTIONS: ReadonlyArray<AppSelectOption<RoomVisibility>> = [
-  { value: "invite_only", label: "仅限邀请加入 (invite_only)" },
-  { value: "public_shareable", label: "允许公开只读分享 (public_shareable)" },
-];
-
-const GOV_STATUS_OPTIONS: ReadonlyArray<AppSelectOption<GovStatusFilter>> = [
-  { value: "__all__", label: "全部运行态" },
-  { value: "active", label: "正常活跃" },
-  { value: "paused_budget", label: "轮次预算挂起" },
-];
-
-const GOV_MODE_OPTIONS: ReadonlyArray<AppSelectOption<GovernanceMode>> = [
-  { value: "free", label: "自由讨论 (free)" },
-  { value: "round_table", label: "圆桌轮流表态 (round_table)" },
-  { value: "proposal", label: "提案收敛模式 (proposal)" },
-];
-
-const AUTHOR_FILTER_OPTIONS: ReadonlyArray<AppSelectOption<AuthorFilter>> = [
-  { value: "__all__", label: "全部发送方" },
-  { value: "human", label: "人类成员" },
-  { value: "agent", label: "智能体 Agent" },
-];
-
-const MSG_TYPE_FILTER_OPTIONS: ReadonlyArray<AppSelectOption<MsgTypeFilter>> = [
-  { value: "__all__", label: "全部消息类型" },
-  { value: "text", label: "文本消息" },
-  { value: "proposal", label: "提案锚点" },
-  { value: "vote", label: "表态投票" },
-  { value: "decision", label: "人类拍板" },
-  { value: "attention", label: "结构化等人" },
-  { value: "system", label: "系统事件" },
-];
-
-const DRAWER_TABS: ReadonlyArray<SegmentedTabItem<DrawerTab>> = [
-  { value: "messages", label: "内容审查" },
-  { value: "members_proposals", label: "成员与提案" },
-  { value: "governance", label: "治理热调控" },
-];
-
 /**
  * 房间监管抽屉主体内容。
  */
@@ -122,6 +86,7 @@ function AdminRoomDetailDrawerContent(props: {
   readonly roomId: RoomId;
   readonly onDeletedClose: () => void;
 }) {
+  const { locale, t } = useAdminI18n();
   const idPrefix = useId();
   const detailQuery = useQuery(adminRoomDetailQueryOptions(props.roomId));
   const updateRoomMutation = useAdminUpdateRoomMutation();
@@ -153,6 +118,54 @@ function AdminRoomDetailDrawerContent(props: {
 
   const [pendingDeleteProposalId, setPendingDeleteProposalId] = useState<ProposalId | null>(null);
   const [deleteRoomConfirmOpen, setDeleteRoomConfirmOpen] = useState<boolean>(false);
+
+  const visibilityEditOptions = useMemo<ReadonlyArray<AppSelectOption<RoomVisibility>>>(
+    () => [
+      { value: "invite_only", label: t("rooms.governance.visibilityInviteOnly") },
+      { value: "public_shareable", label: t("rooms.governance.visibilityPublic") },
+    ],
+    [t],
+  );
+
+  const govModeOptions = useMemo<ReadonlyArray<AppSelectOption<GovernanceMode>>>(
+    () => [
+      { value: "free", label: t("rooms.governance.modeFree") },
+      { value: "round_table", label: t("rooms.governance.modeRoundTable") },
+      { value: "proposal", label: t("rooms.governance.modeProposal") },
+    ],
+    [t],
+  );
+
+  const authorFilterOptions = useMemo<ReadonlyArray<AppSelectOption<AuthorFilter>>>(
+    () => [
+      { value: "__all__", label: t("rooms.messages.authorFilter.all") },
+      { value: "human", label: t("rooms.messages.authorFilter.human") },
+      { value: "agent", label: t("rooms.messages.authorFilter.agent") },
+    ],
+    [t],
+  );
+
+  const msgTypeFilterOptions = useMemo<ReadonlyArray<AppSelectOption<MsgTypeFilter>>>(
+    () => [
+      { value: "__all__", label: t("rooms.messages.typeFilter.all") },
+      { value: "text", label: t("common.messageType.text") },
+      { value: "proposal", label: t("common.messageType.proposal") },
+      { value: "vote", label: t("common.messageType.vote") },
+      { value: "decision", label: t("common.messageType.decision") },
+      { value: "attention", label: t("common.messageType.attention") },
+      { value: "system", label: t("common.messageType.system") },
+    ],
+    [t],
+  );
+
+  const drawerTabs = useMemo<ReadonlyArray<SegmentedTabItem<DrawerTab>>>(
+    () => [
+      { value: "messages", label: t("rooms.drawer.tab.messages") },
+      { value: "members_proposals", label: t("rooms.drawer.tab.membersProposals") },
+      { value: "governance", label: t("rooms.drawer.tab.governance") },
+    ],
+    [t],
+  );
 
   const roomMeta = detailQuery.data?.room;
   useEffect(() => {
@@ -187,8 +200,12 @@ function AdminRoomDetailDrawerContent(props: {
   if (detailQuery.isError || !detailQuery.data) {
     return (
       <AdminErrorState
-        title="加载群聊监管详情失败"
-        message={detailQuery.error instanceof Error ? detailQuery.error.message : "请稍后重试"}
+        title={t("rooms.detail.errorTitle")}
+        message={resolveAdminErrorMessage(
+          detailQuery.error,
+          t("shared.error.tryAgainLater"),
+          locale,
+        )}
         onRetry={() => void detailQuery.refetch()}
       />
     );
@@ -196,6 +213,7 @@ function AdminRoomDetailDrawerContent(props: {
 
   const detail = detailQuery.data;
   const r = detail.room;
+  const fmt = (value: number): string => formatNumber(value, undefined, locale);
 
   const handleSaveGovernance = (renewBudget: boolean): void => {
     const parsedTurns = Math.min(50, Math.max(1, Number(maxTurnsDraft) || 6));
@@ -227,29 +245,42 @@ function AdminRoomDetailDrawerContent(props: {
               {r.name}
             </h3>
             <p className="mt-0.5 text-xs text-[#687082] dark:text-[#8E96AB]">
-              群主：{r.ownerDisplayName} ({r.ownerEmail})
+              {t("rooms.detail.ownerLine", { name: r.ownerDisplayName, email: r.ownerEmail })}
             </p>
             <p className="mt-1 font-mono text-[11px] text-[#939BAD] dark:text-[#63636B]">
-              {r.id} · 邀请码 {detail.inviteToken}
+              {t("rooms.detail.inviteLine", { id: r.id, token: detail.inviteToken })}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
             <AdminStatusPill tone={r.governance.status === "paused_budget" ? "warning" : "success"}>
               {r.governance.status === "paused_budget"
-                ? `已挂起 (${r.governance.consecutiveAgentTurns}/${r.governance.config.maxConsecutiveAgentTurns})`
-                : `活跃 (${r.governance.consecutiveAgentTurns}/${r.governance.config.maxConsecutiveAgentTurns})`}
+                ? t("rooms.detail.statusPaused", {
+                    turns: r.governance.consecutiveAgentTurns,
+                    max: r.governance.config.maxConsecutiveAgentTurns,
+                  })
+                : t("rooms.detail.statusActive", {
+                    turns: r.governance.consecutiveAgentTurns,
+                    max: r.governance.config.maxConsecutiveAgentTurns,
+                  })}
             </AdminStatusPill>
             <AdminStatusPill tone={r.visibility === "public_shareable" ? "info" : "neutral"}>
-              {r.visibility === "public_shareable" ? "公开分享" : "仅邀请"}
+              {r.visibility === "public_shareable"
+                ? t("rooms.badge.publicShare")
+                : t("rooms.badge.inviteOnly")}
             </AdminStatusPill>
           </div>
         </div>
 
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#687082] dark:text-[#8E96AB]">
           <span className="font-mono tabular-nums">
-            成员 {r.memberCount} (人 {r.humanMemberCount} / Agent {r.agentMemberCount}) · 消息{" "}
-            {r.messageCount} · 最新序号 #{r.lastSeq}
+            {t("rooms.detail.metricsLine", {
+              members: fmt(r.memberCount),
+              humans: fmt(r.humanMemberCount),
+              agents: fmt(r.agentMemberCount),
+              messages: fmt(r.messageCount),
+              seq: r.lastSeq,
+            })}
           </span>
           {r.governance.status === "paused_budget" ? (
             <AppButton
@@ -261,7 +292,7 @@ function AdminRoomDetailDrawerContent(props: {
                 updateRoomMutation.mutate({ roomId: r.id, body: { renewBudget: true } })
               }
             >
-              一键续期解除挂起
+              {t("rooms.detail.renewBudget")}
             </AppButton>
           ) : null}
         </div>
@@ -271,10 +302,10 @@ function AdminRoomDetailDrawerContent(props: {
       <SegmentedTabs
         value={drawerTab}
         onValueChange={setDrawerTab}
-        items={DRAWER_TABS}
+        items={drawerTabs}
         size="sm"
         fullWidth={true}
-        ariaLabel="切换房间监管功能"
+        ariaLabel={t("rooms.drawer.tab.aria")}
       />
 
       {/* Tab A：内容审查 */}
@@ -290,15 +321,15 @@ function AdminRoomDetailDrawerContent(props: {
                 setMsgSearch(e.target.value);
                 setBeforeSeq(undefined);
               }}
-              placeholder="搜消息正文或作者…"
-              aria-label="搜索群聊消息"
+              placeholder={t("rooms.messages.searchPlaceholder")}
+              aria-label={t("rooms.messages.searchAria")}
               leadingIcon={<Search className="h-3.5 w-3.5" />}
               trailingSlot={
                 msgSearch.length > 0 ? (
                   <IconButton
                     size="xs"
                     variant="ghost"
-                    label="清空消息搜索"
+                    label={t("rooms.messages.clearSearch")}
                     onClick={() => {
                       setMsgSearch("");
                       setBeforeSeq(undefined);
@@ -316,8 +347,8 @@ function AdminRoomDetailDrawerContent(props: {
                 setAuthorFilter(val);
                 setBeforeSeq(undefined);
               }}
-              options={AUTHOR_FILTER_OPTIONS}
-              ariaLabel="筛选发送方"
+              options={authorFilterOptions}
+              ariaLabel={t("rooms.messages.authorFilterAria")}
             />
             <AppSelect
               size="sm"
@@ -326,8 +357,8 @@ function AdminRoomDetailDrawerContent(props: {
                 setTypeFilter(val);
                 setBeforeSeq(undefined);
               }}
-              options={MSG_TYPE_FILTER_OPTIONS}
-              ariaLabel="筛选消息类型"
+              options={msgTypeFilterOptions}
+              ariaLabel={t("rooms.messages.typeFilterAria")}
             />
           </div>
 
@@ -345,7 +376,7 @@ function AdminRoomDetailDrawerContent(props: {
                   setBeforeSeq(undefined);
                 }}
               />
-              <span>显示已撤回消息占位记录</span>
+              <span>{t("rooms.messages.includeRecalled")}</span>
             </label>
 
             {beforeSeq !== undefined ? (
@@ -355,7 +386,7 @@ function AdminRoomDetailDrawerContent(props: {
                 leadingIcon={<RotateCcw className="h-3 w-3" />}
                 onClick={() => setBeforeSeq(undefined)}
               >
-                回到最新消息
+                {t("rooms.messages.backToLatest")}
               </AppButton>
             ) : null}
           </div>
@@ -364,17 +395,17 @@ function AdminRoomDetailDrawerContent(props: {
             <AdminTableSkeleton rows={5} />
           ) : messagesQuery.isError || !messagesQuery.data ? (
             <AdminErrorState
-              message={
-                messagesQuery.error instanceof Error
-                  ? messagesQuery.error.message
-                  : "加载群聊消息失败"
-              }
+              message={resolveAdminErrorMessage(
+                messagesQuery.error,
+                t("rooms.messages.errorLoad"),
+                locale,
+              )}
               onRetry={() => void messagesQuery.refetch()}
             />
           ) : messagesQuery.data.messages.length === 0 ? (
             <AdminEmptyState
-              title="暂无匹配消息"
-              description="尝试放宽搜索关键词或消息类型筛选条件"
+              title={t("rooms.messages.emptyTitle")}
+              description={t("rooms.messages.emptyDescription")}
             />
           ) : (
             <div className="space-y-2">
@@ -390,7 +421,9 @@ function AdminRoomDetailDrawerContent(props: {
                       }
                     }}
                   >
-                    加载更早消息（&lt; #{messagesQuery.data.messages[0]?.seq ?? 0}）
+                    {t("rooms.messages.loadOlder", {
+                      seq: messagesQuery.data.messages[0]?.seq ?? 0,
+                    })}
                   </AppButton>
                 </div>
               ) : null}
@@ -398,6 +431,10 @@ function AdminRoomDetailDrawerContent(props: {
               <ul className="space-y-2">
                 {messagesQuery.data.messages.map((msg) => {
                   const isRecalled = msg.recalledAtIso !== undefined;
+                  const agentPlatformLabel =
+                    msg.author.platform !== undefined
+                      ? getPlatformVisualMeta(msg.author.platform, locale).label
+                      : "Agent";
                   return (
                     <li
                       key={`${msg.roomId}-${String(msg.seq)}`}
@@ -413,14 +450,18 @@ function AdminRoomDetailDrawerContent(props: {
                           </span>
                           <AdminStatusPill tone={msg.author.kind === "human" ? "success" : "info"}>
                             {msg.author.kind === "human"
-                              ? "人类"
-                              : (msg.author.platform ?? "Agent")}
+                              ? t("common.role.human")
+                              : agentPlatformLabel}
                           </AdminStatusPill>
                           {msg.type !== "text" ? (
-                            <AdminStatusPill tone="neutral">{msg.type}</AdminStatusPill>
+                            <AdminStatusPill tone="neutral">
+                              {getMessageTypeLabel(msg.type, t)}
+                            </AdminStatusPill>
                           ) : null}
                           {isRecalled ? (
-                            <AdminStatusPill tone="danger">已撤回</AdminStatusPill>
+                            <AdminStatusPill tone="danger">
+                              {t("rooms.messages.recalled")}
+                            </AdminStatusPill>
                           ) : null}
                         </div>
 
@@ -437,7 +478,7 @@ function AdminRoomDetailDrawerContent(props: {
                                 setPendingRecallMsg(msg);
                               }}
                             >
-                              强制撤回
+                              {t("rooms.messages.forceRecall")}
                             </AppButton>
                           ) : null}
                         </div>
@@ -467,13 +508,14 @@ function AdminRoomDetailDrawerContent(props: {
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-[#687082] dark:text-[#8E96AB]">
               <Users className="h-3.5 w-3.5" />
-              <span>群成员实时名册 ({detail.members.length})</span>
+              <span>{t("rooms.members.heading", { count: fmt(detail.members.length) })}</span>
             </div>
             <ul className="space-y-1.5">
               {detail.members.map((m) => {
                 const isAgent = m.memberKind === "agent";
-                const rMeta = isAgent ? getReachVisualMeta(m.reach) : null;
-                const pMeta = isAgent && m.platform ? getPlatformVisualMeta(m.platform) : null;
+                const rMeta = isAgent ? getReachVisualMeta(m.reach, locale) : null;
+                const pMeta =
+                  isAgent && m.platform ? getPlatformVisualMeta(m.platform, locale) : null;
                 return (
                   <li
                     key={`${m.memberKind}-${m.userId ?? m.agentId ?? m.displayName}`}
@@ -485,18 +527,21 @@ function AdminRoomDetailDrawerContent(props: {
                           {m.displayName}
                         </span>
                         <AdminStatusPill tone={m.role === "owner" ? "accent" : "neutral"}>
-                          {m.role}
+                          {getRoomMemberRoleLabel(m.role, t)}
                         </AdminStatusPill>
                         {isAgent && pMeta && rMeta ? (
                           <AdminStatusPill dotClass={rMeta.dotClass}>
                             {pMeta.label} · {rMeta.shortLabel}
                           </AdminStatusPill>
                         ) : (
-                          <AdminStatusPill tone="success">人类</AdminStatusPill>
+                          <AdminStatusPill tone="success">{t("common.role.human")}</AdminStatusPill>
                         )}
                       </div>
                       <p className="mt-0.5 text-[11px] text-[#687082] dark:text-[#7D869C]">
-                        归属主人 {m.ownerDisplayName} · 已读游标 #{m.lastReadSeq}
+                        {t("rooms.members.meta", {
+                          owner: m.ownerDisplayName,
+                          seq: m.lastReadSeq,
+                        })}
                       </p>
                     </div>
                     <span className="shrink-0 font-mono text-[11px] text-[#939BAD] tabular-nums dark:text-[#63636B]">
@@ -511,11 +556,11 @@ function AdminRoomDetailDrawerContent(props: {
           <div className="space-y-2">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-[#687082] dark:text-[#8E96AB]">
               <CheckSquare className="h-3.5 w-3.5" />
-              <span>群内提案与拍板 ({detail.proposals.length})</span>
+              <span>{t("rooms.proposals.heading", { count: fmt(detail.proposals.length) })}</span>
             </div>
             {detail.proposals.length === 0 ? (
               <p className="rounded-xl bg-black/[0.025] px-3 py-3 text-xs text-[#939BAD] dark:bg-white/[0.03] dark:text-[#63636B]">
-                暂无结构化提案记录
+                {t("rooms.proposals.empty")}
               </p>
             ) : (
               <ul className="space-y-2">
@@ -538,15 +583,23 @@ function AdminRoomDetailDrawerContent(props: {
                                 : "warning"
                           }
                         >
-                          {prop.status}
+                          {getProposalStatusLabel(prop.status, t)}
                         </AdminStatusPill>
                       </div>
                       <p className="mt-1 line-clamp-2 text-[11.5px] text-[#687082] dark:text-[#7D869C]">
                         {prop.draft.contextSummary}
                       </p>
                       <p className="mt-1 font-mono text-[11px] text-[#939BAD] dark:text-[#63636B]">
-                        {prop.draft.options.length} 个备选方案 · {prop.votes.length} 票表态
-                        {prop.decidedOptionKey ? ` · 采纳 ${prop.decidedOptionKey}` : ""}
+                        {prop.decidedOptionKey
+                          ? t("rooms.proposals.metaWithDecision", {
+                              options: fmt(prop.draft.options.length),
+                              votes: fmt(prop.votes.length),
+                              optionKey: prop.decidedOptionKey,
+                            })
+                          : t("rooms.proposals.meta", {
+                              options: fmt(prop.draft.options.length),
+                              votes: fmt(prop.votes.length),
+                            })}
                       </p>
                     </div>
                     <AppButton
@@ -554,7 +607,7 @@ function AdminRoomDetailDrawerContent(props: {
                       size="xs"
                       onClick={() => setPendingDeleteProposalId(prop.id)}
                     >
-                      删除
+                      {t("shared.action.delete")}
                     </AppButton>
                   </li>
                 ))}
@@ -569,14 +622,14 @@ function AdminRoomDetailDrawerContent(props: {
         <div className="space-y-4">
           <div className="space-y-3 rounded-2xl border border-black/[0.06] p-4 dark:border-white/[0.07]">
             <h4 className="text-xs font-semibold tracking-wide text-[#687082] uppercase dark:text-[#8E96AB]">
-              基础信息与公开可见性
+              {t("rooms.governance.basicHeading")}
             </h4>
             <div className="space-y-2">
               <label
                 htmlFor={`${idPrefix}-room-name`}
                 className="block text-xs font-medium text-[#3B414E] dark:text-[#B4BCD0]"
               >
-                群聊名称
+                {t("rooms.governance.nameLabel")}
               </label>
               <AppInput
                 id={`${idPrefix}-room-name`}
@@ -590,7 +643,7 @@ function AdminRoomDetailDrawerContent(props: {
                 htmlFor={`${idPrefix}-room-topic`}
                 className="block text-xs font-medium text-[#3B414E] dark:text-[#B4BCD0]"
               >
-                讨论议题
+                {t("rooms.governance.topicLabel")}
               </label>
               <AppInput
                 id={`${idPrefix}-room-topic`}
@@ -604,7 +657,7 @@ function AdminRoomDetailDrawerContent(props: {
                 htmlFor={`${idPrefix}-room-rules`}
                 className="block text-xs font-medium text-[#3B414E] dark:text-[#B4BCD0]"
               >
-                群规说明
+                {t("rooms.governance.rulesLabel")}
               </label>
               <AppTextarea
                 id={`${idPrefix}-room-rules`}
@@ -618,22 +671,22 @@ function AdminRoomDetailDrawerContent(props: {
                 htmlFor={`${idPrefix}-room-visibility`}
                 className="block text-xs font-medium text-[#3B414E] dark:text-[#B4BCD0]"
               >
-                分享可见性
+                {t("rooms.governance.visibilityLabel")}
               </label>
               <AppSelect
                 id={`${idPrefix}-room-visibility`}
                 size="sm"
                 value={visibilityDraft}
                 onValueChange={setVisibilityDraft}
-                options={VISIBILITY_EDIT_OPTIONS}
-                ariaLabel="选择可见性"
+                options={visibilityEditOptions}
+                ariaLabel={t("rooms.governance.visibilityAria")}
               />
             </div>
           </div>
 
           <div className="space-y-3 rounded-2xl border border-black/[0.06] p-4 dark:border-white/[0.07]">
             <h4 className="text-xs font-semibold tracking-wide text-[#687082] uppercase dark:text-[#8E96AB]">
-              防死循环治理状态机配置
+              {t("rooms.governance.engineHeading")}
             </h4>
 
             <div className="space-y-2">
@@ -641,15 +694,15 @@ function AdminRoomDetailDrawerContent(props: {
                 htmlFor={`${idPrefix}-room-mode`}
                 className="block text-xs font-medium text-[#3B414E] dark:text-[#B4BCD0]"
               >
-                讨论模式
+                {t("rooms.governance.modeLabel")}
               </label>
               <AppSelect
                 id={`${idPrefix}-room-mode`}
                 size="sm"
                 value={modeDraft}
                 onValueChange={setModeDraft}
-                options={GOV_MODE_OPTIONS}
-                ariaLabel="选择讨论模式"
+                options={govModeOptions}
+                ariaLabel={t("rooms.governance.modeAria")}
               />
             </div>
 
@@ -659,7 +712,7 @@ function AdminRoomDetailDrawerContent(props: {
                   htmlFor={`${idPrefix}-max-turns`}
                   className="block text-xs font-medium text-[#3B414E] dark:text-[#B4BCD0]"
                 >
-                  连续 Agent 发言轮次上限 (1–50)
+                  {t("rooms.governance.maxTurnsLabel")}
                 </label>
                 <AppInput
                   id={`${idPrefix}-max-turns`}
@@ -676,7 +729,7 @@ function AdminRoomDetailDrawerContent(props: {
                   htmlFor={`${idPrefix}-cooldown-ms`}
                   className="block text-xs font-medium text-[#3B414E] dark:text-[#B4BCD0]"
                 >
-                  单 Agent 发言冷却 (毫秒)
+                  {t("rooms.governance.cooldownLabel")}
                 </label>
                 <AppInput
                   id={`${idPrefix}-cooldown-ms`}
@@ -692,7 +745,7 @@ function AdminRoomDetailDrawerContent(props: {
 
             <div className="flex items-center justify-between gap-2 pt-1 text-xs">
               <span className="text-[#3B414E] dark:text-[#B4BCD0]">
-                允许 Agent 互 @ 触发自动唤醒
+                {t("rooms.governance.allowMentions")}
               </span>
               <AppSwitch
                 size="sm"
@@ -703,7 +756,7 @@ function AdminRoomDetailDrawerContent(props: {
 
             <div className="flex items-center justify-between gap-2 text-xs">
               <span className="text-[#3B414E] dark:text-[#B4BCD0]">
-                开启乐观并发防抢话锁（409 拦截未读盲发）
+                {t("rooms.governance.requireRead")}
               </span>
               <AppSwitch
                 size="sm"
@@ -720,7 +773,7 @@ function AdminRoomDetailDrawerContent(props: {
                 leadingIcon={<Save className="h-3.5 w-3.5" />}
                 onClick={() => handleSaveGovernance(false)}
               >
-                保存治理配置
+                {t("rooms.governance.save")}
               </AppButton>
               <AppButton
                 variant="secondary"
@@ -729,7 +782,7 @@ function AdminRoomDetailDrawerContent(props: {
                 leadingIcon={<PlayCircle className="h-3.5 w-3.5" />}
                 onClick={() => handleSaveGovernance(true)}
               >
-                保存并重置轮次预算
+                {t("rooms.governance.saveAndReset")}
               </AppButton>
             </div>
           </div>
@@ -740,10 +793,10 @@ function AdminRoomDetailDrawerContent(props: {
               <div>
                 <h4 className="flex items-center gap-1.5 text-xs font-semibold text-[#C6282E] dark:text-[#F88B8B]">
                   <ShieldAlert className="h-3.5 w-3.5" />
-                  危险操作区
+                  {t("rooms.governance.dangerHeading")}
                 </h4>
                 <p className="mt-0.5 text-xs text-[#687082] dark:text-[#8E96AB]">
-                  强制解散群聊将永久清空该房间的消息与提案，但不会影响成员名下已绑定的个人 Agent。
+                  {t("rooms.governance.dangerDescription")}
                 </p>
               </div>
               <AppButton
@@ -752,7 +805,7 @@ function AdminRoomDetailDrawerContent(props: {
                 leadingIcon={<Trash2 className="h-3.5 w-3.5" />}
                 onClick={() => setDeleteRoomConfirmOpen(true)}
               >
-                解散该群聊
+                {t("rooms.governance.deleteRoom")}
               </AppButton>
             </div>
           </div>
@@ -763,10 +816,12 @@ function AdminRoomDetailDrawerContent(props: {
       <AdminConfirmModal
         open={pendingRecallMsg !== null}
         title={
-          pendingRecallMsg ? `强制撤回第 #${String(pendingRecallMsg.seq)} 条消息` : "强制撤回消息"
+          pendingRecallMsg
+            ? t("rooms.modal.recallTitle", { seq: pendingRecallMsg.seq })
+            : t("rooms.modal.recallTitleFallback")
         }
-        description="撤回后消息正文将立即替换为 [Message recalled]，并实时同步给所有在线成员。"
-        confirmLabel="确认撤回"
+        description={t("rooms.modal.recallDescription")}
+        confirmLabel={t("rooms.modal.recallConfirm")}
         isPending={recallMutation.isPending}
         onClose={() => setPendingRecallMsg(null)}
         onConfirm={() => {
@@ -788,7 +843,11 @@ function AdminRoomDetailDrawerContent(props: {
         <div className="space-y-2.5">
           {pendingRecallMsg ? (
             <div className="rounded-xl bg-black/[0.03] p-2.5 text-xs text-[#3B414E] dark:bg-white/[0.04] dark:text-[#B4BCD0]">
-              <strong className="font-semibold">{pendingRecallMsg.author.displayName}：</strong>
+              <strong className="font-semibold">
+                {t("rooms.modal.recallAuthorPrefix", {
+                  name: pendingRecallMsg.author.displayName,
+                })}
+              </strong>
               {pendingRecallMsg.content.slice(0, 180)}
               {pendingRecallMsg.content.length > 180 ? "…" : ""}
             </div>
@@ -797,8 +856,8 @@ function AdminRoomDetailDrawerContent(props: {
             size="md"
             value={recallReason}
             onChange={(e) => setRecallReason(e.target.value)}
-            placeholder="可选：填写撤回原因（记入管理员审计日志）"
-            aria-label="撤回原因"
+            placeholder={t("rooms.modal.recallReasonPlaceholder")}
+            aria-label={t("rooms.modal.recallReasonAria")}
           />
         </div>
       </AdminConfirmModal>
@@ -806,9 +865,9 @@ function AdminRoomDetailDrawerContent(props: {
       {/* 删除提案弹窗 */}
       <AdminConfirmModal
         open={pendingDeleteProposalId !== null}
-        title="删除结构化提案"
-        description="删除后该提案卡片与投票表态记录将被永久移除。"
-        confirmLabel="确认删除"
+        title={t("rooms.modal.deleteProposalTitle")}
+        description={t("rooms.modal.deleteProposalDescription")}
+        confirmLabel={t("shared.action.confirmDelete")}
         isPending={deleteProposalMutation.isPending}
         onClose={() => setPendingDeleteProposalId(null)}
         onConfirm={() => {
@@ -824,9 +883,9 @@ function AdminRoomDetailDrawerContent(props: {
       {/* 解散群聊弹窗 */}
       <AdminConfirmModal
         open={deleteRoomConfirmOpen}
-        title={`强制解散群聊「${r.name}」`}
-        description="确定永久解散该群聊并级联删除全部历史消息、成员名册与提案记录吗？"
-        confirmLabel="确认解散"
+        title={t("rooms.modal.deleteRoomTitle", { name: r.name })}
+        description={t("rooms.modal.deleteRoomDescription")}
+        confirmLabel={t("rooms.modal.deleteRoomConfirm")}
         isPending={deleteRoomMutation.isPending}
         onClose={() => setDeleteRoomConfirmOpen(false)}
         onConfirm={() => {
@@ -852,6 +911,7 @@ export interface AdminRoomsViewProps {
  * 渲染全平台群聊房间列表与跨房审查视图。
  */
 export function AdminRoomsView(props: AdminRoomsViewProps) {
+  const { locale, t } = useAdminI18n();
   const [page, setPage] = useState<number>(1);
   const [searchInput, setSearchInput] = useState<string>("");
   const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>("__all__");
@@ -860,6 +920,24 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
     props.initialSelectedRoomId ?? null,
   );
   const [pendingQuickDeleteRoom, setPendingQuickDeleteRoom] = useState<AdminRoomItem | null>(null);
+
+  const visibilityFilterOptions = useMemo<ReadonlyArray<AppSelectOption<VisibilityFilter>>>(
+    () => [
+      { value: "__all__", label: t("rooms.filter.allVisibility") },
+      { value: "invite_only", label: t("rooms.filter.inviteOnly") },
+      { value: "public_shareable", label: t("rooms.filter.publicShareable") },
+    ],
+    [t],
+  );
+
+  const govStatusOptions = useMemo<ReadonlyArray<AppSelectOption<GovStatusFilter>>>(
+    () => [
+      { value: "__all__", label: t("rooms.filter.allGovStatus") },
+      { value: "active", label: t("common.status.active") },
+      { value: "paused_budget", label: t("rooms.filter.pausedBudget") },
+    ],
+    [t],
+  );
 
   useEffect(() => {
     if (props.initialSelectedRoomId) {
@@ -879,6 +957,7 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
   );
 
   const deleteRoomMutation = useAdminDeleteRoomMutation();
+  const fmt = (value: number): string => formatNumber(value, undefined, locale);
 
   return (
     <div className="space-y-4">
@@ -893,15 +972,15 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
               setSearchInput(e.target.value);
               setPage(1);
             }}
-            placeholder="搜索群聊名称、议题、群主邮箱或 rom_ ID…"
-            aria-label="搜索群聊"
+            placeholder={t("rooms.search.placeholder")}
+            aria-label={t("rooms.search.aria")}
             leadingIcon={<Search className="h-3.5 w-3.5" />}
             trailingSlot={
               searchInput.length > 0 ? (
                 <IconButton
                   size="xs"
                   variant="ghost"
-                  label="清空搜索"
+                  label={t("shared.action.clearSearch")}
                   onClick={() => {
                     setSearchInput("");
                     setPage(1);
@@ -914,7 +993,7 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
           />
         </div>
 
-        <div className="w-[calc(50%-0.3125rem)] sm:w-36">
+        <div className="w-[calc(50%-0.3125rem)] sm:w-40">
           <AppSelect
             size="sm"
             value={visibilityFilter}
@@ -922,8 +1001,8 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
               setVisibilityFilter(val);
               setPage(1);
             }}
-            options={VISIBILITY_FILTER_OPTIONS}
-            ariaLabel="按可见性筛选"
+            options={visibilityFilterOptions}
+            ariaLabel={t("rooms.filter.visibilityAria")}
           />
         </div>
 
@@ -935,8 +1014,8 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
               setGovStatusFilter(val);
               setPage(1);
             }}
-            options={GOV_STATUS_OPTIONS}
-            ariaLabel="按治理运行态筛选"
+            options={govStatusOptions}
+            ariaLabel={t("rooms.filter.govStatusAria")}
           />
         </div>
       </div>
@@ -946,15 +1025,13 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
           <AdminTableSkeleton rows={6} />
         ) : roomsQuery.isError || !roomsQuery.data ? (
           <AdminErrorState
-            message={
-              roomsQuery.error instanceof Error ? roomsQuery.error.message : "加载群聊列表失败"
-            }
+            message={resolveAdminErrorMessage(roomsQuery.error, t("rooms.error.loadList"), locale)}
             onRetry={() => void roomsQuery.refetch()}
           />
         ) : roomsQuery.data.rooms.length === 0 ? (
           <AdminEmptyState
-            title="暂无符合条件的群聊房间"
-            description="尝试调整搜索词或治理状态筛选条件"
+            title={t("rooms.empty.title")}
+            description={t("rooms.empty.description")}
           />
         ) : (
           <>
@@ -962,12 +1039,12 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
               <table className="w-full min-w-[820px] border-collapse text-left text-[13px]">
                 <thead>
                   <tr className="border-b border-black/[0.06] bg-black/[0.02] text-[11.5px] font-semibold text-[#687082] dark:border-white/[0.07] dark:bg-white/[0.02] dark:text-[#8E96AB]">
-                    <th className="px-4 py-3">群聊房间</th>
-                    <th className="px-3 py-3">群主</th>
-                    <th className="px-3 py-3">治理与分享状态</th>
-                    <th className="px-3 py-3 text-right">成员 / 消息 / 待拍板</th>
-                    <th className="px-3 py-3">最近活跃</th>
-                    <th className="px-4 py-3 text-right">操作</th>
+                    <th className="px-4 py-3">{t("rooms.table.room")}</th>
+                    <th className="px-3 py-3">{t("rooms.table.owner")}</th>
+                    <th className="px-3 py-3">{t("rooms.table.governance")}</th>
+                    <th className="px-3 py-3 text-right">{t("rooms.table.metrics")}</th>
+                    <th className="px-3 py-3">{t("rooms.table.lastActive")}</th>
+                    <th className="px-4 py-3 text-right">{t("rooms.table.actions")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-black/[0.05] dark:divide-white/[0.06]">
@@ -984,7 +1061,9 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
                             </span>
                             {room.kind !== "group" ? (
                               <AdminStatusPill tone="info">
-                                {room.kind === "direct_agent" ? "Agent 单聊" : "好友私聊"}
+                                {room.kind === "direct_agent"
+                                  ? t("rooms.kind.directAgent")
+                                  : t("rooms.kind.directHuman")}
                               </AdminStatusPill>
                             ) : null}
                           </div>
@@ -1011,25 +1090,33 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
                             {room.governance.status === "paused_budget" ? (
                               <>
                                 <PauseCircle className="mr-1 inline h-3 w-3" />
-                                已挂起
+                                {t("common.status.paused")}
                               </>
                             ) : (
-                              room.governance.config.mode
+                              getGovernanceModeLabel(room.governance.config.mode, t)
                             )}
                           </AdminStatusPill>
                           {room.visibility === "public_shareable" ? (
-                            <AdminStatusPill tone="info">公开只读</AdminStatusPill>
+                            <AdminStatusPill tone="info">
+                              {t("rooms.badge.publicReadonly")}
+                            </AdminStatusPill>
                           ) : null}
                         </div>
                       </td>
                       <td className="px-3 py-3 text-right font-mono text-xs text-[#3B414E] tabular-nums dark:text-[#B4BCD0]">
                         <span className="inline-flex items-center gap-2">
-                          <span>{room.memberCount}人</span>
+                          <span>
+                            {t("rooms.metrics.members", { count: fmt(room.memberCount) })}
+                          </span>
                           <span>·</span>
-                          <span>{room.messageCount}条</span>
+                          <span>
+                            {t("rooms.metrics.messages", { count: fmt(room.messageCount) })}
+                          </span>
                           {room.openProposalCount > 0 ? (
                             <AdminStatusPill tone="warning">
-                              {room.openProposalCount} 待拍板
+                              {t("rooms.metrics.openProposals", {
+                                count: fmt(room.openProposalCount),
+                              })}
                             </AdminStatusPill>
                           ) : null}
                         </span>
@@ -1045,14 +1132,14 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
                             leadingIcon={<MessageSquare className="h-3 w-3" />}
                             onClick={() => setSelectedRoomId(room.id)}
                           >
-                            审查
+                            {t("rooms.action.inspect")}
                           </AppButton>
                           <AppButton
                             variant="dangerSoft"
                             size="xs"
                             onClick={() => setPendingQuickDeleteRoom(room)}
                           >
-                            解散
+                            {t("rooms.action.delete")}
                           </AppButton>
                         </div>
                       </td>
@@ -1075,8 +1162,8 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
             setSelectedRoomId(null);
           }
         }}
-        title="群聊内容审查与治理"
-        subtitle="跨房消息监管、强制撤回、成员核查与规则热调控"
+        title={t("rooms.drawer.title")}
+        subtitle={t("rooms.drawer.subtitle")}
         side="right"
         className="sm:w-[min(95vw,780px)]"
       >
@@ -1090,9 +1177,13 @@ export function AdminRoomsView(props: AdminRoomsViewProps) {
 
       <AdminConfirmModal
         open={pendingQuickDeleteRoom !== null}
-        title={pendingQuickDeleteRoom ? `解散群聊「${pendingQuickDeleteRoom.name}」` : "解散群聊"}
-        description="确定永久解散该群聊并级联清理全部历史消息与提案吗？"
-        confirmLabel="确认解散"
+        title={
+          pendingQuickDeleteRoom
+            ? t("rooms.modal.quickDeleteTitle", { name: pendingQuickDeleteRoom.name })
+            : t("rooms.modal.quickDeleteTitleFallback")
+        }
+        description={t("rooms.modal.quickDeleteDescription")}
+        confirmLabel={t("rooms.modal.deleteRoomConfirm")}
         isPending={deleteRoomMutation.isPending}
         onClose={() => setPendingQuickDeleteRoom(null)}
         onConfirm={() => {

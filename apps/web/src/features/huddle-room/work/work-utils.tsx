@@ -6,27 +6,35 @@
  * 1. 编译期穷尽检查：所有基于 `WorkStage` 与 `WorkTopology` 的展示映射统一经 `assertNever` 守卫。
  * 2. 零副作用：仅包含文本解析、名称去前缀、时长格式化与受控剪贴板复制提示。
  */
-import { type OwnedAgentSummaryDto, type WorkSliceRole, assertNever } from "@openhuddle/protocol";
+import {
+  type OwnedAgentSummaryDto,
+  type SupportedLocale,
+  type WorkSliceRole,
+  assertNever,
+} from "@openhuddle/protocol";
 import { CheckCircle2, Circle, CircleAlert, Loader2 } from "lucide-react";
 import { cn, toast } from "../../../components/primitives/index.js";
 import { defaultAgentReplyMode } from "../../auth-pairing/connect-instructions.js";
+import { getWorkbenchTranslator } from "../i18n/workbench.js";
 import type { UpsertAgentWorkspaceInput } from "./solo-workbench-store.js";
 import type { WorkStage, WorkTopology } from "./work-types.js";
 
 /**
- * 获取协作拓扑方式的简明中文标签。
+ * 获取协作拓扑方式的简明本地化标签。
  *
  * @param topology - 协作拓扑枚举
- * @returns 用于界面展示的中文名称
+ * @param locale - 可选目标语种（缺省读取当前生效语种）
+ * @returns 用于界面展示的拓扑名称
  */
-export function getWorkTopologyLabel(topology: WorkTopology): string {
+export function getWorkTopologyLabel(topology: WorkTopology, locale?: SupportedLocale): string {
+  const { t } = getWorkbenchTranslator(locale);
   switch (topology) {
     case "direct":
-      return "单人执行";
+      return t("topology.direct.label");
     case "verify_loop":
-      return "双人复核";
+      return t("topology.verifyLoop.label");
     case "swarm":
-      return "多路并行";
+      return t("topology.swarm.label");
     default:
       return assertNever(topology);
   }
@@ -127,61 +135,69 @@ export function resolveEffectiveDispatchTopology(params: {
 }
 
 /** 等待中的执行和复核分片只有在各自阶段才能认领。 */
-export function getSliceWaitLabel(stage: WorkStage, role: WorkSliceRole | undefined): string {
-  if (stage === "awaiting_answer") return "等待答复";
-  if (stage === "blocked" || stage === "cancelled") return "已暂停";
-  if (role === "verify" && stage === "working") return "等待执行完成";
-  return "待领单";
+export function getSliceWaitLabel(
+  stage: WorkStage,
+  role: WorkSliceRole | undefined,
+  locale?: SupportedLocale,
+): string {
+  const { t } = getWorkbenchTranslator(locale);
+  if (stage === "awaiting_answer") return t("slice.wait.awaitingAnswer");
+  if (stage === "blocked" || stage === "cancelled") return t("slice.wait.paused");
+  if (role === "verify" && stage === "working") return t("slice.wait.waitingExec");
+  return t("slice.wait.queued");
 }
 
 export function getClaimListenerHint(
   agent:
     | Pick<OwnedAgentSummaryDto, "platform" | "reach" | "workspaceListenerConnected">
     | undefined,
+  locale?: SupportedLocale,
 ): { message: string; showInstallGuide: boolean } | undefined {
   if (!agent || agent.workspaceListenerConnected === true) return undefined;
+  const { t } = getWorkbenchTranslator(locale);
 
   if (defaultAgentReplyMode(agent.platform) === "on_demand") {
     return {
-      message:
-        "可在该 Agent 中通过 OpenHuddle MCP 认领分片。自动领单需要在其设备上启用支持工单的后台监听。",
+      message: t("claimHint.onDemand"),
       showInstallGuide: true,
     };
   }
-  const connection =
+  const message =
     agent.reach === "offline"
-      ? "该 Agent 当前离线。"
+      ? t("claimHint.offline")
       : agent.workspaceListenerConnected === false
-        ? "该 Agent 的工单监听尚未连接。"
-        : "若长时间未领单，";
+        ? t("claimHint.listenerDisconnected")
+        : t("claimHint.fallback");
   return {
-    message: `${connection}请在该 Agent 所在设备更新 OpenHuddle CLI 并重启后台监听。`,
+    message,
     showInstallGuide: true,
   };
 }
 
 /**
- * 获取工单阶段的简明中文状态文案。
+ * 获取工单阶段的简明本地化状态文案。
  *
  * @param stage - 工单阶段枚举
+ * @param locale - 可选目标语种（缺省读取当前生效语种）
  * @returns 面向用户的阶段说明文本
  */
-export function formatWorkStageLabel(stage: WorkStage): string {
+export function formatWorkStageLabel(stage: WorkStage, locale?: SupportedLocale): string {
+  const { t } = getWorkbenchTranslator(locale);
   switch (stage) {
     case "working":
-      return "进行中";
+      return t("stage.working");
     case "verifying":
-      return "复核中";
+      return t("stage.verifying");
     case "awaiting_answer":
-      return "待确认";
+      return t("stage.awaitingAnswer");
     case "awaiting_review":
-      return "待签收";
+      return t("stage.awaitingReview");
     case "done":
-      return "已完成";
+      return t("stage.done");
     case "blocked":
-      return "已暂停";
+      return t("stage.blocked");
     case "cancelled":
-      return "已停止";
+      return t("stage.cancelled");
     default:
       return assertNever(stage);
   }

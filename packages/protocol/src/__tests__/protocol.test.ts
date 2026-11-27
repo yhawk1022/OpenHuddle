@@ -14,7 +14,9 @@ import {
   DeleteRoomResponseSchema,
   ErrorCodeSchema,
   HumanUserDtoSchema,
+  LanguagePreferenceSchema,
   LoginWithPasswordBodySchema,
+  MeResponseSchema,
   MessageAttachmentMimeTypeSchema,
   MessageAttachmentSchema,
   MessageAttachmentUploadSchema,
@@ -25,6 +27,8 @@ import {
   RoomIdSchema,
   RoomSummaryDtoSchema,
   SseEventSchema,
+  SupportedLocaleSchema,
+  UpdateMeBodySchema,
   UserIdSchema,
   asMessageSeq,
   computeAuthorStamp,
@@ -431,5 +435,98 @@ describe("@openhuddle/protocol — identity & security invariants", () => {
         data: "iVBORw0KGgo=",
       }).success,
     ).toBe(false);
+  });
+
+  it("validates SupportedLocale, LanguagePreference, RegisterWithPasswordBody, UpdateMeBody, and MeResponse isolation", () => {
+    expect(SupportedLocaleSchema.parse("zh-CN")).toBe("zh-CN");
+    expect(SupportedLocaleSchema.parse("en")).toBe("en");
+    expect(SupportedLocaleSchema.safeParse("auto").success).toBe(false);
+    expect(SupportedLocaleSchema.safeParse("ja-JP").success).toBe(false);
+
+    expect(LanguagePreferenceSchema.parse("auto")).toBe("auto");
+    expect(LanguagePreferenceSchema.parse("zh-CN")).toBe("zh-CN");
+    expect(LanguagePreferenceSchema.parse("en")).toBe("en");
+    expect(LanguagePreferenceSchema.safeParse("fr").success).toBe(false);
+
+    const legacyReg = RegisterWithPasswordBodySchema.parse({
+      email: "legacy-client@example.com",
+      code: "123456",
+      displayName: "Legacy",
+      password: "ValidPassword#2026",
+    });
+    expect(legacyReg.languagePreference).toBeUndefined();
+
+    const localizedReg = RegisterWithPasswordBodySchema.parse({
+      email: "en-client@example.com",
+      code: "123456",
+      displayName: "English",
+      password: "ValidPassword#2026",
+      languagePreference: "en",
+    });
+    expect(localizedReg.languagePreference).toBe("en");
+    expect(
+      RegisterWithPasswordBodySchema.safeParse({
+        email: "bad@example.com",
+        code: "123456",
+        displayName: "Bad",
+        password: "ValidPassword#2026",
+        languagePreference: "jp",
+      }).success,
+    ).toBe(false);
+
+    expect(UpdateMeBodySchema.parse({ languagePreference: "zh-CN" })).toEqual({
+      languagePreference: "zh-CN",
+    });
+    expect(UpdateMeBodySchema.safeParse({ languagePreference: "de" }).success).toBe(false);
+
+    const humanMe = MeResponseSchema.parse({
+      ok: true,
+      callerKind: "human",
+      user: {
+        id: ownerA,
+        email: "owner@example.com",
+        displayName: "Owner",
+        createdAtIso: "2026-11-20T08:00:00.000Z",
+      },
+      agents: [],
+      themePreference: "auto",
+      languagePreference: "en",
+    });
+    expect(humanMe.callerKind === "human" && humanMe.languagePreference).toBe("en");
+
+    // HumanUserDto and agent MeResponse must strip / exclude languagePreference
+    const strippedUser = HumanUserDtoSchema.parse({
+      id: ownerA,
+      email: "owner@example.com",
+      displayName: "Owner",
+      languagePreference: "en",
+      createdAtIso: "2026-11-20T08:00:00.000Z",
+    });
+    expect("languagePreference" in strippedUser).toBe(false);
+
+    const agentMe = MeResponseSchema.parse({
+      ok: true,
+      callerKind: "agent",
+      agent: {
+        id: agentA1,
+        ownerUserId: ownerA,
+        displayName: "Agent",
+        slug: "agent",
+        platform: "codex",
+        reach: "online_sse",
+        createdAtIso: "2026-11-20T08:00:00.000Z",
+      },
+      owner: {
+        id: ownerA,
+        email: "owner@example.com",
+        displayName: "Owner",
+        languagePreference: "en",
+        createdAtIso: "2026-11-20T08:00:00.000Z",
+      },
+      siblingAgents: [],
+      languagePreference: "en",
+    });
+    expect("languagePreference" in agentMe).toBe(false);
+    expect(agentMe.callerKind === "agent" && "languagePreference" in agentMe.owner).toBe(false);
   });
 });

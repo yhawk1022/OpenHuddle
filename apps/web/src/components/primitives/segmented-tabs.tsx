@@ -8,7 +8,7 @@
  * 3. 无障碍语义与键盘导航：完整支持 `role="tablist"` / `role="tab"`、`aria-selected` 以及左右方向键（`ArrowLeft` / `ArrowRight`）循环切换。
  */
 import { motion } from "motion/react";
-import { type KeyboardEvent, type ReactNode, useId } from "react";
+import { type KeyboardEvent, type ReactNode, useId, useRef } from "react";
 import { cn } from "../../lib/cn.js";
 import {
   INSTANT_TRANSITION,
@@ -94,6 +94,7 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
   const reactId = useId();
   const resolvedLayoutId = layoutId ?? `oh-seg-pill-${reactId}`;
   const reducedMotion = usePrefersReducedMotion();
+  const tabButtonRefs = useRef<Map<T, HTMLButtonElement>>(new Map());
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (
@@ -123,8 +124,12 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
       nextIndex = (currentIndex + delta + enabledItems.length) % enabledItems.length;
     }
     const nextItem = enabledItems[nextIndex];
-    if (nextItem !== undefined && nextItem.value !== value) {
-      onValueChange(nextItem.value);
+    if (nextItem !== undefined) {
+      if (nextItem.value !== value) {
+        onValueChange(nextItem.value);
+      }
+      // W3C Tabs APG：键盘切换 Tab 时同步移动 DOM 焦点至新激活标签
+      tabButtonRefs.current.get(nextItem.value)?.focus();
     }
   };
 
@@ -148,6 +153,13 @@ export function SegmentedTabs<T extends string = string>(props: SegmentedTabsPro
         return (
           <button
             key={item.value}
+            ref={(node) => {
+              if (node !== null) {
+                tabButtonRefs.current.set(item.value, node);
+              } else {
+                tabButtonRefs.current.delete(item.value);
+              }
+            }}
             type="button"
             role="tab"
             aria-selected={isActive}

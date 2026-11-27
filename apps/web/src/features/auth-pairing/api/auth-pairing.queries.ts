@@ -9,10 +9,12 @@
 import type {
   AgentId,
   ConnectLocalAgentBody,
+  LanguagePreference,
   RoomDetailDto,
   RoomId,
   RoomSummaryDto,
   RoomVisibility,
+  SupportedLocale,
   ThemePreference,
   UpdateOwnedAgentBody,
 } from "@openhuddle/protocol";
@@ -49,10 +51,25 @@ import {
   updateRoomGovernance,
   verifyEmailOtp,
 } from "../../../lib/api-client.js";
+import {
+  clearLastAccountLanguagePreference,
+  getCommonTranslator,
+  setLastAccountLanguagePreference,
+  useLocale,
+} from "../../../lib/i18n/index.js";
 import { huddleQueryKeys } from "../../../lib/query-keys.js";
 import { navigateTo, setStoredSessionToken } from "../../../lib/session-store.js";
 
-const updateMeMutationKey = [...huddleQueryKeys.me(), "update"];
+const updateMeProfileMutationKey = [...huddleQueryKeys.me(), "update", "profile"] as const;
+const updateMeThemeMutationKey = [...huddleQueryKeys.me(), "update", "theme"] as const;
+const updateMeLanguageMutationKey = [...huddleQueryKeys.me(), "update", "language"] as const;
+
+let latestLanguageMutationSeq = 0;
+let inFlightLanguageCount = 0;
+let activeLanguageRollback: {
+  readonly userId: string;
+  readonly preference: LanguagePreference;
+} | null = null;
 
 /**
  * 构造认证与注册公开策略配置（`/api/v1/auth/config`）的 `queryOptions`。
@@ -112,8 +129,11 @@ export function useRegisterWithPasswordMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: registerWithPassword,
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       setStoredSessionToken(data.sessionToken);
+      if (variables.languagePreference !== undefined) {
+        setLastAccountLanguagePreference(variables.languagePreference);
+      }
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
     },
@@ -182,7 +202,7 @@ export function useChangePasswordMutation() {
 }
 
 /**
- * 更新当前人类用户的展示昵称或外观偏好。
+ * 更新当前人类用户的展示昵称、外观或语言偏好。
  *
  * @returns 更新成功后自动同步 `["me"]` 缓存的 `useMutation` 实例
  */
@@ -190,7 +210,7 @@ export function useUpdateMeMutation() {
   const queryClient = useQueryClient();
   const queryKey = huddleQueryKeys.me();
   return useMutation({
-    mutationKey: updateMeMutationKey,
+    mutationKey: updateMeProfileMutationKey,
     mutationFn: updateCurrentMe,
     onSuccess: async (data, patch) => {
       if (queryClient.getQueryData<HumanMeResponseDto | null>(queryKey)?.user.id !== data.user.id) {
@@ -206,43 +226,211 @@ export function useUpdateMeMutation() {
               ...(patch.themePreference !== undefined && data.themePreference !== undefined
                 ? { themePreference: data.themePreference }
                 : {}),
+              ...(patch.languagePreference !== undefined && data.languagePreference !== undefined
+                ? { languagePreference: data.languagePreference }
+                : {}),
             }
           : current,
       );
+      if (patch.languagePreference !== undefined && data.languagePreference !== undefined) {
+        setLastAccountLanguagePreference(data.languagePreference);
+      }
     },
   });
 }
 
+interface AccountLanguageMutationVars {
+  readonly nextPreference: LanguagePreference;
+  readonly previousPreference: LanguagePreference;
+  readonly targetUserId: string;
+  readonly seq: number;
+}
+
 /**
- * 读取账号外观并保存用户选择。多个入口共用保存状态，避免重复写入。
+ * 读取账号外观并保存用户选择。多个入口共用独立保存状态，不与昵称或语言更新互锁。
  *
  * @returns 当前偏好、保存状态和选择回调。
  */
 export function useAccountThemePreference() {
+  const queryClient = useQueryClient();
+  const queryKey = huddleQueryKeys.me();
   const { data } = useQuery({ ...currentMeQueryOptions(), enabled: false });
   const preference = data?.themePreference ?? "auto";
-  const { mutate } = useUpdateMeMutation();
-  const isSaving = useIsMutating({ mutationKey: updateMeMutationKey }) > 0;
+  const { mutate } = useMutation({
+    mutationKey: updateMeThemeMutationKey,
+    mutationFn: updateCurrentMe,
+    onSuccess: async (updated, patch) => {
+      if (
+        queryClient.getQueryData<HumanMeResponseDto | null>(queryKey)?.user.id !== updated.user.id
+      ) {
+        return;
+      }
+      await queryClient.cancelQueries({ queryKey, exact: true });
+      queryClient.setQueryData<HumanMeResponseDto | null>(queryKey, (current) =>
+        current?.user.id === updated.user.id
+          ? {
+              ...current,
+              ...(patch.themePreference !== undefined && updated.themePreference !== undefined
+                ? { themePreference: updated.themePreference }
+                : {}),
+            }
+          : current,
+      );
+      if (
+        patch.themePreference !== undefined &&
+        updated.themePreference !== patch.themePreference
+      ) {
+        toast.error(getCommonTranslator().t("displayMenu.theme.toastNotSaved"));
+      }
+    },
+    onError: () => {
+      toast.error(getCommonTranslator().t("displayMenu.theme.toastSaveFailed"));
+    },
+  });
+  const isSaving = useIsMutating({ mutationKey: updateMeThemeMutationKey }) > 0;
   const setPreference = useCallback(
     (nextPreference: ThemePreference) => {
       if (data?.callerKind !== "human" || preference === nextPreference || isSaving) {
         return;
       }
-      mutate(
-        { themePreference: nextPreference },
-        {
-          onSuccess: (updated) => {
-            if (updated.themePreference !== nextPreference) {
-              toast.error("账号外观未保存，请稍后重试");
-            }
-          },
-          onError: () => toast.error("账号外观保存失败，请重试"),
-        },
-      );
+      mutate({ themePreference: nextPreference });
     },
     [data?.callerKind, isSaving, mutate, preference],
   );
   return { preference, isSaving, setPreference };
+}
+
+/**
+ * 读取已登录人类账号的语言偏好，并以「乐观更新 + 单调递增序号 `seq` + `userId` 双重守卫」保存至云端。
+ * 全部成功校验与失败回滚置于 Mutation 级生命周期回调中，确保触发菜单或弹窗关闭后仍可靠执行。
+ *
+ * @returns 当前偏好、实际解析生效语种、保存状态与可中断切换回调
+ */
+export function useAccountLanguagePreference(): {
+  readonly preference: LanguagePreference;
+  readonly resolvedLocale: SupportedLocale;
+  readonly isSaving: boolean;
+  readonly setPreference: (nextPreference: LanguagePreference) => void;
+} {
+  const queryClient = useQueryClient();
+  const queryKey = huddleQueryKeys.me();
+  const { data } = useQuery({ ...currentMeQueryOptions(), enabled: false });
+  const activeLocale = useLocale();
+  const preference: LanguagePreference = data?.languagePreference ?? "auto";
+  const resolvedLocale: SupportedLocale = preference === "auto" ? activeLocale : preference;
+  const isSaving = useIsMutating({ mutationKey: updateMeLanguageMutationKey }) > 0;
+
+  const rollbackIfLatest = useCallback(
+    (vars: AccountLanguageMutationVars, toastMessage: string): void => {
+      if (vars.seq !== latestLanguageMutationSeq) {
+        return;
+      }
+      const latestMe = queryClient.getQueryData<HumanMeResponseDto | null>(queryKey);
+      if (latestMe?.user.id !== vars.targetUserId) {
+        return;
+      }
+      const fallbackPreference =
+        activeLanguageRollback?.userId === vars.targetUserId
+          ? activeLanguageRollback.preference
+          : vars.previousPreference;
+      activeLanguageRollback = null;
+      queryClient.setQueryData<HumanMeResponseDto | null>(queryKey, (current) =>
+        current?.user.id === vars.targetUserId
+          ? { ...current, languagePreference: fallbackPreference }
+          : current,
+      );
+      setLastAccountLanguagePreference(fallbackPreference);
+      toast.error(toastMessage);
+    },
+    [queryClient, queryKey],
+  );
+
+  const { mutate } = useMutation({
+    mutationKey: updateMeLanguageMutationKey,
+    mutationFn: (vars: AccountLanguageMutationVars) =>
+      updateCurrentMe({ languagePreference: vars.nextPreference }),
+    onSuccess: async (updated, vars) => {
+      if (vars.seq !== latestLanguageMutationSeq) {
+        return;
+      }
+      const latestMe = queryClient.getQueryData<HumanMeResponseDto | null>(queryKey);
+      if (latestMe?.user.id !== vars.targetUserId || updated.user.id !== vars.targetUserId) {
+        return;
+      }
+      if (updated.languagePreference !== vars.nextPreference) {
+        rollbackIfLatest(vars, getCommonTranslator().t("locale.toast.notSaved"));
+        return;
+      }
+      const confirmedPreference: LanguagePreference = updated.languagePreference;
+      await queryClient.cancelQueries({ queryKey, exact: true });
+      if (vars.seq !== latestLanguageMutationSeq) {
+        return;
+      }
+      const postCancelMe = queryClient.getQueryData<HumanMeResponseDto | null>(queryKey);
+      if (postCancelMe?.user.id !== vars.targetUserId) {
+        return;
+      }
+      activeLanguageRollback = null;
+      queryClient.setQueryData<HumanMeResponseDto | null>(queryKey, (current) =>
+        current?.user.id === vars.targetUserId
+          ? { ...current, languagePreference: confirmedPreference }
+          : current,
+      );
+      setLastAccountLanguagePreference(confirmedPreference);
+    },
+    onError: (_error, vars) => {
+      rollbackIfLatest(vars, getCommonTranslator().t("locale.toast.saveFailed"));
+    },
+    onSettled: () => {
+      inFlightLanguageCount = Math.max(0, inFlightLanguageCount - 1);
+      if (inFlightLanguageCount === 0) {
+        activeLanguageRollback = null;
+      }
+    },
+  });
+
+  const setPreference = useCallback(
+    (nextPreference: LanguagePreference) => {
+      const currentMe = queryClient.getQueryData<HumanMeResponseDto | null>(queryKey);
+      if (currentMe === null || currentMe === undefined || currentMe.callerKind !== "human") {
+        return;
+      }
+      const targetUserId = currentMe.user.id;
+      const previousPreference: LanguagePreference = currentMe.languagePreference ?? "auto";
+      if (previousPreference === nextPreference) {
+        return;
+      }
+
+      if (inFlightLanguageCount === 0 || activeLanguageRollback?.userId !== targetUserId) {
+        activeLanguageRollback = {
+          userId: targetUserId,
+          preference: previousPreference,
+        };
+      }
+      inFlightLanguageCount += 1;
+      latestLanguageMutationSeq += 1;
+      const seq = latestLanguageMutationSeq;
+
+      // 立即乐观更新 ["me"] 缓存与本地镜像槽，实现 0ms 无闪烁切换
+      void queryClient.cancelQueries({ queryKey, exact: true });
+      queryClient.setQueryData<HumanMeResponseDto | null>(queryKey, (current) =>
+        current?.user.id === targetUserId
+          ? { ...current, languagePreference: nextPreference }
+          : current,
+      );
+      setLastAccountLanguagePreference(nextPreference);
+
+      mutate({
+        nextPreference,
+        previousPreference,
+        targetUserId,
+        seq,
+      });
+    },
+    [mutate, queryClient, queryKey],
+  );
+
+  return { preference, resolvedLocale, isSaving, setPreference };
 }
 
 /**
@@ -284,6 +472,7 @@ export function useLogoutMutation() {
     mutationFn: logoutSession,
     onSettled: async (_data, error) => {
       setStoredSessionToken(null);
+      clearLastAccountLanguagePreference();
       if (error !== null) {
         queryClient.clear();
         return;

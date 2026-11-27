@@ -11,7 +11,7 @@
  * 4. 首屏以下分区经 `portal-reveal` 滚动渐进显现（眉标划线 → 标题遮罩上浮 → 卡片与条目错峰级联）：
  *    仅驱动 `transform` / `opacity`、进入视口一次性触发，并遵循系统「减少动态效果」直接渲染终态。
  */
-import type { AgentPlatform } from "@openhuddle/protocol";
+import type { AgentPlatform, LanguagePreference, SupportedLocale } from "@openhuddle/protocol";
 import {
   ArrowDown,
   ArrowLeft,
@@ -22,7 +22,9 @@ import {
   Copy,
   ExternalLink,
   GitBranch,
+  Globe,
   KeyRound,
+  Languages,
   Layers,
   Link2,
   ListTodo,
@@ -53,6 +55,13 @@ import {
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { PlatformGlyph } from "../../../components/ui/platform-icons.js";
 import {
+  getCommonTranslator,
+  readGuestLanguagePreference,
+  setGuestLanguagePreference,
+} from "../../../lib/i18n/index.js";
+import { getPortalTranslator, usePortalI18n } from "../i18n/index.js";
+import { LOCALE_PREFERENCE_ORDER } from "./locale-switcher-menu.js";
+import {
   PortalEyebrow,
   PortalSectionHeader,
   PortalTitleReveal,
@@ -78,11 +87,6 @@ export const PORTAL_SURFACE_CARD_CLASS =
 
 /** 首屏双模实景预览器标签枚举 */
 export type PortalPreviewTab = "huddle" | "workbench";
-
-const PREVIEW_TAB_ITEMS: ReadonlyArray<SegmentedTabItem<PortalPreviewTab>> = [
-  { value: "huddle", label: "多 Agent 群聊" },
-  { value: "workbench", label: "工作台协作与审阅" },
-];
 
 /**
  * 复制文本至系统剪贴板（兼容非 HTTPS 局域网自托管环境的隐藏文本域回退）。
@@ -217,6 +221,12 @@ export function inspectPortalContextTarget(
 export interface PortalContextMenuActions {
   readonly isAuthenticatedWelcome: boolean;
   readonly isDarkTheme: boolean;
+  /** 当前界面语言偏好（缺省读取访客存储槽） */
+  readonly languagePreference?: LanguagePreference | undefined;
+  /** 可选显式语种（缺省取全局生效语种） */
+  readonly locale?: SupportedLocale | undefined;
+  /** 切换界面语言偏好回调（缺省调用 `setGuestLanguagePreference`） */
+  readonly onSelectLanguage?: ((preference: LanguagePreference) => void) | undefined;
   readonly onCopyText: (
     text: string,
     successTitle: string,
@@ -231,6 +241,20 @@ export interface PortalContextMenuActions {
   readonly onCopySiteUrl: () => void;
 }
 
+function renderPortalLanguageIcon(value: LanguagePreference, isSelected: boolean) {
+  if (isSelected) {
+    return <Check className="h-3.5 w-3.5" />;
+  }
+  if (value === "auto") {
+    return <Globe className="h-3.5 w-3.5" />;
+  }
+  return (
+    <span className="inline-flex h-3.5 w-3.5 items-center justify-center text-[10px] font-semibold leading-none opacity-80">
+      {value === "zh-CN" ? /* i18n-ignore */ "中" : "EN"}
+    </span>
+  );
+}
+
 /**
  * 根据命中快照纯函数生成门户 `AppContextMenu` 条目列表。
  */
@@ -242,14 +266,19 @@ export function buildPortalContextMenuEntries(
     return [];
   }
 
+  const { t } = getPortalTranslator(actions.locale);
+  const { t: tCommon } = getCommonTranslator(actions.locale);
+  const currentLanguagePreference = actions.languagePreference ?? readGuestLanguagePreference();
+  const handleSelectLanguage = actions.onSelectLanguage ?? setGuestLanguagePreference;
+
   const items: AppContextMenuEntry[] = [];
 
   if (hit.selectedText.length > 0) {
     items.push({
       id: "ctx-portal-copy-selection",
-      label: "复制选中文字",
+      label: t("context.copySelection"),
       icon: <Copy className="h-3.5 w-3.5" />,
-      onSelect: () => actions.onCopyText(hit.selectedText, "已复制选中文字"),
+      onSelect: () => actions.onCopyText(hit.selectedText, t("context.copiedSelection")),
     });
     items.push({ kind: "separator", id: "ctx-portal-sep-selection" });
   }
@@ -257,16 +286,20 @@ export function buildPortalContextMenuEntries(
   if (hit.hitAuthorEmail) {
     items.push({
       id: "ctx-portal-mail-author",
-      label: `给作者发邮件 (${AUTHOR_CONTACT_EMAIL})`,
+      label: t("context.mailAuthor", { email: AUTHOR_CONTACT_EMAIL }),
       icon: <Mail className="h-3.5 w-3.5" />,
       onSelect: () => actions.onOpenMailClient(AUTHOR_CONTACT_EMAIL),
     });
     items.push({
       id: "ctx-portal-copy-author-email",
-      label: "复制邮箱地址",
+      label: t("context.copyAuthorEmail"),
       icon: <Copy className="h-3.5 w-3.5" />,
       onSelect: () =>
-        actions.onCopyText(AUTHOR_CONTACT_EMAIL, "已复制作者邮箱", AUTHOR_CONTACT_EMAIL),
+        actions.onCopyText(
+          AUTHOR_CONTACT_EMAIL,
+          t("context.copiedAuthorEmail"),
+          AUTHOR_CONTACT_EMAIL,
+        ),
     });
     items.push({ kind: "separator", id: "ctx-portal-sep-author" });
   }
@@ -275,15 +308,15 @@ export function buildPortalContextMenuEntries(
     const href = hit.externalLinkHref;
     items.push({
       id: "ctx-portal-open-link",
-      label: "在新标签页打开链接",
+      label: t("context.openLink"),
       icon: <ExternalLink className="h-3.5 w-3.5" />,
       onSelect: () => actions.onOpenExternalLink(href),
     });
     items.push({
       id: "ctx-portal-copy-link",
-      label: "复制链接地址",
+      label: t("context.copyLink"),
       icon: <Copy className="h-3.5 w-3.5" />,
-      onSelect: () => actions.onCopyText(href, "已复制链接地址", href),
+      onSelect: () => actions.onCopyText(href, t("context.copiedLink"), href),
     });
     items.push({ kind: "separator", id: "ctx-portal-sep-link" });
   }
@@ -292,16 +325,16 @@ export function buildPortalContextMenuEntries(
     const snippet = hit.codeSnippet;
     items.push({
       id: "ctx-portal-copy-code",
-      label: "复制启动命令",
+      label: t("context.copyQuickStart"),
       icon: <Terminal className="h-3.5 w-3.5" />,
-      onSelect: () => actions.onCopyText(snippet, "已复制快速启动命令"),
+      onSelect: () => actions.onCopyText(snippet, t("context.copiedQuickStart")),
     });
     items.push({ kind: "separator", id: "ctx-portal-sep-code" });
   }
 
   items.push({
     id: "ctx-portal-primary-nav",
-    label: actions.isAuthenticatedWelcome ? "返回工作台" : "跳至登录 / 注册",
+    label: actions.isAuthenticatedWelcome ? t("context.backToApp") : t("context.jumpToAuth"),
     icon: actions.isAuthenticatedWelcome ? (
       <ArrowLeft className="h-3.5 w-3.5" />
     ) : (
@@ -312,14 +345,14 @@ export function buildPortalContextMenuEntries(
 
   items.push({
     id: "ctx-portal-jump-preview",
-    label: "滚动至实景预览",
+    label: t("context.scrollToPreview"),
     icon: <Layers className="h-3.5 w-3.5" />,
     onSelect: actions.onScrollToPreview,
   });
 
   items.push({
     id: "ctx-portal-jump-capabilities",
-    label: "浏览核心协作能力",
+    label: t("context.scrollToCapabilities"),
     icon: <Compass className="h-3.5 w-3.5" />,
     onSelect: actions.onScrollToCapabilities,
   });
@@ -329,23 +362,49 @@ export function buildPortalContextMenuEntries(
   if (!hit.hitAuthorEmail) {
     items.push({
       id: "ctx-portal-contact-copy",
-      label: "联系作者（复制邮箱）",
+      label: t("context.contactAuthorCopy"),
       icon: <Mail className="h-3.5 w-3.5" />,
       onSelect: () =>
-        actions.onCopyText(AUTHOR_CONTACT_EMAIL, "已复制作者邮箱", AUTHOR_CONTACT_EMAIL),
+        actions.onCopyText(
+          AUTHOR_CONTACT_EMAIL,
+          t("context.copiedAuthorEmail"),
+          AUTHOR_CONTACT_EMAIL,
+        ),
     });
   }
 
   items.push({
+    kind: "submenu",
+    id: "ctx-portal-language",
+    label: t("context.languageSubmenu"),
+    icon: <Languages className="h-3.5 w-3.5" />,
+    items: LOCALE_PREFERENCE_ORDER.map((value) => {
+      const isSelected = currentLanguagePreference === value;
+      const label =
+        value === "auto"
+          ? tCommon("locale.option.auto")
+          : value === "zh-CN"
+            ? tCommon("locale.autonym.zhCN")
+            : tCommon("locale.autonym.en");
+      return {
+        id: `ctx-portal-lang-${value}`,
+        label,
+        icon: renderPortalLanguageIcon(value, isSelected),
+        onSelect: () => handleSelectLanguage(value),
+      };
+    }),
+  });
+
+  items.push({
     id: "ctx-portal-toggle-theme",
-    label: actions.isDarkTheme ? "切换为白天模式" : "切换为夜间模式",
+    label: actions.isDarkTheme ? t("context.switchToLight") : t("context.switchToDark"),
     icon: actions.isDarkTheme ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />,
     onSelect: actions.onToggleTheme,
   });
 
   items.push({
     id: "ctx-portal-copy-site",
-    label: "复制本站链接",
+    label: t("context.copySiteUrl"),
     icon: <Link2 className="h-3.5 w-3.5" />,
     onSelect: actions.onCopySiteUrl,
   });
@@ -388,6 +447,7 @@ export interface PortalMobileQuickGuideProps {
  * 窄屏（`< lg`）首屏标题下方的快捷导览胶囊行。
  */
 export function PortalMobileQuickGuide(props: PortalMobileQuickGuideProps) {
+  const { t } = usePortalI18n();
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 lg:hidden">
       <button
@@ -408,7 +468,7 @@ export function PortalMobileQuickGuide(props: PortalMobileQuickGuideProps) {
             </span>
           ))}
         </span>
-        <span>实景预览与全部功能</span>
+        <span>{t("mobileGuide.previewAndFeatures")}</span>
         <ArrowDown aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-[#687082]" />
       </button>
 
@@ -418,7 +478,7 @@ export function PortalMobileQuickGuide(props: PortalMobileQuickGuideProps) {
         className="im-press inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-black/[0.07] bg-white/75 px-3 text-[12px] font-medium text-[#3B414E] shadow-[0_1px_3px_rgba(15,23,42,0.03)] hover:bg-white hover:text-[#111318] dark:border-white/[0.09] dark:bg-[#1A1B20] dark:text-[#C4C4CA] dark:hover:bg-[#22232A] dark:hover:text-white"
       >
         <Mail aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-        <span>联系作者</span>
+        <span>{t("mobileGuide.contactAuthor")}</span>
       </button>
     </div>
   );
@@ -432,25 +492,6 @@ interface PreviewBubbleItem {
   readonly time: string;
   readonly text: string;
 }
-
-const PREVIEW_HUDDLE_BUBBLES: ReadonlyArray<PreviewBubbleItem> = [
-  {
-    key: "claude",
-    platform: "claude_code",
-    name: "Claude Code",
-    ownerNote: "Alex 的 Agent",
-    time: "10:42",
-    text: "日志里同一笔订单的支付回调到了两次，第二次没有做重复校验，建议按订单号去重。",
-  },
-  {
-    key: "codex",
-    platform: "codex",
-    name: "Codex",
-    ownerNote: "庞彦的 Agent",
-    time: "10:43",
-    text: "同意。另外网关超时重试时也要带上同一个请求编号，否则还可能重复入账。",
-  },
-];
 
 interface PreviewDiffRow {
   readonly id: string;
@@ -498,8 +539,33 @@ const PREVIEW_WORKBENCH_DIFF_ROWS: ReadonlyArray<PreviewDiffRow> = [
  * 外框使用单层 `relative liquid-glass-modal`，内部所有子面板保持零 `backdrop-blur`。
  */
 export function PortalHeroPreview() {
+  const { t } = usePortalI18n();
   const [previewTab, setPreviewTab] = useState<PortalPreviewTab>("huddle");
   const reducedMotion = usePrefersReducedMotion();
+
+  const previewTabItems: ReadonlyArray<SegmentedTabItem<PortalPreviewTab>> = [
+    { value: "huddle", label: t("preview.tab.huddle") },
+    { value: "workbench", label: t("preview.tab.workbench") },
+  ];
+
+  const previewHuddleBubbles: ReadonlyArray<PreviewBubbleItem> = [
+    {
+      key: "claude",
+      platform: "claude_code",
+      name: "Claude Code",
+      ownerNote: t("preview.huddle.claudeOwner"),
+      time: "10:42",
+      text: t("preview.huddle.claudeText"),
+    },
+    {
+      key: "codex",
+      platform: "codex",
+      name: "Codex",
+      ownerNote: t("preview.huddle.codexOwner"),
+      time: "10:43",
+      text: t("preview.huddle.codexText"),
+    },
+  ];
 
   return (
     <div className="relative liquid-glass-modal select-none overflow-hidden rounded-[24px] sm:rounded-[28px] dark:bg-[#16171C]/[0.76]">
@@ -508,18 +574,16 @@ export function PortalHeroPreview() {
         <SegmentedTabs<PortalPreviewTab>
           value={previewTab}
           onValueChange={setPreviewTab}
-          items={PREVIEW_TAB_ITEMS}
+          items={previewTabItems}
           size="sm"
           layoutId="oh-portal-hero-preview-tabs"
-          ariaLabel="切换产品实景预览模式"
+          ariaLabel={t("preview.tabsAria")}
         />
 
         <span className="hidden items-center gap-1.5 text-[11.5px] font-medium text-[#5A6272] sm:inline-flex dark:text-[#9898A2]">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#16A34A] dark:bg-[#34D399]" />
           <span>
-            {previewTab === "huddle"
-              ? "防刷屏保护已开启 · 你随时可接管"
-              : "独立分支改码 · 双人复核"}
+            {previewTab === "huddle" ? t("preview.status.huddle") : t("preview.status.workbench")}
           </span>
         </span>
       </div>
@@ -540,19 +604,19 @@ export function PortalHeroPreview() {
                   aria-hidden="true"
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[11px] bg-[#DCE8FC] text-[13px] font-semibold text-[#1D3E78] ring-1 ring-inset ring-white/80 dark:bg-[#222938] dark:text-[#B8D0FA] dark:ring-white/[0.08]"
                 >
-                  支
+                  {t("preview.huddle.avatarMonogram")}
                 </div>
                 <div className="min-w-0">
                   <p className="truncate text-[13.5px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
-                    支付回调重复入账排查
+                    {t("preview.huddle.roomTitle")}
                   </p>
                   <p className="truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                    2 位成员 · Claude Code 与 Codex 在线
+                    {t("preview.huddle.roomMeta")}
                   </p>
                 </div>
               </div>
               <span className="shrink-0 rounded-full bg-black/[0.05] px-2.5 py-0.5 text-[11px] font-medium text-[#4B5565] dark:bg-white/[0.07] dark:text-[#C4C4CA]">
-                群聊实况
+                {t("preview.huddle.liveBadge")}
               </span>
             </div>
 
@@ -564,15 +628,15 @@ export function PortalHeroPreview() {
                     <span className="font-medium text-[#157347] dark:text-[#6EE7B7]">
                       @Claude Code @Codex
                     </span>{" "}
-                    支付回调偶尔重复入账，帮我定位原因并给个修复方案。
+                    {t("preview.huddle.humanPrompt")}
                   </div>
                   <p className="mt-1 text-right text-[10.5px] text-[#8E96A6] dark:text-[#8E8E96]">
-                    我 · 10:41
+                    {t("preview.huddle.humanMeta")}
                   </p>
                 </div>
               </div>
 
-              {PREVIEW_HUDDLE_BUBBLES.map((bubble) => (
+              {previewHuddleBubbles.map((bubble) => (
                 <div key={bubble.key} className="flex items-start gap-2.5">
                   <PlatformAvatar
                     kind="agent"
@@ -601,17 +665,17 @@ export function PortalHeroPreview() {
                 <div className="flex items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-[#145335] dark:text-[#6EE7B7]">
                     <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                    <span>已拍板结论</span>
+                    <span>{t("preview.huddle.decisionBadge")}</span>
                   </span>
                   <span className="shrink-0 text-[11px] text-[#2F6849] dark:text-[#9ACBB0]">
-                    2/2 Agent 赞成
+                    {t("preview.huddle.decisionVotes")}
                   </span>
                 </div>
                 <p className="mt-1 text-[13px] font-medium leading-snug">
-                  按订单号去重，网关重试复用同一请求编号
+                  {t("preview.huddle.decisionSummary")}
                 </p>
                 <p className="mt-0.5 text-[11.5px] text-[#3B6E52] dark:text-[#A4C9B4]">
-                  两个 Agent 交叉核对 · 由你最终拍板
+                  {t("preview.huddle.decisionFootnote")}
                 </p>
               </div>
             </div>
@@ -629,7 +693,7 @@ export function PortalHeroPreview() {
             <div className="flex items-start justify-between gap-3 border-b border-black/[0.05] px-4 py-3 sm:px-5 dark:border-white/[0.06]">
               <div className="min-w-0">
                 <p className="text-[13.5px] font-semibold leading-snug tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
-                  修复支付回调重复入账
+                  {t("preview.workbench.taskTitle")}
                 </p>
                 <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[11px] text-[#687082] dark:text-[#8E8E96]">
                   <span>openhuddle</span>
@@ -639,11 +703,11 @@ export function PortalHeroPreview() {
                     <span>fix/payment-dedupe</span>
                   </span>
                   <span aria-hidden="true">·</span>
-                  <span className="font-sans">3 个文件变更</span>
+                  <span className="font-sans">{t("preview.workbench.filesChanged")}</span>
                 </p>
               </div>
               <span className="shrink-0 rounded-full bg-black/[0.055] px-2.5 py-0.5 text-[11px] font-medium text-[#3B414E] dark:bg-white/[0.08] dark:text-[#D4D4D8]">
-                双人复核
+                {t("preview.workbench.topologyBadge")}
               </span>
             </div>
 
@@ -662,7 +726,7 @@ export function PortalHeroPreview() {
                       Claude Code
                     </span>
                     <span className="shrink-0 text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                      主执行
+                      {t("preview.workbench.roleLead")}
                     </span>
                   </div>
                   <span className="shrink-0 font-mono text-[11.5px] font-semibold tabular-nums">
@@ -678,13 +742,13 @@ export function PortalHeroPreview() {
                       Codex
                     </span>
                     <span className="shrink-0 text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                      独立复核
+                      {t("preview.workbench.roleReviewer")}
                     </span>
                   </div>
                   <span className="inline-flex shrink-0 items-center gap-1 text-[11.5px] font-medium text-[#15803D] dark:text-[#4ADE80]">
                     <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
                     <span className="font-mono">pnpm verify</span>
-                    <span>通过</span>
+                    <span>{t("preview.workbench.verifyPassed")}</span>
                   </span>
                 </div>
               </div>
@@ -693,13 +757,13 @@ export function PortalHeroPreview() {
               <div className="rounded-[13px] border border-black/[0.05] bg-black/[0.025] px-3 py-2 text-[11.5px] leading-relaxed dark:border-white/[0.06] dark:bg-white/[0.03]">
                 <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
                   <span className="font-semibold text-[#3B414E] dark:text-[#C4C4CA]">
-                    单问澄清：
+                    {t("preview.workbench.clarifyLabel")}
                   </span>
                   <span className="text-[#5A6272] dark:text-[#9898A2]">
-                    重复回调到达时，返回成功还是报错？
+                    {t("preview.workbench.clarifyQuestion")}
                   </span>
                   <span className="font-medium text-[#111318] dark:text-[#F2F2F4]">
-                    已确认：直接返回首次处理结果
+                    {t("preview.workbench.clarifyAnswer")}
                   </span>
                 </div>
               </div>
@@ -769,15 +833,15 @@ export function PortalHeroPreview() {
               <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
                 <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[#2F6849] dark:text-[#86E0A6]">
                   <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                  <span>门禁测试已通过，等待主人签收</span>
+                  <span>{t("preview.workbench.gatePassed")}</span>
                 </span>
 
                 <div aria-hidden="true" className="flex shrink-0 items-center gap-1.5">
                   <span className="rounded-full border border-black/[0.08] bg-white/80 px-2.5 py-1 text-[11px] font-medium text-[#3B414E] dark:border-white/[0.10] dark:bg-white/[0.06] dark:text-[#D4D4D8]">
-                    拉群会诊
+                    {t("preview.workbench.actionConsult")}
                   </span>
                   <span className="rounded-full bg-[#181B22] px-2.5 py-1 text-[11px] font-medium text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
-                    签收变更
+                    {t("preview.workbench.actionApprove")}
                   </span>
                 </div>
               </div>
@@ -840,103 +904,116 @@ const SUPPORTED_AGENT_PLATFORMS: ReadonlyArray<{
   },
 ];
 
-const CONNECT_METHODS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "一句话指令接入",
-    detail: "复制一句指令发给 Agent，自动装好 CLI 并绑定令牌。",
-  },
-  {
-    title: "本机 CLI 自动识别绑定",
-    detail: "自动识别本机已装的 Agent 命令并拉起后台监听。",
-  },
-  {
-    title: "MCP 与 HTTPS 接入",
-    detail: "本机与远程的 Agent 客户端均可直连。",
-  },
-];
-
-const HUDDLE_GOVERNANCE_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "Agent 不会互相刷屏",
-    detail: "连续发言到上限自动暂停，等你发话再继续。",
-  },
-  {
-    title: "不抢话、不答非所问",
-    detail: "先读完最新消息才能发言。",
-  },
-  {
-    title: "结构化提案与拍板",
-    detail: "讨论收敛为备选方案卡，Agent 投票，拍板只属于人类。",
-  },
-  {
-    title: "只读分享回放",
-    detail: "一条链接只读回放完整讨论与决议。",
-  },
-];
-
-const WORKBENCH_TOPOLOGIES: ReadonlyArray<{
-  readonly title: string;
-  readonly subtitle: string;
-}> = [
-  { title: "单人执行", subtitle: "独立闭环" },
-  { title: "双人复核", subtitle: "主写 + 验审" },
-  { title: "多路并行", subtitle: "分片协同" },
-];
-
-const WORKBENCH_CAPABILITY_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "单问澄清机制",
-    detail: "遇到关键分歧时挂起并给出选项，你点选后即刻继续。",
-  },
-  {
-    title: "Unified Diff 代码审阅",
-    detail: "实时步骤追踪与增删对比，可一键在 Cursor 或 VS Code 打开。",
-  },
-  {
-    title: "一键拉群会诊",
-    detail: "复杂取舍时带着任务与分支上下文拉群会诊。",
-  },
-];
-
-const SANDBOX_BOUNDARY_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "三种目录形态",
-    detail: "单仓库、多目录工作区、非 Git 文件夹均可。",
-  },
-  {
-    title: "三级隔离围栏",
-    detail: "分支副本改码、原地修改或只读审阅，并行互不干扰。",
-  },
-  {
-    title: "多端运行宿主",
-    detail: "本机目录、云端沙箱与团队容器，同一套协议。",
-  },
-  {
-    title: "Agent 只听主人的",
-    detail: "只执行主人的指令，其他人的发言仅作参考。",
-  },
-];
-
 /**
  * 核心协作能力分区（`#portal-capabilities`）。
  */
 export function PortalCapabilitiesSection() {
+  const { t } = usePortalI18n();
   const reducedMotion = usePrefersReducedMotion();
+
+  const connectMethods = [
+    {
+      id: "prompt",
+      title: t("capabilities.connect.item1.title"),
+      detail: t("capabilities.connect.item1.detail"),
+    },
+    {
+      id: "local-cli",
+      title: t("capabilities.connect.item2.title"),
+      detail: t("capabilities.connect.item2.detail"),
+    },
+    {
+      id: "mcp-https",
+      title: t("capabilities.connect.item3.title"),
+      detail: t("capabilities.connect.item3.detail"),
+    },
+  ] as const;
+
+  const huddleGovernanceItems = [
+    {
+      id: "no-spam",
+      title: t("capabilities.huddle.item1.title"),
+      detail: t("capabilities.huddle.item1.detail"),
+    },
+    {
+      id: "sync-read",
+      title: t("capabilities.huddle.item2.title"),
+      detail: t("capabilities.huddle.item2.detail"),
+    },
+    {
+      id: "proposals",
+      title: t("capabilities.huddle.item3.title"),
+      detail: t("capabilities.huddle.item3.detail"),
+    },
+    {
+      id: "share-link",
+      title: t("capabilities.huddle.item4.title"),
+      detail: t("capabilities.huddle.item4.detail"),
+    },
+  ] as const;
+
+  const workbenchTopologies = [
+    {
+      id: "solo",
+      title: t("capabilities.workbench.topo1.title"),
+      subtitle: t("capabilities.workbench.topo1.subtitle"),
+    },
+    {
+      id: "dual",
+      title: t("capabilities.workbench.topo2.title"),
+      subtitle: t("capabilities.workbench.topo2.subtitle"),
+    },
+    {
+      id: "parallel",
+      title: t("capabilities.workbench.topo3.title"),
+      subtitle: t("capabilities.workbench.topo3.subtitle"),
+    },
+  ] as const;
+
+  const workbenchCapabilityItems = [
+    {
+      id: "clarify",
+      title: t("capabilities.workbench.item1.title"),
+      detail: t("capabilities.workbench.item1.detail"),
+    },
+    {
+      id: "diff",
+      title: t("capabilities.workbench.item2.title"),
+      detail: t("capabilities.workbench.item2.detail"),
+    },
+    {
+      id: "consult",
+      title: t("capabilities.workbench.item3.title"),
+      detail: t("capabilities.workbench.item3.detail"),
+    },
+  ] as const;
+
+  const sandboxBoundaryItems = [
+    {
+      id: "shapes",
+      title: t("capabilities.sandbox.item1.title"),
+      detail: t("capabilities.sandbox.item1.detail"),
+    },
+    {
+      id: "isolation",
+      title: t("capabilities.sandbox.item2.title"),
+      detail: t("capabilities.sandbox.item2.detail"),
+    },
+    {
+      id: "hosts",
+      title: t("capabilities.sandbox.item3.title"),
+      detail: t("capabilities.sandbox.item3.detail"),
+    },
+    {
+      id: "owner-first",
+      title: t("capabilities.sandbox.item4.title"),
+      detail: t("capabilities.sandbox.item4.detail"),
+    },
+  ] as const;
+
   return (
     <section id="portal-capabilities" className="shrink-0 scroll-mt-20">
-      <PortalSectionHeader eyebrow="核心协作能力" title="从连通 Agent 到群聊拍板与代码交付" />
+      <PortalSectionHeader eyebrow={t("capabilities.eyebrow")} title={t("capabilities.title")} />
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:gap-5 md:grid-cols-2">
         {/* 卡片 1：一键连通各类个人 Agent */}
@@ -946,7 +1023,7 @@ export function PortalCapabilitiesSection() {
         >
           <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              一键连通各类个人 Agent
+              {t("capabilities.connect.title")}
             </h3>
           </PortalTitleReveal>
 
@@ -975,9 +1052,9 @@ export function PortalCapabilitiesSection() {
           </div>
 
           <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {CONNECT_METHODS.map((item, idx) => (
+            {connectMethods.map((item, idx) => (
               <motion.div
-                key={item.title}
+                key={item.id}
                 {...portalRevealItem(0.18 + idx * 0.04)}
                 className="py-2.5 first:pt-3 last:pb-0"
               >
@@ -999,20 +1076,20 @@ export function PortalCapabilitiesSection() {
         >
           <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              多 Agent 群聊、单聊与人类拍板
+              {t("capabilities.huddle.title")}
             </h3>
           </PortalTitleReveal>
           <motion.p
             {...portalRevealItem(0.14)}
             className="mt-1 text-[13px] leading-relaxed text-[#5A6272] dark:text-[#9898A2]"
           >
-            也支持与 Agent 单聊、与好友私聊，Agent 能看图也能发图。
+            {t("capabilities.huddle.lead")}
           </motion.p>
 
           <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {HUDDLE_GOVERNANCE_ITEMS.map((item, idx) => (
+            {huddleGovernanceItems.map((item, idx) => (
               <motion.div
-                key={item.title}
+                key={item.id}
                 {...portalRevealItem(0.18 + idx * 0.04)}
                 className="py-3 first:pt-3.5 last:pb-0"
               >
@@ -1034,15 +1111,15 @@ export function PortalCapabilitiesSection() {
         >
           <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              面向代码交付的多 Agent 工作台
+              {t("capabilities.workbench.title")}
             </h3>
           </PortalTitleReveal>
 
           {/* 三种协作拓扑等宽条 */}
           <div className="mt-4 grid grid-cols-3 gap-1.5">
-            {WORKBENCH_TOPOLOGIES.map((topo, idx) => (
+            {workbenchTopologies.map((topo, idx) => (
               <motion.div
-                key={topo.title}
+                key={topo.id}
                 {...portalRevealItem(0.12 + idx * 0.05)}
                 className="min-w-0 rounded-[12px] border border-black/[0.05] bg-[#F4F6F8] px-2.5 py-2 text-center dark:border-white/[0.06] dark:bg-[#141417]"
               >
@@ -1060,9 +1137,9 @@ export function PortalCapabilitiesSection() {
           </div>
 
           <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {WORKBENCH_CAPABILITY_ITEMS.map((item, idx) => (
+            {workbenchCapabilityItems.map((item, idx) => (
               <motion.div
-                key={item.title}
+                key={item.id}
                 {...portalRevealItem(0.18 + idx * 0.04)}
                 className="py-2.5 first:pt-3 last:pb-0"
               >
@@ -1084,14 +1161,14 @@ export function PortalCapabilitiesSection() {
         >
           <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              工作区沙箱围栏与归属边界
+              {t("capabilities.sandbox.title")}
             </h3>
           </PortalTitleReveal>
 
           <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {SANDBOX_BOUNDARY_ITEMS.map((item, idx) => (
+            {sandboxBoundaryItems.map((item, idx) => (
               <motion.div
-                key={item.title}
+                key={item.id}
                 {...portalRevealItem(0.18 + idx * 0.04)}
                 className="py-3 first:pt-3.5 last:pb-0"
               >
@@ -1114,60 +1191,6 @@ export function PortalCapabilitiesSection() {
  * 4. 连接性能与多端体验（#portal-architecture，左 7 右 5）
  * ───────────────────────────────────────────────────────────── */
 
-const ARCHITECTURE_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly badge: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "消息实时送达",
-    badge: "秒级唤醒",
-    detail: "@ 一下即唤醒，回复实时出现，无需刷新。",
-  },
-  {
-    title: "断线重连不丢消息",
-    badge: "重连即同步",
-    detail: "切后台、换网络或休眠后，重连即补齐错过的消息，不重不漏。",
-  },
-  {
-    title: "连续追问响应更快",
-    badge: "免冷启动",
-    detail: "活跃 Agent 保持待命 15 分钟，追问无需重新启动。",
-  },
-  {
-    title: "Agent 掉线任务不中断",
-    badge: "自动接管",
-    detail: "任务安全转交继续，迟到的旧结果不覆盖新进度。",
-  },
-  {
-    title: "高刷屏上同样顺滑",
-    badge: "最高 120Hz",
-    detail: "自动适配 60 / 90 / 120Hz，并遵循系统减动效设置。",
-  },
-];
-
-const MOBILE_DESKTOP_ITEMS: ReadonlyArray<{
-  readonly title: string;
-  readonly detail: string;
-}> = [
-  {
-    title: "键盘不挡输入框",
-    detail: "输入框始终贴在键盘上方，选词回车不误发。",
-  },
-  {
-    title: "侧滑返回符合习惯",
-    detail: "先关弹窗再退页面，刷新后停在原位。",
-  },
-  {
-    title: "添加到手机主屏幕",
-    detail: "全屏打开，适配刘海屏与手势条。",
-  },
-  {
-    title: "桌面端高效操作",
-    detail: "⌘K 搜索、快捷键与右键菜单。",
-  },
-];
-
 export interface PortalArchitectureSectionProps {
   readonly onOpenPwaGuide: () => void;
 }
@@ -1176,10 +1199,68 @@ export interface PortalArchitectureSectionProps {
  * 连接性能与多端体验分区（`#portal-architecture`）。
  */
 export function PortalArchitectureSection(props: PortalArchitectureSectionProps) {
+  const { t } = usePortalI18n();
   const reducedMotion = usePrefersReducedMotion();
+
+  const architectureItems = [
+    {
+      id: "realtime",
+      title: t("architecture.perf.item1.title"),
+      badge: t("architecture.perf.item1.badge"),
+      detail: t("architecture.perf.item1.detail"),
+    },
+    {
+      id: "reconnect",
+      title: t("architecture.perf.item2.title"),
+      badge: t("architecture.perf.item2.badge"),
+      detail: t("architecture.perf.item2.detail"),
+    },
+    {
+      id: "warm",
+      title: t("architecture.perf.item3.title"),
+      badge: t("architecture.perf.item3.badge"),
+      detail: t("architecture.perf.item3.detail"),
+    },
+    {
+      id: "handoff",
+      title: t("architecture.perf.item4.title"),
+      badge: t("architecture.perf.item4.badge"),
+      detail: t("architecture.perf.item4.detail"),
+    },
+    {
+      id: "refresh-rate",
+      title: t("architecture.perf.item5.title"),
+      badge: t("architecture.perf.item5.badge"),
+      detail: t("architecture.perf.item5.detail"),
+    },
+  ] as const;
+
+  const mobileDesktopItems = [
+    {
+      id: "keyboard",
+      title: t("architecture.mobile.item1.title"),
+      detail: t("architecture.mobile.item1.detail"),
+    },
+    {
+      id: "back-gesture",
+      title: t("architecture.mobile.item2.title"),
+      detail: t("architecture.mobile.item2.detail"),
+    },
+    {
+      id: "pwa",
+      title: t("architecture.mobile.item3.title"),
+      detail: t("architecture.mobile.item3.detail"),
+    },
+    {
+      id: "desktop",
+      title: t("architecture.mobile.item4.title"),
+      detail: t("architecture.mobile.item4.detail"),
+    },
+  ] as const;
+
   return (
     <section id="portal-architecture" className="shrink-0 scroll-mt-20">
-      <PortalSectionHeader eyebrow="性能与多端体验" title="连接快而稳，桌面与手机皆如原生应用" />
+      <PortalSectionHeader eyebrow={t("architecture.eyebrow")} title={t("architecture.title")} />
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:gap-5 lg:grid-cols-12">
         {/* 左卡（7 列）：低延迟持久连接与无损容错 */}
@@ -1192,15 +1273,15 @@ export function PortalArchitectureSection(props: PortalArchitectureSectionProps)
         >
           <PortalTitleReveal className="mt-0" delay={0.06}>
             <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-              连接快、断线不丢、任务不中断
+              {t("architecture.perf.title")}
             </h3>
           </PortalTitleReveal>
 
           {/* 左卡与右侧卡片等高：条目均分纵向空间，避免内容较短时底部留白 */}
           <dl className="mt-4 flex flex-1 flex-col divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-            {ARCHITECTURE_ITEMS.map((item, idx) => (
+            {architectureItems.map((item, idx) => (
               <motion.div
-                key={item.title}
+                key={item.id}
                 {...portalRevealItem(0.18 + idx * 0.04)}
                 className="flex flex-1 flex-col justify-center py-3"
               >
@@ -1231,7 +1312,7 @@ export function PortalArchitectureSection(props: PortalArchitectureSectionProps)
           <div>
             <PortalTitleReveal className="mt-0" delay={0.06}>
               <h3 className="text-[17px] font-semibold tracking-[-0.015em] text-[#111318] dark:text-[#F2F2F4]">
-                手机上用起来像原生 App
+                {t("architecture.mobile.title")}
               </h3>
             </PortalTitleReveal>
 
@@ -1244,23 +1325,29 @@ export function PortalArchitectureSection(props: PortalArchitectureSectionProps)
               <div className="mx-auto grid max-w-[260px] grid-cols-3 items-center rounded-full border border-black/[0.06] bg-white/80 p-1 shadow-[0_2px_10px_rgba(15,23,42,0.05)] dark:border-white/[0.08] dark:bg-[#1E1F24]">
                 <div className="flex flex-col items-center justify-center gap-0.5 rounded-full py-1 text-[#5E6678] dark:text-[#9696A0]">
                   <MessageCircle className="h-3.5 w-3.5" />
-                  <span className="text-[10.5px] font-medium leading-none">聊天</span>
+                  <span className="text-[10.5px] font-medium leading-none">
+                    {t("architecture.mobile.tabChats")}
+                  </span>
                 </div>
                 <div className="flex flex-col items-center justify-center gap-0.5 rounded-full py-1 text-[#5E6678] dark:text-[#9696A0]">
                   <Users className="h-3.5 w-3.5" />
-                  <span className="text-[10.5px] font-medium leading-none">通讯录</span>
+                  <span className="text-[10.5px] font-medium leading-none">
+                    {t("architecture.mobile.tabContacts")}
+                  </span>
                 </div>
                 <div className="flex flex-col items-center justify-center gap-0.5 rounded-full bg-white py-1 text-[#111318] shadow-[0_1px_4px_rgba(15,23,42,0.08)] ring-1 ring-black/[0.05] dark:bg-white/[0.14] dark:text-[#F8F8FA] dark:ring-white/[0.16]">
                   <ListTodo className="h-3.5 w-3.5" />
-                  <span className="text-[10.5px] font-semibold leading-none">工作台</span>
+                  <span className="text-[10.5px] font-semibold leading-none">
+                    {t("architecture.mobile.tabWorkbench")}
+                  </span>
                 </div>
               </div>
             </motion.div>
 
             <dl className="mt-4 divide-y divide-black/[0.06] border-t border-black/[0.06] dark:divide-white/[0.07] dark:border-white/[0.07]">
-              {MOBILE_DESKTOP_ITEMS.map((item, idx) => (
+              {mobileDesktopItems.map((item, idx) => (
                 <motion.div
-                  key={item.title}
+                  key={item.id}
                   {...portalRevealItem(0.18 + idx * 0.04)}
                   className="py-2.5 first:pt-3"
                 >
@@ -1282,7 +1369,7 @@ export function PortalArchitectureSection(props: PortalArchitectureSectionProps)
               leadingIcon={<Smartphone aria-hidden="true" className="h-3.5 w-3.5" />}
               onClick={props.onOpenPwaGuide}
             >
-              查看添加到主屏幕步骤
+              {t("architecture.mobile.openPwaGuide")}
             </AppButton>
           </div>
         </motion.article>
@@ -1304,6 +1391,7 @@ export interface PortalOpenSourceContactSectionProps {
  * 开源自托管与联系作者分区（`#portal-open-source` & `#portal-contact`）。
  */
 export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSectionProps) {
+  const { t } = usePortalI18n();
   const [copiedCmd, setCopiedCmd] = useState<boolean>(false);
   const [copiedEmail, setCopiedEmail] = useState<boolean>(false);
   const cmdTimerRef = useRef<number | null>(null);
@@ -1324,11 +1412,11 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
   const handleCopyCommand = async (): Promise<void> => {
     const ok = await copyPortalText(PORTAL_QUICK_START_COMMAND);
     if (!ok) {
-      toast.error("复制失败，请手动选中命令复制");
+      toast.error(t("openSource.copyCommandError"));
       return;
     }
     setCopiedCmd(true);
-    toast.success("已复制快速启动命令");
+    toast.success(t("openSource.copyCommandSuccess"));
     if (cmdTimerRef.current !== null) {
       window.clearTimeout(cmdTimerRef.current);
     }
@@ -1340,11 +1428,11 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
   const handleCopyAuthorEmail = async (): Promise<void> => {
     const ok = await copyPortalText(AUTHOR_CONTACT_EMAIL);
     if (!ok) {
-      toast.error("复制失败，请手动复制邮箱地址");
+      toast.error(t("contact.copyEmailError"));
       return;
     }
     setCopiedEmail(true);
-    toast.success("已复制作者邮箱", { description: AUTHOR_CONTACT_EMAIL });
+    toast.success(t("contact.copyEmailSuccess"), { description: AUTHOR_CONTACT_EMAIL });
     if (emailTimerRef.current !== null) {
       window.clearTimeout(emailTimerRef.current);
     }
@@ -1367,18 +1455,17 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
         )}
       >
         <div>
-          <PortalEyebrow>开源与私有化部署</PortalEyebrow>
+          <PortalEyebrow>{t("openSource.eyebrow")}</PortalEyebrow>
           <PortalTitleReveal>
             <h2 className="mt-1.5 text-balance text-[20px] font-semibold leading-snug tracking-[-0.02em] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
-              MIT 开源协议，几分钟内私有化部署
+              {t("openSource.title")}
             </h2>
           </PortalTitleReveal>
           <motion.p
             {...portalRevealItem(0.16)}
             className="mt-2 text-[13.5px] leading-relaxed text-[#525A6B] dark:text-[#A0A2AC]"
           >
-            聊天记录、决议与 Agent 凭据都保存在你自己的服务器。本地一条命令即可启动，正式部署用
-            Docker Compose，2 核 4G 云服务器即可运行。
+            {t("openSource.description")}
           </motion.p>
 
           {/* 带一键复制的快速启动命令槽（暗色底严格 #141417） */}
@@ -1390,7 +1477,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
             <div className="flex items-center justify-between gap-2 border-b border-black/[0.06] px-3.5 py-2 dark:border-white/[0.07]">
               <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
                 <Terminal aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                <span>本地快速启动（Node.js &gt;= 22）</span>
+                <span>{t("openSource.quickStartHeader")}</span>
               </span>
               <button
                 type="button"
@@ -1405,7 +1492,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
                 ) : (
                   <Copy aria-hidden="true" className="h-3 w-3 shrink-0" />
                 )}
-                <span>{copiedCmd ? "已复制" : "复制命令"}</span>
+                <span>{copiedCmd ? t("openSource.copied") : t("openSource.copyCommand")}</span>
               </button>
             </div>
             <pre className="overflow-x-auto px-3.5 py-3 font-mono text-[12px] leading-[1.65] text-[#181B22] dark:text-[#E4E4E7]">
@@ -1421,7 +1508,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
             rel="noopener noreferrer"
             className={cn(appButtonVariants({ variant: "primary", size: "md" }))}
           >
-            <span>查看 GitHub 仓库</span>
+            <span>{t("openSource.viewGithub")}</span>
             <ExternalLink aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
           </a>
 
@@ -1437,7 +1524,9 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
             }
             onClick={props.onPrimaryAuthOrReturn}
           >
-            {props.isAuthenticatedWelcome ? "返回工作台" : "回到顶部登录 / 注册"}
+            {props.isAuthenticatedWelcome
+              ? t("openSource.backToApp")
+              : t("openSource.backToTopAuth")}
           </AppButton>
         </div>
       </motion.article>
@@ -1452,17 +1541,17 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
         )}
       >
         <div>
-          <PortalEyebrow>联系作者</PortalEyebrow>
+          <PortalEyebrow>{t("contact.eyebrow")}</PortalEyebrow>
           <PortalTitleReveal>
             <h2 className="mt-1.5 text-balance text-[20px] font-semibold leading-snug tracking-[-0.02em] text-[#111318] sm:text-[23px] dark:text-[#F2F2F4]">
-              问题反馈与建议
+              {t("contact.title")}
             </h2>
           </PortalTitleReveal>
           <motion.p
             {...portalRevealItem(0.16)}
             className="mt-2 text-[13.5px] leading-relaxed text-[#525A6B] dark:text-[#A0A2AC]"
           >
-            部署、连通或日常协作中遇到问题，或有改进想法，欢迎发邮件，每一封都会回复。
+            {t("contact.description")}
           </motion.p>
         </div>
 
@@ -1472,7 +1561,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
           className="mt-5 rounded-[18px] border border-black/[0.07] bg-[#EFF1F4] p-4 dark:border-white/[0.08] dark:bg-[#141417]"
         >
           <p className="text-[11.5px] font-medium text-[#5A6272] dark:text-[#9898A2]">
-            作者联系邮箱
+            {t("contact.emailLabel")}
           </p>
           <p className="mt-1 select-all break-all font-mono text-[15px] font-semibold tracking-tight text-[#111318] sm:text-[16px] dark:text-[#F2F2F4]">
             {AUTHOR_CONTACT_EMAIL}
@@ -1484,7 +1573,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
               className={cn(appButtonVariants({ variant: "primary", size: "sm" }))}
             >
               <Mail aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-              <span>写邮件联系</span>
+              <span>{t("contact.sendEmail")}</span>
             </a>
 
             <AppButton
@@ -1502,7 +1591,7 @@ export function PortalOpenSourceContactSection(props: PortalOpenSourceContactSec
               }
               onClick={() => void handleCopyAuthorEmail()}
             >
-              {copiedEmail ? "已复制" : "复制邮箱"}
+              {copiedEmail ? t("openSource.copied") : t("contact.copyEmail")}
             </AppButton>
           </div>
         </div>
@@ -1519,12 +1608,13 @@ export interface PortalFooterProps {
  * 门户页脚。
  */
 export function PortalFooter(props: PortalFooterProps) {
+  const { t } = usePortalI18n();
   return (
     <footer className="shrink-0 border-t border-black/[0.06] pt-6 pb-4 dark:border-white/[0.07]">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div className="flex items-center gap-2 text-[12.5px] text-[#5A6272] dark:text-[#8E8E96]">
           <BrandMark className="h-5 w-5 shrink-0" />
-          <span>OpenHuddle · 基于 MIT 协议开源</span>
+          <span>{t("footer.license")}</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[12.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
@@ -1549,7 +1639,7 @@ export function PortalFooter(props: PortalFooterProps) {
             onClick={props.onScrollToTop}
             className="inline-flex cursor-pointer items-center gap-1 transition-colors hover:text-[#111318] dark:hover:text-white"
           >
-            <span>回到顶部</span>
+            <span>{t("footer.backToTop")}</span>
             <ArrowUp aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
           </button>
         </div>

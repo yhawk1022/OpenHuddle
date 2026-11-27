@@ -14,6 +14,7 @@ import {
   formatCodeFenceLanguageLabel,
   resolveCodeBlockSyntaxLanguage,
 } from "../../lib/syntax-highlight.js";
+import { useComponentsI18n } from "../i18n/index.js";
 import { AppTooltip, IconButton, cn, toast } from "../primitives/index.js";
 import { HighlightedCodeBlock } from "./syntax-code.js";
 
@@ -397,10 +398,16 @@ function extractMarkdownTargetUrl(rawTarget: string): string {
   return rawTarget.replace(/\s+(?:"[^"]*"|'[^']*')$/u, "").trim();
 }
 
+interface InlineMarkdownLabels {
+  readonly externalImageWithAlt: (alt: string) => string;
+  readonly externalImageFallback: string;
+}
+
 function renderInlineMarkdown(
   text: string,
   keyPrefix: string,
   styles: MarkdownToneStyles,
+  labels: InlineMarkdownLabels,
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   let lastIndex = 0;
@@ -429,13 +436,13 @@ function renderInlineMarkdown(
     } else if (matchText.startsWith("**") && matchText.endsWith("**") && matchText.length >= 4) {
       nodes.push(
         <strong key={tokenKey} className={styles.strong}>
-          {renderInlineMarkdown(matchText.slice(2, -2), `${tokenKey}-b`, styles)}
+          {renderInlineMarkdown(matchText.slice(2, -2), `${tokenKey}-b`, styles, labels)}
         </strong>,
       );
     } else if (matchText.startsWith("*") && matchText.endsWith("*") && matchText.length >= 2) {
       nodes.push(
         <em key={tokenKey} className={styles.em}>
-          {renderInlineMarkdown(matchText.slice(1, -1), `${tokenKey}-i`, styles)}
+          {renderInlineMarkdown(matchText.slice(1, -1), `${tokenKey}-i`, styles, labels)}
         </em>,
       );
     } else if (matchText.startsWith("![")) {
@@ -446,7 +453,8 @@ function renderInlineMarkdown(
       const safeHref =
         rawTarget !== undefined ? sanitizeSafeHttpUrl(extractMarkdownTargetUrl(rawTarget)) : null;
       if (safeHref !== null) {
-        const linkLabel = rawAlt.length > 0 ? `[外部图片：${rawAlt}]` : "[查看外部图片链接]";
+        const linkLabel =
+          rawAlt.length > 0 ? labels.externalImageWithAlt(rawAlt) : labels.externalImageFallback;
         nodes.push(
           <a
             key={tokenKey}
@@ -476,7 +484,7 @@ function renderInlineMarkdown(
             rel="noopener noreferrer"
             className={styles.link}
           >
-            {renderInlineMarkdown(label, `${tokenKey}-a`, styles)}
+            {renderInlineMarkdown(label, `${tokenKey}-a`, styles, labels)}
           </a>,
         );
       } else {
@@ -511,6 +519,7 @@ interface CodeFenceBlockProps {
 }
 
 function CodeFenceBlock(props: CodeFenceBlockProps) {
+  const { t } = useComponentsI18n();
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<number | null>(null);
   const resolvedSyntaxLanguage = useMemo(
@@ -536,7 +545,7 @@ function CodeFenceBlock(props: CodeFenceBlockProps) {
     }
     void navigator.clipboard.writeText(props.code).then(() => {
       setCopied(true);
-      toast.success("代码已复制");
+      toast.success(t("markdown.toastCodeCopied"));
       if (copyTimerRef.current !== null) {
         window.clearTimeout(copyTimerRef.current);
       }
@@ -558,11 +567,11 @@ function CodeFenceBlock(props: CodeFenceBlockProps) {
           {headerLanguageLabel}
         </span>
 
-        <AppTooltip content={copied ? "已复制" : "复制代码"} side="top">
+        <AppTooltip content={copied ? t("markdown.copied") : t("markdown.copyCode")} side="top">
           <IconButton
             size="xs"
             variant="ghost"
-            label="复制代码"
+            label={t("markdown.copyCode")}
             onClick={handleCopy}
             className="h-6 w-6 text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#7D869C] dark:hover:bg-white/[0.08] dark:hover:text-[#ECEFF6]"
           >
@@ -611,8 +620,16 @@ function getAlignClass(align: TableAlign): string {
  * @returns 结构化排版的 React 视图
  */
 export function MarkdownContent(props: MarkdownContentProps) {
+  const { t } = useComponentsI18n();
   const blocks = useMemo(() => parseMarkdownBlocks(props.content), [props.content]);
   const styles = getToneStyles(props.tone ?? "default");
+  const inlineLabels = useMemo<InlineMarkdownLabels>(
+    () => ({
+      externalImageWithAlt: (alt: string) => t("markdown.externalImageWithAlt", { alt }),
+      externalImageFallback: t("markdown.externalImageFallback"),
+    }),
+    [t],
+  );
 
   return (
     <div
@@ -647,7 +664,7 @@ export function MarkdownContent(props: MarkdownContentProps) {
                   : cn("text-[15px] font-semibold", styles.headingSoft);
             return (
               <h4 key={block.id} className={cn("pt-0.5", sizeClass)}>
-                {renderInlineMarkdown(block.text, block.id, styles)}
+                {renderInlineMarkdown(block.text, block.id, styles, inlineLabels)}
               </h4>
             );
           }
@@ -657,7 +674,12 @@ export function MarkdownContent(props: MarkdownContentProps) {
               <blockquote key={block.id} className={cn("leading-relaxed", styles.blockquote)}>
                 {block.lines.map((line, linePos) => (
                   <p key={`${block.id}-q-${String(linePos)}`}>
-                    {renderInlineMarkdown(line, `${block.id}-q-${String(linePos)}`, styles)}
+                    {renderInlineMarkdown(
+                      line,
+                      `${block.id}-q-${String(linePos)}`,
+                      styles,
+                      inlineLabels,
+                    )}
                   </p>
                 ))}
               </blockquote>
@@ -668,7 +690,12 @@ export function MarkdownContent(props: MarkdownContentProps) {
               <ul key={block.id} className="list-disc space-y-1 pl-5 marker:opacity-55">
                 {block.items.map((item, itemPos) => (
                   <li key={`${block.id}-li-${String(itemPos)}`}>
-                    {renderInlineMarkdown(item, `${block.id}-li-${String(itemPos)}`, styles)}
+                    {renderInlineMarkdown(
+                      item,
+                      `${block.id}-li-${String(itemPos)}`,
+                      styles,
+                      inlineLabels,
+                    )}
                   </li>
                 ))}
               </ul>
@@ -682,7 +709,12 @@ export function MarkdownContent(props: MarkdownContentProps) {
               >
                 {block.items.map((item, itemPos) => (
                   <li key={`${block.id}-oli-${String(itemPos)}`}>
-                    {renderInlineMarkdown(item, `${block.id}-oli-${String(itemPos)}`, styles)}
+                    {renderInlineMarkdown(
+                      item,
+                      `${block.id}-oli-${String(itemPos)}`,
+                      styles,
+                      inlineLabels,
+                    )}
                   </li>
                 ))}
               </ol>
@@ -711,7 +743,12 @@ export function MarkdownContent(props: MarkdownContentProps) {
                             getAlignClass(block.alignments[colIdx] ?? "left"),
                           )}
                         >
-                          {renderInlineMarkdown(header, `${block.id}-th-${String(colIdx)}`, styles)}
+                          {renderInlineMarkdown(
+                            header,
+                            `${block.id}-th-${String(colIdx)}`,
+                            styles,
+                            inlineLabels,
+                          )}
                         </th>
                       ))}
                     </tr>
@@ -737,6 +774,7 @@ export function MarkdownContent(props: MarkdownContentProps) {
                                 cell,
                                 `${block.id}-td-${String(rowIdx)}-${String(colIdx)}`,
                                 styles,
+                                inlineLabels,
                               )}
                             </td>
                           );
@@ -754,7 +792,12 @@ export function MarkdownContent(props: MarkdownContentProps) {
                 {block.lines.map((line, lineIdx) => (
                   <span key={`${block.id}-ln-${String(lineIdx)}`}>
                     {lineIdx > 0 ? "\n" : null}
-                    {renderInlineMarkdown(line, `${block.id}-ln-${String(lineIdx)}`, styles)}
+                    {renderInlineMarkdown(
+                      line,
+                      `${block.id}-ln-${String(lineIdx)}`,
+                      styles,
+                      inlineLabels,
+                    )}
                   </span>
                 ))}
               </p>

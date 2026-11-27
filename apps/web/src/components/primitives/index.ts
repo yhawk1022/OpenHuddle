@@ -84,6 +84,7 @@ export {
   AppContextMenuSubContent,
   AppContextMenuSubTrigger,
   AppDropdownMenu,
+  AppDropdownMenuGroup,
   AppDropdownMenuItem,
   AppDropdownMenuLabel,
   AppDropdownMenuSeparator,

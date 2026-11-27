@@ -4,7 +4,7 @@
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 统一缓存键管理：所有 `queryOptions` 与 `invalidateQueries` 一律引用 `adminQueryKeys`，保证列表、详情抽屉与统计大盘变更后秒级联动刷新。
- * 2. 统一反馈兜底：所有敏感写操作成功或失败均通过 `sonner` `toast` 给出明确中文反馈。
+ * 2. 统一反馈兜底：所有敏感写操作成功或失败均通过 `sonner` `toast` 给出明确双语反馈。
  */
 import type {
   AdminAgentListQuery,
@@ -53,7 +53,9 @@ import {
   updateAdminRoom,
   updateAdminUser,
 } from "../../../lib/admin-api-client.js";
+import { formatNumber } from "../../../lib/i18n/index.js";
 import { adminQueryKeys, huddleQueryKeys } from "../../../lib/query-keys.js";
+import { getAdminI18n, resolveAdminErrorMessage } from "../i18n/index.js";
 
 /**
  * 统计大盘 `queryOptions`（按时间窗口天数缓存，30s 刷新基线）。
@@ -192,14 +194,18 @@ export function useAdminUpdateUserMutation() {
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
+      const { t, tp } = getAdminI18n();
       const msg =
         res.revokedSessionCount > 0
-          ? `已更新「${res.user.displayName}」并踢出 ${String(res.revokedSessionCount)} 个活跃会话`
-          : `已更新账号「${res.user.displayName}」`;
+          ? tp("mutation.user.updatedAndRevoked", res.revokedSessionCount, {
+              name: res.user.displayName,
+            })
+          : t("mutation.user.updated", { name: res.user.displayName });
       toast.success(msg);
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "更新用户失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.user.updateFailed"), locale));
     },
   });
 }
@@ -214,12 +220,18 @@ export function useAdminDeleteUserMutation() {
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
-      toast.success("已彻底注销该账号", {
-        description: `清理了 ${String(res.deletedRoomCount)} 个群聊、${String(res.deletedAgentCount)} 个 Agent 与 ${String(res.deletedSessionCount)} 个会话`,
+      const { locale, t } = getAdminI18n();
+      toast.success(t("mutation.user.deleted"), {
+        description: t("mutation.user.deletedDetail", {
+          rooms: formatNumber(res.deletedRoomCount, undefined, locale),
+          agents: formatNumber(res.deletedAgentCount, undefined, locale),
+          sessions: formatNumber(res.deletedSessionCount, undefined, locale),
+        }),
       });
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "删除用户失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.user.deleteFailed"), locale));
     },
   });
 }
@@ -233,10 +245,12 @@ export function useAdminRevokeUserSessionsMutation() {
     mutationFn: (userId: UserId) => revokeAllUserSessions(userId),
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
-      toast.success(`已强制下线 ${String(res.revokedCount)} 个登录会话`);
+      const { tp } = getAdminI18n();
+      toast.success(tp("mutation.user.revokedSessions", res.revokedCount));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "踢下线会话失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.user.revokeSessionsFailed"), locale));
     },
   });
 }
@@ -250,10 +264,12 @@ export function useAdminRevokeSessionMutation() {
     mutationFn: (sessionId: SessionId) => revokeAdminSession(sessionId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
-      toast.success("已强制吊销该登录会话");
+      const { t } = getAdminI18n();
+      toast.success(t("mutation.session.revoked"));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "吊销会话失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.session.revokeFailed"), locale));
     },
   });
 }
@@ -267,10 +283,12 @@ export function useAdminPurgeExpiredSessionsMutation() {
     mutationFn: () => purgeExpiredSessions(),
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
-      toast.success(`已清理 ${String(res.purgedCount)} 条过期会话`);
+      const { tp } = getAdminI18n();
+      toast.success(tp("mutation.session.purgedExpired", res.purgedCount));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "清理过期会话失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.session.purgeFailed"), locale));
     },
   });
 }
@@ -289,10 +307,12 @@ export function useAdminUpdateRoomMutation() {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.roomDetail(res.room.id) });
-      toast.success(`已更新群聊「${res.room.name}」治理配置`);
+      const { t } = getAdminI18n();
+      toast.success(t("mutation.room.updated", { name: res.room.name }));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "更新群聊配置失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.room.updateFailed"), locale));
     },
   });
 }
@@ -313,10 +333,12 @@ export function useAdminRecallMessageMutation() {
       void queryClient.invalidateQueries({
         queryKey: huddleQueryKeys.roomMessages(res.message.roomId),
       });
-      toast.success(`已强制撤回消息 #${String(res.message.seq)}`);
+      const { t } = getAdminI18n();
+      toast.success(t("mutation.message.recalled", { seq: res.message.seq }));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "强制撤回消息失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.message.recallFailed"), locale));
     },
   });
 }
@@ -331,10 +353,12 @@ export function useAdminDeleteRoomMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.rooms() });
-      toast.success("已彻底解散该群聊");
+      const { t } = getAdminI18n();
+      toast.success(t("mutation.room.deleted"));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "解散群聊失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.room.deleteFailed"), locale));
     },
   });
 }
@@ -349,10 +373,12 @@ export function useAdminDeleteAgentMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
       void queryClient.invalidateQueries({ queryKey: huddleQueryKeys.me() });
-      toast.success("已吊销并删除该 Agent");
+      const { t } = getAdminI18n();
+      toast.success(t("mutation.agent.deleted"));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "删除 Agent 失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.agent.deleteFailed"), locale));
     },
   });
 }
@@ -366,10 +392,12 @@ export function useAdminDeleteProposalMutation() {
     mutationFn: (proposalId: ProposalId) => deleteAdminProposal(proposalId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
-      toast.success("已删除该提案记录");
+      const { t } = getAdminI18n();
+      toast.success(t("mutation.proposal.deleted"));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "删除提案失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.proposal.deleteFailed"), locale));
     },
   });
 }
@@ -383,10 +411,12 @@ export function useAdminRevokePairingCodeMutation() {
     mutationFn: (code: PairingCode) => revokeAdminPairingCode(code),
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
-      toast.success(`已吊销配对码 ${res.revokedCode}`);
+      const { t } = getAdminI18n();
+      toast.success(t("mutation.pairingCode.revoked", { code: res.revokedCode }));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "吊销配对码失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.pairingCode.revokeFailed"), locale));
     },
   });
 }
@@ -400,10 +430,12 @@ export function useAdminPurgePairingCodesMutation() {
     mutationFn: () => purgeAdminPairingCodes(),
     onSuccess: (res) => {
       void queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
-      toast.success(`已清理 ${String(res.purgedCount)} 条无效配对码`);
+      const { tp } = getAdminI18n();
+      toast.success(tp("mutation.pairingCode.purged", res.purgedCount));
     },
     onError: (err) => {
-      toast.error(err instanceof Error ? err.message : "清理配对码失败");
+      const { locale, t } = getAdminI18n();
+      toast.error(resolveAdminErrorMessage(err, t("mutation.pairingCode.purgeFailed"), locale));
     },
   });
 }

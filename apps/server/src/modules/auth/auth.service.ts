@@ -16,6 +16,7 @@ import type {
   ChangePasswordBody,
   ConfirmPasswordResetBody,
   EmailDeliveryMode,
+  LanguagePreference,
   LoginWithPasswordBody,
   MeResponse,
   OtpPurpose,
@@ -24,6 +25,7 @@ import type {
   RequestOtpResponse,
   RequestPasswordResetCodeBody,
   RequestRegisterCodeBody,
+  SupportedLocale,
   UpdateMeBody,
   VerifyOtpBody,
   VerifyOtpResponse,
@@ -44,6 +46,7 @@ import {
 import { renderVerificationEmail } from "../../infra/email-templates.js";
 import { type ServerEnv, parseAdminEmailSet, parseAllowedEmailDomainSet } from "../../infra/env.js";
 import { AppError } from "../../infra/errors.js";
+import { parseAcceptLanguage } from "../../infra/locale.js";
 import type { EmailMailer } from "../../infra/mailer.js";
 import type { SlidingWindowRateLimiter } from "../../infra/rate-limiter.js";
 import type { RealtimeBus } from "../../infra/realtime-bus.js";
@@ -105,6 +108,16 @@ function isPgUniqueViolation(err: unknown): boolean {
     return (cause as { readonly code?: unknown }).code === "23505";
   }
   return false;
+}
+
+function resolveEmailLocale(
+  savedPreference: LanguagePreference | undefined,
+  acceptLanguage: string | undefined,
+): SupportedLocale {
+  if (savedPreference === "zh-CN" || savedPreference === "en") {
+    return savedPreference;
+  }
+  return parseAcceptLanguage(acceptLanguage, "zh-CN");
 }
 
 /**
@@ -210,6 +223,7 @@ export class AuthService {
     readonly email: string;
     readonly purpose: OtpPurpose;
     readonly requestedDisplayName?: string;
+    readonly locale?: SupportedLocale;
   }): Promise<AuthCodeSentResponse> {
     const now = new Date();
     const cooldownSec = this.env.OTP_RESEND_COOLDOWN_SEC;
@@ -276,6 +290,7 @@ export class AuthService {
         code: otpCode,
         expiresInMinutes: Math.round(OTP_TTL_SEC / 60),
         publicBaseUrl: this.env.PUBLIC_BASE_URL,
+        ...(params.locale !== undefined ? { locale: params.locale } : {}),
       });
 
       try {
@@ -512,12 +527,14 @@ export class AuthService {
    *
    * @param body - 规范化后的待注册邮箱
    * @param clientIp - 客户端 IP（用于滑动窗口防刷）
+   * @param acceptLanguage - 可选 HTTP `Accept-Language` 请求头（用于决定验证码邮件语言）
    * @returns 验证码有效期、重发冷却秒数与投递方式
    * @throws {AppError} 关闭注册（403）、域名不在白名单（403）、邮箱已注册（409）、频控（429）或邮件服务异常（502/503）
    */
   public async requestRegisterCode(
     body: Readonly<RequestRegisterCodeBody>,
     clientIp: string,
+    acceptLanguage?: string,
   ): Promise<AuthCodeSentResponse> {
     this.assertRateLimit(
       `code-req-ip:${clientIp}`,
@@ -539,6 +556,7 @@ export class AuthService {
     return this.issueAndDeliverCode({
       email: body.email,
       purpose: "register",
+      locale: parseAcceptLanguage(acceptLanguage, "zh-CN"),
     });
   }
 
@@ -607,6 +625,7 @@ export class AuthService {
           displayName: body.displayName,
           passwordHash,
           grantAdmin,
+          languagePreference: body.languagePreference ?? "auto",
           now,
           adminEmails,
         });
@@ -742,11 +761,13 @@ export class AuthService {
    *
    * @param body - 规范化目标邮箱
    * @param clientIp - 客户端 IP
+   * @param acceptLanguage - 可选 HTTP `Accept-Language` 请求头（当用户偏好为 `auto` 时生效）
    * @returns 标准验证码下发回执
    */
   public async requestPasswordResetCode(
     body: Readonly<RequestPasswordResetCodeBody>,
     clientIp: string,
+    acceptLanguage?: string,
   ): Promise<AuthCodeSentResponse> {
     this.assertRateLimit(
       `code-req-ip:${clientIp}`,
@@ -765,8 +786,8 @@ export class AuthService {
       });
     }
 
-    const existingUser = await this.repo.findUserByEmail(body.email);
-    if (!existingUser) {
+    const existingAuth = await this.repo.findUserAuthByEmail(body.email);
+    if (!existingAuth) {
       // 安全边界：未注册邮箱不落库、不发信、不回显 devOtpCode，返回统一 200 防止邮箱探测枚举
       return {
         ok: true,
@@ -777,7 +798,7 @@ export class AuthService {
       };
     }
 
-    if (existingUser.status === "suspended") {
+    if (existingAuth.user.status === "suspended") {
       throw new AppError({
         code: "ACCOUNT_SUSPENDED",
         statusCode: 403,
@@ -788,6 +809,7 @@ export class AuthService {
     return this.issueAndDeliverCode({
       email: body.email,
       purpose: "password_reset",
+      locale: resolveEmailLocale(existingAuth.languagePreference, acceptLanguage),
     });
   }
 
@@ -961,12 +983,14 @@ export class AuthService {
    *
    * @param body - 包含规范化邮箱与可选初始昵称的请求体
    * @param clientIp - 客户端 IP
+   * @param acceptLanguage - 可选 HTTP `Accept-Language` 请求头（当用户不存在或偏好为 `auto` 时生效）
    * @returns 包含过期秒数（及开发/测试无 SMTP 环境下的 `devOtpCode`）的响应体
    * @throws {AppError} 当账号已被封禁、禁止注册或频控触发时抛出对应错误
    */
   public async requestOtp(
     body: Readonly<RequestOtpBody>,
     clientIp = "local",
+    acceptLanguage?: string,
   ): Promise<RequestOtpResponse> {
     this.assertRateLimit(
       `code-req-ip:${clientIp}`,
@@ -975,21 +999,22 @@ export class AuthService {
       "Too many verification code requests from this network. Please try again later.",
     );
 
-    const existingUser = await this.repo.findUserByEmail(body.email);
-    if (existingUser?.status === "suspended") {
+    const existingAuth = await this.repo.findUserAuthByEmail(body.email);
+    if (existingAuth?.user.status === "suspended") {
       throw new AppError({
         code: "ACCOUNT_SUSPENDED",
         statusCode: 403,
         message: "This account has been suspended by an administrator.",
       });
     }
-    if (!existingUser) {
+    if (!existingAuth) {
       this.assertRegistrationAllowed(body.email);
     }
 
     return this.issueAndDeliverCode({
       email: body.email,
       purpose: "login",
+      locale: resolveEmailLocale(existingAuth?.languagePreference, acceptLanguage),
       ...(body.displayName !== undefined ? { requestedDisplayName: body.displayName } : {}),
     });
   }
@@ -1112,13 +1137,14 @@ export class AuthService {
           message: "Authenticated user record no longer exists.",
         });
       }
-      const { user, themePreference } = profile;
+      const { user, themePreference, languagePreference } = profile;
       const ownedAgents = await this.repo.listAgentsByOwner(user.id);
       return {
         ok: true,
         callerKind: "human",
         user,
         themePreference,
+        languagePreference,
         agents: ownedAgents.map((record) => mapAgentRecordToSummaryDto(record, this.realtimeBus)),
       };
     }
@@ -1153,23 +1179,30 @@ export class AuthService {
    * @param caller - 当前已认证调用者
    * @param body - 资料变更项
    * @returns 更新后的 `MeResponse`
-   * @throws {AppError} Agent 尝试写入人类账号的外观偏好时返回 403。
+   * @throws {AppError} Agent 尝试写入人类账号的外观或语言偏好时返回 403。
    */
   public async updateMe(
     caller: Readonly<AuthenticatedCaller>,
     body: Readonly<UpdateMeBody>,
   ): Promise<MeResponse> {
     if (caller.kind === "human") {
-      if (body.displayName !== undefined || body.themePreference !== undefined) {
+      if (
+        body.displayName !== undefined ||
+        body.themePreference !== undefined ||
+        body.languagePreference !== undefined
+      ) {
         await this.repo.updateHumanProfile(caller.userId, {
           ...(body.displayName !== undefined ? { displayName: body.displayName } : {}),
           ...(body.themePreference !== undefined ? { themePreference: body.themePreference } : {}),
+          ...(body.languagePreference !== undefined
+            ? { languagePreference: body.languagePreference }
+            : {}),
         });
       }
       return this.getMe(caller);
     }
 
-    if (body.themePreference !== undefined) {
+    if (body.themePreference !== undefined || body.languagePreference !== undefined) {
       assertHumanCaller(caller);
     }
     await this.repo.updateAgentProfile(caller.agentId, {

@@ -1,9 +1,8 @@
 {
   "id": "/",
-  "name": "OpenHuddle — 多 Agent 群聊与协作工作台",
+  "name": "OpenHuddle",
   "short_name": "OpenHuddle",
-  "description": "一键连通各类个人 Agent，支持受控多 Agent 群聊提案拍板与隔离工作台并行改码审阅",
-  "lang": "zh-CN",
+  "description": "Multi-agent group huddle and isolated collaboration workbench",
   "start_url": "/?source=pwa",
   "scope": "/",
   "display": "standalone",

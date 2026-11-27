@@ -7,15 +7,58 @@ import {
   type MessageAttachmentMimeType,
   type MessageDto,
   MessageStickerNameSchema,
+  type SupportedLocale,
   type UserId,
 } from "@openhuddle/protocol";
 import { roomMessageAttachmentPath } from "../../../lib/api-client.js";
 import { createClientOperationKey } from "../../../lib/format.js";
 import { getStoredSessionToken } from "../../../lib/session-store.js";
+import { getChatDetailTranslator } from "../i18n/chat-detail.js";
 
 const STORE_NAME = "stickers";
 const MAX_STICKERS = 48;
 const MAX_LIBRARY_BYTES = 32 * 1024 * 1024;
+const MAX_LIBRARY_MB = MAX_LIBRARY_BYTES / 1024 / 1024;
+const MAX_STICKER_MB = MAX_MESSAGE_ATTACHMENT_BYTES / 1024 / 1024;
+
+/** 内置表情定义（稳定内部 `id` 用于资源定位，展示名称随当前语种切换）。 */
+export const BUILT_IN_STICKERS = [
+  { id: "thumbs-up", labelKey: "sticker.builtin.thumbsUp" },
+  { id: "laugh", labelKey: "sticker.builtin.laugh" },
+  { id: "wave", labelKey: "sticker.builtin.wave" },
+  { id: "thinking", labelKey: "sticker.builtin.thinking" },
+  { id: "heart", labelKey: "sticker.builtin.heart" },
+  { id: "celebrate", labelKey: "sticker.builtin.celebrate" },
+] as const;
+
+/** 单个内置表情条目类型。 */
+export type BuiltInSticker = (typeof BUILT_IN_STICKERS)[number];
+
+/** 内置表情稳定内部键联合类型。 */
+export type BuiltInStickerId = BuiltInSticker["id"];
+
+/** 表情面板分组定义（稳定内部 `id` + 词典标签键）。 */
+export const STICKER_CATEGORIES = [
+  { id: "built-in", labelKey: "sticker.tab.builtIn" },
+  { id: "saved", labelKey: "sticker.tab.saved" },
+] as const;
+
+/** 表情面板分组标识类型。 */
+export type StickerCategoryId = (typeof STICKER_CATEGORIES)[number]["id"];
+
+/** 按当前或指定语种获取内置表情的展示标签。 */
+export function getBuiltInStickerLabel(id: BuiltInStickerId, locale?: SupportedLocale): string {
+  const { t } = getChatDetailTranslator(locale);
+  const entry = BUILT_IN_STICKERS.find((item) => item.id === id);
+  return entry !== undefined ? t(entry.labelKey) : id;
+}
+
+/** 按当前或指定语种获取表情分组的展示标签。 */
+export function getStickerCategoryLabel(id: StickerCategoryId, locale?: SupportedLocale): string {
+  const { t } = getChatDetailTranslator(locale);
+  const entry = STICKER_CATEGORIES.find((item) => item.id === id);
+  return entry !== undefined ? t(entry.labelKey) : id;
+}
 
 /** 发送表情需要的原始图片字节与描述。 */
 export interface StickerImage {
@@ -101,7 +144,12 @@ async function addSticker(sticker: SavedSticker): Promise<"added" | "exists"> {
       }
       const totalBytes = existing.reduce((sum, item) => sum + item.blob.size, sticker.blob.size);
       if (existing.length >= MAX_STICKERS || totalBytes > MAX_LIBRARY_BYTES) {
-        reject(new Error("表情收藏已达上限（48 张或 32 MB），移除一些后即可继续添加"));
+        const { t } = getChatDetailTranslator();
+        reject(
+          new Error(
+            t("sticker.err.libraryLimit", { maxCount: MAX_STICKERS, maxMb: MAX_LIBRARY_MB }),
+          ),
+        );
         transaction.abort();
         return;
       }
@@ -112,16 +160,17 @@ async function addSticker(sticker: SavedSticker): Promise<"added" | "exists"> {
 
 /** 验证并导入本地图片，保留 GIF 和 WebP 的原始动画帧。 */
 export async function importSticker(userId: UserId, file: File): Promise<void> {
+  const { t } = getChatDetailTranslator();
   const extension = /\.([a-z0-9]+)$/iu.exec(file.name)?.[1]?.toLowerCase() ?? "";
   const mimeType =
     file.type === "" || file.type === "application/octet-stream"
       ? MIME_BY_EXTENSION[extension]
       : file.type;
   if (mimeType === undefined || !isStickerMimeType(mimeType)) {
-    throw new Error("请选择 JPG、PNG、GIF 或 WebP 图片");
+    throw new Error(t("sticker.err.invalidFormat"));
   }
   if (file.size === 0 || file.size > MAX_MESSAGE_ATTACHMENT_BYTES) {
-    throw new Error("表情图片大小须大于 0 且不超过 8 MB");
+    throw new Error(t("sticker.err.invalidSize", { maxMb: MAX_STICKER_MB }));
   }
 
   const blob = file.slice(0, file.size, mimeType);
@@ -131,7 +180,7 @@ export async function importSticker(userId: UserId, file: File): Promise<void> {
     image.src = objectUrl;
     await image.decode();
   } catch {
-    throw new Error("无法读取这张图片，请选择其他文件");
+    throw new Error(t("sticker.err.unreadableImage"));
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
@@ -142,7 +191,7 @@ export async function importSticker(userId: UserId, file: File): Promise<void> {
     userId,
     blob,
     mimeType,
-    name: name.success ? name.data : "自定义表情",
+    name: name.success ? name.data : t("sticker.defaultCustomName"),
     createdAt: Date.now(),
   });
 }
@@ -152,9 +201,10 @@ export async function saveRoomSticker(
   userId: UserId,
   message: MessageDto,
 ): Promise<"added" | "exists"> {
+  const { t } = getChatDetailTranslator();
   const attachment = message.attachment;
   if (attachment?.stickerName === undefined || !isStickerMimeType(attachment.mimeType)) {
-    throw new Error("该消息没有可收藏的表情");
+    throw new Error(t("sticker.err.noStickerInMessage"));
   }
 
   const sessionToken = getStoredSessionToken();
@@ -164,12 +214,12 @@ export async function saveRoomSticker(
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
-    throw new Error("无法读取这条消息的表情，请稍后重试");
+    throw new Error(t("sticker.err.fetchMessageStickerFailed"));
   }
   const blob = await response.blob();
   const normalizedMime = blob.type.split(";")[0]?.trim().toLowerCase() ?? "";
   if (blob.size !== attachment.byteLength || normalizedMime !== attachment.mimeType.toLowerCase()) {
-    throw new Error("无法读取这条消息的表情，请稍后重试");
+    throw new Error(t("sticker.err.fetchMessageStickerFailed"));
   }
 
   return addSticker({

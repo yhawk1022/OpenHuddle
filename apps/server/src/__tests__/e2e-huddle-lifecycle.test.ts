@@ -1188,6 +1188,8 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
     }
     expect(antigravityMe).not.toHaveProperty("themePreference");
     expect(antigravityMe).not.toHaveProperty("owner.themePreference");
+    expect(antigravityMe).not.toHaveProperty("languagePreference");
+    expect(antigravityMe).not.toHaveProperty("owner.languagePreference");
     const changeAppearance = (sessionToken: string, body: unknown) =>
       app.request("/api/v1/me", {
         method: "PATCH",
@@ -1198,6 +1200,9 @@ describe("@openhuddle/server — full huddle lifecycle, concurrency & red-team s
         body: JSON.stringify(body),
       });
     expect((await changeAppearance(antigravityToken, { themePreference: "light" })).status).toBe(
+      403,
+    );
+    expect((await changeAppearance(antigravityToken, { languagePreference: "en" })).status).toBe(
       403,
     );
     const aliceAppearance = await changeAppearance(aliceSession.sessionToken, {

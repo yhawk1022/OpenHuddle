@@ -138,6 +138,14 @@ export const RequestRegisterCodeBodySchema = z.object({
 });
 export type RequestRegisterCodeBody = z.infer<typeof RequestRegisterCodeBodySchema>;
 
+/** 服务端与客户端支持的界面及邮件语言枚举。 */
+export const SupportedLocaleSchema = z.enum(["zh-CN", "en"]);
+export type SupportedLocale = z.infer<typeof SupportedLocaleSchema>;
+
+/** 人类账号可保存的语言偏好（`auto` 跟随浏览器或请求头解析）。 */
+export const LanguagePreferenceSchema = z.enum(["auto", "zh-CN", "en"]);
+export type LanguagePreference = z.infer<typeof LanguagePreferenceSchema>;
+
 /**
  * 核验 6 位邮箱激活码并完成新用户注册的请求体 Schema。
  */
@@ -146,6 +154,7 @@ export const RegisterWithPasswordBodySchema = z.object({
   code: VerificationCodeSchema,
   displayName: z.string().trim().min(1).max(80),
   password: PasswordSchema,
+  languagePreference: LanguagePreferenceSchema.optional(),
 });
 export type RegisterWithPasswordBody = z.infer<typeof RegisterWithPasswordBodySchema>;
 
@@ -237,6 +246,7 @@ export const MeResponseSchema = z.discriminatedUnion("callerKind", [
     user: HumanUserDtoSchema,
     agents: z.array(OwnedAgentSummaryDtoSchema),
     themePreference: ThemePreferenceSchema.optional(),
+    languagePreference: LanguagePreferenceSchema.optional(),
   }),
   z.object({
     ok: z.literal(true),
@@ -249,12 +259,13 @@ export const MeResponseSchema = z.discriminatedUnion("callerKind", [
 export type MeResponse = z.infer<typeof MeResponseSchema>;
 
 /**
- * `PATCH /api/v1/me` 更新当前主体资料。外观偏好仅对人类账号生效。
+ * `PATCH /api/v1/me` 更新当前主体资料。外观与语言偏好仅对人类账号生效。
  */
 export const UpdateMeBodySchema = z.object({
   displayName: z.string().trim().min(1).max(80).optional(),
   intro: z.string().trim().max(280).optional(),
   checkinIntervalMin: z.number().int().min(1).max(1_440).optional(),
   themePreference: ThemePreferenceSchema.optional(),
+  languagePreference: LanguagePreferenceSchema.optional(),
 });
 export type UpdateMeBody = z.infer<typeof UpdateMeBodySchema>;

@@ -48,6 +48,7 @@ import {
   toast,
 } from "../../../components/primitives/index.js";
 import { getReachVisualMeta } from "../../../lib/format.js";
+import { useChatShellI18n } from "../i18n/chat-shell.js";
 
 /** `GovernanceBar` 入参属性 */
 export interface GovernanceBarProps {
@@ -73,19 +74,7 @@ export interface GovernanceBarProps {
   readonly onBackToList: () => void;
 }
 
-const MODE_META: ReadonlyArray<{
-  readonly value: GovernanceMode;
-  readonly label: string;
-}> = [
-  { value: "free", label: "自由讨论" },
-  { value: "round_table", label: "圆桌轮流" },
-  { value: "proposal", label: "提案收敛" },
-];
-
-const MODE_TAB_ITEMS: ReadonlyArray<SegmentedTabItem<GovernanceMode>> = MODE_META.map((item) => ({
-  value: item.value,
-  label: item.label,
-}));
+const GOVERNANCE_MODE_ORDER: ReadonlyArray<GovernanceMode> = ["free", "round_table", "proposal"];
 
 const BASE_TURN_CAPS: ReadonlyArray<number> = [3, 4, 6, 8, 10, 15, 25];
 
@@ -108,12 +97,33 @@ const CONTROL_ITEM_ACTIVE_CLASS =
 export function GovernanceBar(props: GovernanceBarProps) {
   const { governance } = props;
   const { config } = governance;
+  const { locale, t, tp } = useChatShellI18n();
   const [governanceOpen, setGovernanceOpen] = useState<boolean>(false);
 
   const usedTurns = governance.consecutiveAgentTurns;
   const maxTurns = config.maxConsecutiveAgentTurns;
   const ratio = maxTurns > 0 ? Math.min(1, usedTurns / maxTurns) : 0;
   const isPaused = governance.status === "paused_budget";
+
+  const getModeLabel = (mode: GovernanceMode): string => {
+    if (mode === "free") return t("mode.free");
+    if (mode === "round_table") return t("mode.round_table");
+    return t("mode.proposal");
+  };
+
+  const modeTabItems: ReadonlyArray<SegmentedTabItem<GovernanceMode>> = useMemo(
+    () =>
+      GOVERNANCE_MODE_ORDER.map((value) => ({
+        value,
+        label:
+          value === "free"
+            ? t("mode.free")
+            : value === "round_table"
+              ? t("mode.round_table")
+              : t("mode.proposal"),
+      })),
+    [t],
+  );
 
   const agents = useMemo(
     () => props.room.members.filter((m) => m.memberKind === "agent"),
@@ -138,9 +148,9 @@ export function GovernanceBar(props: GovernanceBarProps) {
       : [...BASE_TURN_CAPS, maxTurns].sort((a, b) => a - b);
     return merged.map((cap) => ({
       value: String(cap),
-      label: `${String(cap)} 轮连续发言`,
+      label: tp("gov.turnCapOption", cap),
     }));
-  }, [maxTurns]);
+  }, [maxTurns, tp]);
 
   const isGroupRoom = props.room.kind === "group";
   const isDirectAgent = props.room.kind === "direct_agent";
@@ -150,32 +160,39 @@ export function GovernanceBar(props: GovernanceBarProps) {
   const subtitleText = useMemo(() => {
     if (isDirectHuman) {
       if (peer?.kind === "human" && peer.email !== undefined && peer.email.length > 0) {
-        return `好友私聊 · ${peer.email}`;
+        return t("gov.subtitle.directHumanWithEmail", { email: peer.email });
       }
-      return "好友私聊";
+      return t("gov.subtitle.directHuman");
     }
     if (isDirectAgent) {
       if (peer?.kind === "agent") {
-        const reachLabel = getReachVisualMeta(peer.reach).shortLabel;
+        const reachLabel = getReachVisualMeta(peer.reach, locale).shortLabel;
         const isMyAgent =
           props.currentUserId !== undefined && peer.ownerUserId === props.currentUserId;
         return isMyAgent
-          ? `我的个人 Agent · ${reachLabel}`
-          : `${peer.ownerDisplayName} 共享的 Agent · ${reachLabel}`;
+          ? t("gov.subtitle.myAgent", { reach: reachLabel })
+          : t("gov.subtitle.sharedAgent", {
+              owner: peer.ownerDisplayName,
+              reach: reachLabel,
+            });
       }
-      return "Agent 私聊";
+      return t("gov.subtitle.directAgent");
     }
     if (props.room.topic.length > 0) {
       return props.room.topic;
     }
-    return props.room.visibility === "public_shareable" ? "公开只读可分享" : "仅限邀请加入";
+    return props.room.visibility === "public_shareable"
+      ? t("gov.subtitle.publicShareable")
+      : t("gov.subtitle.inviteOnly");
   }, [
     isDirectAgent,
     isDirectHuman,
+    locale,
     peer,
     props.currentUserId,
     props.room.topic,
     props.room.visibility,
+    t,
   ]);
 
   const visibleProposalBadgeCount =
@@ -185,9 +202,9 @@ export function GovernanceBar(props: GovernanceBarProps) {
     if (nextMode === config.mode || props.isUpdatingGovernance) {
       return;
     }
-    const label = MODE_META.find((m) => m.value === nextMode)?.label ?? nextMode;
+    const label = getModeLabel(nextMode);
     props.onUpdateGovernance({ mode: nextMode });
-    toast.success(`讨论模式已切换为「${label}」`);
+    toast.success(t("gov.toast.modeChanged", { mode: label }));
   };
 
   const handleTurnCapChange = (nextValue: string): void => {
@@ -196,7 +213,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
       return;
     }
     props.onUpdateGovernance({ maxConsecutiveAgentTurns: parsed });
-    toast.success(`连续 Agent 发言上限已设为 ${String(parsed)} 轮`);
+    toast.success(tp("gov.toast.turnCapChanged", parsed));
   };
 
   const handleRenewBudget = (): void => {
@@ -204,7 +221,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
       return;
     }
     props.onUpdateGovernance({ renewBudget: true });
-    toast.success(`已续期轮次预算（+${String(maxTurns)} 轮），Agent 讨论继续`);
+    toast.success(tp("gov.toast.budgetRenewed", maxTurns));
   };
 
   const handleToggleAgentMentions = (checked: boolean): void => {
@@ -212,7 +229,9 @@ export function GovernanceBar(props: GovernanceBarProps) {
       return;
     }
     props.onUpdateGovernance({ allowAgentMentions: checked });
-    toast.success(checked ? "已允许 Agent 互相 @ 唤醒" : "已关闭 Agent 互相 @ 唤醒");
+    toast.success(
+      checked ? t("gov.toast.agentMentionsEnabled") : t("gov.toast.agentMentionsDisabled"),
+    );
   };
 
   const handleToggleReadLock = (checked: boolean): void => {
@@ -220,7 +239,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
       return;
     }
     props.onUpdateGovernance({ requireReadBeforeSend: checked });
-    toast.success(checked ? "已开启防抢话读锁" : "已关闭防抢话读锁");
+    toast.success(checked ? t("gov.toast.readLockEnabled") : t("gov.toast.readLockDisabled"));
   };
 
   return (
@@ -234,7 +253,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
           <IconButton
             variant="ghost"
             size="sm"
-            label="返回会话列表"
+            label={t("gov.backToList")}
             onClick={props.onBackToList}
             className="shrink-0 text-[#111318] md:hidden dark:text-[#F2F2F4]"
           >
@@ -268,17 +287,23 @@ export function GovernanceBar(props: GovernanceBarProps) {
             shortcut="⌘."
             content={
               props.isInspectorOpen
-                ? "收起会话信息面板"
+                ? t("gov.tooltip.closeInspector")
                 : isDirectHuman
-                  ? "查看好友会话信息"
+                  ? t("gov.tooltip.openDirectHumanInfo")
                   : isDirectAgent
-                    ? "查看 Agent 详情与会话设置"
-                    : `${String(onlineAgents)} 个 Agent 在线 · 点击展开群成员面板`
+                    ? t("gov.tooltip.openDirectAgentInfo")
+                    : tp("gov.tooltip.openGroupMembers", onlineAgents)
             }
           >
             <button
               type="button"
-              aria-label={isGroupRoom ? "群成员" : isDirectHuman ? "会话信息" : "Agent 详情"}
+              aria-label={
+                isGroupRoom
+                  ? t("gov.aria.members")
+                  : isDirectHuman
+                    ? t("gov.info")
+                    : t("gov.agentInfo")
+              }
               aria-pressed={props.isInspectorOpen}
               onClick={props.onToggleInspector}
               className={cn(
@@ -290,20 +315,23 @@ export function GovernanceBar(props: GovernanceBarProps) {
               {isDirectHuman ? (
                 <>
                   <UserRound className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#9B9BA3]" />
-                  <span className="hidden @[520px]:inline">会话信息</span>
+                  <span className="hidden @[520px]:inline">{t("gov.info")}</span>
                 </>
               ) : isDirectAgent ? (
                 <>
                   <Bot className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#9B9BA3]" />
-                  <span className="hidden @[520px]:inline">Agent 详情</span>
+                  <span className="hidden @[520px]:inline">{t("gov.agentInfo")}</span>
                 </>
               ) : (
                 <>
                   <Users className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#9B9BA3]" />
-                  <span className="hidden @[680px]:inline">
-                    {agents.length} 个 agent · {humanCount} 人
+                  <span className="hidden @[740px]:inline">
+                    {t("gov.membersSummary", {
+                      agents: tp("gov.agentCount", agents.length),
+                      humans: tp("gov.humanCount", humanCount),
+                    })}
                   </span>
-                  <span className="tabular-nums @[680px]:hidden">{props.room.members.length}</span>
+                  <span className="tabular-nums @[740px]:hidden">{props.room.members.length}</span>
                 </>
               )}
             </button>
@@ -315,10 +343,10 @@ export function GovernanceBar(props: GovernanceBarProps) {
               side="bottom"
               content={
                 (props.needsAttentionTasksCount ?? 0) > 0
-                  ? `${String(props.needsAttentionTasksCount)} 项执行结果或提问待你确认`
+                  ? tp("gov.tooltip.tasksNeedsReview", props.needsAttentionTasksCount ?? 0)
                   : (props.runningTasksCount ?? 0) > 0
-                    ? `${String(props.runningTasksCount)} 个任务正在后台运行 · 点击查看拓扑与实时纠偏`
-                    : "打开多 Agent 任务与蜂群拓扑面板"
+                    ? tp("gov.tooltip.tasksRunning", props.runningTasksCount ?? 0)
+                    : t("gov.tooltip.tasksDefault")
               }
             >
               <button
@@ -344,7 +372,9 @@ export function GovernanceBar(props: GovernanceBarProps) {
                   <>
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D97706] dark:bg-[#FBBF24]" />
                     <span className="tabular-nums">
-                      <span className="hidden @[520px]:inline">待确认 · </span>
+                      <span className="hidden @[520px]:inline">
+                        {t("gov.tasksReviewPrefix")} ·{" "}
+                      </span>
                       {props.needsAttentionTasksCount}
                     </span>
                   </>
@@ -355,7 +385,9 @@ export function GovernanceBar(props: GovernanceBarProps) {
                       <span className="relative inline-flex h-2 w-2 rounded-full bg-[#16A34A] dark:bg-[#34D399]" />
                     </span>
                     <span className="tabular-nums">
-                      <span className="hidden @[520px]:inline">运行中 · </span>
+                      <span className="hidden @[520px]:inline">
+                        {t("gov.tasksRunningPrefix")} ·{" "}
+                      </span>
                       {props.runningTasksCount}
                     </span>
                   </>
@@ -363,7 +395,9 @@ export function GovernanceBar(props: GovernanceBarProps) {
                   <>
                     <ListTodo className="h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#9B9BA3]" />
                     <span className="hidden @[520px]:inline">
-                      {(props.tasksCount ?? 0) > 0 ? `任务 · ${String(props.tasksCount)}` : "任务"}
+                      {(props.tasksCount ?? 0) > 0
+                        ? t("gov.tasksWithCount", { count: props.tasksCount ?? 0 })
+                        : t("gov.tasks")}
                     </span>
                   </>
                 )}
@@ -382,10 +416,10 @@ export function GovernanceBar(props: GovernanceBarProps) {
               trigger={
                 <button
                   type="button"
-                  aria-label="讨论轮次与会话规则设置"
+                  aria-label={t("gov.aria.turnsSettings")}
                   className={cn(
                     CONTROL_ITEM_BASE_CLASS,
-                    "px-1.5 @[420px]:px-2 @[520px]:px-3",
+                    "px-1.5 @[420px]:px-2 @[620px]:px-3",
                     isPaused
                       ? "bg-amber-500/16 text-[#78350F] ring-1 ring-inset ring-amber-500/35 hover:bg-amber-500/24 dark:bg-amber-400/16 dark:text-[#FCD34D] dark:ring-amber-400/30 dark:hover:bg-amber-400/24"
                       : governanceOpen
@@ -397,7 +431,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D97706] dark:bg-[#FBBF24]" />
                   ) : null}
                   <span className="tabular-nums">
-                    <span className="hidden @[520px]:inline">轮次 </span>
+                    <span className="hidden @[620px]:inline">{t("gov.turnsPrefix")} </span>
                     {usedTurns}/{maxTurns}
                   </span>
                 </button>
@@ -408,16 +442,16 @@ export function GovernanceBar(props: GovernanceBarProps) {
                 <div>
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="text-[11.5px] font-semibold text-[#687082] dark:text-[#8E8E96]">
-                      讨论节奏
+                      {t("gov.popover.modeTitle")}
                     </span>
                   </div>
                   <SegmentedTabs
                     value={config.mode}
                     onValueChange={handleModeChange}
-                    items={MODE_TAB_ITEMS}
+                    items={modeTabItems}
                     size="xs"
                     fullWidth={true}
-                    ariaLabel="切换讨论模式"
+                    ariaLabel={t("gov.popover.modeAriaLabel")}
                   />
                 </div>
               ) : null}
@@ -426,7 +460,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-[11.5px] font-semibold text-[#687082] dark:text-[#8E8E96]">
-                    连续 Agent 发言上限
+                    {t("gov.popover.turnCapTitle")}
                   </span>
                   <span
                     className={cn(
@@ -436,7 +470,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
                         : "text-[#111318] dark:text-[#ECECEF]",
                     )}
                   >
-                    已用 {usedTurns} / {maxTurns} 轮
+                    {tp("gov.popover.turnsUsed", maxTurns, { used: usedTurns })}
                   </span>
                 </div>
 
@@ -456,7 +490,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
                   <div className="min-w-0 flex-1">
                     <AppSelect
                       id="gov-bar-turn-cap"
-                      ariaLabel="连续 Agent 轮次上限"
+                      ariaLabel={t("gov.popover.turnCapAriaLabel")}
                       size="sm"
                       align="end"
                       disabled={props.isUpdatingGovernance}
@@ -473,7 +507,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
                       leadingIcon={<Play className="h-3 w-3 fill-current" />}
                       onClick={handleRenewBudget}
                     >
-                      续期
+                      {t("gov.popover.renew")}
                     </AppButton>
                   ) : null}
                 </div>
@@ -494,10 +528,10 @@ export function GovernanceBar(props: GovernanceBarProps) {
                       )}
                       <span className="min-w-0">
                         <span className="block font-medium text-[#111318] dark:text-[#F2F2F4]">
-                          Agent 互相 @ 自动唤醒
+                          {t("gov.popover.agentMentionsTitle")}
                         </span>
                         <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                          关闭后仅人类点名可唤醒 Agent
+                          {t("gov.popover.agentMentionsDesc")}
                         </span>
                       </span>
                     </label>
@@ -519,10 +553,10 @@ export function GovernanceBar(props: GovernanceBarProps) {
                     <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#687082] dark:text-[#8E8E96]" />
                     <span className="min-w-0">
                       <span className="block font-medium text-[#111318] dark:text-[#F2F2F4]">
-                        先读后发保护
+                        {t("gov.popover.readLockTitle")}
                       </span>
                       <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                        拦截未读最新消息的盲目抢话
+                        {t("gov.popover.readLockDesc")}
                       </span>
                     </span>
                   </label>
@@ -538,8 +572,9 @@ export function GovernanceBar(props: GovernanceBarProps) {
 
               {isGroupRoom && config.mode === "round_table" ? (
                 <p className="rounded-xl bg-black/[0.04] px-2.5 py-1.5 text-[11px] font-medium text-[#3B414E] dark:bg-white/[0.06] dark:text-[#C4C4CA]">
-                  本轮圆桌已发言：{governance.roundTableSpokenAgentIds.length} / {agents.length} 个
-                  Agent
+                  {tp("gov.popover.roundTableSpoken", agents.length, {
+                    spoken: governance.roundTableSpokenAgentIds.length,
+                  })}
                 </p>
               ) : null}
             </AppPopover>
@@ -547,33 +582,31 @@ export function GovernanceBar(props: GovernanceBarProps) {
 
           {/* 3. `提案 · N` 按钮（群聊与 Agent 单聊支持整理方案；纯人类私聊不展示） */}
           {!isDirectHuman ? (
-            <AppTooltip side="bottom" content="查看共识提案与拍板记录">
+            <AppTooltip side="bottom" content={t("gov.tooltip.proposals")}>
               <button
                 type="button"
                 onClick={props.onOpenProposals}
                 className={cn(
                   CONTROL_ITEM_BASE_CLASS,
-                  visibleProposalBadgeCount > 0
-                    ? "px-1.5 @[420px]:px-2 @[520px]:px-3"
-                    : "px-1.5 @[420px]:px-2",
+                  "px-1.5 @[420px]:px-2 @[620px]:px-3",
                   visibleProposalBadgeCount === 0 &&
                     props.openProposalsCount === 0 &&
                     "hidden @[400px]:inline-flex",
                   CONTROL_ITEM_NEUTRAL_CLASS,
                 )}
               >
-                <FileText className="h-3.5 w-3.5 shrink-0 text-[#687082] @[520px]:hidden dark:text-[#9B9BA3]" />
-                <span className="hidden @[520px]:inline">
+                <FileText className="h-3.5 w-3.5 shrink-0 text-[#687082] @[620px]:hidden dark:text-[#9B9BA3]" />
+                <span className="hidden @[620px]:inline">
                   {visibleProposalBadgeCount > 0
-                    ? `提案 · ${String(visibleProposalBadgeCount)}`
-                    : "提案"}
+                    ? t("gov.proposalsWithCount", { count: visibleProposalBadgeCount })
+                    : t("gov.proposals")}
                 </span>
                 {visibleProposalBadgeCount > 0 ? (
-                  <span className="tabular-nums @[520px]:hidden">{visibleProposalBadgeCount}</span>
+                  <span className="tabular-nums @[620px]:hidden">{visibleProposalBadgeCount}</span>
                 ) : null}
                 {props.openProposalsCount > 0 ? (
                   <span
-                    aria-label="有待拍板提案"
+                    aria-label={t("gov.aria.hasOpenProposals")}
                     className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#D97706] dark:bg-[#FBBF24]"
                   />
                 ) : null}
@@ -583,10 +616,10 @@ export function GovernanceBar(props: GovernanceBarProps) {
 
           {/* 4. `+ 邀请` 高对比主触点胶囊（仅群聊展示） */}
           {isGroupRoom ? (
-            <AppTooltip side="bottom" content="把好友或你的 Agent 拉进群">
+            <AppTooltip side="bottom" content={t("gov.tooltip.invite")}>
               <button
                 type="button"
-                aria-label="邀请群成员"
+                aria-label={t("gov.aria.invite")}
                 onClick={props.onOpenInviteModal}
                 className={cn(
                   CONTROL_ITEM_BASE_CLASS,
@@ -594,7 +627,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
                 )}
               >
                 <Plus className="h-3.5 w-3.5 shrink-0 stroke-[2.2]" />
-                <span className="hidden @[520px]:inline">邀请</span>
+                <span className="hidden @[520px]:inline">{t("gov.invite")}</span>
               </button>
             </AppTooltip>
           ) : null}
@@ -616,10 +649,10 @@ export function GovernanceBar(props: GovernanceBarProps) {
               <div className="flex min-w-0 items-center gap-2">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[#D97706] dark:text-[#FBBF24]" />
                 <span className="truncate">
-                  <strong>Agent 已连续讨论 {usedTurns} 轮，暂停等待你的意见</strong>
+                  <strong>{tp("gov.banner.pausedHeadline", usedTurns)}</strong>
                   <span className="hidden opacity-80 sm:inline">
                     {" "}
-                    · 直接发言会自动继续，也可以点击右侧续期
+                    · {t("gov.banner.pausedHint")}
                   </span>
                 </span>
               </div>
@@ -630,7 +663,7 @@ export function GovernanceBar(props: GovernanceBarProps) {
                 leadingIcon={<Play className="h-3 w-3 fill-current" />}
                 onClick={handleRenewBudget}
               >
-                继续讨论 (+{maxTurns})
+                {t("gov.banner.resumeCta", { count: maxTurns })}
               </AppButton>
             </div>
           </motion.div>

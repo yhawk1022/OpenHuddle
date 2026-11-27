@@ -12,6 +12,7 @@ import type {
   FriendContactDto,
   FriendshipId,
   HumanUserDto,
+  LanguagePreference,
   MessageDto,
   MessageMention,
   OperationKey,
@@ -37,6 +38,7 @@ import {
   FileText,
   Gauge,
   KeyRound,
+  Languages,
   ListTodo,
   LogIn,
   LogOut,
@@ -104,6 +106,7 @@ import {
   pickLatestIso,
   sortRoomsByLatestActivity,
 } from "../../../lib/format.js";
+import { resolveLocale, useCommonI18n } from "../../../lib/i18n/index.js";
 import type { OptimisticMessageItem } from "../../../lib/query-keys.js";
 import {
   navigateBackOr,
@@ -120,6 +123,7 @@ import {
   type OnboardingModalTab,
   OtpSignInScreen,
   currentMeQueryOptions,
+  useAccountLanguagePreference,
   useAccountThemePreference,
   useDeleteOwnedAgentMutation,
   useLogoutMutation,
@@ -151,6 +155,11 @@ import {
   useUpdateAnyRoomGovernanceMutation,
   useUpdateGovernanceMutation,
 } from "../api/huddle-room.queries.js";
+import {
+  CHAT_SHELL_COMMAND_KEYWORDS,
+  getChatShellTranslator,
+  useChatShellI18n,
+} from "../i18n/chat-shell.js";
 import { type RoomNotificationState, reconcileRoomNotifications } from "../room-notifications.js";
 import { saveRoomSticker } from "../stickers/sticker-library.js";
 import {
@@ -198,11 +207,7 @@ import {
 import { RoomSidebar, type SidebarSectionTab } from "./room-sidebar.js";
 import { SoloWorkbench } from "./solo-workbench.js";
 import { savedStickerQueryKey } from "./sticker-picker.js";
-import {
-  LiveRunFloatingBar,
-  WorkTimelineMilestoneCard,
-  getWorkTopologyLabel,
-} from "./work-timeline-cards.js";
+import { LiveRunFloatingBar, WorkTimelineMilestoneCard } from "./work-timeline-cards.js";
 
 export { systemHealthQueryOptions };
 
@@ -318,15 +323,19 @@ interface ActiveRoomStageProps {
 }
 
 function ActiveRoomStage(props: ActiveRoomStageProps) {
+  const { t, tp } = useChatShellI18n();
+  const { t: commonT } = useCommonI18n();
   const queryClient = useQueryClient();
   const handleSaveSticker = async (message: MessageDto): Promise<void> => {
     const userId = props.currentUser.id;
     try {
       const result = await saveRoomSticker(userId, message);
       await queryClient.invalidateQueries({ queryKey: savedStickerQueryKey(userId) });
-      toast.success(result === "added" ? "已收藏表情" : "这条表情已收藏");
+      toast.success(
+        result === "added" ? t("stage.toast.stickerSaved") : t("stage.toast.stickerAlreadySaved"),
+      );
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : "无法收藏表情，请稍后重试");
+      toast.error(cause instanceof Error ? cause.message : t("stage.toast.stickerSaveFailed"));
     }
   };
   const detailQuery = useQuery(roomDetailQueryOptions(props.roomId));
@@ -419,21 +428,21 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
     } else {
       setMobileInspectorOpen(true);
     }
-    toast.info("正在从近期讨论整理对比提案…");
+    toast.info(t("stage.toast.synthesizing"));
     synthesizeMutation.mutate(
       { messageWindowLimit: 30 },
       {
         onSuccess: (res) => {
           setFocusedProposalId(res.proposal.id);
           setInspectorTab("proposals");
-          toast.success("已生成提案卡");
+          toast.success(t("stage.toast.synthesized"));
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "整理提案失败");
+          toast.error(err instanceof Error ? err.message : t("stage.toast.synthesizeFailed"));
         },
       },
     );
-  }, [isWideScreen, props.synthesizeSignal, synthesizeMutation]);
+  }, [isWideScreen, props.synthesizeSignal, synthesizeMutation, t]);
 
   const messages: ReadonlyArray<OptimisticMessageItem> = useMemo(
     () => messagesQuery.data?.messages ?? [],
@@ -764,10 +773,10 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         <div className="relative liquid-glass-modal max-w-sm rounded-[24px] p-6">
           <AlertCircle className="mx-auto h-6 w-6 text-[#E5484D] dark:text-[#F87171]" />
           <h2 className="mt-2.5 text-[15px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-            无法加载当前群聊
+            {t("stage.error.loadRoomTitle")}
           </h2>
           <p className="mt-1 text-xs text-[#687082] dark:text-[#8E8E96]">
-            请确认你仍是该群成员，或点击重新加载。
+            {t("stage.error.loadRoomDesc")}
           </p>
           <div className="mt-4 flex items-center justify-center gap-2">
             <AppButton
@@ -776,7 +785,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
               onClick={props.onBackToList}
               className="md:hidden"
             >
-              返回列表
+              {t("stage.error.backToList")}
             </AppButton>
             <AppButton
               variant="primary"
@@ -784,7 +793,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
               leadingIcon={<RefreshCw className="h-3.5 w-3.5" />}
               onClick={() => void detailQuery.refetch()}
             >
-              重新加载
+              {t("stage.error.reload")}
             </AppButton>
           </div>
         </div>
@@ -939,7 +948,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
           onSuccess: (res) => {
             setFocusedProposalId(res.proposal.id);
             setInspectorTab("proposals");
-            toast.success("已整理生成对比提案卡");
+            toast.success(t("stage.toast.proposalSynthesized"));
           },
         });
       }}
@@ -960,9 +969,9 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         castVoteMutation.mutate(
           { proposalId, body },
           {
-            onSuccess: () => toast.success("你的意见已同步到群里"),
+            onSuccess: () => toast.success(t("stage.toast.voteSynced")),
             onError: (err) =>
-              toast.error(err instanceof Error ? err.message : "提交投票失败，请稍后重试"),
+              toast.error(err instanceof Error ? err.message : t("stage.toast.voteFailed")),
           },
         )
       }
@@ -972,17 +981,19 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
           {
             onSuccess: (res) =>
               toast.success(
-                res.proposal.status === "approved" ? "已拍板通过该方案" : "已驳回该提案",
+                res.proposal.status === "approved"
+                  ? t("stage.toast.proposalApproved")
+                  : t("stage.toast.proposalRejected"),
               ),
             onError: (err) =>
-              toast.error(err instanceof Error ? err.message : "拍板操作失败，请检查权限后重试"),
+              toast.error(err instanceof Error ? err.message : t("stage.toast.decideFailed")),
           },
         )
       }
       onUpdateGovernance={(patch) =>
         governanceMutation.mutate(patch, {
           onError: (err) =>
-            toast.error(err instanceof Error ? err.message : "更新讨论设置失败，请稍后重试"),
+            toast.error(err instanceof Error ? err.message : t("stage.toast.governanceFailed")),
         })
       }
       onInspectAgent={props.onInspectAgent}
@@ -1054,12 +1065,12 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                   <Paperclip className="h-4 w-4" />
                 </span>
                 <p className="text-[14px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                  松开鼠标添加至「{roomDisplayName}」
+                  {t("stage.dropOverlay.title", { name: roomDisplayName })}
                 </p>
                 <p className="text-xs text-[#687082] dark:text-[#8E8E96]">
                   {room.kind === "direct_human"
-                    ? "支持图片自动压缩预览、语音与文件附件"
-                    : "支持发图让 Agent 看图分析（超大图自动压缩），也支持语音与文件附件"}
+                    ? t("stage.dropOverlay.descHuman")
+                    : t("stage.dropOverlay.descAgent")}
                 </p>
               </motion.div>
             </motion.div>
@@ -1103,13 +1114,15 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
               >
                 <Pin className="h-3.5 w-3.5 shrink-0 rotate-45 text-[#D97706] dark:text-[#FBBF24]" />
                 <span className="shrink-0 font-semibold text-[#78350F] dark:text-[#FCD34D]">
-                  待拍板{openProposals.length > 1 ? ` · ${String(openProposals.length)}` : ""}
+                  {openProposals.length > 1
+                    ? t("stage.pinnedProposal.labelCount", { count: openProposals.length })
+                    : t("stage.pinnedProposal.label")}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[#111318] dark:text-[#ECECEF]">
                   {pinnedProposal.draft.title}
                 </span>
                 <span className="inline-flex shrink-0 items-center gap-0.5 font-medium text-[#78350F] dark:text-[#FCD34D]">
-                  <span className="hidden sm:inline">查看方案</span>
+                  <span className="hidden sm:inline">{t("stage.pinnedProposal.view")}</span>
                   <ChevronRight className="h-3.5 w-3.5 transition group-hover:translate-x-0.5" />
                 </span>
               </motion.button>
@@ -1133,13 +1146,13 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
             {messagesQuery.isError && (
               <div className="rounded-2xl bg-[#E5484D]/10 p-4 text-xs text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
                 <div className="flex items-center justify-between gap-2">
-                  <span>拉取消息失败，请检查网络连接。</span>
+                  <span>{t("stage.error.loadMessages")}</span>
                   <AppButton
                     variant="danger"
                     size="xs"
                     onClick={() => void messagesQuery.refetch()}
                   >
-                    重试
+                    {commonT("action.retry")}
                   </AppButton>
                 </div>
               </div>
@@ -1176,19 +1189,19 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                 )}
                 <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-[#111318] dark:text-[#F2F2F4]">
                   {room.kind === "direct_agent"
-                    ? `和 ${room.name} 的聊天`
+                    ? t("stage.empty.directTitle", { name: room.name })
                     : room.kind === "direct_human"
-                      ? `和 ${roomDisplayName} 的聊天`
+                      ? t("stage.empty.directTitle", { name: roomDisplayName })
                       : room.name}
                 </h2>
                 <p className="mx-auto mt-2 text-[13.5px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                   {room.kind === "direct_agent"
                     ? room.peer?.kind === "agent" && room.peer.ownerUserId !== props.currentUser.id
-                      ? `这是 ${room.peer.ownerDisplayName} 的 Agent。你可以发文字或图片和它交流，你的消息仅作协作参考。`
-                      : "直接发消息或粘贴截图就好，不用 @ 它；它也能直接发图回复。"
+                      ? t("stage.empty.sharedAgentDesc", { owner: room.peer.ownerDisplayName })
+                      : t("stage.empty.myAgentDesc")
                     : room.kind === "direct_human"
-                      ? "发条消息或图片打个招呼吧。"
-                      : "邀请好友或 Agent 进群，发文字或图片并输入 @ 即可点名讨论。"}
+                      ? t("stage.empty.directHumanDesc")
+                      : t("stage.empty.groupDesc")}
                 </p>
                 <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
                   {room.kind === "group" ? (
@@ -1199,14 +1212,14 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                         leadingIcon={<Users className="h-4 w-4" />}
                         onClick={() => setInviteMode("members")}
                       >
-                        邀请成员
+                        {t("stage.empty.inviteMembers")}
                       </AppButton>
                       <AppButton
                         variant="secondary"
                         size="md"
                         onClick={() => openInspectorAt("members")}
                       >
-                        查看群成员
+                        {t("stage.empty.viewMembers")}
                       </AppButton>
                     </>
                   ) : (
@@ -1215,7 +1228,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                       size="md"
                       onClick={() => openInspectorAt("members")}
                     >
-                      查看会话信息
+                      {t("stage.empty.viewInfo")}
                     </AppButton>
                   )}
                 </div>
@@ -1275,7 +1288,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                     }}
                     onRecall={(seq) =>
                       recallMutation.mutate(seq, {
-                        onSuccess: () => toast.success("消息已撤回"),
+                        onSuccess: () => toast.success(t("stage.toast.messageRecalled")),
                       })
                     }
                     onOpenProposal={handleOpenProposalInInspector}
@@ -1343,7 +1356,11 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                 )}
               >
                 <ArrowDown className="h-3.5 w-3.5" />
-                <span>{unseenCount > 0 ? `${String(unseenCount)} 条新消息` : "回到底部"}</span>
+                <span>
+                  {unseenCount > 0
+                    ? tp("stage.jump.newMessages", unseenCount)
+                    : t("stage.jump.toBottom")}
+                </span>
               </motion.button>
             ) : null}
           </AnimatePresence>
@@ -1449,7 +1466,11 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
                             : {}),
                           roomId: props.roomId,
                         }).catch((err: unknown) => {
-                          toast.error(err instanceof Error ? err.message : "派发工作区任务失败");
+                          toast.error(
+                            err instanceof Error
+                              ? err.message
+                              : t("stage.toast.dispatchTaskFailed"),
+                          );
                         });
                       } else {
                         const createdRoomWork = dispatchRoomWorkItem({
@@ -1540,7 +1561,7 @@ function ActiveRoomStage(props: ActiveRoomStageProps) {
         <AppSheetDrawer
           open={mobileInspectorOpen}
           onOpenChange={setMobileInspectorOpen}
-          title="群信息"
+          title={room.kind === "group" ? t("stage.drawer.groupInfo") : t("stage.drawer.chatInfo")}
           subtitle={roomDisplayName}
           side="right"
           mobileAsBottomSheet={true}
@@ -1600,6 +1621,7 @@ interface ConnectedSoloWorkbenchProps {
   readonly onSwitchToChats: () => void;
   readonly onOpenConnectAgent: () => void;
   readonly onInspectOwnedAgent: (agent: OwnedAgentSummaryDto) => void;
+  readonly onOpenAccountSecurity: () => void;
 }
 
 /**
@@ -1621,6 +1643,7 @@ function ConnectedSoloWorkbench(props: ConnectedSoloWorkbenchProps) {
       onSwitchToChats={props.onSwitchToChats}
       onOpenConnectAgent={props.onOpenConnectAgent}
       onInspectOwnedAgent={props.onInspectOwnedAgent}
+      onOpenAccountSecurity={props.onOpenAccountSecurity}
     />
   );
 }
@@ -1629,23 +1652,27 @@ function ConnectedSoloWorkbench(props: ConnectedSoloWorkbenchProps) {
  * 左侧 `72px` 个人身份与已绑定 Agent 垂直导航栏。
  */
 function PersonalAgentRail(props: PersonalAgentRailProps) {
+  const { locale, t } = useChatShellI18n();
   const reducedMotion = usePrefersReducedMotion();
 
   return (
     <nav
-      aria-label="我与我的 Agent"
+      aria-label={t("rail.ariaLabel")}
       data-tauri-drag-region=""
       className="app-drag-region relative liquid-glass-panel hidden w-[72px] shrink-0 select-none flex-col items-center pt-4 pb-3 md:flex md:rounded-[22px] [--oh-avatar-ring:#F4F6FA] dark:[--oh-avatar-ring:#1E1E22]"
     >
-      {/* 1. 顶部个人身份：纯净浮起圆形头像 + `我`（点击打开账号安全弹窗，告别多层灰环套娃） */}
+      {/* 1. 顶部个人身份：纯净浮起圆形头像 + `我`（点击打开账号设置弹窗，告别多层灰环套娃） */}
       <AppTooltip
         side="right"
-        content={`${props.currentUser.displayName} · ${props.currentUser.email} · 账号安全`}
+        content={t("rail.profileTooltip", {
+          name: props.currentUser.displayName,
+          email: props.currentUser.email,
+        })}
       >
         <button
           type="button"
           onClick={props.onOpenAccountSecurity}
-          aria-label="打开账号安全设置"
+          aria-label={t("rail.openAccountSettings")}
           className="im-press app-no-drag group relative flex w-full shrink-0 cursor-pointer flex-col items-center"
         >
           <div className="rounded-full shadow-[0_2px_8px_rgba(15,23,42,0.08)] ring-[1.5px] ring-white/95 transition-transform duration-150 group-hover:scale-[1.04] dark:shadow-[0_2px_10px_rgba(0,0,0,0.4)] dark:ring-white/18">
@@ -1656,19 +1683,19 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
               className="[&>div]:h-[38px] [&>div]:w-[38px] [&>div]:rounded-full [&>div]:text-[14px]"
             />
           </div>
-          <span className="mt-1.5 text-[11px] font-medium leading-none text-[#3B414E] transition-colors group-hover:text-[#111318] dark:text-[#C4C4CA] dark:group-hover:text-white">
-            我
+          <span className="mt-1.5 max-w-full truncate px-0.5 text-[11px] font-medium leading-none text-[#3B414E] transition-colors group-hover:text-[#111318] dark:text-[#C4C4CA] dark:group-hover:text-white">
+            {t("rail.me")}
           </span>
         </button>
       </AppTooltip>
 
-      {/* 1b. 顶层双模式切换舱：`💬 会话`（多人/多主群聊） vs `⚡ 工作台`（1 人 + 我的 Agent 舰队极速执行），采用 layoutId 弹簧滑动底衬 */}
+      {/* 1b. 顶层双模式切换舱：`会话`（多人/多主群聊） vs `工作台`（1 人 + 我的 Agent 舰队极速执行），采用 layoutId 弹簧滑动底衬 */}
       <div
         role="tablist"
-        aria-label="切换会话与单人工作台模式"
+        aria-label={t("rail.surfaceTabsAria")}
         className="app-no-drag mt-3 flex w-[56px] shrink-0 flex-col gap-1 rounded-[16px] bg-black/[0.038] p-1 dark:bg-white/[0.05]"
       >
-        <AppTooltip side="right" shortcut="⌥1" content="聊天">
+        <AppTooltip side="right" shortcut="⌥1" content={t("rail.chatsTooltip")}>
           <button
             type="button"
             role="tab"
@@ -1690,14 +1717,16 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
               />
             ) : null}
             <MessageCircle className="h-4 w-4" />
-            <span className="text-[10px] font-medium leading-none">会话</span>
+            <span className="max-w-full truncate px-0.5 text-[10px] font-medium leading-none">
+              {t("rail.chats")}
+            </span>
             {props.chatUnreadCount > 0 ? (
               <span className="absolute top-1 right-1.5 h-1.5 w-1.5 rounded-full bg-[#E5484D] dark:bg-[#F05252]" />
             ) : null}
           </button>
         </AppTooltip>
 
-        <AppTooltip side="right" shortcut="⌥2" content="工作台">
+        <AppTooltip side="right" shortcut="⌥2" content={t("rail.workbenchTooltip")}>
           <button
             type="button"
             role="tab"
@@ -1719,7 +1748,9 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
               />
             ) : null}
             <ListTodo className="h-4 w-4" />
-            <span className="text-[10px] font-medium leading-none">工作台</span>
+            <span className="max-w-full truncate px-0.5 text-[10px] font-medium leading-none">
+              {t("rail.workbench")}
+            </span>
             {props.workbenchNeedsYouCount > 0 ? (
               <span className="absolute top-1 right-1.5 h-1.5 w-1.5 rounded-full bg-[#F59E0B]" />
             ) : props.workbenchRunningCount > 0 ? (
@@ -1742,43 +1773,45 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
             agent.displayName,
             props.currentUser.displayName,
           );
-          const platformMeta = getPlatformVisualMeta(agent.platform);
-          const reachMeta = getReachVisualMeta(agent.reach);
+          const platformMeta = getPlatformVisualMeta(agent.platform, locale);
+          const reachMeta = getReachVisualMeta(agent.reach, locale);
           const railAgentMenuItems: ReadonlyArray<AppContextMenuEntry> = [
             {
               id: `ctx-rail-dm-${agent.id}`,
-              label: "发消息",
+              label: t("sidebar.contacts.message"),
               icon: <MessageCircle className="h-3.5 w-3.5" />,
               onSelect: () => props.onStartDirectAgentChat(agent.id),
             },
             {
               id: `ctx-rail-inspect-${agent.id}`,
-              label: "查看 Agent 名片",
+              label: t("sidebar.agents.viewProfile"),
               icon: <UserRound className="h-3.5 w-3.5" />,
               onSelect: () => props.onInspectAgent(agent),
             },
             {
               id: `ctx-rail-copy-${agent.id}`,
-              label: `复制 ${agentHandle}`,
+              label: t("sidebar.agents.copyHandle", { handle: agentHandle }),
               icon: <Copy className="h-3.5 w-3.5" />,
               onSelect: () => {
                 if (typeof navigator !== "undefined" && navigator.clipboard) {
                   void navigator.clipboard.writeText(agentHandle).then(() => {
-                    toast.success("已复制 @ 标识", { description: agentHandle });
+                    toast.success(t("sidebar.agents.copiedHandleToast"), {
+                      description: agentHandle,
+                    });
                   });
                 }
               },
             },
             {
               id: `ctx-rail-reclaim-${agent.id}`,
-              label: "重新连接",
+              label: t("sidebar.agents.reconnect"),
               icon: <KeyRound className="h-3.5 w-3.5" />,
               onSelect: () => props.onReclaimAgent(agent.id),
             },
             { kind: "separator", id: `ctx-rail-sep-danger-${agent.id}` },
             {
               id: `ctx-rail-delete-${agent.id}`,
-              label: "删除该 Agent",
+              label: t("sidebar.agents.delete"),
               icon: <Trash2 className="h-3.5 w-3.5" />,
               danger: true,
               onSelect: () => props.onRequestDeleteAgent(agent),
@@ -1795,7 +1828,7 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
                   <button
                     type="button"
                     onClick={() => props.onInspectAgent(agent)}
-                    aria-label={`查看 ${agent.displayName} 名片`}
+                    aria-label={t("rail.inspectAgentAria", { name: agent.displayName })}
                     className="flex w-full cursor-pointer flex-col items-center gap-1 transition active:scale-[0.96]"
                   >
                     <PlatformAvatar
@@ -1811,10 +1844,13 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
                     </span>
                   </button>
                 </AppTooltip>
-                <AppTooltip side="right" content={`删除 ${agent.displayName}`}>
+                <AppTooltip
+                  side="right"
+                  content={t("sidebar.agents.deleteAria", { name: agent.displayName })}
+                >
                   <button
                     type="button"
-                    aria-label={`删除 ${agent.displayName}`}
+                    aria-label={t("sidebar.agents.deleteAria", { name: agent.displayName })}
                     onClick={(event) => {
                       event.stopPropagation();
                       props.onRequestDeleteAgent(agent);
@@ -1833,25 +1869,25 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
         <button
           type="button"
           onClick={props.onOpenConnectAgent}
-          aria-label="接入新的个人 Agent"
+          aria-label={t("rail.connectAgentAria")}
           className="app-no-drag group flex w-full cursor-pointer flex-col items-center gap-1 transition active:scale-[0.96]"
         >
           <span className="flex h-9 w-9 items-center justify-center rounded-full border border-dashed border-black/20 bg-black/[0.03] text-[#687082] transition group-hover:border-[#181B22]/50 group-hover:bg-white/75 group-hover:text-[#111318] dark:border-white/20 dark:bg-white/[0.04] dark:text-[#8E8E96] dark:group-hover:border-white/45 dark:group-hover:bg-white/[0.10] dark:group-hover:text-white">
             <Plus className="h-4 w-4 stroke-[1.9]" />
           </span>
-          <span className="text-center text-[10px] leading-[1.24] text-[#687082] transition-colors group-hover:text-[#111318] dark:text-[#8E8E96] dark:group-hover:text-white">
-            接入 Agent
+          <span className="max-w-full truncate px-0.5 text-center text-[10px] leading-[1.24] text-[#687082] transition-colors group-hover:text-[#111318] dark:text-[#8E8E96] dark:group-hover:text-white">
+            {t("rail.connectAgent")}
           </span>
         </button>
       </div>
 
-      {/* 3. 底部极简工具列：⌘K 搜索面板、管理后台（仅管理员）、主题切换、退出登录 */}
+      {/* 3. 底部极简工具列：⌘K 搜索面板、管理后台（仅管理员）、外观/语言/刷新率菜单、退出登录 */}
       <div className="flex shrink-0 flex-col items-center gap-1 pt-1">
-        <AppTooltip side="right" content="快速搜索与跳转" shortcut="⌘K">
+        <AppTooltip side="right" content={t("rail.commandPaletteTooltip")} shortcut="⌘K">
           <IconButton
             size="md"
             variant="ghost"
-            label="打开快速搜索与命令面板 (⌘K)"
+            label={t("rail.commandPaletteAria")}
             onClick={props.onOpenCommandPalette}
           >
             <Command className="h-4 w-4" />
@@ -1859,11 +1895,11 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
         </AppTooltip>
 
         {props.currentUser.role === "admin" ? (
-          <AppTooltip side="right" content="运营与治理管理后台">
+          <AppTooltip side="right" content={t("rail.adminTooltip")}>
             <IconButton
               size="md"
               variant="ghost"
-              label="打开运营管理后台"
+              label={t("rail.adminAria")}
               onClick={props.onOpenAdminConsole}
             >
               <Shield className="h-4 w-4" />
@@ -1872,14 +1908,14 @@ function PersonalAgentRail(props: PersonalAgentRailProps) {
         ) : null}
 
         <div className="app-no-drag">
-          <AccountThemeMenu />
+          <AccountThemeMenu side="right" align="end" />
         </div>
 
-        <AppTooltip side="right" content="退出登录">
+        <AppTooltip side="right" content={t("sidebar.accountMenu.logout")}>
           <IconButton
             size="md"
             variant="ghost"
-            label="退出登录"
+            label={t("sidebar.accountMenu.logout")}
             onClick={props.onLogout}
             className="text-[#8E96A6] hover:text-[#E5484D] dark:text-[#63636B] dark:hover:text-[#F87171]"
           >
@@ -1932,11 +1968,18 @@ const WORKSPACE_SURFACE_VARIANTS = {
 };
 
 function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
+  const { locale, t, tp } = useChatShellI18n();
+  const { t: commonT } = useCommonI18n();
   const queryClient = useQueryClient();
   const location = useBrowserLocation();
   const sessionToken = useSessionToken();
   const themeMode = useThemeMode();
   const { setPreference: setThemePreference } = useAccountThemePreference();
+  const {
+    preference: languagePreference,
+    resolvedLocale: resolvedLanguageLocale,
+    setPreference: setLanguagePreference,
+  } = useAccountLanguagePreference();
   const isDesktopChat = useIsDesktopChat();
   const connectionStatusRef = useRef<SseConnectionStatus>("connecting");
   const notificationRefetchInterval = () =>
@@ -2023,14 +2066,14 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     if (previous !== null) {
       for (const request of incomingRequestSnapshot) {
         if (!previous.has(request.friendshipId)) {
-          toast.info("收到好友申请", {
+          toast.info(t("ws.toast.incomingFriendRequest"), {
             id: request.friendshipId,
             description: request.peer.displayName,
           });
         }
       }
     }
-  }, [incomingRequestSnapshot]);
+  }, [incomingRequestSnapshot, t]);
 
   // 移动端（< md）严格由 URL 查询参数 `?room=` 驱动是否进入聊天室，保证顶部返回与 Android 侧滑 `popstate` 100% 闭环
   const activeRoomId: RoomId | null = useMemo(() => {
@@ -2124,12 +2167,12 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     for (const change of changes) {
       const id = `room-notice-${change.roomId}`;
       if (change.type === "show") {
-        toast.info(`${change.roomName} 有新消息`, { id });
+        toast.info(t("ws.toast.newRoomMessage", { roomName: change.roomName }), { id });
       } else {
         toast.dismiss(id);
       }
     }
-  }, [queryClient, roomSnapshot, visibleRoomId]);
+  }, [queryClient, roomSnapshot, t, visibleRoomId]);
 
   const onlineAgentCount = useMemo(
     () =>
@@ -2241,12 +2284,22 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     async (task: SoloWorkTaskView): Promise<void> => {
       setEscalatingTaskId(task.id);
       try {
-        const roomTitle =
-          task.title.length > 26 ? `会诊：${task.title.slice(0, 26)}…` : `会诊：${task.title}`;
+        const topologyLabel =
+          task.topology === "direct"
+            ? t("topology.direct")
+            : task.topology === "verify_loop"
+              ? t("topology.verify_loop")
+              : t("topology.swarm");
+        const shortTitle = task.title.length > 26 ? `${task.title.slice(0, 26)}…` : task.title;
+        const roomTitle = t("ws.escalate.roomTitle", { title: shortTitle });
         const res = await createRoomMutation.mutateAsync({
           name: roomTitle,
-          topic: `${task.repoName} · ${task.worktreeBranch}（${getWorkTopologyLabel(task.topology)}）`,
-          rules: "围绕单人工作台升级的工单上下文交叉举证，收敛可执行提案供群主拍板。",
+          topic: t("ws.escalate.roomTopic", {
+            repo: task.repoName,
+            branch: task.worktreeBranch,
+            topology: topologyLabel,
+          }),
+          rules: t("ws.escalate.roomRules"),
           visibility: "invite_only",
           governance: {
             mode: "proposal",
@@ -2259,16 +2312,19 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
         const blockerLine =
           task.attention !== undefined && task.attention.answeredChoice === undefined
-            ? `\n- **待共同拍板问题**：${task.attention.question}\n  - 备选项：${task.attention.options.join(" / ")}`
+            ? t("ws.escalate.blockerAttention", {
+                question: task.attention.question,
+                options: task.attention.options.join(" / "),
+              })
             : task.review?.verifierNote !== undefined
-              ? `\n- **独立审查摘要**：${task.review.verifierNote}`
+              ? t("ws.escalate.blockerReview", { note: task.review.verifierNote })
               : "";
 
         const contextMessage = [
-          `### 任务讨论：${task.title}`,
-          `- **所属工作区与分支**：\`${task.repoName}\` · \`${task.worktreeBranch}\``,
-          `- **执行方式**：${getWorkTopologyLabel(task.topology)}`,
-          `- **背景说明**：${task.brief}${blockerLine}`,
+          t("ws.escalate.msgHeading", { title: task.title }),
+          t("ws.escalate.msgWorkspace", { repo: task.repoName, branch: task.worktreeBranch }),
+          t("ws.escalate.msgTopology", { topology: topologyLabel }),
+          t("ws.escalate.msgBrief", { brief: task.brief, blocker: blockerLine }),
         ].join("\n");
 
         let anchorSeq = 1;
@@ -2304,14 +2360,16 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           markSoloTaskEscalated(task.id, res.room.id, createdRoomItem.id);
         }
         handleSelectRoom(res.room.id);
-        toast.success(`已创建会诊群「${res.room.name}」并继承工作区「${task.repoName}」`);
+        toast.success(
+          t("ws.escalate.toastCreated", { roomName: res.room.name, repoName: task.repoName }),
+        );
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "创建会诊群聊失败，请稍后重试");
+        toast.error(err instanceof Error ? err.message : t("ws.escalate.toastFailed"));
       } finally {
         setEscalatingTaskId(null);
       }
     },
-    [createRoomMutation, handleSelectRoom, props.currentUser.id, props.ownedAgents],
+    [createRoomMutation, handleSelectRoom, props.currentUser.id, props.ownedAgents, t],
   );
 
   const openOnboarding = useCallback(
@@ -2370,11 +2428,11 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           onOpened?.();
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "无法打开与该 Agent 的单聊");
+          toast.error(err instanceof Error ? err.message : t("ws.toast.openDirectAgentFailed"));
         },
       });
     },
-    [handleSelectRoom, openDirectAgentMutation],
+    [handleSelectRoom, openDirectAgentMutation, t],
   );
 
   const handleStartDirectHumanChat = useCallback(
@@ -2384,11 +2442,11 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           handleSelectRoom(res.room.id);
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "无法打开好友私聊");
+          toast.error(err instanceof Error ? err.message : t("ws.toast.openDirectHumanFailed"));
         },
       });
     },
-    [handleSelectRoom, openDirectHumanMutation],
+    [handleSelectRoom, openDirectHumanMutation, t],
   );
 
   const handleSendQuickFriendRequest = useCallback(
@@ -2398,60 +2456,60 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         {
           onSuccess: (res) => {
             if (res.autoAccepted || res.status === "accepted") {
-              toast.success(`已与「${displayName}」成为好友，现在可以直接私聊`);
+              toast.success(t("ws.toast.friendAutoAccepted", { name: displayName }));
             } else {
-              toast.success(`已向「${displayName}」发送好友申请`);
+              toast.success(t("ws.toast.friendRequestSent", { name: displayName }));
             }
           },
           onError: (err) => {
-            toast.error(err instanceof Error ? err.message : "发送好友申请失败");
+            toast.error(err instanceof Error ? err.message : t("ws.toast.friendRequestFailed"));
           },
         },
       );
     },
-    [sendFriendRequestMutation],
+    [sendFriendRequestMutation, t],
   );
 
   const handleAcceptFriendRequest = useCallback(
     (friendshipId: FriendshipId, displayName: string): void => {
       acceptFriendMutation.mutate(friendshipId, {
         onSuccess: () => {
-          toast.success(`已添加「${displayName}」为好友`);
+          toast.success(t("ws.toast.friendAccepted", { name: displayName }));
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "同意申请失败");
+          toast.error(err instanceof Error ? err.message : t("ws.toast.friendAcceptFailed"));
         },
       });
     },
-    [acceptFriendMutation],
+    [acceptFriendMutation, t],
   );
 
   const handleDeclineFriendRequest = useCallback(
     (friendshipId: FriendshipId, displayName: string): void => {
       declineFriendMutation.mutate(friendshipId, {
         onSuccess: () => {
-          toast.success(`已忽略「${displayName}」的好友申请`);
+          toast.success(t("ws.toast.friendDeclined", { name: displayName }));
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "操作失败");
+          toast.error(err instanceof Error ? err.message : t("ws.toast.actionFailed"));
         },
       });
     },
-    [declineFriendMutation],
+    [declineFriendMutation, t],
   );
 
   const handleRemoveFriend = useCallback(
     (userId: UserId, displayName: string): void => {
       removeFriendMutation.mutate(userId, {
         onSuccess: () => {
-          toast.success(`已解除与「${displayName}」的好友关系`);
+          toast.success(t("ws.toast.friendRemoved", { name: displayName }));
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "解除好友失败");
+          toast.error(err instanceof Error ? err.message : t("ws.toast.friendRemoveFailed"));
         },
       });
     },
-    [removeFriendMutation],
+    [removeFriendMutation, t],
   );
 
   const handleToggleAllowExternalDm = useCallback(
@@ -2467,17 +2525,17 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
             );
             toast.success(
               res.agent.allowExternalDm
-                ? "已开放站内其他用户私聊此 Agent"
-                : "已关闭外部用户私聊此 Agent",
+                ? t("ws.toast.externalDmEnabled")
+                : t("ws.toast.externalDmDisabled"),
             );
           },
           onError: (err) => {
-            toast.error(err instanceof Error ? err.message : "更新 Agent 设置失败");
+            toast.error(err instanceof Error ? err.message : t("ws.toast.updateAgentFailed"));
           },
         },
       );
     },
-    [updateOwnedAgentMutation],
+    [t, updateOwnedAgentMutation],
   );
 
   const handleDeleteOwnedAgent = useCallback(
@@ -2489,19 +2547,19 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           setInspectedAgent((prev) => (prev?.agentId === agentId ? null : prev));
           setInspectConfirmDelete(false);
           setReclaimAgentId((prev) => (prev === agentId ? null : prev));
-          toast.success(`已删除 Agent「${displayName}」`, {
+          toast.success(t("ws.toast.agentDeleted", { name: displayName }), {
             description: res.stoppedLocalDaemon
-              ? "已同步移出全部群聊并停止本机后台监听服务"
-              : "已移出全部群聊并吊销其访问令牌",
+              ? t("ws.toast.agentDeletedLocal")
+              : t("ws.toast.agentDeletedRemote"),
           });
         },
         onError: (err) => {
           setDeletingAgentId(null);
-          toast.error(err instanceof Error ? err.message : "删除 Agent 失败");
+          toast.error(err instanceof Error ? err.message : t("ws.toast.deleteAgentFailed"));
         },
       });
     },
-    [deleteOwnedAgentMutation],
+    [deleteOwnedAgentMutation, t],
   );
 
   const handleRequestDeleteRoom = useCallback(
@@ -2519,20 +2577,22 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         onSuccess: () => {
           setPendingDeleteRoom((prev) => (prev?.id === target.id ? null : prev));
           toast.success(
-            isDirect ? `已删除单聊会话「${target.name}」` : `已删除群聊「${target.name}」`,
+            isDirect
+              ? t("ws.toast.directRoomDeleted", { name: target.name })
+              : t("ws.toast.groupRoomDeleted", { name: target.name }),
             {
               description: isDirect
-                ? "会话消息已清理，个人 Agent 与好友关系不受影响"
-                : "群内消息与提案已清理，你的个人 Agent 不受影响",
+                ? t("ws.toast.directRoomDeletedDesc")
+                : t("ws.toast.groupRoomDeletedDesc"),
             },
           );
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "删除会话失败，请稍后重试");
+          toast.error(err instanceof Error ? err.message : t("ws.toast.deleteRoomFailed"));
         },
       });
     },
-    [deleteRoomMutation],
+    [deleteRoomMutation, t],
   );
 
   const handleRequestLeaveRoom = useCallback(
@@ -2548,14 +2608,14 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       leaveRoomMutation.mutate(target.id, {
         onSuccess: () => {
           setPendingLeaveRoom((prev) => (prev?.id === target.id ? null : prev));
-          toast.success(`已退出群聊「${target.name}」`);
+          toast.success(t("ws.toast.leftGroup", { name: target.name }));
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "退出群聊失败，请稍后重试");
+          toast.error(err instanceof Error ? err.message : t("ws.toast.leaveGroupFailed"));
         },
       });
     },
-    [leaveRoomMutation],
+    [leaveRoomMutation, t],
   );
 
   const handleUpdateRoomGovernanceFromMenu = useCallback(
@@ -2565,28 +2625,30 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         {
           onSuccess: () => {
             if (patch.renewBudget === true) {
-              toast.success("已续期讨论轮次");
+              toast.success(t("ws.toast.menuBudgetRenewed"));
             } else if (patch.mode !== undefined) {
               const modeLabel =
                 patch.mode === "free"
-                  ? "自由讨论"
+                  ? t("mode.free")
                   : patch.mode === "round_table"
-                    ? "圆桌轮流"
-                    : "提案收敛";
-              toast.success(`讨论节奏已切换为「${modeLabel}」`);
+                    ? t("mode.round_table")
+                    : t("mode.proposal");
+              toast.success(t("ws.toast.menuModeChanged", { mode: modeLabel }));
             } else if (patch.allowAgentMentions !== undefined) {
               toast.success(
-                patch.allowAgentMentions ? "已允许 Agent 互相 @" : "已关闭 Agent 互相 @",
+                patch.allowAgentMentions
+                  ? t("ws.toast.menuMentionsEnabled")
+                  : t("ws.toast.menuMentionsDisabled"),
               );
             }
           },
           onError: (err) => {
-            toast.error(err instanceof Error ? err.message : "更新群设置失败");
+            toast.error(err instanceof Error ? err.message : t("ws.toast.menuUpdateRoomFailed"));
           },
         },
       );
     },
-    [updateAnyRoomGovernanceMutation],
+    [t, updateAnyRoomGovernanceMutation],
   );
 
   const handleLogout = useCallback((): void => {
@@ -2595,10 +2657,26 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         resetSoloWorkbenchMemory();
         resetAllRoomWorkBuckets();
         resetAgentCapabilityPrefsMemory();
-        toast.success("已退出当前账号");
+        toast.success(t("ws.toast.signedOut"));
       },
     });
-  }, [logoutMutation]);
+  }, [logoutMutation, t]);
+
+  const handleSwitchLanguageFromPalette = useCallback(
+    (nextPreference: LanguagePreference): void => {
+      const targetLocale = resolveLocale(nextPreference);
+      setLanguagePreference(nextPreference);
+      const targetT = getChatShellTranslator(targetLocale).t;
+      toast.success(
+        nextPreference === "zh-CN"
+          ? targetT("cmd.lang.toast.zhCN")
+          : nextPreference === "en"
+            ? targetT("cmd.lang.toast.en")
+            : targetT("cmd.lang.toast.auto"),
+      );
+    },
+    [setLanguagePreference],
+  );
 
   // 构造全局 `⌘K` 命令面板分组动作
   const commandGroups: ReadonlyArray<CommandPaletteGroup> = useMemo(() => {
@@ -2613,35 +2691,45 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
       activeRoomSummary !== null &&
       (activeRoomSummary.kind === "direct_human" || isActiveRoomOwner);
     const isDark = themeMode === "dark";
+    const resolvedLanguageAutonym =
+      resolvedLanguageLocale === "zh-CN"
+        ? commonT("locale.autonym.zhCN")
+        : commonT("locale.autonym.en");
+    const activeLanguageBadge = (
+      <span className="rounded-full bg-black/[0.06] px-2 py-0.5 text-[10.5px] font-medium text-[#3B414E] dark:bg-white/[0.10] dark:text-[#D4D4DA]">
+        {t("cmd.badge.active")}
+      </span>
+    );
 
     const quickActions: CommandPaletteGroup = {
       id: "quick-actions",
-      heading: "快捷操作",
+      heading: t("cmd.group.quickActions"),
       items: [
         {
           id: "act-toggle-workbench-surface",
-          label: surfaceMode === "workbench" ? "返回聊天" : "打开工作台",
+          label:
+            surfaceMode === "workbench" ? t("cmd.workbench.backToChats") : t("cmd.workbench.open"),
           subtitle:
             surfaceMode === "workbench"
-              ? "查看私聊和群聊"
-              : `${String(workbenchCounts.needsYou)} 项任务待确认`,
+              ? t("cmd.workbench.backToChatsSubtitle")
+              : tp("cmd.workbench.needsReview", workbenchCounts.needsYou),
           icon:
             surfaceMode === "workbench" ? (
               <MessageCircle className="h-4 w-4" />
             ) : (
               <ListTodo className="h-4 w-4" />
             ),
-          keywords: ["workbench", "solo", "multica", "swarm", "工作台", "看板", "并发", "派活"],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.workbench,
           onSelect: () => handleSelectSurface(surfaceMode === "workbench" ? "chats" : "workbench"),
         },
         ...(activeRoomId !== null && activeRoomSummary?.kind !== "direct_human"
           ? [
               {
                 id: "act-synthesize-proposal",
-                label: "整理当前会话近期讨论为提案卡",
-                subtitle: activeRoomName ?? "对比多方案优劣与风险",
+                label: t("cmd.synthesize.label"),
+                subtitle: activeRoomName ?? t("cmd.synthesize.fallbackSubtitle"),
                 icon: <FileText className="h-4 w-4" />,
-                keywords: ["synthesize", "proposal", "提案", "总结", "整理"],
+                keywords: CHAT_SHELL_COMMAND_KEYWORDS.synthesize,
                 onSelect: () => {
                   if (activeRoomId !== null && !isDesktopChat && urlRoomId !== activeRoomId) {
                     handleSelectRoom(activeRoomId);
@@ -2655,142 +2743,161 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           ? [
               {
                 id: "act-delete-current-room",
-                label: activeRoomSummary.kind === "group" ? "删除当前群聊" : "删除当前单聊会话",
+                label:
+                  activeRoomSummary.kind === "group"
+                    ? t("cmd.deleteRoom.group")
+                    : t("cmd.deleteRoom.direct"),
                 subtitle: activeRoomSummary.name,
                 icon: <Trash2 className="h-4 w-4 text-[#C81E1E] dark:text-[#FCA5A5]" />,
-                keywords: ["delete", "remove", "room", "删除", "解散", "群聊", "单聊"],
+                keywords: CHAT_SHELL_COMMAND_KEYWORDS.deleteRoom,
                 onSelect: () => handleRequestDeleteRoom(activeRoomSummary),
               },
             ]
           : []),
         {
           id: "act-add-friend",
-          label: "添加好友 / 处理好友申请",
+          label: t("cmd.addFriend.label"),
           subtitle:
             incomingRequests.length > 0
-              ? `收到 ${String(incomingRequests.length)} 条新的好友申请`
-              : "用昵称或邮箱找好友",
+              ? tp("cmd.addFriend.incoming", incomingRequests.length)
+              : t("cmd.addFriend.subtitle"),
           icon: <UserPlus className="h-4 w-4" />,
-          keywords: ["friend", "dm", "user", "search", "好友", "私聊", "单聊", "添加"],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.addFriend,
           onSelect: () => setAddFriendOpen(true),
         },
         {
           id: "act-connect-agent",
-          label: "接入我的个人 Agent",
+          label: t("cmd.connectAgent.label"),
           subtitle: "Claude Code · Codex · Cursor · Antigravity · DeepSeek",
           icon: <Plus className="h-4 w-4" />,
-          keywords: ["agent", "connect", "pair", "cli", "mcp", "配对", "接入"],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.connectAgent,
           onSelect: () => openOnboarding("pair_agent"),
         },
         {
           id: "act-create-room",
-          label: "建群",
-          subtitle: "创建群聊并直接拉入好友或你的 Agent",
+          label: t("cmd.createRoom.label"),
+          subtitle: t("cmd.createRoom.subtitle"),
           icon: <MessageCircle className="h-4 w-4" />,
-          keywords: ["create", "new", "room", "新建", "建群", "群聊"],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.createRoom,
           onSelect: () => setCreateRoomOpen(true),
         },
         {
           id: "act-join-room",
-          label: "凭邀请码加入群",
-          subtitle: "输入朋友分享的群聊邀请码",
+          label: t("cmd.joinRoom.label"),
+          subtitle: t("cmd.joinRoom.subtitle"),
           icon: <LogIn className="h-4 w-4" />,
-          keywords: ["join", "invite", "token", "加入", "邀请码"],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.joinRoom,
           onSelect: () => setJoinRoomOpen(true),
         },
         ...(props.currentUser.role === "admin"
           ? [
               {
                 id: "act-open-admin-console",
-                label: "打开运营管理后台",
-                subtitle: "用户、会话、群聊内容监管与数据统计大盘",
+                label: t("cmd.admin.label"),
+                subtitle: t("cmd.admin.subtitle"),
                 icon: <Shield className="h-4 w-4" />,
-                keywords: ["admin", "console", "stats", "users", "后台", "管理", "统计"],
+                keywords: CHAT_SHELL_COMMAND_KEYWORDS.admin,
                 onSelect: () => navigateTo("/admin"),
               },
             ]
           : []),
         {
           id: "act-account-security",
-          label: "账号安全",
-          subtitle: `${props.currentUser.email} · 修改昵称或登录密码`,
+          label: t("cmd.accountSettings.label"),
+          subtitle: t("cmd.accountSettings.subtitle", { email: props.currentUser.email }),
           icon: <KeyRound className="h-4 w-4" />,
-          keywords: ["account", "password", "security", "profile", "账号", "密码", "安全", "昵称"],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.accountSettings,
           onSelect: () => setAccountSecurityOpen(true),
         },
         {
           id: "act-open-welcome-portal",
-          label: "产品介绍与联系作者",
-          subtitle: "功能概览 · 工作台协作 · impangyan@outlook.com",
+          label: t("cmd.welcome.label"),
+          subtitle: t("cmd.welcome.subtitle"),
           icon: <Compass className="h-4 w-4" />,
-          keywords: [
-            "welcome",
-            "about",
-            "portal",
-            "author",
-            "contact",
-            "email",
-            "介绍",
-            "关于",
-            "门户",
-            "作者",
-            "联系",
-            "邮箱",
-          ],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.welcome,
           onSelect: () => navigateTo("/welcome"),
         },
         {
           id: "act-toggle-theme",
-          label: isDark ? "始终使用白天模式" : "始终使用夜间模式",
-          subtitle: "关闭自动切换并固定使用所选外观",
+          label: isDark ? commonT("displayMenu.theme.light") : commonT("displayMenu.theme.dark"),
+          subtitle: t("cmd.theme.toggleSubtitle"),
           icon: isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />,
-          keywords: ["theme", "dark", "light", "主题", "深色", "浅色"],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.themeToggle,
           onSelect: () => setThemePreference(isDark ? "light" : "dark"),
         },
         {
           id: "act-automatic-theme",
-          label: "按时间自动切换外观",
-          subtitle: "07:00 白天 · 18:00 夜间",
+          label: t("cmd.theme.autoLabel"),
+          subtitle: commonT("displayMenu.theme.autoHint"),
           icon: <Clock3 className="h-4 w-4" />,
-          keywords: ["theme", "auto", "主题", "自动"],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.themeAuto,
           onSelect: () => setThemePreference("auto"),
         },
         {
           id: "act-refresh-rate-mode",
           label:
-            refreshState.preference === "max" ? "切换为标准省电帧率" : "开启最高刷新率（默认推荐）",
+            refreshState.preference === "max"
+              ? t("cmd.refresh.toStandard")
+              : t("cmd.refresh.toMax"),
           subtitle:
             refreshState.preference === "max"
-              ? `当前已开启最高刷新率 · 实时面板 ${String(refreshState.detectedHz)}Hz`
-              : "恢复自适应屏幕支持的最高刷新率（120Hz / 144Hz / 240Hz）",
+              ? t("cmd.refresh.maxSubtitle", { hz: refreshState.detectedHz })
+              : t("cmd.refresh.standardSubtitle"),
           icon: <Gauge className="h-4 w-4" />,
-          keywords: ["fps", "hz", "promotion", "120hz", "144hz", "240hz", "刷新率", "帧率", "高刷"],
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.refreshRate,
           onSelect: () => {
             const nextPref = refreshState.preference === "max" ? "standard" : "max";
             setRefreshRatePreference(nextPref);
             toast.success(
               nextPref === "max"
-                ? `已开启最高刷新率（当前 ${String(refreshState.detectedHz)}Hz）`
-                : "已切换至标准省电帧率",
+                ? t("cmd.refresh.toastMax", { hz: refreshState.detectedHz })
+                : t("cmd.refresh.toastStandard"),
             );
           },
+        },
+        {
+          id: "act-lang-auto",
+          label: commonT("locale.option.auto"),
+          subtitle: t("cmd.lang.auto.subtitle", { language: resolvedLanguageAutonym }),
+          icon: <Languages className="h-4 w-4" />,
+          ...(languagePreference === "auto" ? { badge: activeLanguageBadge } : {}),
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.language,
+          onSelect: () => handleSwitchLanguageFromPalette("auto"),
+        },
+        {
+          id: "act-lang-zh-CN",
+          label: commonT("locale.autonym.zhCN"),
+          subtitle: t("cmd.lang.zhCN.subtitle"),
+          icon: <Languages className="h-4 w-4" />,
+          ...(languagePreference === "zh-CN" ? { badge: activeLanguageBadge } : {}),
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.language,
+          onSelect: () => handleSwitchLanguageFromPalette("zh-CN"),
+        },
+        {
+          id: "act-lang-en",
+          label: commonT("locale.autonym.en"),
+          subtitle: t("cmd.lang.en.subtitle"),
+          icon: <Languages className="h-4 w-4" />,
+          ...(languagePreference === "en" ? { badge: activeLanguageBadge } : {}),
+          keywords: CHAT_SHELL_COMMAND_KEYWORDS.language,
+          onSelect: () => handleSwitchLanguageFromPalette("en"),
         },
       ],
     };
 
     const roomItemsGroup: CommandPaletteGroup = {
       id: "switch-rooms",
-      heading: "聊天会话",
+      heading: t("cmd.group.rooms"),
       items: rooms.map((room) => {
         const unread = Math.max(0, room.lastSeq - room.yourLastReadSeq);
         const kindLabel =
           room.kind === "direct_agent"
-            ? "Agent 单聊"
+            ? t("cmd.roomKind.directAgent")
             : room.kind === "direct_human"
-              ? "好友私聊"
+              ? t("cmd.roomKind.directHuman")
               : room.topic.length > 0
                 ? room.topic
-                : "群聊";
+                : t("cmd.roomKind.group");
         return {
           id: `cmd-room-${room.id}`,
           label: getRoomDisplayName(room, friendRemarks),
@@ -2805,7 +2912,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                 ),
               }
             : {}),
-          keywords: [room.name, room.topic, kindLabel, "room", "群聊", "单聊"],
+          keywords: [room.name, room.topic, kindLabel, ...CHAT_SHELL_COMMAND_KEYWORDS.room],
           onSelect: () => handleSelectRoom(room.id),
         };
       }),
@@ -2813,30 +2920,30 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
 
     const friendsGroup: CommandPaletteGroup = {
       id: "friends-dm",
-      heading: "我的好友",
+      heading: t("cmd.group.friends"),
       items: friends.map((f) => ({
         id: `cmd-friend-${f.user.userId}`,
         label: f.remark ?? f.user.displayName,
         subtitle: f.user.email,
         icon: <UserRound className="h-4 w-4" />,
-        keywords: [f.user.displayName, f.user.email, "friend", "dm", "好友", "私聊"],
+        keywords: [f.user.displayName, f.user.email, ...CHAT_SHELL_COMMAND_KEYWORDS.friend],
         onSelect: () => handleStartDirectHumanChat(f.user.userId),
       })),
     };
 
     const agentItemsGroup: CommandPaletteGroup = {
       id: "owned-agents",
-      heading: "我的 Agent",
+      heading: t("cmd.group.agents"),
       items: props.ownedAgents.map((agt) => {
-        const reachMeta = getReachVisualMeta(agt.reach);
+        const reachMeta = getReachVisualMeta(agt.reach, locale);
         return {
           id: `cmd-agt-${agt.id}`,
-          label: `单聊 ${agt.displayName}`,
+          label: t("cmd.agent.directLabel", { name: agt.displayName }),
           subtitle: `${agt.platform} · ${reachMeta.shortLabel}`,
           icon: (
             <span className={cn("inline-block h-2.5 w-2.5 rounded-full", reachMeta.dotClass)} />
           ),
-          keywords: [agt.displayName, agt.platform, "agent", "单聊", "dm"],
+          keywords: [agt.displayName, agt.platform, ...CHAT_SHELL_COMMAND_KEYWORDS.agent],
           onSelect: () => handleStartDirectAgentChat(agt.id),
         };
       }),
@@ -2851,6 +2958,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
   }, [
     activeRoomDetailQuery.data?.room,
     activeRoomId,
+    commonT,
     friendRemarks,
     friends,
     handleRequestDeleteRoom,
@@ -2858,8 +2966,11 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     handleSelectSurface,
     handleStartDirectAgentChat,
     handleStartDirectHumanChat,
+    handleSwitchLanguageFromPalette,
     incomingRequests.length,
     isDesktopChat,
+    languagePreference,
+    locale,
     openOnboarding,
     props.currentUser.email,
     props.currentUser.id,
@@ -2867,12 +2978,15 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
     props.ownedAgents,
     refreshState.detectedHz,
     refreshState.preference,
+    resolvedLanguageLocale,
     rooms,
     setThemePreference,
+    surfaceMode,
+    t,
+    themeMode,
+    tp,
     urlRoomId,
     workbenchCounts.needsYou,
-    surfaceMode,
-    themeMode,
   ]);
 
   const isChatVisibleOnMobile = mobileShowChat;
@@ -2941,6 +3055,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                 onSwitchToChats={() => handleSelectSurface("chats")}
                 onOpenConnectAgent={() => openOnboarding("pair_agent")}
                 onInspectOwnedAgent={(agent) => inspectOwnedAgent(agent, false)}
+                onOpenAccountSecurity={() => setAccountSecurityOpen(true)}
               />
             </motion.div>
           ) : (
@@ -3101,10 +3216,10 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                   <div className="max-w-md select-none text-center">
                     <BrandMark className="mx-auto mb-4 h-12 w-12 rounded-[14px] shadow-xs" />
                     <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[#111318] dark:text-[#F2F2F4]">
-                      还没有聊天记录
+                      {t("sidebar.empty.title")}
                     </h1>
                     <p className="mt-2.5 text-[14px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                      可以和好友或 Agent 私聊，也可以建个群。
+                      {t("sidebar.empty.desc")}
                     </p>
 
                     <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
@@ -3114,7 +3229,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                         leadingIcon={<Plus className="h-4 w-4" />}
                         onClick={() => setCreateRoomOpen(true)}
                       >
-                        建群
+                        {t("sidebar.footer.newGroup")}
                       </AppButton>
                       <AppButton
                         variant="secondary"
@@ -3122,14 +3237,14 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
                         leadingIcon={<ListTodo className="h-4 w-4" />}
                         onClick={() => handleSelectSurface("workbench")}
                       >
-                        打开工作台
+                        {t("cmd.workbench.open")}
                       </AppButton>
                       <AppButton
                         variant="secondary"
                         size="lg"
                         onClick={() => openOnboarding("pair_agent")}
                       >
-                        接入 Agent
+                        {t("sidebar.footer.connectAgent")}
                       </AppButton>
                     </div>
                   </div>
@@ -3146,8 +3261,11 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
           activeTab={surfaceMode === "workbench" ? "workbench" : sidebarSectionTab}
           chatUnreadCount={totalChatUnread}
           contactsBadgeText={
-            incomingRequests.length > 0 ? `${String(incomingRequests.length)} 新` : undefined
+            incomingRequests.length > 0
+              ? t("sidebar.contactsBadgeIncoming", { count: incomingRequests.length })
+              : undefined
           }
+          contactsBadgeTone={incomingRequests.length > 0 ? "alert" : "neutral"}
           workbenchNeedsYouCount={workbenchCounts.needsYou}
           onSelectTab={(tab) => {
             if (tab === "workbench") {
@@ -3169,7 +3287,13 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
         open={commandPaletteOpen}
         onOpenChange={setCommandPaletteOpen}
         groups={commandGroups}
-        footerHint={`${props.currentUser.displayName} · ${String(onlineAgentCount)} 个个人 Agent 在线 · ${String(friends.length)} 位好友`}
+        placeholder={t("cmd.placeholder")}
+        emptyText={t("cmd.empty")}
+        footerHint={t("cmd.footerHint", {
+          name: props.currentUser.displayName,
+          agents: tp("cmd.footerAgentsOnline", onlineAgentCount),
+          friends: tp("cmd.footerFriendsCount", friends.length),
+        })}
       />
 
       {/* 全局业务模态弹窗组 */}
@@ -3276,6 +3400,7 @@ function AuthenticatedWorkspaceView(props: AuthenticatedWorkspaceViewProps) {
  * @returns 登录视图或完整 Apple Liquid Glass 协作工作台
  */
 export function WorkspaceShell() {
+  const { t } = useChatShellI18n();
   const meQuery = useQuery(currentMeQueryOptions());
 
   // 首次鉴权用连接页。网络异常后的重试应保留已打开的认证表单。
@@ -3284,7 +3409,7 @@ export function WorkspaceShell() {
       <main className="flex h-vvh flex-col items-center justify-center gap-3 bg-app-frame text-im-fg dark:bg-[#0F1014]">
         <BrandMark className="h-10 w-10 rounded-[12px] shadow-xs" />
         <span className="text-[16px] font-semibold tracking-[-0.02em]">OpenHuddle</span>
-        <span className="text-xs text-[#687082] dark:text-[#8E8E96]">正在连接…</span>
+        <span className="text-xs text-[#687082] dark:text-[#8E8E96]">{t("ws.connecting")}</span>
       </main>
     );
   }

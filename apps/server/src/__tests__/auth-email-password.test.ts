@@ -182,7 +182,10 @@ describe("@openhuddle/server — email+password registration, login, reset & SMT
     const mePath = "/api/v1/me";
     const registeredHeaders = { authorization: `Bearer ${registered.sessionToken}` };
     const defaultAppearance = await app.request(mePath, { headers: registeredHeaders });
-    expect(await defaultAppearance.json()).toMatchObject({ themePreference: "auto" });
+    expect(await defaultAppearance.json()).toMatchObject({
+      themePreference: "auto",
+      languagePreference: "auto",
+    });
     const saveAppearance = (themePreference: string) =>
       app.request(mePath, {
         method: "PATCH",
@@ -194,12 +197,16 @@ describe("@openhuddle/server — email+password registration, login, reset & SMT
     expect(updatedAppearance.status).toBe(200);
     expect(await updatedAppearance.json()).toMatchObject({
       themePreference: "light",
+      languagePreference: "auto",
       user: { displayName: "Alice" },
     });
     const secondDeviceAppearance = await app.request(mePath, {
       headers: { authorization: `Bearer ${secondDeviceSession.sessionToken}` },
     });
-    expect(await secondDeviceAppearance.json()).toMatchObject({ themePreference: "light" });
+    expect(await secondDeviceAppearance.json()).toMatchObject({
+      themePreference: "light",
+      languagePreference: "auto",
+    });
 
     // 8. 忘记密码对未知邮箱返回防枚举静默 200 且不发信
     const unknownResetRes = await app.request("/api/v1/auth/password-reset/request-code", {
@@ -570,5 +577,218 @@ describe("@openhuddle/server — email+password registration, login, reset & SMT
       body: JSON.stringify({ email: "legacy@example.com", password: "MigratedPassword#2026" }),
     });
     expect(afterMigrateLogin.status).toBe(200);
+  });
+
+  it("syncs languagePreference across devices, isolates it from agents, and localizes verification emails by preference or Accept-Language", async () => {
+    const mailer = new InMemoryTestMailer();
+    const env = parseServerEnv({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      DATABASE_URL: "memory://",
+      OTP_RESEND_COOLDOWN_SEC: "0",
+    });
+    const app = createServerApp({ env, database, realtimeBus: bus, mailer });
+
+    // 1. 注册发码携带 Accept-Language: en -> 发送英文注册邮件
+    const enRegCodeRes = await app.request("/api/v1/auth/register/request-code", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept-language": "en-US,en;q=0.9",
+      },
+      body: JSON.stringify({ email: "intl@example.com" }),
+    });
+    expect(enRegCodeRes.status).toBe(200);
+    expect(mailer.sent).toHaveLength(1);
+    expect(mailer.sent[0]?.subject).toContain("[OpenHuddle] Registration verification code:");
+    expect(mailer.sent[0]?.html).toContain('<html lang="en">');
+    const enRegCode = extractSixDigitCode(mailer.sent[0]?.text ?? "");
+
+    // 2. 注册继承显式 languagePreference: "en"
+    const enRegisterRes = await app.request("/api/v1/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: "intl@example.com",
+        code: enRegCode,
+        displayName: "Intl User",
+        password: "IntlPassword#2026",
+        languagePreference: "en",
+      }),
+    });
+    expect(enRegisterRes.status).toBe(201);
+    const intlSession1 = (await enRegisterRes.json()) as AuthSessionResponse;
+    expect("languagePreference" in intlSession1.user).toBe(false);
+
+    const intlMeRes = await app.request("/api/v1/me", {
+      headers: { authorization: `Bearer ${intlSession1.sessionToken}` },
+    });
+    expect(intlMeRes.status).toBe(200);
+    expect(await intlMeRes.json()).toMatchObject({
+      callerKind: "human",
+      languagePreference: "en",
+      themePreference: "auto",
+    });
+
+    // 3. 登录第二设备并验证 PATCH /api/v1/me 校验非法值 400、保存后跨会话同步
+    const intlLogin2Res = await app.request("/api/v1/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "intl@example.com", password: "IntlPassword#2026" }),
+    });
+    expect(intlLogin2Res.status).toBe(200);
+    const intlSession2 = (await intlLogin2Res.json()) as AuthSessionResponse;
+
+    const invalidLangRes = await app.request("/api/v1/me", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${intlSession1.sessionToken}`,
+      },
+      body: JSON.stringify({ languagePreference: "ja-JP" }),
+    });
+    expect(invalidLangRes.status).toBe(400);
+
+    // 4. 账号保存为 "en" 时，即使请求头无 Accept-Language 或带 zh-CN，重置密码与旧版 OTP 仍发英文
+    const resetSavedEnRes = await app.request("/api/v1/auth/password-reset/request-code", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept-language": "zh-CN",
+      },
+      body: JSON.stringify({ email: "intl@example.com" }),
+    });
+    expect(resetSavedEnRes.status).toBe(200);
+    expect(mailer.sent[1]?.subject).toContain("[OpenHuddle] Password reset code:");
+    expect(mailer.sent[1]?.html).toContain('<html lang="en">');
+
+    // 5. 保存为 "zh-CN" 后跨设备同步，且即便请求头带 Accept-Language: en，重置密码与旧版 OTP 仍发中文
+    const patchZhRes = await app.request("/api/v1/me", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${intlSession1.sessionToken}`,
+      },
+      body: JSON.stringify({ languagePreference: "zh-CN" }),
+    });
+    expect(patchZhRes.status).toBe(200);
+    expect(await patchZhRes.json()).toMatchObject({
+      callerKind: "human",
+      languagePreference: "zh-CN",
+      user: { displayName: "Intl User" },
+    });
+
+    const secondSessionMe = await app.request("/api/v1/me", {
+      headers: { authorization: `Bearer ${intlSession2.sessionToken}` },
+    });
+    expect(await secondSessionMe.json()).toMatchObject({
+      callerKind: "human",
+      languagePreference: "zh-CN",
+    });
+
+    const resetSavedZhRes = await app.request("/api/v1/auth/password-reset/request-code", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept-language": "en",
+      },
+      body: JSON.stringify({ email: "intl@example.com" }),
+    });
+    expect(resetSavedZhRes.status).toBe(200);
+    expect(mailer.sent[2]?.subject).toContain("【OpenHuddle】重置密码验证码：");
+    expect(mailer.sent[2]?.html).toContain('<html lang="zh-CN">');
+
+    const otpSavedZhRes = await app.request("/api/v1/auth/otp/request", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept-language": "en",
+      },
+      body: JSON.stringify({ email: "intl@example.com" }),
+    });
+    expect(otpSavedZhRes.status).toBe(200);
+    expect(mailer.sent[3]?.subject).toContain("【OpenHuddle】登录验证码：");
+
+    // 6. 切回 "auto" 后，重置密码与旧版 OTP 均按 Accept-Language: en 发送英文邮件
+    const patchAutoRes = await app.request("/api/v1/me", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${intlSession1.sessionToken}`,
+      },
+      body: JSON.stringify({ languagePreference: "auto" }),
+    });
+    expect(patchAutoRes.status).toBe(200);
+
+    const resetAutoEnRes = await app.request("/api/v1/auth/password-reset/request-code", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept-language": "en",
+      },
+      body: JSON.stringify({ email: "intl@example.com" }),
+    });
+    expect(resetAutoEnRes.status).toBe(200);
+    expect(mailer.sent[4]?.subject).toContain("[OpenHuddle] Password reset code:");
+    expect(mailer.sent[4]?.html).toContain('<html lang="en">');
+
+    const otpAutoEnRes = await app.request("/api/v1/auth/otp/request", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "accept-language": "en",
+      },
+      body: JSON.stringify({ email: "intl@example.com" }),
+    });
+    expect(otpAutoEnRes.status).toBe(200);
+    expect(mailer.sent[5]?.subject).toContain("[OpenHuddle] Sign-in verification code:");
+
+    // 7. 配对 Agent 验证：GET /api/v1/me 不泄露主人 languagePreference，PATCH 携带 languagePreference 返回 403 且不修改 Agent 资料
+    const pairCodeRes = await app.request("/api/v1/pairing-codes", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${intlSession1.sessionToken}`,
+      },
+      body: JSON.stringify({}),
+    });
+    const pairCode = (await pairCodeRes.json()) as CreatePairingCodeResponse;
+    const pairRes = await app.request("/api/v1/pair", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: pairCode.code, name: "Intl Bot", platform: "codex" }),
+    });
+    const paired = (await pairRes.json()) as PairAgentResponse;
+
+    const agentMeRes = await app.request("/api/v1/me", {
+      headers: { authorization: `Bearer ${paired.token}` },
+    });
+    expect(agentMeRes.status).toBe(200);
+    const agentMe = (await agentMeRes.json()) as MeResponse;
+    expect(agentMe.callerKind).toBe("agent");
+    expect(agentMe).not.toHaveProperty("languagePreference");
+    expect(agentMe).not.toHaveProperty("owner.languagePreference");
+
+    const agentPatchRes = await app.request("/api/v1/me", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${paired.token}`,
+      },
+      body: JSON.stringify({ displayName: "Should Not Change", languagePreference: "en" }),
+    });
+    expect(agentPatchRes.status).toBe(403);
+    expect(((await agentPatchRes.json()) as ApiErrorEnvelope).error.code).toBe(
+      "FORBIDDEN_NOT_OWNER",
+    );
+
+    const agentMeAfterPatch = (await (
+      await app.request("/api/v1/me", {
+        headers: { authorization: `Bearer ${paired.token}` },
+      })
+    ).json()) as MeResponse;
+    expect(agentMeAfterPatch.callerKind === "agent" && agentMeAfterPatch.agent.displayName).toBe(
+      "Intl Bot",
+    );
   });
 });

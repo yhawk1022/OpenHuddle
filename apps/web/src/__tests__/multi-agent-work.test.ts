@@ -4,6 +4,7 @@
  */
 import type {
   AgentId,
+  HumanUserDto,
   OwnedAgentSummaryDto,
   ReadCursorSeq,
   RoomId,
@@ -16,17 +17,24 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppTooltipProvider, SegmentedTabs } from "../components/primitives/index.js";
 import { MarkdownContent } from "../components/ui/markdown-content.js";
+import { SoloWorkbench } from "../features/huddle-room/components/solo-workbench.js";
 import {
   WorkAttentionCard,
   isCustomReplyPlaceholderOption,
 } from "../features/huddle-room/components/work-attention-card.js";
 import { WorkInspectorTab } from "../features/huddle-room/components/work-inspector-tab.js";
-import { WorkTimelineMilestoneCard } from "../features/huddle-room/components/work-timeline-cards.js";
+import {
+  LiveRunFloatingBar,
+  WorkTimelineMilestoneCard,
+} from "../features/huddle-room/components/work-timeline-cards.js";
 import {
   WorkbenchTaskDetailPane,
   observeWorkbenchTraceScroll,
   quoteWorkbenchPath,
 } from "../features/huddle-room/components/workbench-task-detail.js";
+import { WorkbenchTraceEvents } from "../features/huddle-room/components/workbench-trace-events.js";
+import { WorkspaceConfigModal } from "../features/huddle-room/components/workspace-config-modal.js";
+import { getWorkbenchTranslator } from "../features/huddle-room/i18n/workbench.js";
 import {
   answerRoomWorkAttention,
   bindRoomWorkItemToSoloTask,
@@ -39,6 +47,10 @@ import {
   steerRoomWorkSlice,
   stopRoomWorkItem,
 } from "../features/huddle-room/work/room-work-store.js";
+import {
+  buildDefaultSoloTasks,
+  buildDefaultWorkspaces,
+} from "../features/huddle-room/work/solo-workbench-fixtures.js";
 import {
   answerSoloWorkAttention,
   bindRoomToWorkspace,
@@ -61,7 +73,10 @@ import {
   toSoloWorkTaskView,
 } from "../features/huddle-room/work/work-server-sync.js";
 import {
+  formatWorkStageLabel,
   getClaimListenerHint,
+  getSliceWaitLabel,
+  getWorkTopologyLabel,
   normalizeWorkspaceRoots,
   parsePromptTopologyDirective,
   resolveEffectiveDispatchTopology,
@@ -73,6 +88,7 @@ import {
   getExecutionTierMeta,
 } from "../lib/agent-capability-prefs.js";
 import { createExternalStore } from "../lib/external-store.js";
+import { withLocale } from "../lib/i18n/index.js";
 import {
   detectSyntaxLanguageFromCode,
   formatCodeFenceLanguageLabel,
@@ -174,7 +190,12 @@ describe("agent capability daemon CLI flags", () => {
       "codex",
     );
     expect(flags).toBe("");
-    expect(getExecutionTierMeta("chat_only").shortLabel).toBe("仅讨论");
+    withLocale("zh-CN", () => {
+      expect(getExecutionTierMeta("chat_only").shortLabel).toBe("仅讨论");
+    });
+    withLocale("en", () => {
+      expect(getExecutionTierMeta("chat_only").shortLabel).toBe("Chat only");
+    });
   });
 });
 
@@ -316,24 +337,45 @@ describe("solo workbench store & unified diff lifecycle", () => {
     );
     expect(pickWorkbenchAgent([offline, chatOnly, connected], offline.id)).toBe(offline);
     expect(pickWorkbenchAgent([offline, chatOnly], undefined, offline.id)).toBe(chatOnly);
-    expect(() => pickWorkbenchAgent([connected], offline.id)).toThrow("重新选择");
+    withLocale("zh-CN", () => {
+      expect(() => pickWorkbenchAgent([connected], offline.id)).toThrow("重新选择");
+    });
+    withLocale("en", () => {
+      expect(() => pickWorkbenchAgent([connected], offline.id)).toThrow("choose another");
+    });
   });
 
   it("distinguishes a declared work listener from an on-demand connection across identities", () => {
     for (const platform of ["codex", "deepseek", "claude_code", "gemini", "antigravity"] as const) {
-      expect(
-        getClaimListenerHint({ platform, reach: "online_sse", workspaceListenerConnected: false })
-          ?.message,
-      ).toContain("更新 OpenHuddle CLI");
+      withLocale("zh-CN", () => {
+        expect(
+          getClaimListenerHint({ platform, reach: "online_sse", workspaceListenerConnected: false })
+            ?.message,
+        ).toContain("更新 OpenHuddle CLI");
+      });
+      withLocale("en", () => {
+        expect(
+          getClaimListenerHint({ platform, reach: "online_sse", workspaceListenerConnected: false })
+            ?.message,
+        ).toContain("Update OpenHuddle CLI");
+      });
     }
     for (const platform of ["custom", "cursor", "openclaw", "chatgpt", "hosted"] as const) {
       expect(
         getClaimListenerHint({ platform, reach: "online_sse", workspaceListenerConnected: true }),
       ).toBeUndefined();
-      expect(
-        getClaimListenerHint({ platform, reach: "polling", workspaceListenerConnected: false })
-          ?.message,
-      ).toContain("OpenHuddle MCP");
+      withLocale("zh-CN", () => {
+        expect(
+          getClaimListenerHint({ platform, reach: "polling", workspaceListenerConnected: false })
+            ?.message,
+        ).toContain("OpenHuddle MCP");
+      });
+      withLocale("en", () => {
+        expect(
+          getClaimListenerHint({ platform, reach: "polling", workspaceListenerConnected: false })
+            ?.message,
+        ).toContain("OpenHuddle MCP");
+      });
     }
   });
 
@@ -401,13 +443,24 @@ describe("solo workbench store & unified diff lifecycle", () => {
       createdAtIso: "2026-11-24T00:00:00.000Z",
       updatedAtIso: "2026-11-24T00:00:00.000Z",
     });
-    const view = toSoloWorkTaskView(item, Date.parse(item.createdAtIso));
-    const html = renderDetail(view);
-    expect(html).toContain("等待 Codex 认领执行分片");
-    expect(html).toContain("所有执行分片完成后开始复核");
-    expect(html).toContain("工单监听尚未连接");
-    expect(html.match(/href="\/install.md"/g)).toHaveLength(1);
-    expect(html).not.toContain("打开执行目录");
+    const zhView = withLocale("zh-CN", () =>
+      toSoloWorkTaskView(item, Date.parse(item.createdAtIso)),
+    );
+    const zhHtml = withLocale("zh-CN", () => renderDetail(zhView));
+    expect(zhHtml).toContain("等待 Codex 认领执行分片");
+    expect(zhHtml).toContain("所有执行分片完成后开始复核");
+    expect(zhHtml).toContain("工单监听尚未连接");
+    expect(zhHtml.match(/href="\/install.md"/g)).toHaveLength(1);
+    expect(zhHtml).not.toContain("打开执行目录");
+
+    const enView = withLocale("en", () => toSoloWorkTaskView(item, Date.parse(item.createdAtIso)));
+    const enHtml = withLocale("en", () => renderDetail(enView));
+    expect(enHtml).toContain("Waiting for Codex to claim execution slice");
+    expect(enHtml).toContain("Verification starts once execution slices finish");
+    expect(enHtml).toContain("work listener is not connected");
+    expect(enHtml.match(/href="\/install.md"/g)).toHaveLength(1);
+    expect(enHtml).not.toContain("Open Directory");
+
     const reported = {
       agentEnvironment: "CLI",
       sessionJsonlPath: "sessions/test.jsonl",
@@ -416,8 +469,8 @@ describe("solo workbench store & unified diff lifecycle", () => {
     };
     const worktree = "/worktrees/hash-51b8c2";
     const completed = {
-      ...view,
-      slices: view.slices
+      ...zhView,
+      slices: zhView.slices
         .map((slice) => ({
           ...slice,
           provenance: {
@@ -428,11 +481,23 @@ describe("solo workbench store & unified diff lifecycle", () => {
         }))
         .reverse(),
     };
-    expect(renderDetail(completed)).toContain(`title="${worktree}"`);
+    expect(withLocale("zh-CN", () => renderDetail(completed))).toContain(`title="${worktree}"`);
     expect(
-      toSoloWorkTaskView({ ...item, stage: "verifying" }, Date.parse(item.updatedAtIso)).slices[1]
-        ?.liveSummary,
+      withLocale(
+        "zh-CN",
+        () =>
+          toSoloWorkTaskView({ ...item, stage: "verifying" }, Date.parse(item.updatedAtIso))
+            .slices[1]?.liveSummary,
+      ),
     ).toBe("等待 DeepSeek 认领复核分片");
+    expect(
+      withLocale(
+        "en",
+        () =>
+          toSoloWorkTaskView({ ...item, stage: "verifying" }, Date.parse(item.updatedAtIso))
+            .slices[1]?.liveSummary,
+      ),
+    ).toBe("Waiting for DeepSeek to claim verification slice");
   });
 
   it("summarizes consecutive runner output and keeps prompt text inside closed disclosures", () => {
@@ -452,7 +517,7 @@ describe("solo workbench store & unified diff lifecycle", () => {
       detail: "Original terminal output",
       timestampIso: "2026-11-24T00:00:00.000Z",
     } as const;
-    const html = renderDetail({
+    const taskWithTrace = {
       ...task,
       slices: task.slices.map((slice) => ({
         ...slice,
@@ -466,22 +531,24 @@ describe("solo workbench store & unified diff lifecycle", () => {
         {
           ...first,
           id: "d",
-          kind: "review",
+          kind: "review" as const,
           message: "复核未通过，打回修复：Original rework request",
         },
       ],
-    });
-    expect(html).not.toMatch(/<details[^>]*\bopen/);
-    const collapsed = html.replace(
+    };
+
+    const zhHtml = withLocale("zh-CN", () => renderDetail(taskWithTrace));
+    expect(zhHtml).not.toMatch(/<details[^>]*\bopen/);
+    const zhCollapsed = zhHtml.replace(
       /<details\b[^>]*>\s*(<summary\b[\s\S]*?<\/summary>)[\s\S]*?<\/details>/g,
       "$1",
     );
-    expect(collapsed).toContain('aria-label="补充说明"');
-    expect(collapsed).toContain("<textarea");
-    expect(collapsed).toContain('enterKeyHint="enter"');
-    expect(collapsed).toContain("收到了 2 条执行输出");
-    expect(collapsed).toContain("收到了执行输出");
-    expect(collapsed).toContain("已退回修改");
+    expect(zhCollapsed).toContain('aria-label="补充说明"');
+    expect(zhCollapsed).toContain("<textarea");
+    expect(zhCollapsed).toContain('enterKeyHint="enter"');
+    expect(zhCollapsed).toContain("收到了 2 条执行输出");
+    expect(zhCollapsed).toContain("收到了执行输出");
+    expect(zhCollapsed).toContain("已退回修改");
     for (const raw of [
       "You are the implementing agent.",
       "Original terminal output",
@@ -491,9 +558,20 @@ describe("solo workbench store & unified diff lifecycle", () => {
       "Raw worker instructions",
       "[Verifier #1] Original review instructions",
     ]) {
-      expect(collapsed).not.toContain(raw);
-      expect(html).toContain(raw);
+      expect(zhCollapsed).not.toContain(raw);
+      expect(zhHtml).toContain(raw);
     }
+
+    const enHtml = withLocale("en", () => renderDetail(taskWithTrace));
+    const enCollapsed = enHtml.replace(
+      /<details\b[^>]*>\s*(<summary\b[\s\S]*?<\/summary>)[\s\S]*?<\/details>/g,
+      "$1",
+    );
+    expect(enCollapsed).toContain('aria-label="Additional guidance"');
+    expect(enCollapsed).toContain("Received 2 output entries");
+    expect(enCollapsed).toContain("Received execution output");
+    expect(enCollapsed).toContain("Changes requested");
+    expect(enCollapsed).toContain("Details · 1 note");
   });
 
   it("keeps the last trace visible when a keyboard resize dispatches scroll first", ({
@@ -600,22 +678,36 @@ describe("solo workbench store & unified diff lifecycle", () => {
     expect(folderWs.sandboxMode).toBe("in_place");
     expect(folderWs.prewarmedWorktrees).toBe(0);
 
-    // 3. 只读围栏工作区派发任务自动降级为 workspace_read
+    // 3. 只读围栏工作区派发任务自动降级为 workspace_read，并按语种本地化分支展示文案
     const readOnlyWs = upsertAgentWorkspace({
       name: "线上只读审计仓",
       kind: "git_repo",
       roots: [{ localPath: "~/Developer/prod-mirror", defaultBranch: "release" }],
       sandboxMode: "read_only",
     });
-    const readTask = dispatchSoloWorkTask({
-      rawPrompt: "排查鉴权中间件的超时重试配置",
-      topology: "direct",
-      repoId: readOnlyWs.id,
-      ownedAgents: OWNED_AGENTS,
-      ownerDisplayName: "庞彦",
-    });
-    expect(readTask.tier).toBe("workspace_read");
-    expect(readTask.worktreeBranch).toBe("只读围栏");
+    const readTaskZh = withLocale("zh-CN", () =>
+      dispatchSoloWorkTask({
+        rawPrompt: "排查鉴权中间件的超时重试配置",
+        topology: "direct",
+        repoId: readOnlyWs.id,
+        ownedAgents: OWNED_AGENTS,
+        ownerDisplayName: "庞彦",
+      }),
+    );
+    expect(readTaskZh.tier).toBe("workspace_read");
+    expect(readTaskZh.worktreeBranch).toBe("只读围栏");
+
+    const readTaskEn = withLocale("en", () =>
+      dispatchSoloWorkTask({
+        rawPrompt: "Audit auth middleware retry timeout",
+        topology: "direct",
+        repoId: readOnlyWs.id,
+        ownedAgents: OWNED_AGENTS,
+        ownerDisplayName: "庞彦",
+      }),
+    );
+    expect(readTaskEn.tier).toBe("workspace_read");
+    expect(readTaskEn.worktreeBranch).toBe("Read-only");
 
     // 4. 群聊绑定工作区并在移除工作区时自动解绑清理
     bindRoomToWorkspace(ROOM_ID, multiWs.id);
@@ -1043,26 +1135,45 @@ describe("shared external-store, work-utils, and workspace edit/logout invariant
     expect(isCustomReplyPlaceholderOption("已处理设备或工作区问题，重试")).toBe(false);
     expect(isCustomReplyPlaceholderOption("仅自动还原越界文件并保留合规改动（推荐）")).toBe(false);
 
-    const html = renderToStaticMarkup(
-      createElement(WorkAttentionCard, {
-        variant: "detail",
-        askedByName: "Codex",
-        question: "目录已存在文件，如何处理？",
-        options: ["在现有目录下继续（推荐）", "补充说明后继续"],
-        onSubmitAnswer() {},
-      }),
+    const zhHtml = withLocale("zh-CN", () =>
+      renderToStaticMarkup(
+        createElement(WorkAttentionCard, {
+          variant: "detail",
+          askedByName: "Codex",
+          question: "目录已存在文件，如何处理？",
+          options: ["在现有目录下继续（推荐）", "补充说明后继续"],
+          onSubmitAnswer() {},
+        }),
+      ),
     );
 
-    expect(html).toContain("Codex 请你确认：目录已存在文件，如何处理？");
-    expect(html).toContain('maxLength="240"');
-    expect(html).toContain("或直接回复说明，提交后继续…");
-    expect(html).toContain(">回复<");
-    expect(html).not.toContain("oh-workbench-note");
-    expect(html).toContain('data-attention-option="direct"');
-    expect(html).toContain('data-attention-option="custom-guide"');
+    expect(zhHtml).toContain("Codex 请你确认：目录已存在文件，如何处理？");
+    expect(zhHtml).toContain('maxLength="240"');
+    expect(zhHtml).toContain("或直接回复说明，提交后继续…");
+    expect(zhHtml).toContain(">回复<");
+    expect(zhHtml).not.toContain("oh-workbench-note");
+    expect(zhHtml).toContain('data-attention-option="direct"');
+    expect(zhHtml).toContain('data-attention-option="custom-guide"');
     // 占位项与直接提交项渲染不同图标（Pencil vs ChevronRight）
-    expect(html).toContain("lucide-pencil");
-    expect(html).toContain("lucide-chevron-right");
+    expect(zhHtml).toContain("lucide-pencil");
+    expect(zhHtml).toContain("lucide-chevron-right");
+
+    const enHtml = withLocale("en", () =>
+      renderToStaticMarkup(
+        createElement(WorkAttentionCard, {
+          variant: "detail",
+          askedByName: "Codex",
+          question: "Existing files detected — how should we proceed?",
+          options: ["Continue in existing directory (Recommended)", "Other (specify)"],
+          onSubmitAnswer() {},
+        }),
+      ),
+    );
+    expect(enHtml).toContain("Codex asks: Existing files detected — how should we proceed?");
+    expect(enHtml).toContain("Or type your reply to continue…");
+    expect(enHtml).toContain(">Reply<");
+    expect(enHtml).toContain('data-attention-option="direct"');
+    expect(enHtml).toContain('data-attention-option="custom-guide"');
   });
 
   it("shows stop button, defaults to steps tab, and exposes WorkAttentionCard when awaiting_answer", () => {
@@ -1078,7 +1189,7 @@ describe("shared external-store, work-utils, and workspace edit/logout invariant
         createdAtIso: "2026-11-24T00:00:00.000Z",
       },
     ];
-    resetSoloWorkbenchShowcase(ownedAgents, "庞彦");
+    withLocale("zh-CN", () => resetSoloWorkbenchShowcase(ownedAgents, "庞彦"));
     const attnTask = getSoloWorkTaskById("solo_wrk_attn_02");
     expect(attnTask).toBeDefined();
     if (!attnTask) return;
@@ -1097,80 +1208,308 @@ describe("shared external-store, work-utils, and workspace edit/logout invariant
       ],
     };
 
-    const detailHtml = renderToStaticMarkup(
-      createElement(
-        AppTooltipProvider,
-        null,
-        createElement(WorkbenchTaskDetailPane, {
-          task: awaitingTaskWithDiff,
-          ownedAgents,
-          ownerDisplayName: "庞彦",
-          isEscalating: false,
-          onEscalate() {},
-          onOpenEscalatedRoom() {},
-          onConfigureWorkspace() {},
-        }),
-      ),
-    );
+    const renderAwaitingDetail = () =>
+      renderToStaticMarkup(
+        createElement(
+          AppTooltipProvider,
+          null,
+          createElement(WorkbenchTaskDetailPane, {
+            task: awaitingTaskWithDiff,
+            ownedAgents,
+            ownerDisplayName: "庞彦",
+            isEscalating: false,
+            onEscalate() {},
+            onOpenEscalatedRoom() {},
+            onConfigureWorkspace() {},
+          }),
+        ),
+      );
 
-    expect(detailHtml).toContain('data-awaiting-answer="true"');
-    expect(detailHtml).not.toContain('data-collapsed="true"');
-    expect(detailHtml).toContain(">停止<");
-    expect(detailHtml).toContain('data-attention-card="detail"');
-    expect(detailHtml).toContain('maxLength="240"');
+    const zhDetailHtml = withLocale("zh-CN", renderAwaitingDetail);
+    expect(zhDetailHtml).toContain('data-awaiting-answer="true"');
+    expect(zhDetailHtml).not.toContain('data-collapsed="true"');
+    expect(zhDetailHtml).toContain(">停止<");
+    expect(zhDetailHtml).toContain('data-attention-card="detail"');
+    expect(zhDetailHtml).toContain('maxLength="240"');
     // 默认落在「执行追踪」页签（实时过程追踪可见，而非直接切入 diff 查看器）
-    expect(detailHtml).toContain("实时过程追踪");
-    expect(detailHtml).toMatch(/aria-selected="true"[^>]*>.*?执行追踪/);
+    expect(zhDetailHtml).toContain("实时过程追踪");
+    expect(zhDetailHtml).toMatch(/aria-selected="true"[^>]*>.*?执行追踪/);
+
+    const enDetailHtml = withLocale("en", renderAwaitingDetail);
+    expect(enDetailHtml).toContain(">Stop<");
+    expect(enDetailHtml).toContain("Live Execution Trace");
+    expect(enDetailHtml).toMatch(/aria-selected="true"[^>]*>.*?Trace/);
+    expect(enDetailHtml).toContain(">Changes<");
 
     // 聊天时间线与右侧任务抽屉的 awaiting_answer 均具备停止按钮与统一确认卡
-    loadRoomWorkShowcase({
-      roomId: ROOM_ID,
-      preset: "needs_you",
-      latestSeq: 22,
-      members: SAMPLE_MEMBERS,
-      currentUserId: ME_ID,
-    });
+    withLocale("zh-CN", () =>
+      loadRoomWorkShowcase({
+        roomId: ROOM_ID,
+        preset: "needs_you",
+        latestSeq: 22,
+        members: SAMPLE_MEMBERS,
+        currentUserId: ME_ID,
+      }),
+    );
 
     const roomAttnItem = getRoomWorkItems(ROOM_ID).find((i) => i.id === "wrk_showcase_attn");
     expect(roomAttnItem).toBeDefined();
     if (!roomAttnItem) return;
 
-    const timelineHtml = renderToStaticMarkup(
-      createElement(WorkTimelineMilestoneCard, {
-        item: roomAttnItem,
-        onOpenInInspector() {},
-        onAnswerAttention() {},
-        onStop() {},
-        onDecideReview() {},
-        onRetry() {},
-      }),
-    );
-    expect(timelineHtml).toContain(">停止<");
-    expect(timelineHtml).toContain('data-attention-card="timeline"');
+    const renderTimeline = () =>
+      renderToStaticMarkup(
+        createElement(WorkTimelineMilestoneCard, {
+          item: roomAttnItem,
+          onOpenInInspector() {},
+          onAnswerAttention() {},
+          onStop() {},
+          onDecideReview() {},
+          onRetry() {},
+        }),
+      );
+    const zhTimelineHtml = withLocale("zh-CN", renderTimeline);
+    expect(zhTimelineHtml).toContain(">停止<");
+    expect(zhTimelineHtml).toContain('data-attention-card="timeline"');
+    const enTimelineHtml = withLocale("en", renderTimeline);
+    expect(enTimelineHtml).toContain(">Stop<");
+    expect(enTimelineHtml).toContain("Needs You");
 
-    const inspectorHtml = renderToStaticMarkup(
-      createElement(WorkInspectorTab, {
+    const renderInspector = () =>
+      renderToStaticMarkup(
+        createElement(WorkInspectorTab, {
+          roomId: ROOM_ID,
+          members: SAMPLE_MEMBERS,
+          items: [roomAttnItem],
+          activeRunningItems: [],
+          needsHumanItems: [roomAttnItem],
+          defaults: { intakeMode: "off" },
+          observeLogs: [],
+          focusedWorkItemId: null,
+          onUpdateDefaults() {},
+          onSteerSlice() {},
+          onStopItem() {},
+          onRetryItem() {},
+          onAnswerAttention() {},
+          onDecideReview() {},
+          onOpenComposerDispatch() {},
+          onLoadShowcase() {},
+          onClearShowcase() {},
+        }),
+      );
+    const zhInspectorHtml = withLocale("zh-CN", renderInspector);
+    expect(zhInspectorHtml).toContain('aria-label="停止任务"');
+    expect(zhInspectorHtml).toContain('data-attention-card="inspector"');
+    expect(zhInspectorHtml).toContain("共 1 项任务");
+
+    const enInspectorHtml = withLocale("en", renderInspector);
+    expect(enInspectorHtml).toContain('aria-label="Stop task"');
+    expect(enInspectorHtml).toContain("1 task");
+    expect(enInspectorHtml).toContain("Needs You");
+    expect(enInspectorHtml).toContain("New Task");
+  });
+
+  it("renders SoloWorkbench, WorkspaceConfigModal, LiveRunFloatingBar, WorkbenchTraceEvents, fixtures, and work-utils cleanly in zh-CN and en", () => {
+    const ownedAgents: ReadonlyArray<OwnedAgentSummaryDto> = [
+      {
+        id: MY_CODEX_ID,
+        ownerUserId: ME_ID,
+        displayName: "庞彦-Codex",
+        slug: "pangyan-codex",
+        platform: "codex",
+        reach: "online_sse",
+        workspaceListenerConnected: true,
+        allowExternalDm: false,
+        createdAtIso: "2026-11-24T00:00:00.000Z",
+      },
+    ];
+    const currentUser: HumanUserDto = {
+      id: ME_ID,
+      email: "owner@openhuddle.dev",
+      displayName: "庞彦",
+      role: "user",
+      status: "active",
+      emailVerified: true,
+      hasPassword: true,
+      createdAtIso: "2026-11-24T00:00:00.000Z",
+    };
+
+    // 1. Fixtures & work-utils bilingual assertions
+    const zhWorkspaces = buildDefaultWorkspaces("zh-CN");
+    const enWorkspaces = buildDefaultWorkspaces("en");
+    expect(zhWorkspaces[1]?.name).toBe("跨端底座联调");
+    expect(enWorkspaces[1]?.name).toBe("Cross-Platform SDK");
+    expect(zhWorkspaces[2]?.name).toBe("产品与架构文档");
+    expect(enWorkspaces[2]?.name).toBe("Product & Arch Docs");
+
+    const zhTasks = buildDefaultSoloTasks(ownedAgents, "庞彦", "zh-CN");
+    const enTasks = buildDefaultSoloTasks(ownedAgents, "庞彦", "en");
+    expect(zhTasks[0]?.title).toContain("RealtimeBus");
+    expect(enTasks[0]?.title).toContain("Refactor RealtimeBus");
+    expect(zhTasks[1]?.repoName).toBe("跨端底座联调");
+    expect(enTasks[1]?.repoName).toBe("Cross-Platform SDK");
+
+    expect(getWorkTopologyLabel("direct", "zh-CN")).toBe("单人执行");
+    expect(getWorkTopologyLabel("verify_loop", "zh-CN")).toBe("双人复核");
+    expect(getWorkTopologyLabel("swarm", "zh-CN")).toBe("多路并行");
+    expect(getWorkTopologyLabel("direct", "en")).toBe("Direct");
+    expect(getWorkTopologyLabel("verify_loop", "en")).toBe("Verify");
+    expect(getWorkTopologyLabel("swarm", "en")).toBe("Swarm");
+    expect(formatWorkStageLabel("awaiting_answer", "en")).toBe("Needs You");
+    expect(formatWorkStageLabel("awaiting_review", "zh-CN")).toBe("待签收");
+    expect(getSliceWaitLabel("working", "verify", "en")).toBe("Waiting on work");
+
+    // 2. SoloWorkbench bilingual rendering (including concise English labels + optional onOpenAccountSecurity)
+    const renderWorkbench = (locale: "zh-CN" | "en") =>
+      withLocale(locale, () => {
+        const repos = buildDefaultWorkspaces(locale);
+        const tasks = buildDefaultSoloTasks(ownedAgents, "庞彦", locale);
+        return renderToStaticMarkup(
+          createElement(
+            AppTooltipProvider,
+            null,
+            createElement(SoloWorkbench, {
+              currentUser,
+              ownedAgents,
+              repos,
+              tasks,
+              counts: computeSoloWorkbenchCounts(tasks),
+              escalatingTaskId: null,
+              onEscalateToHuddle() {},
+              onOpenEscalatedRoom() {},
+              onSwitchToChats() {},
+              onOpenConnectAgent() {},
+              onInspectOwnedAgent() {},
+              onOpenAccountSecurity() {},
+            }),
+          ),
+        );
+      });
+
+    const zhWbHtml = renderWorkbench("zh-CN");
+    expect(zhWbHtml).toContain("工作台");
+    expect(zhWbHtml).toContain("全部任务");
+    expect(zhWbHtml).toContain("待确认");
+    expect(zhWbHtml).toContain("进行中");
+    expect(zhWbHtml).toContain("已完成");
+    expect(zhWbHtml).toContain('aria-label="按工作区筛选任务"');
+    expect(zhWbHtml).toContain('aria-label="选择协作方式"');
+    expect(zhWbHtml).toContain('aria-label="选择执行 Agent"');
+    expect(zhWbHtml).toContain("执行追踪");
+    expect(zhWbHtml).toContain("代码变更");
+
+    const enWbHtml = renderWorkbench("en");
+    expect(enWbHtml).toContain("Workbench");
+    expect(enWbHtml).toContain("All Tasks");
+    expect(enWbHtml).toContain("Needs You");
+    expect(enWbHtml).toContain("Running");
+    expect(enWbHtml).toContain("Done");
+    expect(enWbHtml).toContain('aria-label="Filter tasks by workspace"');
+    expect(enWbHtml).toContain('aria-label="Select topology"');
+    expect(enWbHtml).toContain('aria-label="Select execution agent"');
+    expect(enWbHtml).toContain("Trace");
+    expect(enWbHtml).toContain("Changes");
+
+    // Compact English terminology & Account/Language menu entry catalog assertions
+    const zhT = getWorkbenchTranslator("zh-CN").t;
+    const enT = getWorkbenchTranslator("en").t;
+    expect(zhT("filter.allWorkspaces")).toBe("全部工作区");
+    expect(enT("filter.allWorkspaces")).toBe("All Spaces");
+    expect(zhT("assign.auto")).toBe("自动分配");
+    expect(enT("assign.auto")).toBe("Auto-assign");
+    expect(zhT("workbench.menu.accountSecurity")).toBe("账号与语言设置…");
+    expect(enT("workbench.menu.accountSecurity")).toBe("Account & Language…");
+    expect(enT("detail.tab.steps")).toBe("Trace");
+    expect(enT("detail.tab.changes")).toBe("Changes");
+
+    // 3. WorkspaceConfigModal renders cleanly without throwing in both locales (Dialog.Portal mounts client-side)
+    const renderWsModal = (locale: "zh-CN" | "en") =>
+      withLocale(locale, () =>
+        renderToStaticMarkup(
+          createElement(
+            AppTooltipProvider,
+            null,
+            createElement(WorkspaceConfigModal, {
+              open: true,
+              initialWorkspace: null,
+              canDelete: false,
+              ownedAgents,
+              ownerDisplayName: "庞彦",
+              onClose() {},
+              onSaved() {},
+              onDeleted() {},
+            }),
+          ),
+        ),
+      );
+    expect(() => renderWsModal("zh-CN")).not.toThrow();
+    expect(() => renderWsModal("en")).not.toThrow();
+    expect(zhT("wsModal.titleCreate")).toBe("新建工作区");
+    expect(enT("wsModal.titleCreate")).toBe("New Workspace");
+    expect(enT("wsModal.kind.gitRepo")).toBe("Git Repo");
+    expect(enT("wsModal.kind.multiRoot")).toBe("Multi-root");
+    expect(enT("wsModal.kind.folder")).toBe("Folder");
+
+    // 4. LiveRunFloatingBar + WorkbenchTraceEvents bilingual rendering
+    withLocale("en", () =>
+      loadRoomWorkShowcase({
         roomId: ROOM_ID,
+        preset: "swarm_live",
+        latestSeq: 22,
         members: SAMPLE_MEMBERS,
-        items: [roomAttnItem],
-        activeRunningItems: [],
-        needsHumanItems: [roomAttnItem],
-        defaults: { intakeMode: "off" },
-        observeLogs: [],
-        focusedWorkItemId: null,
-        onUpdateDefaults() {},
-        onSteerSlice() {},
-        onStopItem() {},
-        onRetryItem() {},
-        onAnswerAttention() {},
-        onDecideReview() {},
-        onOpenComposerDispatch() {},
-        onLoadShowcase() {},
-        onClearShowcase() {},
+        currentUserId: ME_ID,
       }),
     );
-    expect(inspectorHtml).toContain('aria-label="停止任务"');
-    expect(inspectorHtml).toContain('data-attention-card="inspector"');
+    const swarmItem = getRoomWorkItems(ROOM_ID).find((i) => i.id === "wrk_showcase_swarm");
+    expect(swarmItem).toBeDefined();
+    if (swarmItem) {
+      const enBarHtml = withLocale("en", () =>
+        renderToStaticMarkup(
+          createElement(LiveRunFloatingBar, {
+            activeItems: [swarmItem],
+            onSteer() {},
+            onStop() {},
+            onOpenTasksInspector() {},
+          }),
+        ),
+      );
+      expect(enBarHtml).toContain("Swarm 1/2");
+      expect(enBarHtml).toContain("Guide");
+      expect(enBarHtml).toContain('aria-label="Stop task"');
+    }
+
+    const traceEntries = [
+      {
+        id: "tr_1",
+        kind: "diff" as const,
+        actorName: "庞彦-Codex",
+        message: "最终变更：2 个文件（+31 / -7）",
+        timestampIso: "2026-11-24T09:05:06.000Z",
+      },
+      {
+        id: "tr_2",
+        kind: "review" as const,
+        actorName: "庞彦-Codex",
+        message: "人工审核已签收通过",
+        timestampIso: "invalid-timestamp",
+      },
+    ];
+    const zhTraceHtml = withLocale("zh-CN", () =>
+      renderToStaticMarkup(
+        createElement(WorkbenchTraceEvents, { entries: traceEntries, ownerDisplayName: "庞彦" }),
+      ),
+    );
+    expect(zhTraceHtml).toContain("变更了 2 个文件，新增 31 行，删除 7 行");
+    expect(zhTraceHtml).toContain("人工审核已签收通过");
+    expect(zhTraceHtml).toContain("--:--:--");
+
+    const enTraceHtml = withLocale("en", () =>
+      renderToStaticMarkup(
+        createElement(WorkbenchTraceEvents, { entries: traceEntries, ownerDisplayName: "庞彦" }),
+      ),
+    );
+    expect(enTraceHtml).toContain("Changed 2 files (+31 / -7)");
+    expect(enTraceHtml).toContain("Approved by reviewer");
+    expect(enTraceHtml).toContain("--:--:--");
   });
 
   it("clears pending attention when stopping local solo and room work items and preserves disabled SegmentedTabs title", () => {

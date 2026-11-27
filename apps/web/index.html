@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" class="dark">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta
@@ -13,7 +13,117 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <title>OpenHuddle — 多 Agent 群聊与协作工作台</title>
+    <title>OpenHuddle — Multi-Agent Huddle &amp; Collaboration Workbench</title>
+    <script>
+      (() => {
+        try {
+          const valid = (v) => (v === "auto" || v === "zh-CN" || v === "en" ? v : null);
+          const read = (k) => {
+            try {
+              return window.localStorage.getItem(k);
+            } catch {
+              return null;
+            }
+          };
+          const tok = read("oh_session_token");
+          const hasSession = Boolean(tok && tok.trim().length > 0);
+          const pref = hasSession
+            ? valid(read("oh_last_account_lang")) || valid(read("oh_guest_lang")) || "auto"
+            : valid(read("oh_guest_lang")) || "auto";
+
+          const zhLangs = { zh: 1, cmn: 1, yue: 1, wuu: 1, nan: 1, hak: 1, hsn: 1, gan: 1 };
+          const zhRegs = { CN: 1, HK: 1, MO: 1, TW: 1 };
+          const zhTzs = {
+            "Asia/Shanghai": 1,
+            "Asia/Chongqing": 1,
+            "Asia/Harbin": 1,
+            "Asia/Urumqi": 1,
+            "Asia/Kashgar": 1,
+            "Asia/Hong_Kong": 1,
+            "Asia/Macau": 1,
+            "Asia/Taipei": 1,
+            PRC: 1,
+            ROC: 1,
+            Hongkong: 1,
+            "Asia/Macao": 1,
+            "Asia/Chungking": 1,
+          };
+
+          const parseTag = (raw) => {
+            if (!raw || typeof raw !== "string") return null;
+            const parts = raw.trim().replace(/_/g, "-").split("-").filter(Boolean);
+            if (!parts.length) return null;
+            const primary = parts[0].toLowerCase();
+            let region = null;
+            for (let i = 1; i < parts.length; i += 1) {
+              const s = parts[i];
+              if (s.length === 1) break;
+              if (/^[a-z]{2}$/i.test(s)) {
+                region = s.toUpperCase();
+                break;
+              }
+            }
+            return { primary, region };
+          };
+
+          let locale = pref;
+          if (locale === "auto") {
+            let resolved = null;
+            let sawZhRegion = false;
+            const list =
+              Array.isArray(navigator.languages) && navigator.languages.length > 0
+                ? navigator.languages
+                : navigator.language
+                  ? [navigator.language]
+                  : [];
+            for (let i = 0; i < list.length; i += 1) {
+              const p = parseTag(list[i]);
+              if (!p) continue;
+              if (zhLangs[p.primary]) {
+                resolved = "zh-CN";
+                break;
+              }
+              if (p.primary === "en") {
+                resolved = "en";
+                break;
+              }
+              if (p.region && zhRegs[p.region]) sawZhRegion = true;
+            }
+            let tz = null;
+            try {
+              const opts = Intl.DateTimeFormat().resolvedOptions();
+              tz = opts.timeZone || null;
+              if (!resolved && opts.locale) {
+                const p = parseTag(opts.locale);
+                if (p) {
+                  if (zhLangs[p.primary]) resolved = "zh-CN";
+                  else if (p.primary === "en") resolved = "en";
+                  else if (p.region && zhRegs[p.region]) sawZhRegion = true;
+                }
+              }
+            } catch {}
+            if (!resolved) {
+              resolved = sawZhRegion || (tz && zhTzs[tz]) ? "zh-CN" : "en";
+            }
+            locale = resolved;
+          }
+
+          document.documentElement.lang = locale;
+          const pathname = window.location.pathname || "/";
+          if (!pathname.startsWith("/share/")) {
+            const isAdmin = /^\/admin(\/|$)/.test(pathname);
+            document.title =
+              locale === "zh-CN"
+                ? isAdmin
+                  ? "管理后台 — OpenHuddle"
+                  : "OpenHuddle — 多 Agent 群聊与协作工作台"
+                : isAdmin
+                  ? "Admin Console — OpenHuddle"
+                  : "OpenHuddle — Multi-Agent Huddle & Collaboration Workbench";
+          }
+        } catch {}
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

@@ -10,6 +10,7 @@
 import type { AgentId, OwnedAgentSummaryDto, RoomId, WorkTraceEntry } from "@openhuddle/protocol";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { AgentExecutionTier } from "../../../lib/agent-capability-prefs.js";
+import { getWorkbenchTranslator } from "../i18n/workbench.js";
 import {
   answerRoomWorkAttention,
   decideRoomWorkReview,
@@ -20,8 +21,8 @@ import {
   stopRoomWorkItem,
 } from "./room-work-store.js";
 import {
-  DEFAULT_WORKSPACES,
   buildDefaultSoloTasks,
+  buildDefaultWorkspaces,
   buildGeneratedDiffForPrompt,
   buildSliceProvenance,
   resolveSoloFleet,
@@ -284,7 +285,10 @@ function parsePersistedWorkspace(raw: unknown): AgentWorkspace | null {
     defaultBranch: typeof raw.defaultBranch === "string" ? raw.defaultBranch : "main",
     host: {
       mode: hostMode,
-      hostLabel: typeof hostRec.hostLabel === "string" ? hostRec.hostLabel : "本机 Mac",
+      hostLabel:
+        typeof hostRec.hostLabel === "string"
+          ? hostRec.hostLabel
+          : getWorkbenchTranslator().t("host.localMac"),
       online: typeof hostRec.online === "boolean" ? hostRec.online : true,
     },
     sandboxMode,
@@ -519,7 +523,7 @@ export function resetSoloWorkbenchShowcase(
   setSnapshot({
     initialized: true,
     boundWithOwnedAgents: ownedAgents.length > 0,
-    repos: DEFAULT_WORKSPACES,
+    repos: buildDefaultWorkspaces(),
     tasks: buildDefaultSoloTasks(ownedAgents, ownerDisplayName),
     roomBindings: stateSnapshot.roomBindings,
   });
@@ -553,7 +557,8 @@ export function resetSoloWorkbenchMemory(): void {
  * 创建或更新工作区配置（编辑时完整保留既有目录的 `remoteSlug` 与未覆盖的复核人配置）。
  */
 export function upsertAgentWorkspace(input: UpsertAgentWorkspaceInput): AgentWorkspace {
-  const cleanName = input.name.trim() || "未命名工作区";
+  const { t } = getWorkbenchTranslator();
+  const cleanName = input.name.trim() || t("workspace.unnamed");
   const isFolderKind = input.kind === "folder";
   const existing =
     input.id !== undefined ? stateSnapshot.repos.find((w) => w.id === input.id) : undefined;
@@ -598,10 +603,10 @@ export function upsertAgentWorkspace(input: UpsertAgentWorkspaceInput): AgentWor
       hostLabel:
         input.hostLabel?.trim() ||
         (input.hostMode === "personal_remote"
-          ? "远程主力沙箱"
+          ? t("host.personalRemote")
           : input.hostMode === "shared_container"
-            ? "隔离容器沙箱"
-            : (existing?.host.hostLabel ?? "本机 Mac")),
+            ? t("host.sharedContainer")
+            : (existing?.host.hostLabel ?? t("host.localMac"))),
       online: existing?.host.online ?? true,
     },
     sandboxMode: effectiveSandbox,
@@ -733,13 +738,14 @@ export function getSoloWorkTaskById(taskId: string): SoloWorkTaskView | undefine
  * 新建并派发一条个人工作台任务。
  */
 export function dispatchSoloWorkTask(input: DispatchSoloTaskInput): SoloWorkTaskView {
+  const { t } = getWorkbenchTranslator();
   const repo = stateSnapshot.repos.find((r) => r.id === input.repoId) ?? stateSnapshot.repos[0];
   const { topology: effectiveTopology, body } = parsePromptTopologyDirective(
     input.rawPrompt,
     input.topology,
   );
 
-  const firstLine = body.split("\n")[0]?.trim() ?? "新派发任务";
+  const firstLine = body.split("\n")[0]?.trim() ?? t("task.defaultDispatchedTitle");
   const title = firstLine.length > 52 ? `${firstLine.slice(0, 52)}…` : firstLine;
   const fleet = resolveSoloFleet(input.ownedAgents, input.ownerDisplayName);
   const candidateWorkerId = input.preferredWorkerId ?? repo?.defaultWorkerId;
@@ -779,10 +785,10 @@ export function dispatchSoloWorkTask(input: DispatchSoloTaskInput): SoloWorkTask
     sandboxMode === "worktree_pool"
       ? `huddle/solo-${effectiveTopology === "swarm" ? "swarm" : "task"}-${shortHash}`
       : sandboxMode === "read_only"
-        ? "只读围栏"
+        ? t("sandbox.readOnly")
         : repo?.kind === "folder"
-          ? "原地文件夹"
-          : `${repo?.defaultBranch ?? "main"} (原地)`;
+          ? t("sandbox.inPlaceFolder")
+          : t("sandbox.inPlaceBranch", { branch: repo?.defaultBranch ?? "main" });
   const effectiveTier: AgentExecutionTier =
     sandboxMode === "read_only" ? "workspace_read" : "worktree_write";
   const nowIso = new Date().toISOString();
@@ -802,14 +808,17 @@ export function dispatchSoloWorkTask(input: DispatchSoloTaskInput): SoloWorkTask
       ? [
           {
             sliceId: `slc_${shortHash}_1`,
-            title: `分片 A：${repo?.roots[0]?.name ?? "核心模块"}实现（${title.slice(0, 16)}）`,
+            title: t("store.swarmSliceATitle", {
+              root: repo?.roots[0]?.name ?? t("store.swarmSliceADefaultRoot"),
+              title: title.slice(0, 16),
+            }),
             worker: primaryWorker,
             ownedPaths: [rootScopeLabels[0] ?? "packages/protocol/"],
             status: "running",
             liveSummary:
               sandboxMode === "worktree_pool"
-                ? "正在隔离 Worktree 分支内并行修改…"
-                : "正在工作区受控目录内执行…",
+                ? t("store.swarmSliceALiveWorktree")
+                : t("store.swarmSliceALiveControlled"),
             elapsedSec: 1,
             steerNotes: [],
             provenance: buildSliceProvenance({
@@ -822,11 +831,13 @@ export function dispatchSoloWorkTask(input: DispatchSoloTaskInput): SoloWorkTask
           },
           {
             sliceId: `slc_${shortHash}_2`,
-            title: `分片 B：${repo?.roots[1]?.name ?? "前端交互与回归单测"}联动覆盖`,
+            title: t("store.swarmSliceBTitle", {
+              root: repo?.roots[1]?.name ?? t("store.swarmSliceBDefaultRoot"),
+            }),
             worker: fleet.workerB,
             ownedPaths: [rootScopeLabels[1] ?? "apps/web/src/"],
             status: "running",
-            liveSummary: "已加载工作区共享记忆与 AGENTS.md 规范，同步推进中…",
+            liveSummary: t("store.swarmSliceBLive"),
             elapsedSec: 1,
             steerNotes: [],
             provenance: buildSliceProvenance({
@@ -847,10 +858,10 @@ export function dispatchSoloWorkTask(input: DispatchSoloTaskInput): SoloWorkTask
             status: "running",
             liveSummary:
               sandboxMode === "read_only"
-                ? "正在只读工作区围栏内检索代码与定位问题…"
+                ? t("store.singleLiveReadOnly")
                 : sandboxMode === "worktree_pool"
-                  ? "正在隔离 Worktree 分支内执行改动…"
-                  : "已获取工作区单写互斥锁，正在原目录内执行…",
+                  ? t("store.singleLiveWorktree")
+                  : t("store.singleLiveInPlace"),
             elapsedSec: 1,
             steerNotes: [],
             provenance: buildSliceProvenance({
@@ -922,6 +933,7 @@ export function answerSoloWorkAttention(taskId: string, choice: string): void {
   if (trimmed.length === 0) {
     return;
   }
+  const { t } = getWorkbenchTranslator();
   const targetTask = stateSnapshot.tasks.find((t) => t.id === taskId);
   const nowIso = new Date().toISOString();
   setSnapshot({
@@ -942,7 +954,7 @@ export function answerSoloWorkAttention(taskId: string, choice: string): void {
             ? {
                 ...s,
                 status: "running",
-                liveSummary: `已按确认项「${trimmed}」继续执行…`,
+                liveSummary: t("store.resumedWithChoice", { choice: trimmed }),
               }
             : s,
         ),
@@ -963,6 +975,7 @@ export function steerSoloWorkSlice(taskId: string, sliceId: string, note: string
   if (trimmed.length === 0) {
     return;
   }
+  const { t } = getWorkbenchTranslator();
   const targetTask = stateSnapshot.tasks.find((t) => t.id === taskId);
   const nowIso = new Date().toISOString();
   setSnapshot({
@@ -982,7 +995,7 @@ export function steerSoloWorkSlice(taskId: string, sliceId: string, note: string
             ? {
                 ...slice,
                 steerNotes: [...slice.steerNotes, trimmed],
-                liveSummary: `已补充说明：「${trimmed}」`,
+                liveSummary: t("store.steeredNote", { note: trimmed }),
               }
             : slice,
         ),
@@ -999,6 +1012,7 @@ export function steerSoloWorkSlice(taskId: string, sliceId: string, note: string
  * 停止指定运行中任务并释放执行槽位（同步更新关联群聊工单）。
  */
 export function stopSoloWorkTask(taskId: string): void {
+  const { t } = getWorkbenchTranslator();
   const targetTask = stateSnapshot.tasks.find((t) => t.id === taskId);
   const nowIso = new Date().toISOString();
   setSnapshot({
@@ -1015,7 +1029,7 @@ export function stopSoloWorkTask(taskId: string): void {
         stage: "cancelled",
         slices: task.slices.map((s) =>
           s.status === "running" || s.status === "verifying" || s.status === "waiting"
-            ? { ...s, status: "blocked", liveSummary: "已手动停止并保留当前分支草稿" }
+            ? { ...s, status: "blocked", liveSummary: t("store.stoppedKeepDraft") }
             : s,
         ),
         updatedAtIso: nowIso,
@@ -1031,6 +1045,7 @@ export function stopSoloWorkTask(taskId: string): void {
  * 重新唤醒已停止或受阻的任务（同步更新关联群聊工单）。
  */
 export function retrySoloWorkTask(taskId: string): void {
+  const { t } = getWorkbenchTranslator();
   const targetTask = stateSnapshot.tasks.find((t) => t.id === taskId);
   const nowIso = new Date().toISOString();
   setSnapshot({
@@ -1044,7 +1059,7 @@ export function retrySoloWorkTask(taskId: string): void {
               ...s,
               status: "running",
               elapsedSec: 1,
-              liveSummary: "已在原分支重新唤醒执行…",
+              liveSummary: t("store.retriedInBranch"),
             })),
             updatedAtIso: nowIso,
           }
@@ -1064,6 +1079,7 @@ export function decideSoloWorkReview(
   decision: "approve" | "request_changes",
   feedback?: string,
 ): void {
+  const { t } = getWorkbenchTranslator();
   const targetTask = stateSnapshot.tasks.find((t) => t.id === taskId);
   const nowIso = new Date().toISOString();
   setSnapshot({
@@ -1079,7 +1095,7 @@ export function decideSoloWorkReview(
           updatedAtIso: nowIso,
         };
       }
-      const note = feedback?.trim() || "请补充边界测试后再次提交审阅";
+      const note = feedback?.trim() || t("store.defaultReworkNote");
       return {
         ...task,
         stage: "working",
@@ -1090,7 +1106,7 @@ export function decideSoloWorkReview(
                 status: "running",
                 elapsedSec: 1,
                 steerNotes: [...s.steerNotes, note],
-                liveSummary: `按审阅意见调整中：「${note}」`,
+                liveSummary: t("store.reworkingWithNote", { note }),
               }
             : s,
         ),
@@ -1169,6 +1185,7 @@ function tickSoloRunningTasks(): void {
     return;
   }
 
+  const { t } = getWorkbenchTranslator();
   const nowIso = new Date().toISOString();
   const nextTasks = stateSnapshot.tasks.map((task): SoloWorkTaskView => {
     // 真实服务端工单（wrk_*）仅在本地平滑递增已耗时读秒，绝不伪造自动完成或假代码 Diff
@@ -1201,7 +1218,7 @@ function tickSoloRunningTasks(): void {
             status: "ready",
             diffAdded: slice.diffAdded ?? 42,
             diffRemoved: slice.diffRemoved ?? 6,
-            liveSummary: "已完成编码与本地自测，生成分支 Diff",
+            liveSummary: t("store.sliceReadyDiff"),
           };
         }
         return {
@@ -1242,12 +1259,12 @@ function tickSoloRunningTasks(): void {
             ...nextSlices,
             {
               sliceId: `slc_verify_${task.id.slice(-4)}_r${String(verifyRound)}`,
-              title: `独立复核：执行 ${effectiveVerifyCmd} 与边界检查`,
+              title: t("store.verifySliceTitle", { cmd: effectiveVerifyCmd }),
               worker: task.verifier,
               ownedPaths: generatedDiffs.map((f) => f.path),
               status: "verifying",
               elapsedSec: 1,
-              liveSummary: `正在独立运行门禁命令（${effectiveVerifyCmd}）…`,
+              liveSummary: t("store.verifySliceRunning", { cmd: effectiveVerifyCmd }),
               steerNotes: [],
             },
           ],
@@ -1260,7 +1277,7 @@ function tickSoloRunningTasks(): void {
             testCommand: effectiveVerifyCmd,
             testPassed: true,
             worktreeBranch: task.worktreeBranch,
-            verifierNote: `独立复核通过（第 ${String(verifyRound)} 轮）：类型检查与单测均通过。`,
+            verifierNote: t("store.verifyNotePassed", { round: verifyRound }),
             verifyLoopsUsed: verifyRound,
           },
           updatedAtIso: nowIso,
@@ -1297,7 +1314,7 @@ function tickSoloRunningTasks(): void {
             ...slice,
             elapsedSec: nextSec,
             status: "ready",
-            liveSummary: "复核通过，等待人工签收",
+            liveSummary: t("store.verifyPassedAwaitingApproval"),
           };
         }
         return {

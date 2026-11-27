@@ -47,6 +47,7 @@ import {
   currentMeQueryOptions,
   useLogoutMutation,
 } from "../../auth-pairing/index.js";
+import { useAdminI18n } from "../i18n/index.js";
 import { AdminAgentsView } from "./admin-agents-view.js";
 import { AdminAuditLogsView } from "./admin-audit-logs-view.js";
 import { type AdminNavSection, AdminOverviewView } from "./admin-overview-view.js";
@@ -57,11 +58,31 @@ import { AdminSessionsView } from "./admin-sessions-view.js";
 import { AdminStatusPill } from "./admin-shared-ui.js";
 import { AdminUsersView } from "./admin-users-view.js";
 
+type AdminNavLabelKey =
+  | "nav.overview.label"
+  | "nav.users.label"
+  | "nav.sessions.label"
+  | "nav.rooms.label"
+  | "nav.agents.label"
+  | "nav.proposals.label"
+  | "nav.pairingCodes.label"
+  | "nav.auditLogs.label";
+
+type AdminNavDescriptionKey =
+  | "nav.overview.description"
+  | "nav.users.description"
+  | "nav.sessions.description"
+  | "nav.rooms.description"
+  | "nav.agents.description"
+  | "nav.proposals.description"
+  | "nav.pairingCodes.description"
+  | "nav.auditLogs.description";
+
 interface AdminNavItemConfig {
   readonly id: AdminNavSection;
   readonly path: string;
-  readonly label: string;
-  readonly description: string;
+  readonly labelKey: AdminNavLabelKey;
+  readonly descriptionKey: AdminNavDescriptionKey;
   readonly icon: ReactNode;
 }
 
@@ -69,57 +90,57 @@ const ADMIN_NAV_ITEMS: ReadonlyArray<AdminNavItemConfig> = [
   {
     id: "overview",
     path: "/admin",
-    label: "数据统计大盘",
-    description: "全局 KPI、趋势分析与运行态遥测",
+    labelKey: "nav.overview.label",
+    descriptionKey: "nav.overview.description",
     icon: <BarChart3 className="h-4 w-4" />,
   },
   {
     id: "users",
     path: "/admin/users",
-    label: "用户账号管理",
-    description: "权限授撤、封禁管控与级联删号",
+    labelKey: "nav.users.label",
+    descriptionKey: "nav.users.description",
     icon: <Users className="h-4 w-4" />,
   },
   {
     id: "sessions",
     path: "/admin/sessions",
-    label: "登录会话管理",
-    description: "活跃 Web 会话查验与强制下线",
+    labelKey: "nav.sessions.label",
+    descriptionKey: "nav.sessions.description",
     icon: <KeyRound className="h-4 w-4" />,
   },
   {
     id: "rooms",
     path: "/admin/rooms",
-    label: "群聊与内容监管",
-    description: "跨房消息审查、强制撤回与治理调控",
+    labelKey: "nav.rooms.label",
+    descriptionKey: "nav.rooms.description",
     icon: <MessagesSquare className="h-4 w-4" />,
   },
   {
     id: "agents",
     path: "/admin/agents",
-    label: "智能体总览",
-    description: "全平台绑定 Agent 活跃状态与吊销",
+    labelKey: "nav.agents.label",
+    descriptionKey: "nav.agents.description",
     icon: <Bot className="h-4 w-4" />,
   },
   {
     id: "proposals",
     path: "/admin/proposals",
-    label: "提案与拍板",
-    description: "跨群结构化提案与人类决策记录",
+    labelKey: "nav.proposals.label",
+    descriptionKey: "nav.proposals.description",
     icon: <CheckSquare className="h-4 w-4" />,
   },
   {
     id: "pairing-codes",
     path: "/admin/pairing-codes",
-    label: "配对码监控",
-    description: "待核销配对码吊销与过期清理",
+    labelKey: "nav.pairingCodes.label",
+    descriptionKey: "nav.pairingCodes.description",
     icon: <QrCode className="h-4 w-4" />,
   },
   {
     id: "audit-logs",
     path: "/admin/audit-logs",
-    label: "操作审计日志",
-    description: "全量后台写操作不可变留痕",
+    labelKey: "nav.auditLogs.label",
+    descriptionKey: "nav.auditLogs.description",
     icon: <FileClock className="h-4 w-4" />,
   },
 ];
@@ -157,6 +178,8 @@ function AdminSidebarNav(props: {
   readonly onBackToWorkspace: () => void;
   readonly onLogout: () => void;
 }) {
+  const { t } = useAdminI18n();
+
   return (
     <div className="flex h-full flex-col bg-sidebar-surface select-none">
       {/* 品牌与后台标识 */}
@@ -170,14 +193,16 @@ function AdminSidebarNav(props: {
             <span className="block truncate text-[14px] font-semibold tracking-[-0.015em] text-im-fg">
               OpenHuddle
             </span>
-            <span className="block text-[11px] font-medium text-im-muted">运营与治理后台</span>
+            <span className="block text-[11px] font-medium text-im-muted">
+              {t("nav.brandSubtitle")}
+            </span>
           </div>
         </div>
-        <AdminStatusPill tone="accent">Admin</AdminStatusPill>
+        <AdminStatusPill tone="accent">{t("nav.badge")}</AdminStatusPill>
       </div>
 
       {/* 导航菜单 */}
-      <nav aria-label="后台管理导航" className="flex-1 space-y-1 overflow-y-auto px-2.5 py-3">
+      <nav aria-label={t("nav.ariaLabel")} className="flex-1 space-y-1 overflow-y-auto px-2.5 py-3">
         {ADMIN_NAV_ITEMS.map((item) => {
           const isActive = item.id === props.activeSection;
           return (
@@ -194,7 +219,7 @@ function AdminSidebarNav(props: {
               )}
             >
               <span className="shrink-0">{item.icon}</span>
-              <span className="truncate">{item.label}</span>
+              <span className="truncate">{t(item.labelKey)}</span>
             </button>
           );
         })}
@@ -209,7 +234,7 @@ function AdminSidebarNav(props: {
           leadingIcon={<ArrowLeft className="h-3.5 w-3.5" />}
           onClick={props.onBackToWorkspace}
         >
-          返回聊天工作台
+          {t("nav.backToWorkspace")}
         </AppButton>
 
         <div className="flex items-center justify-between gap-2 rounded-xl bg-black/[0.03] px-2.5 py-2 dark:bg-white/[0.04]">
@@ -229,11 +254,11 @@ function AdminSidebarNav(props: {
               </span>
             </div>
           </div>
-          <AppTooltip side="top" content="退出登录">
+          <AppTooltip side="top" content={t("nav.logout")}>
             <IconButton
               size="xs"
               variant="ghost"
-              label="退出登录"
+              label={t("nav.logout")}
               onClick={props.onLogout}
               className="text-im-muted hover:text-[#E5484D]"
             >
@@ -247,6 +272,7 @@ function AdminSidebarNav(props: {
 }
 
 function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }) {
+  const { t } = useAdminI18n();
   const location = useBrowserLocation();
   const queryClient = useQueryClient();
   const logoutMutation = useLogoutMutation();
@@ -287,17 +313,17 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
     setIsRefreshing(true);
     try {
       await queryClient.invalidateQueries({ queryKey: adminQueryKeys.all() });
-      toast.success("已刷新后台最新数据");
+      toast.success(t("page.toast.refreshed"));
     } finally {
       setIsRefreshing(false);
     }
-  }, [queryClient]);
+  }, [queryClient, t]);
 
   const handleLogout = useCallback((): void => {
     logoutMutation.mutate(undefined, {
-      onSuccess: () => toast.success("已退出当前管理员账号"),
+      onSuccess: () => toast.success(t("page.toast.signedOut")),
     });
-  }, [logoutMutation]);
+  }, [logoutMutation, t]);
 
   const activeNavMeta =
     ADMIN_NAV_ITEMS.find((item) => item.id === activeSection) ?? ADMIN_NAV_ITEMS[0];
@@ -328,7 +354,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
                 <IconButton
                   size="sm"
                   variant="ghost"
-                  label="打开后台导航菜单"
+                  label={t("nav.openMenu")}
                   onClick={() => setMobileNavOpen(true)}
                 >
                   <Menu className="h-4 w-4" />
@@ -336,20 +362,20 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
               </div>
               <div className="min-w-0">
                 <h1 className="truncate text-[15px] font-semibold tracking-[-0.015em] text-im-fg sm:text-[15.5px]">
-                  {activeNavMeta?.label ?? "运营管理后台"}
+                  {activeNavMeta !== undefined ? t(activeNavMeta.labelKey) : t("nav.fallbackTitle")}
                 </h1>
                 <p className="hidden truncate text-xs text-im-muted sm:block">
-                  {activeNavMeta?.description ?? ""}
+                  {activeNavMeta !== undefined ? t(activeNavMeta.descriptionKey) : ""}
                 </p>
               </div>
             </div>
 
             <div className="app-no-drag flex shrink-0 items-center gap-1 sm:gap-1.5">
-              <AppTooltip side="bottom" content="刷新当前数据">
+              <AppTooltip side="bottom" content={t("nav.refreshData")}>
                 <IconButton
                   size="sm"
                   variant="ghost"
-                  label="刷新当前数据"
+                  label={t("nav.refreshData")}
                   isLoading={isRefreshing}
                   onClick={() => void handleRefreshAll()}
                 >
@@ -357,7 +383,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
                 </IconButton>
               </AppTooltip>
 
-              <AccountThemeMenu />
+              <AccountThemeMenu align="end" />
 
               <AppButton
                 variant="secondary"
@@ -366,8 +392,8 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
                 leadingIcon={<ArrowLeft className="h-3.5 w-3.5" />}
                 onClick={() => navigateBackOr("/")}
               >
-                <span className="max-[359px]:hidden">工作台</span>
-                <span className="min-[360px]:hidden">返回</span>
+                <span className="max-[359px]:hidden">{t("nav.topBackWorkspace")}</span>
+                <span className="min-[360px]:hidden">{t("nav.topBackShort")}</span>
               </AppButton>
             </div>
           </header>
@@ -422,7 +448,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
       <AppSheetDrawer
         open={mobileNavOpen}
         onOpenChange={setMobileNavOpen}
-        title="运营管理后台导航"
+        title={t("nav.mobileDrawerTitle")}
         side="left"
         mobileAsBottomSheet={false}
         hideHeader={true}
@@ -447,6 +473,7 @@ function AuthenticatedAdminConsole(props: { readonly currentUser: HumanUserDto }
  * OpenHuddle 运营与治理管理后台入口组件（自动完成登录与管理员角色门禁校验）。
  */
 export function AdminConsolePage() {
+  const { t } = useAdminI18n();
   const meQuery = useQuery(currentMeQueryOptions());
   const logoutMutation = useLogoutMutation();
 
@@ -455,7 +482,9 @@ export function AdminConsolePage() {
     return (
       <main className="flex h-vvh w-full flex-col items-center justify-center gap-2.5 bg-app-frame text-im-fg">
         <Shield className="h-6 w-6 animate-pulse text-im-muted" />
-        <span className="text-[15px] font-semibold tracking-[-0.015em]">正在核验管理员权限…</span>
+        <span className="text-[15px] font-semibold tracking-[-0.015em]">
+          {t("page.loading.verifying")}
+        </span>
       </main>
     );
   }
@@ -472,12 +501,14 @@ export function AdminConsolePage() {
             <ShieldAlert className="h-6 w-6" />
           </div>
           <h1 className="mt-4 text-[18px] font-semibold tracking-[-0.02em] text-im-fg">
-            需要平台管理员权限
+            {t("page.forbidden.title")}
           </h1>
           <p className="mt-2 text-[13px] leading-relaxed text-im-muted">
-            当前登录账号 <strong className="text-im-fg">{meQuery.data.user.email}</strong>{" "}
-            为普通成员角色，无法访问运营管理后台。请联系平台管理员授权，或将其邮箱加入服务端{" "}
-            <code className="font-mono text-xs">ADMIN_EMAILS</code> 配置。
+            {t("page.forbidden.bodyPrefix")}
+            <strong className="text-im-fg">{meQuery.data.user.email}</strong>
+            {t("page.forbidden.bodyMiddle")}
+            <code className="font-mono text-xs">ADMIN_EMAILS</code>
+            {t("page.forbidden.bodySuffix")}
           </p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-2.5">
             <AppButton
@@ -486,7 +517,7 @@ export function AdminConsolePage() {
               leadingIcon={<ArrowLeft className="h-4 w-4" />}
               onClick={() => navigateBackOr("/")}
             >
-              返回聊天工作台
+              {t("nav.backToWorkspace")}
             </AppButton>
             <AppButton
               variant="secondary"
@@ -495,7 +526,7 @@ export function AdminConsolePage() {
               isLoading={logoutMutation.isPending}
               onClick={() => logoutMutation.mutate()}
             >
-              切换其他账号
+              {t("page.forbidden.switchAccount")}
             </AppButton>
           </div>
         </div>

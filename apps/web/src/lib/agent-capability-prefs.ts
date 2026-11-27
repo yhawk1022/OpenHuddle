@@ -6,8 +6,50 @@
  * 1. 单向共享边界：下沉于 `src/lib/`，同时供 `auth-pairing`（接入弹窗）、`components/ui`（Agent 名片）与 `huddle-room`（派活舱、成员能力徽章）无环共享，严守兄弟 feature 不互引铁律。
  * 2. 默认最小权限（Owner-First Tier 0）：任何未由主人显式配置本地工作区的 Agent 默认恒为 `chat_only`（纯讨论，零本地文件读写）；外部主人的 Agent 在 UI 与派活层强制降级展示为只读协作参考。
  */
-import { type AgentId, type AgentPlatform, assertNever } from "@openhuddle/protocol";
+import {
+  type AgentId,
+  type AgentPlatform,
+  type SupportedLocale,
+  assertNever,
+} from "@openhuddle/protocol";
 import { useCallback, useSyncExternalStore } from "react";
+import { createScopedTranslator, defineCatalog } from "./i18n/index.js";
+
+const tierCatalog = defineCatalog(
+  {
+    /* i18n-ignore */
+    "chatOnly.shortLabel": "仅讨论",
+    /* i18n-ignore */
+    "chatOnly.fullLabel": "仅讨论",
+    /* i18n-ignore */
+    "chatOnly.description": "可以聊天和投票，不能读写本地文件。",
+    /* i18n-ignore */
+    "workspaceRead.shortLabel": "查看代码",
+    /* i18n-ignore */
+    "workspaceRead.fullLabel": "只读访问代码库",
+    /* i18n-ignore */
+    "workspaceRead.description": "可以查看代码和审查改动，不能修改文件。",
+    /* i18n-ignore */
+    "worktreeWrite.shortLabel": "修改代码",
+    "worktreeWrite.fullLabel": /* i18n-ignore */ "在独立工作树中修改代码",
+    "worktreeWrite.description":
+      /* i18n-ignore */ "你批准任务后，Agent 可以在独立的 Git 工作树中修改代码并运行测试。",
+  },
+  {
+    "chatOnly.shortLabel": "Chat only",
+    "chatOnly.fullLabel": "Chat only",
+    "chatOnly.description": "Can chat and vote, with no local file access.",
+    "workspaceRead.shortLabel": "Read code",
+    "workspaceRead.fullLabel": "Read-only repo access",
+    "workspaceRead.description": "Can inspect code and review changes without modifying files.",
+    "worktreeWrite.shortLabel": "Edit code",
+    "worktreeWrite.fullLabel": "Edit code in isolated worktree",
+    "worktreeWrite.description":
+      "After you approve a task, the agent can edit code and run tests in an isolated Git worktree.",
+  },
+);
+
+const tierI18n = createScopedTranslator(tierCatalog);
 
 /**
  * 本地守护进程可执行能力等级（对齐 Owner-First 三级门禁）。
@@ -159,16 +201,21 @@ export function resetAgentCapabilityPrefsMemory(): void {
  * 获取指定能力档位的文案、说明、守护 CLI 参数与双主题胶囊样式。
  *
  * @param tier - 能力档位枚举
+ * @param locale - 可选显式语种（缺省取全局生效语种）
  * @returns 用于渲染徽章与配置项的完整视觉描述
  */
-export function getExecutionTierMeta(tier: AgentExecutionTier): ExecutionTierBadgeMeta {
+export function getExecutionTierMeta(
+  tier: AgentExecutionTier,
+  locale?: SupportedLocale,
+): ExecutionTierBadgeMeta {
+  const { t } = tierI18n.getTranslator(locale);
   switch (tier) {
     case "chat_only":
       return {
         tier,
-        shortLabel: "仅讨论",
-        fullLabel: "仅讨论",
-        description: "可以聊天和投票，不能读写本地文件。",
+        shortLabel: t("chatOnly.shortLabel"),
+        fullLabel: t("chatOnly.fullLabel"),
+        description: t("chatOnly.description"),
         cliFlags: "",
         pillClassName:
           "bg-black/[0.05] text-[#687082] ring-black/[0.05] dark:bg-white/[0.07] dark:text-[#9B9BA3] dark:ring-white/[0.08]",
@@ -176,9 +223,9 @@ export function getExecutionTierMeta(tier: AgentExecutionTier): ExecutionTierBad
     case "workspace_read":
       return {
         tier,
-        shortLabel: "查看代码",
-        fullLabel: "只读访问代码库",
-        description: "可以查看代码和审查改动，不能修改文件。",
+        shortLabel: t("workspaceRead.shortLabel"),
+        fullLabel: t("workspaceRead.fullLabel"),
+        description: t("workspaceRead.description"),
         cliFlags: "--allow-read",
         pillClassName:
           "bg-[#E1ECFF]/85 text-[#1E40AF] ring-[#2563EB]/15 dark:bg-[#1A273D] dark:text-[#93C5FD] dark:ring-[#60A5FA]/25",
@@ -186,9 +233,9 @@ export function getExecutionTierMeta(tier: AgentExecutionTier): ExecutionTierBad
     case "worktree_write":
       return {
         tier,
-        shortLabel: "修改代码",
-        fullLabel: "在独立工作树中修改代码",
-        description: "你批准任务后，Agent 可以在独立的 Git 工作树中修改代码并运行测试。",
+        shortLabel: t("worktreeWrite.shortLabel"),
+        fullLabel: t("worktreeWrite.fullLabel"),
+        description: t("worktreeWrite.description"),
         cliFlags: "--allow-worktree",
         pillClassName:
           "bg-[#E6F5EC] text-[#145335] ring-[#16A34A]/18 dark:bg-[#1B2B23] dark:text-[#6EE7B7] dark:ring-[#34D399]/25",

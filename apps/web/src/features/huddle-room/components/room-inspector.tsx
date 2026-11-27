@@ -38,7 +38,6 @@ import {
   FilePlus2,
   FileText,
   Globe,
-  ListTodo,
   Lock,
   LogOut,
   MessageCircle,
@@ -49,7 +48,6 @@ import {
   Trash2,
   UserPlus,
   UserRound,
-  Users,
   X,
 } from "lucide-react";
 import { type FormEvent, useId, useMemo, useState } from "react";
@@ -82,9 +80,15 @@ import {
   getExecutionTierMeta,
   useAgentCapabilityPrefs,
 } from "../../../lib/agent-capability-prefs.js";
-import { ApiClientError, type SynthesizeProposalInput } from "../../../lib/api-client.js";
+import type { SynthesizeProposalInput } from "../../../lib/api-client.js";
 import { getReachVisualMeta } from "../../../lib/format.js";
+import { useCommonI18n } from "../../../lib/i18n/index.js";
 import { useUpdateOwnRoomRemarkMutation } from "../api/huddle-room.queries.js";
+import {
+  type ChatDetailTranslator,
+  resolveChatDetailErrorMessage,
+  useChatDetailI18n,
+} from "../i18n/chat-detail.js";
 import type {
   ObserveDryRunEntry,
   RoomOrchestrationDefaults,
@@ -95,12 +99,6 @@ import { WorkInspectorTab } from "./work-inspector-tab.js";
 
 /** 右侧群信息抽屉标签页枚举 */
 export type InspectorTab = "members" | "tasks" | "proposals";
-
-const MODE_OPTIONS: ReadonlyArray<SegmentedTabItem<GovernanceMode>> = [
-  { value: "free", label: "自由讨论" },
-  { value: "round_table", label: "圆桌轮流" },
-  { value: "proposal", label: "提案收敛" },
-];
 
 const BASE_TURN_CAPS: ReadonlyArray<number> = [3, 4, 6, 8, 10, 15, 25];
 
@@ -205,12 +203,12 @@ function splitLinesToItems(raw: string): string[] {
     .slice(0, 8);
 }
 
-function createInitialOptions(): ReadonlyArray<EditableOptionDraft> {
+function createInitialOptions(t: ChatDetailTranslator["t"]): ReadonlyArray<EditableOptionDraft> {
   return [
     {
       localId: "opt-init-a",
       optionKey: "A",
-      label: "方案 A（稳健渐进）",
+      label: t("inspector.proposal.initOptionA"),
       summary: "",
       prosText: "",
       consText: "",
@@ -219,7 +217,7 @@ function createInitialOptions(): ReadonlyArray<EditableOptionDraft> {
     {
       localId: "opt-init-b",
       optionKey: "B",
-      label: "方案 B（一步到位）",
+      label: t("inspector.proposal.initOptionB"),
       summary: "",
       prosText: "",
       consText: "",
@@ -239,7 +237,10 @@ function isReachableNow(member: RoomMemberDto): boolean {
  *
  * @remarks 分组键只信任服务端返回的 `ownerUserId`，在线 Agent 数量多的队伍优先置顶。
  */
-function groupMembersByOwner(members: ReadonlyArray<RoomMemberDto>): ReadonlyArray<OwnerTeamGroup> {
+function groupMembersByOwner(
+  members: ReadonlyArray<RoomMemberDto>,
+  unknownOwnerFallback: string,
+): ReadonlyArray<OwnerTeamGroup> {
   const order: UserId[] = [];
   const humans = new Map<UserId, RoomMemberDto>();
   const agentsByOwner = new Map<UserId, RoomMemberDto[]>();
@@ -264,7 +265,7 @@ function groupMembersByOwner(members: ReadonlyArray<RoomMemberDto>): ReadonlyArr
   return order
     .map((ownerUserId) => ({
       ownerUserId,
-      ownerDisplayName: ownerNames.get(ownerUserId) ?? "未知成员",
+      ownerDisplayName: ownerNames.get(ownerUserId) ?? unknownOwnerFallback,
       human: humans.get(ownerUserId) ?? null,
       agents: agentsByOwner.get(ownerUserId) ?? [],
     }))
@@ -273,14 +274,14 @@ function groupMembersByOwner(members: ReadonlyArray<RoomMemberDto>): ReadonlyArr
     );
 }
 
-function roleLabel(role: RoomMemberDto["role"]): string {
+function roleLabel(role: RoomMemberDto["role"], t: ChatDetailTranslator["t"]): string {
   switch (role) {
     case "owner":
-      return "群主";
+      return t("inspector.role.owner");
     case "moderator":
-      return "管理员";
+      return t("inspector.role.moderator");
     case "member":
-      return "成员";
+      return t("inspector.role.member");
     default:
       return assertNever(role);
   }
@@ -293,6 +294,8 @@ function roleLabel(role: RoomMemberDto["role"]): string {
  * @returns 右侧群信息与提案面板视图
  */
 export function RoomInspector(props: RoomInspectorProps) {
+  const { locale, t, tp } = useChatDetailI18n();
+  const { t: commonT } = useCommonI18n();
   const surfaceMode = props.surfaceMode ?? "panel";
   const reducedMotion = usePrefersReducedMotion();
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -313,11 +316,16 @@ export function RoomInspector(props: RoomInspectorProps) {
   const [draftTitle, setDraftTitle] = useState<string>("");
   const [draftContext, setDraftContext] = useState<string>("");
   const [recommendedKey, setRecommendedKey] = useState<string>("A");
-  const [optionDrafts, setOptionDrafts] =
-    useState<ReadonlyArray<EditableOptionDraft>>(createInitialOptions);
+  const [optionDrafts, setOptionDrafts] = useState<ReadonlyArray<EditableOptionDraft>>(() =>
+    createInitialOptions(t),
+  );
   const { getPref } = useAgentCapabilityPrefs();
 
-  const teamGroups = useMemo(() => groupMembersByOwner(props.room.members), [props.room.members]);
+  const unknownOwnerLabel = t("inspector.member.unknownOwner");
+  const teamGroups = useMemo(
+    () => groupMembersByOwner(props.room.members, unknownOwnerLabel),
+    [props.room.members, unknownOwnerLabel],
+  );
   const agentMembers = useMemo(
     () => props.room.members.filter((m) => m.memberKind === "agent"),
     [props.room.members],
@@ -345,6 +353,15 @@ export function RoomInspector(props: RoomInspectorProps) {
     return s;
   }, [props.friends]);
 
+  const modeOptions: ReadonlyArray<SegmentedTabItem<GovernanceMode>> = useMemo(
+    () => [
+      { value: "free", label: t("inspector.settings.mode.free") },
+      { value: "round_table", label: t("inspector.settings.mode.roundTable") },
+      { value: "proposal", label: t("inspector.settings.mode.proposal") },
+    ],
+    [t],
+  );
+
   const turnCapOptions: ReadonlyArray<AppSelectOption<string>> = useMemo(() => {
     const current = config.maxConsecutiveAgentTurns;
     const merged = BASE_TURN_CAPS.includes(current)
@@ -352,9 +369,9 @@ export function RoomInspector(props: RoomInspectorProps) {
       : [...BASE_TURN_CAPS, current].sort((a, b) => a - b);
     return merged.map((cap) => ({
       value: String(cap),
-      label: `${String(cap)} 轮`,
+      label: tp("inspector.settings.turnsCount", cap),
     }));
-  }, [config.maxConsecutiveAgentTurns]);
+  }, [config.maxConsecutiveAgentTurns, tp]);
 
   const workItems = props.workItems ?? [];
   const activeRunningWork = props.activeRunningWorkItems ?? [];
@@ -370,20 +387,17 @@ export function RoomInspector(props: RoomInspectorProps) {
     () => [
       {
         value: "members",
-        label: isGroupRoom ? "成员" : "参与方",
-        icon: <Users className="h-3.5 w-3.5" />,
+        label: isGroupRoom ? t("inspector.tab.members") : t("inspector.tab.people"),
         badge: String(props.room.members.length),
       },
       {
         value: "tasks",
-        label: "任务",
-        icon: <ListTodo className="h-3.5 w-3.5" />,
+        label: t("inspector.tab.tasks"),
         ...(workBadgeCount > 0 ? { badge: String(workBadgeCount) } : {}),
       },
       {
         value: "proposals",
-        label: "提案",
-        icon: <FileText className="h-3.5 w-3.5" />,
+        label: t("inspector.tab.proposals"),
         badge: openProposalsCount > 0 ? String(openProposalsCount) : String(props.proposals.length),
       },
     ],
@@ -392,6 +406,7 @@ export function RoomInspector(props: RoomInspectorProps) {
       openProposalsCount,
       props.proposals.length,
       props.room.members.length,
+      t,
       workBadgeCount,
     ],
   );
@@ -407,7 +422,11 @@ export function RoomInspector(props: RoomInspectorProps) {
     }
     void navigator.clipboard.writeText(value).then(() => {
       setCopiedKey(key);
-      toast.success(key === "share" ? "已复制公开只读回放链接" : "已复制群邀请码");
+      toast.success(
+        key === "share"
+          ? t("inspector.toast.shareLinkCopied")
+          : t("inspector.toast.inviteCodeCopied"),
+      );
       window.setTimeout(() => {
         setCopiedKey((prev) => (prev === key ? null : prev));
       }, 1_800);
@@ -459,7 +478,7 @@ export function RoomInspector(props: RoomInspectorProps) {
       draftContext.trim().length < 2 ||
       validOptions.length === 0
     ) {
-      toast.error("请至少填写提案标题、背景说明及 1 个有效方案");
+      toast.error(t("inspector.proposal.validationError"));
       return;
     }
 
@@ -474,9 +493,9 @@ export function RoomInspector(props: RoomInspectorProps) {
       () => {
         setDraftTitle("");
         setDraftContext("");
-        setOptionDrafts(createInitialOptions());
+        setOptionDrafts(createInitialOptions(t));
         setManualFormOpen(false);
-        toast.success("提案卡已发布到群聊");
+        toast.success(t("inspector.proposal.publishedToast"));
       },
     );
   };
@@ -502,19 +521,8 @@ export function RoomInspector(props: RoomInspectorProps) {
     setOptionDrafts((prev) => prev.map((item, i) => (i === idx ? { ...item, ...patch } : item)));
   };
 
-  const synthErr =
-    props.synthesizeError instanceof ApiClientError
-      ? props.synthesizeError.message
-      : props.synthesizeError instanceof Error
-        ? props.synthesizeError.message
-        : null;
-
-  const createPropErr =
-    props.createProposalError instanceof ApiClientError
-      ? props.createProposalError.message
-      : props.createProposalError instanceof Error
-        ? props.createProposalError.message
-        : null;
+  const synthErr = resolveChatDetailErrorMessage(props.synthesizeError, locale);
+  const createPropErr = resolveChatDetailErrorMessage(props.createProposalError, locale);
 
   return (
     <aside
@@ -532,20 +540,25 @@ export function RoomInspector(props: RoomInspectorProps) {
       >
         <div className="min-w-0">
           <p className="text-[14.5px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#F2F2F4]">
-            {isGroupRoom ? "群信息" : "会话信息"}
+            {isGroupRoom ? t("inspector.title.group") : t("inspector.title.direct")}
           </p>
           <p className="mt-0.5 truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
             {props.roomDisplayName}
           </p>
         </div>
-        <AppTooltip side="bottom" content="收起面板">
-          <IconButton size="sm" variant="ghost" label="收起会话信息面板" onClick={props.onClose}>
+        <AppTooltip side="bottom" content={t("inspector.closeTooltip")}>
+          <IconButton
+            size="sm"
+            variant="ghost"
+            label={t("inspector.closeAria")}
+            onClick={props.onClose}
+          >
             <X className="h-4 w-4" />
           </IconButton>
         </AppTooltip>
       </div>
 
-      {/* 2. 全胶囊弹簧滑块分段导航：成员/参与方 ⇄ 提案（纯人类 1v1 私聊不展示提案页） */}
+      {/* 2. 全胶囊弹簧滑块分段导航：纯文字 + 计数微标（356px 抽屉内英文单行零截断） */}
       {!isDirectHuman ? (
         <div className="shrink-0 select-none px-4 pt-3 pb-2.5">
           <SegmentedTabs
@@ -554,7 +567,8 @@ export function RoomInspector(props: RoomInspectorProps) {
             items={inspectorTabs}
             size="sm"
             fullWidth={true}
-            ariaLabel="会话信息分栏"
+            ariaLabel={t("inspector.tabsAria")}
+            className="[&_[role=tab]]:gap-1 [&_[role=tab]]:px-1.5 [&_[role=tab]]:text-[12px]"
           />
         </div>
       ) : (
@@ -580,10 +594,11 @@ export function RoomInspector(props: RoomInspectorProps) {
                 <div className="flex items-start gap-2.5 rounded-[18px] bg-[#E6F5EC]/75 p-3 text-xs text-[#145335] ring-1 ring-inset ring-[#16A34A]/18 dark:bg-[#1B2B23]/75 dark:text-[#A7F3D0] dark:ring-[#34D399]/20">
                   <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[#16A34A] dark:text-[#34D399]" />
                   <div className="leading-relaxed">
-                    <p className="font-semibold">外部共享 Agent 咨询模式</p>
+                    <p className="font-semibold">{t("inspector.externalDm.title")}</p>
                     <p className="mt-0.5 opacity-90">
-                      该 Agent 归属于 {props.room.peer.ownerDisplayName}
-                      。你的发言在服务端强制标记为外部参考，不会触发对方宿主机的本机命令授权。
+                      {t("inspector.externalDm.body", {
+                        owner: props.room.peer.ownerDisplayName,
+                      })}
                     </p>
                   </div>
                 </div>
@@ -594,8 +609,11 @@ export function RoomInspector(props: RoomInspectorProps) {
                 <div className="flex select-none flex-wrap items-center justify-between gap-2 px-0.5">
                   <h3 className="text-[12px] font-medium text-[#687082] dark:text-[#8E8E96]">
                     {isGroupRoom
-                      ? `${String(onlineAgentCount)}/${String(agentMembers.length)} 个 Agent 在线`
-                      : "会话参与方"}
+                      ? t("inspector.members.agentsOnline", {
+                          online: onlineAgentCount,
+                          total: agentMembers.length,
+                        })
+                      : t("inspector.members.directParticipants")}
                   </h3>
                   {isGroupRoom ? (
                     <div className="flex flex-wrap items-center gap-1">
@@ -606,7 +624,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                         onClick={props.onOpenInviteMembersModal}
                         className="whitespace-nowrap"
                       >
-                        邀请成员
+                        {t("inspector.members.inviteButton")}
                       </AppButton>
                       <AppButton
                         variant="soft"
@@ -615,7 +633,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                         onClick={props.onOpenInviteAgentsModal}
                         className="whitespace-nowrap"
                       >
-                        添加我的 Agent
+                        {t("inspector.members.addMyAgentButton")}
                       </AppButton>
                     </div>
                   ) : null}
@@ -629,10 +647,10 @@ export function RoomInspector(props: RoomInspectorProps) {
                   >
                     <Plus className="h-5 w-5 text-[#111318] dark:text-[#ECECEF]" />
                     <span className="text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
-                      群里还没有 Agent
+                      {t("inspector.members.noAgentsTitle")}
                     </span>
                     <span className="text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
-                      选择自己的 Agent 加入群聊
+                      {t("inspector.members.noAgentsHint")}
                     </span>
                   </button>
                 ) : null}
@@ -674,7 +692,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                                 ? [
                                     {
                                       id: `ctx-insp-human-dm-${targetUserId}`,
-                                      label: "发私聊消息",
+                                      label: t("inspector.ctx.sendDm"),
                                       icon: <MessageCircle className="h-3.5 w-3.5" />,
                                       onSelect: () => props.onStartDirectHumanChat?.(targetUserId),
                                     } satisfies AppContextMenuEntry,
@@ -687,7 +705,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                                 ? [
                                     {
                                       id: `ctx-insp-human-friend-${targetUserId}`,
-                                      label: "添加好友",
+                                      label: t("inspector.ctx.addFriend"),
                                       icon: <UserPlus className="h-3.5 w-3.5" />,
                                       onSelect: () =>
                                         props.onSendFriendRequest?.(targetUserId, targetName),
@@ -696,10 +714,14 @@ export function RoomInspector(props: RoomInspectorProps) {
                                 : []),
                               {
                                 id: `ctx-insp-human-copy-${targetUserId}`,
-                                label: "复制昵称",
+                                label: t("inspector.ctx.copyName"),
                                 icon: <Copy className="h-3.5 w-3.5" />,
                                 onSelect: () =>
-                                  copyPlainText(targetName, "已复制成员昵称", targetName),
+                                  copyPlainText(
+                                    targetName,
+                                    t("inspector.toast.memberNameCopied"),
+                                    targetName,
+                                  ),
                               },
                             ];
                           })()
@@ -734,18 +756,18 @@ export function RoomInspector(props: RoomInspectorProps) {
                                   </p>
                                   {group.human && isGroupRoom ? (
                                     <span className="shrink-0 rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] font-medium text-[#4B5565] dark:bg-white/[0.08] dark:text-[#C4C4CA]">
-                                      {roleLabel(group.human.role)}
+                                      {roleLabel(group.human.role, t)}
                                     </span>
                                   ) : null}
                                 </div>
                                 <p className="mt-0.5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
                                   {group.human
                                     ? isGroupRoom
-                                      ? "群成员"
-                                      : "会话成员"
-                                    : "未以本人账号进会话"}
+                                      ? t("inspector.member.groupMember")
+                                      : t("inspector.member.chatMember")
+                                    : t("inspector.member.notInRoom")}
                                   {group.agents.length > 0
-                                    ? ` · 接入 ${String(group.agents.length)} 个 Agent`
+                                    ? tp("inspector.member.agentCountSuffix", group.agents.length)
                                     : ""}
                                 </p>
                               </div>
@@ -764,7 +786,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                                           onClick={() => setRemarkDraft(group.human?.remark ?? "")}
                                           className="h-6 px-2 text-[11px]"
                                         >
-                                          我的群备注
+                                          {t("inspector.member.myRemarkButton")}
                                         </AppButton>
                                       ) : null}
                                       {isGroupRoom && isOtherHuman ? (
@@ -778,7 +800,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                                             }
                                             className="h-6 px-2 text-[11px]"
                                           >
-                                            私聊
+                                            {t("inspector.member.dmButton")}
                                           </AppButton>
                                         ) : !isAlreadyFriend &&
                                           props.onSendFriendRequest !== undefined ? (
@@ -790,16 +812,23 @@ export function RoomInspector(props: RoomInspectorProps) {
                                             }
                                             className="h-6 px-2 text-[11px]"
                                           >
-                                            加好友
+                                            {t("inspector.member.addFriendButton")}
                                           </AppButton>
                                         ) : null
                                       ) : null}
                                       {isGroupRoom ? (
-                                        <AppTooltip side="left" content={`在输入框 @${humanName}`}>
+                                        <AppTooltip
+                                          side="left"
+                                          content={t("inspector.member.mentionTooltip", {
+                                            name: humanName,
+                                          })}
+                                        >
                                           <IconButton
                                             size="sm"
                                             variant="ghost"
-                                            label={`点名 @${humanName}`}
+                                            label={t("inspector.member.mentionAria", {
+                                              name: humanName,
+                                            })}
                                             onClick={() =>
                                               props.onQuickMention({
                                                 kind: "human",
@@ -829,7 +858,9 @@ export function RoomInspector(props: RoomInspectorProps) {
                                   onSuccess: ({ remark }) => {
                                     setRemarkDraft(null);
                                     toast.success(
-                                      remark === null ? "已清除群备注" : "已保存群备注",
+                                      remark === null
+                                        ? t("inspector.remark.clearedToast")
+                                        : t("inspector.remark.savedToast"),
                                     );
                                   },
                                 });
@@ -837,7 +868,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                             }}
                           >
                             <label htmlFor={remarkInputId} className="block text-xs text-im-muted">
-                              我的群备注
+                              {t("inspector.remark.label")}
                             </label>
                             <AppInput
                               id={remarkInputId}
@@ -850,16 +881,15 @@ export function RoomInspector(props: RoomInspectorProps) {
                               invalid={remarkMutation.isError}
                             />
                             <p className="text-[11px] text-im-muted">
-                              群成员可见，留空使用账号昵称。
+                              {t("inspector.remark.hint")}
                             </p>
                             {remarkMutation.isError ? (
                               <p
                                 role="alert"
                                 className="text-xs text-[#C12C32] dark:text-[#F87171]"
                               >
-                                {remarkMutation.error instanceof ApiClientError
-                                  ? remarkMutation.error.message
-                                  : "保存群备注失败，请重试。"}
+                                {resolveChatDetailErrorMessage(remarkMutation.error, locale) ??
+                                  t("inspector.remark.saveFailed")}
                               </p>
                             ) : null}
                             <div className="flex justify-end gap-1.5">
@@ -873,14 +903,16 @@ export function RoomInspector(props: RoomInspectorProps) {
                                   setRemarkDraft(null);
                                 }}
                               >
-                                取消
+                                {commonT("action.cancel")}
                               </AppButton>
                               <AppButton
                                 type="submit"
                                 size="xs"
                                 disabled={remarkMutation.isPending}
                               >
-                                {remarkMutation.isPending ? "保存中…" : "保存"}
+                                {remarkMutation.isPending
+                                  ? commonT("action.saving")
+                                  : commonT("action.save")}
                               </AppButton>
                             </div>
                           </form>
@@ -890,7 +922,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                         {group.agents.length > 0 ? (
                           <ul className="mt-1.5 ml-3.5 space-y-1 border-l border-black/[0.08] pl-2.5 dark:border-white/[0.10]">
                             {group.agents.map((agent) => {
-                              const reachMeta = getReachVisualMeta(agent.reach);
+                              const reachMeta = getReachVisualMeta(agent.reach, locale);
                               const agentId = agent.agentId;
                               const agentMentionText = `@${agent.displayName}`;
                               const canDirectChatAgent =
@@ -918,7 +950,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                                   ? [
                                       {
                                         id: `ctx-insp-agt-dm-${agentId}`,
-                                        label: "发消息",
+                                        label: t("inspector.ctx.messageAgent"),
                                         icon: <MessageCircle className="h-3.5 w-3.5" />,
                                         onSelect: () => props.onStartDirectAgentChat?.(agentId),
                                       } satisfies AppContextMenuEntry,
@@ -926,18 +958,20 @@ export function RoomInspector(props: RoomInspectorProps) {
                                   : []),
                                 {
                                   id: `ctx-insp-agt-inspect-${agentId ?? agent.displayName}`,
-                                  label: "查看 Agent 名片",
+                                  label: t("inspector.ctx.inspectAgent"),
                                   icon: <UserRound className="h-3.5 w-3.5" />,
                                   onSelect: () => handleInspectMemberAgent(agent),
                                 },
                                 {
                                   id: `ctx-insp-agt-copy-${agentId ?? agent.displayName}`,
-                                  label: `复制 ${agentMentionText}`,
+                                  label: t("inspector.ctx.copyMention", {
+                                    mention: agentMentionText,
+                                  }),
                                   icon: <Copy className="h-3.5 w-3.5" />,
                                   onSelect: () =>
                                     copyPlainText(
                                       agentMentionText,
-                                      "已复制提及标识",
+                                      t("inspector.toast.mentionCopied"),
                                       agentMentionText,
                                     ),
                                 },
@@ -996,14 +1030,14 @@ export function RoomInspector(props: RoomInspectorProps) {
                                             ) {
                                               return null;
                                             }
-                                            const meta = getExecutionTierMeta(cap.tier);
                                             return (
                                               <>
                                                 <span className="opacity-50">·</span>
                                                 <span className="font-medium text-[#3B414E] dark:text-[#C4C4CA]">
                                                   {cap.tier !== "chat_only"
-                                                    ? meta.shortLabel
-                                                    : "双模引擎"}
+                                                    ? getExecutionTierMeta(cap.tier, locale)
+                                                        .shortLabel
+                                                    : t("inspector.agent.dualEngine")}
                                                 </span>
                                               </>
                                             );
@@ -1025,7 +1059,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                                         }
                                         className="h-6 px-2.5 text-[11px]"
                                       >
-                                        @TA
+                                        {t("inspector.agent.quickMention")}
                                       </AppButton>
                                     ) : null}
                                   </li>
@@ -1050,23 +1084,27 @@ export function RoomInspector(props: RoomInspectorProps) {
                       ) : (
                         <Lock className="h-3.5 w-3.5 text-[#8E96A6] dark:text-[#8E8E96]" />
                       )}
-                      <span>邀请与公开分享</span>
+                      <span>{t("inspector.share.title")}</span>
                     </div>
 
                     <div className="flex items-center gap-2">
                       <span className="text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                        {props.room.visibility === "public_shareable" ? "公开可分享" : "仅限邀请"}
+                        {props.room.visibility === "public_shareable"
+                          ? t("inspector.share.statusPublic")
+                          : t("inspector.share.statusInviteOnly")}
                       </span>
                       <AppSwitch
                         size="sm"
-                        ariaLabel="切换公开只读回放权限"
+                        ariaLabel={t("inspector.share.switchAria")}
                         checked={props.room.visibility === "public_shareable"}
                         disabled={props.isUpdatingGovernance}
                         onCheckedChange={(checked) => {
                           const nextVis = checked ? "public_shareable" : "invite_only";
                           props.onUpdateGovernance({ visibility: nextVis });
                           toast.success(
-                            checked ? "已开启公开只读分享链接" : "已关闭公开分享，恢复仅限邀请加入",
+                            checked
+                              ? t("inspector.share.enabledToast")
+                              : t("inspector.share.disabledToast"),
                           );
                         }}
                       />
@@ -1090,7 +1128,9 @@ export function RoomInspector(props: RoomInspectorProps) {
                         }
                         onClick={() => copyText("inv", props.room.inviteToken ?? "")}
                       >
-                        {copiedKey === "inv" ? "已复制" : "复制邀请码"}
+                        {copiedKey === "inv"
+                          ? commonT("action.copied")
+                          : t("inspector.share.copyCode")}
                       </AppButton>
                     </div>
                   ) : null}
@@ -1100,7 +1140,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                       <AppButton
                         variant="primary"
                         size="sm"
-                        fullWidth={true}
+                        className="min-w-0 flex-1"
                         leadingIcon={
                           copiedKey === "share" ? (
                             <Check className="h-3.5 w-3.5" />
@@ -1110,17 +1150,21 @@ export function RoomInspector(props: RoomInspectorProps) {
                         }
                         onClick={() => copyText("share", shareUrl)}
                       >
-                        {copiedKey === "share" ? "已复制公开链接" : "复制公开只读链接"}
+                        <span className="truncate">
+                          {copiedKey === "share"
+                            ? t("inspector.share.linkCopiedButton")
+                            : t("inspector.share.copyLinkButton")}
+                        </span>
                       </AppButton>
-                      <AppTooltip side="top" content="在新标签页打开公开回放页">
+                      <AppTooltip side="top" content={t("inspector.share.openReplayTooltip")}>
                         <a
                           href={shareUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          aria-label="在新标签页打开公开回放页"
+                          aria-label={t("inspector.share.openReplayTooltip")}
                           className={cn(
                             appButtonVariants({ variant: "secondary", size: "sm" }),
-                            "w-8 px-0",
+                            "w-8 shrink-0 px-0",
                           )}
                         >
                           <ExternalLink className="h-3.5 w-3.5" />
@@ -1142,7 +1186,11 @@ export function RoomInspector(props: RoomInspectorProps) {
                   >
                     <span className="inline-flex items-center gap-1.5">
                       <Settings2 className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
-                      <span>{isGroupRoom ? "群设置与讨论规则" : "单聊轮次与护栏规则"}</span>
+                      <span>
+                        {isGroupRoom
+                          ? t("inspector.settings.groupTitle")
+                          : t("inspector.settings.directTitle")}
+                      </span>
                     </span>
                     <ChevronDown
                       className={cn(
@@ -1166,23 +1214,28 @@ export function RoomInspector(props: RoomInspectorProps) {
                           {isGroupRoom ? (
                             <div>
                               <p className="mb-1.5 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                                讨论节奏
+                                {t("inspector.settings.modeLabel")}
                               </p>
                               <SegmentedTabs
                                 value={config.mode}
                                 onValueChange={(nextMode) => {
                                   if (nextMode !== config.mode && !props.isUpdatingGovernance) {
                                     const label =
-                                      MODE_OPTIONS.find((m) => m.value === nextMode)?.label ??
+                                      modeOptions.find((m) => m.value === nextMode)?.label ??
                                       nextMode;
                                     props.onUpdateGovernance({ mode: nextMode });
-                                    toast.success(`讨论节奏已切换为「${String(label)}」`);
+                                    toast.success(
+                                      t("inspector.settings.modeChangedToast", {
+                                        mode: String(label),
+                                      }),
+                                    );
                                   }
                                 }}
-                                items={MODE_OPTIONS}
+                                items={modeOptions}
                                 size="xs"
                                 fullWidth={true}
-                                ariaLabel="讨论节奏"
+                                ariaLabel={t("inspector.settings.modeLabel")}
+                                className="[&_[role=tab]]:px-1.5"
                               />
                             </div>
                           ) : null}
@@ -1192,12 +1245,12 @@ export function RoomInspector(props: RoomInspectorProps) {
                               htmlFor="insp-turn-cap"
                               className="font-medium text-[#111318] dark:text-[#ECECEF]"
                             >
-                              连续 Agent 发言上限
+                              {t("inspector.settings.turnCapLabel")}
                             </label>
                             <div className="w-28 shrink-0">
                               <AppSelect
                                 id="insp-turn-cap"
-                                ariaLabel="连续 Agent 发言上限"
+                                ariaLabel={t("inspector.settings.turnCapLabel")}
                                 size="sm"
                                 align="end"
                                 disabled={props.isUpdatingGovernance}
@@ -1209,7 +1262,9 @@ export function RoomInspector(props: RoomInspectorProps) {
                                     parsed !== config.maxConsecutiveAgentTurns
                                   ) {
                                     props.onUpdateGovernance({ maxConsecutiveAgentTurns: parsed });
-                                    toast.success(`连续发言上限已设为 ${String(parsed)} 轮`);
+                                    toast.success(
+                                      tp("inspector.settings.turnCapChangedToast", parsed),
+                                    );
                                   }
                                 }}
                                 options={turnCapOptions}
@@ -1224,10 +1279,10 @@ export function RoomInspector(props: RoomInspectorProps) {
                                 className="min-w-0 flex-1 cursor-pointer"
                               >
                                 <span className="block font-medium text-[#111318] dark:text-[#ECECEF]">
-                                  Agent 互相 @ 唤醒
+                                  {t("inspector.settings.allowAgentMentionsLabel")}
                                 </span>
                                 <span className="block text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                                  关闭后仅人类发言可唤醒 Agent
+                                  {t("inspector.settings.allowAgentMentionsHint")}
                                 </span>
                               </label>
                               <AppSwitch
@@ -1239,8 +1294,8 @@ export function RoomInspector(props: RoomInspectorProps) {
                                   props.onUpdateGovernance({ allowAgentMentions: checked });
                                   toast.success(
                                     checked
-                                      ? "已允许 Agent 互相 @ 唤醒"
-                                      : "已关闭 Agent 互相 @ 唤醒",
+                                      ? t("inspector.settings.allowAgentMentionsEnabledToast")
+                                      : t("inspector.settings.allowAgentMentionsDisabledToast"),
                                   );
                                 }}
                               />
@@ -1253,10 +1308,10 @@ export function RoomInspector(props: RoomInspectorProps) {
                               className="min-w-0 flex-1 cursor-pointer"
                             >
                               <span className="block font-medium text-[#111318] dark:text-[#ECECEF]">
-                                先读后发保护
+                                {t("inspector.settings.readLockLabel")}
                               </span>
                               <span className="block text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                                拦截未读最新消息的盲目抢答
+                                {t("inspector.settings.readLockHint")}
                               </span>
                             </label>
                             <AppSwitch
@@ -1267,7 +1322,9 @@ export function RoomInspector(props: RoomInspectorProps) {
                               onCheckedChange={(checked) => {
                                 props.onUpdateGovernance({ requireReadBeforeSend: checked });
                                 toast.success(
-                                  checked ? "已开启先读后发保护" : "已关闭先读后发保护",
+                                  checked
+                                    ? t("inspector.settings.readLockEnabledToast")
+                                    : t("inspector.settings.readLockDisabledToast"),
                                 );
                               }}
                             />
@@ -1276,7 +1333,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                           {props.room.rules.trim().length > 0 ? (
                             <div className="rounded-xl bg-white/85 p-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#141417] dark:ring-white/[0.07]">
                               <p className="mb-1 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                                群约定
+                                {t("inspector.settings.rulesLabel")}
                               </p>
                               <p className="whitespace-pre-wrap text-xs leading-relaxed text-[#3B414E] dark:text-[#C4C4CA]">
                                 {props.room.rules}
@@ -1295,12 +1352,14 @@ export function RoomInspector(props: RoomInspectorProps) {
                 <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
                   <div>
                     <h3 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                      {isGroupRoom ? "群主管理" : "会话管理"}
+                      {isGroupRoom
+                        ? t("inspector.danger.ownerTitle")
+                        : t("inspector.danger.directTitle")}
                     </h3>
                     <p className="mt-0.5 text-[11px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                       {isGroupRoom
-                        ? "永久删除当前群聊及其全部消息与提案，此操作不可撤销。"
-                        : "删除当前一对一单聊会话及其历史消息记录（个人 Agent 与好友关系不受影响）。"}
+                        ? t("inspector.danger.deleteGroupDesc")
+                        : t("inspector.danger.deleteDirectDesc")}
                     </p>
                   </div>
                   <AppButton
@@ -1310,17 +1369,19 @@ export function RoomInspector(props: RoomInspectorProps) {
                     leadingIcon={<Trash2 className="h-3.5 w-3.5" />}
                     onClick={() => props.onRequestDeleteRoom?.(props.room)}
                   >
-                    {isGroupRoom ? "删除群聊" : "删除单聊会话"}
+                    {isGroupRoom
+                      ? t("inspector.danger.deleteGroupButton")
+                      : t("inspector.danger.deleteDirectButton")}
                   </AppButton>
                 </section>
               ) : isGroupRoom && !isRoomOwner && props.onRequestLeaveRoom !== undefined ? (
                 <section className={cn(SECTION_CARD_CLASS, "space-y-2.5 p-3.5")}>
                   <div>
                     <h3 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                      成员操作
+                      {t("inspector.danger.memberActionsTitle")}
                     </h3>
                     <p className="mt-0.5 text-[11px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                      退出当前群聊后需凭邀请码重新加入，群内历史消息会保留。
+                      {t("inspector.danger.leaveGroupDesc")}
                     </p>
                   </div>
                   <AppButton
@@ -1330,7 +1391,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                     leadingIcon={<LogOut className="h-3.5 w-3.5" />}
                     onClick={() => props.onRequestLeaveRoom?.(props.room)}
                   >
-                    退出群聊
+                    {t("inspector.danger.leaveGroupButton")}
                   </AppButton>
                 </section>
               ) : null}
@@ -1390,14 +1451,16 @@ export function RoomInspector(props: RoomInspectorProps) {
                     onClick={handleSynthesizeClick}
                     className="flex-1"
                   >
-                    {props.isSynthesizing ? "正在整理讨论要点…" : "整理近期讨论为提案"}
+                    {props.isSynthesizing
+                      ? t("inspector.proposal.synthesizing")
+                      : t("inspector.proposal.synthesizeButton")}
                   </AppButton>
 
-                  <AppTooltip side="bottom" content="调整整理窗口或填写临时模型密钥">
+                  <AppTooltip side="bottom" content={t("inspector.proposal.optionsTooltip")}>
                     <IconButton
                       size="md"
                       variant={byokOpen ? "soft" : "secondary"}
-                      label="提案整理选项"
+                      label={t("inspector.proposal.optionsAria")}
                       aria-pressed={byokOpen}
                       onClick={() => setByokOpen((prev) => !prev)}
                     >
@@ -1412,7 +1475,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                     leadingIcon={<FilePlus2 className="h-3.5 w-3.5" />}
                     onClick={() => setManualFormOpen((prev) => !prev)}
                   >
-                    手写
+                    {t("inspector.proposal.manualButton")}
                   </AppButton>
                 </div>
 
@@ -1428,7 +1491,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                     >
                       <div className="space-y-2 rounded-xl border border-black/[0.06] bg-white/90 p-2.5 text-xs dark:border-white/[0.08] dark:bg-[#141417]">
                         <p className="font-medium text-[#111318] dark:text-[#ECECEF]">
-                          消息窗口与可选自定义模型（留空使用服务端默认）
+                          {t("inspector.proposal.byokTitle")}
                         </p>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
@@ -1436,7 +1499,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                               htmlFor="synth-window-limit"
                               className="mb-1 block text-[10.5px] text-[#687082] dark:text-[#8E8E96]"
                             >
-                              读取最近消息条数
+                              {t("inspector.proposal.windowLimitLabel")}
                             </label>
                             <AppInput
                               id="synth-window-limit"
@@ -1457,7 +1520,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                               htmlFor="synth-model"
                               className="mb-1 block text-[10.5px] text-[#687082] dark:text-[#8E8E96]"
                             >
-                              自定义模型 ID
+                              {t("inspector.proposal.modelIdLabel")}
                             </label>
                             <AppInput
                               id="synth-model"
@@ -1472,18 +1535,18 @@ export function RoomInspector(props: RoomInspectorProps) {
                         <AppInput
                           size="sm"
                           type="url"
-                          aria-label="OpenAI 兼容 Base URL"
+                          aria-label={t("inspector.proposal.baseUrlAria")}
                           value={byokBaseUrl}
                           onChange={(e) => setByokBaseUrl(e.target.value)}
-                          placeholder="可选 OpenAI 兼容 Base URL"
+                          placeholder={t("inspector.proposal.baseUrlPlaceholder")}
                         />
                         <AppInput
                           size="sm"
                           type="password"
-                          aria-label="BYOK API Key"
+                          aria-label={t("inspector.proposal.apiKeyAria")}
                           value={byokApiKey}
                           onChange={(e) => setByokApiKey(e.target.value)}
-                          placeholder="可选临时 API Key（仅当次透传，不保存）"
+                          placeholder={t("inspector.proposal.apiKeyPlaceholder")}
                         />
                       </div>
                     </motion.div>
@@ -1492,7 +1555,7 @@ export function RoomInspector(props: RoomInspectorProps) {
 
                 {synthErr ? (
                   <p className="rounded-xl bg-[#E5484D]/10 px-2.5 py-1.5 text-[11.5px] text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
-                    整理失败：{synthErr}
+                    {t("inspector.proposal.synthesizeFailed", { error: synthErr })}
                   </p>
                 ) : null}
               </div>
@@ -1511,10 +1574,10 @@ export function RoomInspector(props: RoomInspectorProps) {
                   >
                     <div className="flex items-center justify-between">
                       <h4 className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                        手写对比提案
+                        {t("inspector.proposal.manualFormTitle")}
                       </h4>
                       <AppButton variant="ghost" size="xs" onClick={() => setManualFormOpen(false)}>
-                        收起
+                        {t("inspector.proposal.collapseButton")}
                       </AppButton>
                     </div>
 
@@ -1523,20 +1586,20 @@ export function RoomInspector(props: RoomInspectorProps) {
                       type="text"
                       required={true}
                       maxLength={160}
-                      aria-label="提案标题"
+                      aria-label={t("inspector.proposal.titleAria")}
                       value={draftTitle}
                       onChange={(e) => setDraftTitle(e.target.value)}
-                      placeholder="提案标题（例如：通知同步采用 LISTEN/NOTIFY 还是 Redis）"
+                      placeholder={t("inspector.proposal.titlePlaceholder")}
                     />
 
                     <AppTextarea
                       rows={2}
                       required={true}
                       maxLength={2000}
-                      aria-label="决策背景"
+                      aria-label={t("inspector.proposal.contextAria")}
                       value={draftContext}
                       onChange={(e) => setDraftContext(e.target.value)}
-                      placeholder="决策背景与关键约束…"
+                      placeholder={t("inspector.proposal.contextPlaceholder")}
                       className="resize-none py-2 text-[16px] md:text-xs"
                     />
 
@@ -1552,7 +1615,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                               type="text"
                               required={true}
                               maxLength={16}
-                              aria-label="方案 Key"
+                              aria-label={t("inspector.proposal.optionKeyAria")}
                               value={opt.optionKey}
                               onChange={(e) =>
                                 updateOptionDraft(idx, { optionKey: e.target.value })
@@ -1566,17 +1629,17 @@ export function RoomInspector(props: RoomInspectorProps) {
                               type="text"
                               required={true}
                               maxLength={120}
-                              aria-label="方案名称"
+                              aria-label={t("inspector.proposal.optionNameLabel")}
                               value={opt.label}
                               onChange={(e) => updateOptionDraft(idx, { label: e.target.value })}
-                              placeholder="方案名称"
+                              placeholder={t("inspector.proposal.optionNameLabel")}
                               containerClassName="min-w-0 flex-1"
                             />
                             {optionDrafts.length > 1 ? (
                               <IconButton
                                 size="sm"
                                 variant="ghost"
-                                label="删除备选方案"
+                                label={t("inspector.proposal.removeOptionAria")}
                                 onClick={() =>
                                   setOptionDrafts((prev) => prev.filter((_, i) => i !== idx))
                                 }
@@ -1591,34 +1654,34 @@ export function RoomInspector(props: RoomInspectorProps) {
                             size="sm"
                             type="text"
                             required={true}
-                            aria-label="方案核心思路"
+                            aria-label={t("inspector.proposal.optionSummaryAria")}
                             value={opt.summary}
                             onChange={(e) => updateOptionDraft(idx, { summary: e.target.value })}
-                            placeholder="一句话方案思路 *"
+                            placeholder={t("inspector.proposal.optionSummaryPlaceholder")}
                           />
                           <AppInput
                             size="sm"
                             type="text"
-                            aria-label="优势"
+                            aria-label={t("inspector.proposal.optionProsAria")}
                             value={opt.prosText}
                             onChange={(e) => updateOptionDraft(idx, { prosText: e.target.value })}
-                            placeholder="优势（逗号分隔）"
+                            placeholder={t("inspector.proposal.optionProsPlaceholder")}
                           />
                           <AppInput
                             size="sm"
                             type="text"
-                            aria-label="代价"
+                            aria-label={t("inspector.proposal.optionConsAria")}
                             value={opt.consText}
                             onChange={(e) => updateOptionDraft(idx, { consText: e.target.value })}
-                            placeholder="代价（逗号分隔）"
+                            placeholder={t("inspector.proposal.optionConsPlaceholder")}
                           />
                           <AppInput
                             size="sm"
                             type="text"
-                            aria-label="风险"
+                            aria-label={t("inspector.proposal.optionRisksAria")}
                             value={opt.risksText}
                             onChange={(e) => updateOptionDraft(idx, { risksText: e.target.value })}
-                            placeholder="风险（逗号分隔）"
+                            placeholder={t("inspector.proposal.optionRisksPlaceholder")}
                           />
                         </div>
                       ))}
@@ -1637,7 +1700,9 @@ export function RoomInspector(props: RoomInspectorProps) {
                               {
                                 localId: `opt-${Date.now().toString(36)}`,
                                 optionKey: nextLetter,
-                                label: `方案 ${nextLetter}`,
+                                label: t("inspector.proposal.optionDefaultLabel", {
+                                  key: nextLetter,
+                                }),
                                 summary: "",
                                 prosText: "",
                                 consText: "",
@@ -1646,7 +1711,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                             ]);
                           }}
                         >
-                          增加方案
+                          {t("inspector.proposal.addOptionButton")}
                         </AppButton>
                       ) : (
                         <span />
@@ -1657,7 +1722,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                           htmlFor="manual-recommended-key"
                           className="text-[#687082] dark:text-[#8E8E96]"
                         >
-                          推荐方案
+                          {t("inspector.proposal.recommendedLabel")}
                         </label>
                         <AppInput
                           id="manual-recommended-key"
@@ -1682,7 +1747,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                       fullWidth={true}
                       isLoading={props.isCreatingProposal}
                     >
-                      发布提案到群聊
+                      {t("inspector.proposal.publishButton")}
                     </AppButton>
                   </motion.form>
                 ) : null}
@@ -1702,7 +1767,7 @@ export function RoomInspector(props: RoomInspectorProps) {
                 <div className="rounded-[18px] bg-[#E5484D]/10 p-3.5 text-xs text-[#C81E1E] dark:bg-[#F05252]/15 dark:text-[#FCA5A5]">
                   <div className="flex items-center gap-1.5 font-semibold">
                     <AlertCircle className="h-4 w-4" />
-                    <span>加载提案列表失败</span>
+                    <span>{t("inspector.proposal.loadError")}</span>
                   </div>
                   <AppButton
                     variant="danger"
@@ -1711,17 +1776,17 @@ export function RoomInspector(props: RoomInspectorProps) {
                     onClick={props.onRetryProposals}
                     className="mt-2"
                   >
-                    重新加载
+                    {t("inspector.proposal.reloadButton")}
                   </AppButton>
                 </div>
               ) : props.proposals.length === 0 ? (
                 <div className={cn(SECTION_CARD_CLASS, "p-6 text-center")}>
                   <FileText className="mx-auto h-5 w-5 text-[#8E96A6] dark:text-[#63636B]" />
                   <p className="mt-2 text-[13px] font-medium text-[#111318] dark:text-[#F2F2F4]">
-                    还没有提案
+                    {t("inspector.proposal.emptyTitle")}
                   </p>
                   <p className="mt-1 text-[12px] leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                    等群里的讨论差不多有了眉目，点击上方「整理近期讨论为提案」对比优劣再拍板。
+                    {t("inspector.proposal.emptyHint")}
                   </p>
                 </div>
               ) : (

@@ -51,6 +51,7 @@ export const usersTable = pgTable(
     role: text("role").notNull().default("user"),
     status: text("status").notNull().default("active"),
     themePreference: text("theme_preference").notNull().default("auto"),
+    languagePreference: text("language_preference").notNull().default("auto"),
     suspendedAt: timestamp("suspended_at", { withTimezone: true }),
     suspendedReason: text("suspended_reason"),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),

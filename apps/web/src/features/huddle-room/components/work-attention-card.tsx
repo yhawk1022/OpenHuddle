@@ -20,23 +20,22 @@ import {
 } from "react";
 import { AppButton, cn, toast } from "../../../components/primitives/index.js";
 import { isCoarsePointerDevice, isImeComposing } from "../../../lib/viewport-sync.js";
+import { useWorkbenchI18n } from "../i18n/workbench.js";
 
 const MAX_ATTENTION_CHOICE_LENGTH = 240;
 const COUNTER_WARNING_REMAINING = 30;
 const CUSTOM_SUBMIT_SOURCE = "__custom_reply__";
 
-const DEFAULT_PLACEHOLDER = "或直接回复说明，提交后继续…";
-const GUIDED_PLACEHOLDER = "请填写补充说明，提交后继续…";
-
+// 协议级启发式匹配表：识别 Agent 在中/英文环境下生成的「引导下方自定义输入」占位选项（非界面展示文案）
 const CUSTOM_REPLY_EXACT_MATCHES = new Set([
-  "补充说明后继续",
-  "补充说明",
-  "其他说明",
-  "其他",
-  "自定义回复",
-  "自定义回复其他方案",
-  "手动输入",
-  "手动输入分支名",
+  /* i18n-ignore */ "补充说明后继续",
+  /* i18n-ignore */ "补充说明",
+  /* i18n-ignore */ "其他说明",
+  /* i18n-ignore */ "其他",
+  /* i18n-ignore */ "自定义回复",
+  /* i18n-ignore */ "自定义回复其他方案",
+  /* i18n-ignore */ "手动输入",
+  /* i18n-ignore */ "手动输入分支名",
   "other",
   "other (specify)",
   "other(specify)",
@@ -122,6 +121,7 @@ const VARIANT_CLASSES: Record<
  * 渲染工单 `awaiting_answer` 统一澄清与内联自定义回复卡片。
  */
 export function WorkAttentionCard(props: WorkAttentionCardProps) {
+  const { t } = useWorkbenchI18n();
   const { variant, askedByName, question, options, onSubmitAnswer, className } = props;
   const styles = VARIANT_CLASSES[variant];
 
@@ -186,14 +186,14 @@ export function WorkAttentionCard(props: WorkAttentionCardProps) {
     setSubmittingSource(source);
     try {
       await onSubmitAnswer(clean);
-      toast.success("已回复并继续执行");
+      toast.success(t("attention.toast.replied"));
       if (mountedRef.current && source === CUSTOM_SUBMIT_SOURCE) {
         setDraft("");
         setCustomReplyGuided(false);
         setHighlightRing(false);
       }
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : "提交回复失败，请稍后重试");
+      toast.error(err instanceof Error ? err.message : t("attention.toast.replyFailed"));
       if (mountedRef.current && source === CUSTOM_SUBMIT_SOURCE && typeof window !== "undefined") {
         window.requestAnimationFrame(() => {
           textareaRef.current?.focus();
@@ -283,7 +283,7 @@ export function WorkAttentionCard(props: WorkAttentionCardProps) {
             styles.questionText,
           )}
         >
-          {askedByName} 请你确认：{question}
+          {t("attention.askedBy", { name: askedByName, question })}
         </p>
       </div>
 
@@ -340,7 +340,7 @@ export function WorkAttentionCard(props: WorkAttentionCardProps) {
         <div className="flex items-end gap-2">
           <textarea
             ref={textareaRef}
-            aria-label="回复待确认问题"
+            aria-label={t("attention.replyAriaLabel")}
             rows={1}
             maxLength={MAX_ATTENTION_CHOICE_LENGTH}
             enterKeyHint={coarsePointer ? "enter" : "send"}
@@ -358,7 +358,11 @@ export function WorkAttentionCard(props: WorkAttentionCardProps) {
               }
             }}
             onKeyDown={handleTextareaKeyDown}
-            placeholder={customReplyGuided ? GUIDED_PLACEHOLDER : DEFAULT_PLACEHOLDER}
+            placeholder={
+              customReplyGuided
+                ? t("attention.placeholderGuided")
+                : t("attention.placeholderDefault")
+            }
             className={cn(
               "app-no-drag min-h-[44px] min-w-0 flex-1 resize-none rounded-lg border px-2.5 py-2 text-[16px] leading-snug outline-none transition-[border-color,box-shadow,background-color] duration-150 md:min-h-[30px] md:py-1.5 md:text-[12.5px]",
               "border-black/[0.09] bg-[#F4F5F7] text-[#111318] placeholder:text-[14px] placeholder:text-[#8E96A6] md:placeholder:text-[12px]",
@@ -378,13 +382,16 @@ export function WorkAttentionCard(props: WorkAttentionCardProps) {
             disabled={isSubmitting || trimmedDraft.length === 0}
             className="h-11 shrink-0 whitespace-nowrap px-3.5 md:h-7 md:px-3"
           >
-            回复
+            {t("attention.reply")}
           </AppButton>
         </div>
 
         {showCharCounter ? (
           <p className="mt-1 text-right font-mono text-[11px] tabular-nums text-[#687082] dark:text-[#8E8E96]">
-            已输入 {draft.length}/{MAX_ATTENTION_CHOICE_LENGTH}
+            {t("attention.charCounter", {
+              count: draft.length,
+              max: MAX_ATTENTION_CHOICE_LENGTH,
+            })}
           </p>
         ) : null}
       </form>

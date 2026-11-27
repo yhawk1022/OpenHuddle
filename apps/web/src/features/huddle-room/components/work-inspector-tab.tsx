@@ -33,6 +33,7 @@ import {
   toast,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
+import { useWorkbenchI18n } from "../i18n/workbench.js";
 import { useWorkspaceDirectory } from "../work/solo-workbench-store.js";
 import { bindRoomWorkspaceOnServer } from "../work/work-server-sync.js";
 import type {
@@ -47,12 +48,6 @@ import { WorkAttentionCard } from "./work-attention-card.js";
 
 const SECTION_CARD_CLASS =
   "overflow-hidden rounded-[16px] bg-white/72 ring-1 ring-inset ring-black/[0.055] dark:bg-white/[0.045] dark:ring-white/[0.075]";
-
-const INTAKE_MODE_ITEMS: ReadonlyArray<SegmentedTabItem<SuperAgentIntakeMode>> = [
-  { value: "off", label: "手动交办" },
-  { value: "observe", label: "仅建议" },
-  { value: "auto", label: "自动接单" },
-];
 
 const AUTO_SENTINEL = "__auto__";
 const UNBOUND_WORKSPACE_SENTINEL = "__unbound_ws__";
@@ -83,11 +78,21 @@ export interface WorkInspectorTabProps {
  * 渲染 `RoomInspector` 内的「任务」页签。
  */
 export function WorkInspectorTab(props: WorkInspectorTabProps) {
+  const { locale, t, tp } = useWorkbenchI18n();
   const [expandedId, setExpandedId] = useState<string | null>(props.focusedWorkItemId);
   const [steerTargetKey, setSteerTargetKey] = useState<string | null>(null);
   const [steerInput, setSteerInput] = useState<string>("");
   const [defaultsOpen, setDefaultsOpen] = useState<boolean>(false);
   const [stoppingId, setStoppingId] = useState<string | null>(null);
+
+  const intakeModeItems = useMemo<ReadonlyArray<SegmentedTabItem<SuperAgentIntakeMode>>>(
+    () => [
+      { value: "off", label: t("inspector.intake.off") },
+      { value: "observe", label: t("inspector.intake.observe") },
+      { value: "auto", label: t("inspector.intake.auto") },
+    ],
+    [t],
+  );
 
   const workbenchSnap = useWorkspaceDirectory();
   const boundWorkspaceId = workbenchSnap.roomBindings[props.roomId] ?? null;
@@ -101,13 +106,13 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
 
   const workspaceSelectOptions: ReadonlyArray<AppSelectOption<string>> = useMemo(
     () => [
-      { value: UNBOUND_WORKSPACE_SENTINEL, label: "未关联（仅聊天）" },
+      { value: UNBOUND_WORKSPACE_SENTINEL, label: t("inspector.unboundWorkspace") },
       ...workbenchSnap.workspaces.map((ws) => ({
         value: ws.id,
         label: ws.name,
       })),
     ],
-    [workbenchSnap.workspaces],
+    [t, workbenchSnap.workspaces],
   );
 
   const agentMembers = useMemo(
@@ -117,13 +122,13 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
 
   const roleSelectOptions: ReadonlyArray<AppSelectOption<string>> = useMemo(
     () => [
-      { value: AUTO_SENTINEL, label: "自动分配" },
+      { value: AUTO_SENTINEL, label: t("assign.auto") },
       ...agentMembers.map((a) => ({
         value: String(a.agentId),
         label: a.displayName,
       })),
     ],
-    [agentMembers],
+    [agentMembers, t],
   );
 
   const completedItems = useMemo(
@@ -137,7 +142,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
         ? [
             {
               id: "insp-open-workbench",
-              label: "打开工作台…",
+              label: t("inspector.menu.openWorkbench"),
               onSelect: () => props.onOpenWorkbench?.(boundWorkspace?.id),
             } satisfies AppDropdownEntry,
           ]
@@ -146,14 +151,14 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
         ? [
             {
               id: "insp-demo-clear",
-              label: "清空本地记录",
+              label: t("inspector.menu.clearLocal"),
               danger: true,
               onSelect: () => props.onClearShowcase(),
             } satisfies AppDropdownEntry,
           ]
         : []),
     ],
-    [boundWorkspace?.id, props],
+    [boundWorkspace?.id, props, t],
   );
 
   const submitSliceSteer = (workItemId: string, sliceId: string): void => {
@@ -162,7 +167,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
       return;
     }
     props.onSteerSlice(workItemId, clean, sliceId);
-    toast.success("已发送补充说明");
+    toast.success(t("inspector.toast.steerSent"));
     setSteerInput("");
     setSteerTargetKey(null);
   };
@@ -173,8 +178,10 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
     }
     setStoppingId(workItemId);
     void Promise.resolve(props.onStopItem(workItemId))
-      .then(() => toast.info("已停止任务"))
-      .catch((err: unknown) => toast.error(err instanceof Error ? err.message : "停止任务失败"))
+      .then(() => toast.info(t("detail.toast.stopped")))
+      .catch((err: unknown) =>
+        toast.error(err instanceof Error ? err.message : t("detail.toast.stopFailed")),
+      )
       .finally(() => setStoppingId((cur) => (cur === workItemId ? null : cur)));
   };
 
@@ -185,26 +192,32 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
         <div className="flex items-center justify-between gap-2">
           <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
             <FolderGit2 className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
-            <span>关联工作区</span>
+            <span>{t("inspector.linkedWorkspace")}</span>
           </span>
 
           <AppSelect
             size="sm"
-            ariaLabel="关联本机工作区"
+            ariaLabel={t("inspector.linkedWorkspaceAriaLabel")}
             value={boundWorkspace?.id ?? UNBOUND_WORKSPACE_SENTINEL}
             onValueChange={(nextVal) => {
               if (nextVal === UNBOUND_WORKSPACE_SENTINEL) {
                 void bindRoomWorkspaceOnServer(props.roomId, null)
-                  .then(() => toast.info("已解除本群工作区关联"))
+                  .then(() => toast.info(t("inspector.toast.unbound")))
                   .catch((err: unknown) =>
-                    toast.error(err instanceof Error ? err.message : "解除工作区关联失败"),
+                    toast.error(
+                      err instanceof Error ? err.message : t("inspector.toast.unbindFailed"),
+                    ),
                   );
               } else {
                 const targetWs = workbenchSnap.workspaces.find((w) => w.id === nextVal);
                 void bindRoomWorkspaceOnServer(props.roomId, nextVal)
-                  .then(() => toast.success(`已关联工作区「${targetWs?.name ?? nextVal}」`))
+                  .then(() =>
+                    toast.success(t("inspector.toast.bound", { name: targetWs?.name ?? nextVal })),
+                  )
                   .catch((err: unknown) =>
-                    toast.error(err instanceof Error ? err.message : "关联工作区失败"),
+                    toast.error(
+                      err instanceof Error ? err.message : t("inspector.toast.bindFailed"),
+                    ),
                   );
               }
             }}
@@ -223,14 +236,12 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
                   onClick={() => props.onOpenWorkbench?.(boundWorkspace.id)}
                   className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 font-sans text-[11px] font-medium text-[#2563EB] hover:underline dark:text-[#60A5FA]"
                 >
-                  <span>打开工作台</span>
+                  <span>{t("inspector.openWorkbench")}</span>
                   <ArrowUpRight className="h-3 w-3" />
                 </button>
               ) : null}
             </div>
-            <p className="leading-relaxed">
-              群内交办将自动归入该工作区；非本人名下的外部 Agent 始终仅限聊天讨论。
-            </p>
+            <p className="leading-relaxed">{t("inspector.linkedWorkspaceHint")}</p>
           </div>
         ) : null}
       </div>
@@ -238,7 +249,9 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
       {/* 顶部操作行：新建任务 + 更多选项菜单 */}
       <div className="flex items-center justify-between gap-2 px-0.5">
         <span className="text-[12px] font-medium text-[#687082] dark:text-[#8E8E96]">
-          {props.items.length > 0 ? `共 ${String(props.items.length)} 项任务` : "群内任务"}
+          {props.items.length > 0
+            ? tp("inspector.taskCount", props.items.length)
+            : t("inspector.roomTasks")}
         </span>
 
         <div className="flex items-center gap-1">
@@ -248,7 +261,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
             leadingIcon={<Plus className="h-3.5 w-3.5" />}
             onClick={props.onOpenComposerDispatch}
           >
-            新建任务
+            {t("inspector.newTask")}
           </AppButton>
 
           {menuEntries.length > 0 ? (
@@ -258,7 +271,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
               trigger={
                 <button
                   type="button"
-                  aria-label="任务菜单"
+                  aria-label={t("inspector.taskMenuAriaLabel")}
                   className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-white"
                 >
                   <MoreHorizontal className="h-4 w-4" />
@@ -272,9 +285,11 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
       {/* 空态 */}
       {props.items.length === 0 ? (
         <div className={cn(SECTION_CARD_CLASS, "px-4 py-8 text-center")}>
-          <p className="text-[13px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">暂无任务</p>
+          <p className="text-[13px] font-medium text-[#3B414E] dark:text-[#C4C4CA]">
+            {t("workbench.emptyDefault")}
+          </p>
           <p className="mt-1 text-[11.5px] leading-relaxed text-[#8E96A6] dark:text-[#71717A]">
-            点击「新建任务」或在输入框开启交办，将事项分配给群内 Agent
+            {t("inspector.emptyHint")}
           </p>
         </div>
       ) : null}
@@ -283,7 +298,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
       {props.needsHumanItems.length > 0 ? (
         <section className="space-y-1.5">
           <div className="flex items-center justify-between px-1 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-            <span>待确认</span>
+            <span>{t("filter.needsYou")}</span>
             <span className="tabular-nums">{props.needsHumanItems.length}</span>
           </div>
 
@@ -308,8 +323,8 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
                   {item.stage === "awaiting_answer" ? (
                     <button
                       type="button"
-                      title="停止任务"
-                      aria-label="停止任务"
+                      title={t("inspector.stopTaskAriaLabel")}
+                      aria-label={t("inspector.stopTaskAriaLabel")}
                       disabled={stoppingId === item.id}
                       onClick={() => handleStopItem(item.id)}
                       className="relative inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#8E96A6] transition hover:bg-black/[0.05] hover:text-[#DC2626] disabled:cursor-not-allowed disabled:opacity-45 [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-2.5 dark:hover:bg-white/[0.08] dark:hover:text-[#F87171]"
@@ -335,7 +350,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
                 {item.stage === "awaiting_review" && item.review !== undefined ? (
                   <div className="space-y-2 pl-5">
                     <p className="text-[11.5px] text-[#687082] dark:text-[#9B9BA3]">
-                      {item.review.filesChanged} 个文件变更 ·{" "}
+                      {tp("filesChanged", item.review.filesChanged)} ·{" "}
                       <span className="font-mono text-[#15803D] dark:text-[#4ADE80]">
                         +{item.review.additions}
                       </span>{" "}
@@ -355,20 +370,20 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
                         leadingIcon={<Check className="h-3 w-3" />}
                         onClick={() => {
                           props.onDecideReview(item.id, "approve");
-                          toast.success("已签收");
+                          toast.success(t("inspector.toast.approved"));
                         }}
                       >
-                        签收
+                        {t("detail.approve")}
                       </AppButton>
                       <AppButton
                         size="xs"
                         variant="secondary"
                         onClick={() => {
                           props.onDecideReview(item.id, "rework");
-                          toast.info("已退回修改");
+                          toast.info(t("inspector.toast.reworkSent"));
                         }}
                       >
-                        退回
+                        {t("detail.sendBack")}
                       </AppButton>
                     </div>
                   </div>
@@ -382,7 +397,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
                       leadingIcon={<RotateCcw className="h-3 w-3" />}
                       onClick={() => props.onRetryItem(item.id)}
                     >
-                      重新运行
+                      {t("detail.retry")}
                     </AppButton>
                   </div>
                 ) : null}
@@ -396,7 +411,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
       {props.activeRunningItems.length > 0 ? (
         <section className="space-y-1.5">
           <div className="flex items-center justify-between px-1 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-            <span>进行中</span>
+            <span>{t("filter.running")}</span>
             <span className="tabular-nums">{props.activeRunningItems.length}</span>
           </div>
 
@@ -418,8 +433,8 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
 
                   <button
                     type="button"
-                    title="停止任务"
-                    aria-label="停止任务"
+                    title={t("inspector.stopTaskAriaLabel")}
+                    aria-label={t("inspector.stopTaskAriaLabel")}
                     disabled={stoppingId === item.id}
                     onClick={() => handleStopItem(item.id)}
                     className="relative inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-[#8E96A6] transition hover:bg-black/[0.05] hover:text-[#DC2626] disabled:cursor-not-allowed disabled:opacity-45 [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-2.5 dark:hover:bg-white/[0.08] dark:hover:text-[#F87171]"
@@ -453,7 +468,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
                               onClick={() => setSteerTargetKey(steerOpen ? null : key)}
                               className="cursor-pointer text-[11px] text-[#687082] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:text-white"
                             >
-                              补充
+                              {t("inspector.steerShort")}
                             </button>
                             <span className="font-mono text-[10.5px] tabular-nums text-[#8E96A6]">
                               {slice.elapsedSec}s
@@ -477,7 +492,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
                                   submitSliceSteer(item.id, slice.sliceId);
                                 }
                               }}
-                              placeholder="补充要求…"
+                              placeholder={t("inspector.steerPlaceholder")}
                               className="flex-1 text-xs"
                             />
                             <AppButton
@@ -503,7 +518,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
       {completedItems.length > 0 ? (
         <section className="space-y-1.5">
           <div className="flex items-center justify-between px-1 text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-            <span>已完成</span>
+            <span>{t("filter.done")}</span>
             <span className="tabular-nums">{completedItems.length}</span>
           </div>
 
@@ -539,7 +554,8 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
                   {open ? (
                     <div className="mt-2 space-y-1 pl-5 text-[11px] text-[#687082] dark:text-[#8E8E96]">
                       <p>
-                        {getWorkTopologyLabel(item.topology)} · {item.primaryWorker.displayName}
+                        {getWorkTopologyLabel(item.topology, locale)} ·{" "}
+                        {item.primaryWorker.displayName}
                       </p>
                       {item.stage === "cancelled" ? (
                         <button
@@ -548,7 +564,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
                           className="mt-1 inline-flex cursor-pointer items-center gap-1 font-medium text-[#111318] hover:underline dark:text-[#F2F2F4]"
                         >
                           <RotateCcw className="h-3 w-3" />
-                          <span>重新运行</span>
+                          <span>{t("detail.retry")}</span>
                         </button>
                       ) : null}
                     </div>
@@ -569,7 +585,7 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
         >
           <span className="inline-flex items-center gap-1.5">
             <SlidersHorizontal className="h-3.5 w-3.5 text-[#687082]" />
-            <span>默认分工偏好</span>
+            <span>{t("inspector.defaultsHeading")}</span>
           </span>
           <ChevronDown
             className={cn(
@@ -583,12 +599,12 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
           <div className="mt-3 space-y-3 border-t border-black/[0.05] pt-3 dark:border-white/[0.06]">
             <div>
               <span className="mb-1.5 block text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                接单方式
+                {t("inspector.intakeModeLabel")}
               </span>
               <SegmentedTabs
                 size="xs"
                 fullWidth={true}
-                items={INTAKE_MODE_ITEMS}
+                items={intakeModeItems}
                 value={props.defaults.intakeMode}
                 onValueChange={(intakeMode) => props.onUpdateDefaults({ intakeMode })}
               />
@@ -598,11 +614,11 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
               <>
                 <div>
                   <span className="mb-1 block text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                    默认拆单人
+                    {t("inspector.defaultCoordinator")}
                   </span>
                   <AppSelect
                     size="sm"
-                    ariaLabel="默认拆单人"
+                    ariaLabel={t("inspector.defaultCoordinator")}
                     value={props.defaults.coordinatorAgentId ?? AUTO_SENTINEL}
                     onValueChange={(v) =>
                       props.onUpdateDefaults({
@@ -615,11 +631,11 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
 
                 <div>
                   <span className="mb-1 block text-[11px] text-[#687082] dark:text-[#8E8E96]">
-                    默认复核人
+                    {t("inspector.defaultVerifier")}
                   </span>
                   <AppSelect
                     size="sm"
-                    ariaLabel="默认复核人"
+                    ariaLabel={t("inspector.defaultVerifier")}
                     value={props.defaults.verifierAgentId ?? AUTO_SENTINEL}
                     onValueChange={(v) =>
                       props.onUpdateDefaults({
@@ -636,7 +652,10 @@ export function WorkInspectorTab(props: WorkInspectorTabProps) {
               <div className="space-y-1 border-t border-black/[0.05] pt-2 text-[11px] text-[#687082] dark:border-white/[0.06] dark:text-[#8E8E96]">
                 {props.observeLogs.slice(0, 3).map((entry) => (
                   <p key={entry.id} className="truncate">
-                    建议交由 {entry.suggestedAssigneeName}：{entry.triggerSnippet}
+                    {t("inspector.observeSuggestion", {
+                      assignee: entry.suggestedAssigneeName,
+                      snippet: entry.triggerSnippet,
+                    })}
                   </p>
                 ))}
               </div>

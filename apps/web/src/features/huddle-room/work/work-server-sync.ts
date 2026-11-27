@@ -36,6 +36,7 @@ import {
   updateWorkspaceApi,
 } from "../../../lib/api-client.js";
 import { subscribeWorkRealtimeSignals } from "../../../lib/sse-sync.js";
+import { getWorkbenchTranslator } from "../i18n/workbench.js";
 import {
   answerRoomWorkAttention,
   decideRoomWorkReview,
@@ -140,6 +141,7 @@ const genericQueueSummaries = new Set([
 ]);
 
 function mapSlices(item: Readonly<WorkItemDto>, nowMs: number): ReadonlyArray<WorkSliceNode> {
+  const { t } = getWorkbenchTranslator();
   return item.slices.map((s) => {
     const startMs = s.startedAtIso ? Date.parse(s.startedAtIso) : Date.parse(item.createdAtIso);
     const endMs = s.completedAtIso ? Date.parse(s.completedAtIso) : nowMs;
@@ -158,8 +160,10 @@ function mapSlices(item: Readonly<WorkItemDto>, nowMs: number): ReadonlyArray<Wo
         genericQueueSummaries.has(s.liveSummary) &&
         (item.stage === "working" || item.stage === "verifying")
           ? s.leaseRole === "verify" && item.stage === "working"
-            ? "所有执行分片完成后开始复核"
-            : `等待 ${s.assignedAgent.displayName} 认领${s.leaseRole === "verify" ? "复核" : "执行"}分片`
+            ? t("slice.waitingVerifyAfterExec")
+            : s.leaseRole === "verify"
+              ? t("slice.waitingClaimVerify", { agent: s.assignedAgent.displayName })
+              : t("slice.waitingClaimExec", { agent: s.assignedAgent.displayName })
           : s.liveSummary,
       elapsedSec,
       ...(s.diffAdded > 0 ? { diffAdded: s.diffAdded } : {}),
@@ -311,7 +315,8 @@ function bindingsListToRecord(
 export async function saveWorkspaceOnServer(
   input: UpsertAgentWorkspaceInput,
 ): Promise<AgentWorkspace> {
-  const cleanName = input.name.trim() || "未命名工作区";
+  const { t } = getWorkbenchTranslator();
+  const cleanName = input.name.trim() || t("workspace.unnamed");
   const isFolder = input.kind === "folder";
   const effectiveSandbox =
     isFolder && input.sandboxMode === "worktree_pool" ? "in_place" : input.sandboxMode;
@@ -405,12 +410,17 @@ export function buildSwarmDisjointSlices(params: {
   if (!workspaceSupportsSwarm(params.workspace)) {
     return [];
   }
+  const { t } = getWorkbenchTranslator();
   const workers = [params.workerAId, params.workerBId] as const;
   return params.workspace.roots.map((root, index) => {
     const rootName = root.name.trim();
     const assignedAgentId = workers[index % workers.length] ?? params.workerAId;
     return {
-      title: `分片 ${String.fromCharCode(65 + (index % 26))}：${rootName}（${params.title.slice(0, 24)}）`,
+      title: t("slice.swarmTitle", {
+        letter: String.fromCharCode(65 + (index % 26)),
+        rootName,
+        taskTitle: params.title.slice(0, 24),
+      }),
       assignedAgentId,
       leaseRole: params.leaseRole,
       ownedPaths: [`${rootName}/**`],
@@ -426,7 +436,9 @@ export function pickWorkbenchAgent(
 ): OwnedAgentSummaryDto | undefined {
   if (preferredId !== undefined) {
     const preferred = candidates.find((agent) => agent.id === preferredId);
-    if (!preferred) throw new Error("所选 Agent 无法参与此工单，请重新选择。");
+    if (!preferred) {
+      throw new Error(getWorkbenchTranslator().t("error.selectedAgentUnavailable"));
+    }
     return preferred;
   }
   const configured = candidates.find((agent) => agent.id === defaultId);
@@ -452,11 +464,12 @@ export async function dispatchWorkbenchTaskOnServer(input: {
   readonly preferredVerifierId?: AgentId | undefined;
   readonly roomId?: RoomId | undefined;
 }): Promise<SoloWorkTaskView> {
+  const { t } = getWorkbenchTranslator();
   if (!input.workspace || !input.workspace.id.startsWith("wsp_")) {
-    throw new Error("请先选择或新建一个有效的工作区");
+    throw new Error(t("error.workspaceRequired"));
   }
   if (input.ownedAgents.length === 0) {
-    throw new Error("请先接入至少 1 个本机 Agent 后再派发任务");
+    throw new Error(t("error.agentRequired"));
   }
 
   const { topology: parsedTopology, body } = parsePromptTopologyDirective(
@@ -469,7 +482,7 @@ export async function dispatchWorkbenchTaskOnServer(input: {
     agentCount: input.ownedAgents.length,
   });
   const cleanBrief = body.trim() || input.rawPrompt.trim();
-  const firstLine = cleanBrief.split(/\r?\n/)[0]?.trim() ?? "工作区任务";
+  const firstLine = cleanBrief.split(/\r?\n/)[0]?.trim() ?? t("task.defaultWorkspaceTitle");
   const title = firstLine.length > 64 ? `${firstLine.slice(0, 64)}…` : firstLine;
 
   const primaryWorkerId = pickWorkbenchAgent(
@@ -478,7 +491,7 @@ export async function dispatchWorkbenchTaskOnServer(input: {
     input.workspace.defaultWorkerId,
   )?.id;
   if (!primaryWorkerId) {
-    throw new Error("未找到可用的执行 Agent");
+    throw new Error(t("error.noAvailableWorker"));
   }
 
   const peers = input.ownedAgents.filter((agent) => agent.id !== primaryWorkerId);

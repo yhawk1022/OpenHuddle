@@ -6,10 +6,12 @@
  * 1. 对齐全站设计令牌：仅使用 Atelier Daylight / Obsidian Studio 中性与功能语义色彩，数字强制 `tabular-nums` 等宽对齐。
  * 2. 四态完备性：提供标准化的 `AdminTableSkeleton`、`AdminEmptyState` 与 `AdminErrorState`，确保每个管理子页不出现闪烁与白屏。
  */
-import type { AdminPagination } from "@openhuddle/protocol";
+import type { AdminPagination, SupportedLocale } from "@openhuddle/protocol";
 import { AlertCircle, ChevronLeft, ChevronRight, Inbox, RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
 import { AppButton, AppModal, cn } from "../../../components/primitives/index.js";
+import { formatCompactDuration, formatNumber } from "../../../lib/i18n/index.js";
+import { getAdminI18n, useAdminI18n } from "../i18n/index.js";
 
 /** 状态胶囊配色语义变体 */
 export type AdminTone = "neutral" | "success" | "warning" | "danger" | "info" | "accent";
@@ -48,24 +50,20 @@ export function formatAdminDateTime(iso: string | undefined): string {
 }
 
 /**
- * 格式化运行时长秒数为人类可读中文字符串（如 `2天 4小时` / `18分 30秒`）。
+ * 格式化运行时长秒数为人类可读双语紧凑字符串（如 `2天 4小时` / `2d 4h` / `18 分 30 秒` / `18m 30s`）。
  */
-export function formatUptimeDuration(seconds: number): string {
+export function formatUptimeDuration(seconds: number, locale?: SupportedLocale): string {
   const safe = Math.max(0, Math.floor(seconds));
+  const { t } = getAdminI18n(locale);
+  if (safe === 0) {
+    return t("shared.uptime.zeroSeconds");
+  }
   const days = Math.floor(safe / 86_400);
-  const hours = Math.floor((safe % 86_400) / 3_600);
-  const mins = Math.floor((safe % 3_600) / 60);
-  const secs = safe % 60;
   if (days > 0) {
-    return `${days}天 ${hours}小时`;
+    const hours = Math.floor((safe % 86_400) / 3_600);
+    return t("shared.uptime.daysHours", { days, hours });
   }
-  if (hours > 0) {
-    return `${hours}小时 ${mins}分`;
-  }
-  if (mins > 0) {
-    return `${mins}分 ${secs}秒`;
-  }
-  return `${secs}秒`;
+  return formatCompactDuration(safe * 1_000, locale);
 }
 
 /** `AdminStatCard` 入参属性 */
@@ -82,6 +80,7 @@ export interface AdminStatCardProps {
  * 渲染运营大盘核心 KPI 统计卡片（带 `tabular-nums` 等宽数字与可选交互跳转）。
  */
 export function AdminStatCard(props: AdminStatCardProps) {
+  const { locale } = useAdminI18n();
   const content = (
     <div className="flex h-full flex-col justify-between gap-3">
       <div className="flex items-start justify-between gap-2">
@@ -98,7 +97,9 @@ export function AdminStatCard(props: AdminStatCardProps) {
       <div>
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-[26px] font-semibold tracking-[-0.03em] text-[#111318] tabular-nums dark:text-[#ECEFF6]">
-            {typeof props.value === "number" ? props.value.toLocaleString() : props.value}
+            {typeof props.value === "number"
+              ? formatNumber(props.value, undefined, locale)
+              : props.value}
           </span>
           {props.badge}
         </div>
@@ -135,6 +136,7 @@ export function AdminStatCard(props: AdminStatCardProps) {
 export interface AdminStatusPillProps {
   readonly tone?: AdminTone | undefined;
   readonly dotClass?: string | undefined;
+  readonly title?: string | undefined;
   readonly children: ReactNode;
   readonly className?: string | undefined;
 }
@@ -146,6 +148,7 @@ export function AdminStatusPill(props: AdminStatusPillProps) {
   const tone = props.tone ?? "neutral";
   return (
     <span
+      title={props.title}
       className={cn(
         "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-4",
         TONE_CLASS_MAP[tone],
@@ -170,16 +173,19 @@ export interface AdminPaginationBarProps {
  * 渲染分页控制栏（总条数、当前页码与上/下一页切换）。
  */
 export function AdminPaginationBar(props: AdminPaginationBarProps) {
+  const { locale, t } = useAdminI18n();
   const { page, pageSize, total, totalPages } = props.pagination;
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const end = Math.min(total, page * pageSize);
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-black/[0.06] px-4 py-3 text-xs text-[#687082] dark:border-white/[0.07] dark:text-[#8E96AB]">
-      <span className="tabular-nums">
-        显示第 <strong className="font-semibold text-[#111318] dark:text-[#ECEFF6]">{start}</strong>
-        –<strong className="font-semibold text-[#111318] dark:text-[#ECEFF6]">{end}</strong> 条，共{" "}
-        <strong className="font-semibold text-[#111318] dark:text-[#ECEFF6]">{total}</strong> 条
+      <span className="font-medium tabular-nums">
+        {t("shared.pagination.summary", {
+          start: formatNumber(start, undefined, locale),
+          end: formatNumber(end, undefined, locale),
+          total: formatNumber(total, undefined, locale),
+        })}
       </span>
       <div className="flex items-center gap-1.5">
         <AppButton
@@ -189,10 +195,10 @@ export function AdminPaginationBar(props: AdminPaginationBarProps) {
           onClick={() => props.onPageChange(page - 1)}
           leadingIcon={<ChevronLeft className="h-3.5 w-3.5" />}
         >
-          上一页
+          {t("shared.pagination.prev")}
         </AppButton>
         <span className="px-2 font-medium tabular-nums text-[#111318] dark:text-[#ECEFF6]">
-          {page} / {totalPages}
+          {formatNumber(page, undefined, locale)} / {formatNumber(totalPages, undefined, locale)}
         </span>
         <AppButton
           variant="secondary"
@@ -201,7 +207,7 @@ export function AdminPaginationBar(props: AdminPaginationBarProps) {
           onClick={() => props.onPageChange(page + 1)}
           trailingIcon={<ChevronRight className="h-3.5 w-3.5" />}
         >
-          下一页
+          {t("shared.pagination.next")}
         </AppButton>
       </div>
     </div>
@@ -226,6 +232,7 @@ export interface AdminConfirmModalProps {
  * 渲染后台危险/关键操作二次确认弹窗（基于 `AppModal` 适配桌面与移动端手势抽屉）。
  */
 export function AdminConfirmModal(props: AdminConfirmModalProps) {
+  const { t } = useAdminI18n();
   return (
     <AppModal
       open={props.open}
@@ -241,7 +248,7 @@ export function AdminConfirmModal(props: AdminConfirmModalProps) {
             disabled={props.isPending}
             onClick={props.onClose}
           >
-            {props.cancelLabel ?? "取消"}
+            {props.cancelLabel ?? t("shared.action.cancel")}
           </AppButton>
           <AppButton
             variant={props.variant ?? "danger"}
@@ -249,7 +256,7 @@ export function AdminConfirmModal(props: AdminConfirmModalProps) {
             isLoading={props.isPending}
             onClick={props.onConfirm}
           >
-            {props.confirmLabel ?? "确认执行"}
+            {props.confirmLabel ?? t("shared.action.confirm")}
           </AppButton>
         </div>
       }
@@ -321,11 +328,12 @@ export function AdminErrorState(props: {
   readonly message: string;
   readonly onRetry: () => void;
 }) {
+  const { t } = useAdminI18n();
   return (
     <div className="m-4 rounded-2xl border border-[#E5484D]/20 bg-[#E5484D]/8 p-5 text-center dark:border-[#F05252]/25 dark:bg-[#F05252]/12">
       <AlertCircle className="mx-auto h-6 w-6 text-[#D70015] dark:text-[#FF6961]" />
       <h3 className="mt-2 text-sm font-semibold text-[#111318] dark:text-[#ECEFF6]">
-        {props.title ?? "数据加载失败"}
+        {props.title ?? t("shared.error.defaultTitle")}
       </h3>
       <p className="mt-1 text-xs text-[#687082] dark:text-[#B4BCD0]">{props.message}</p>
       <div className="mt-3.5 flex justify-center">
@@ -335,7 +343,7 @@ export function AdminErrorState(props: {
           leadingIcon={<RefreshCw className="h-3.5 w-3.5" />}
           onClick={props.onRetry}
         >
-          重试加载
+          {t("shared.error.retry")}
         </AppButton>
       </div>
     </div>

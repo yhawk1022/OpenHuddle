@@ -8,7 +8,11 @@
  * 3. 单层模糊光学纪律：顶栏采用轻磨砂 `backdrop-blur-xl`（内部零 `liquid-glass-*`）；首屏认证卡与双模预览器各用单层 `relative liquid-glass-modal`（内部零二次模糊）；首屏下方内容卡片全部采用无模糊分层表面，保障 120Hz 顺滑滚动。
  * 4. 全页单实例 `AppContextMenu`：内容区根据命中目标与选区动态生成菜单；命中原生输入控件时在冒泡阶段 `stopPropagation` 完整放行系统编辑与密码填充菜单。
  */
-import { type AuthCodeSentResponse, PASSWORD_MIN_LENGTH } from "@openhuddle/protocol";
+import {
+  type AuthCodeSentResponse,
+  type LanguagePreference,
+  PASSWORD_MIN_LENGTH,
+} from "@openhuddle/protocol";
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -57,12 +61,19 @@ import { HuddleConstellationBackground } from "../../../components/ui/huddle-con
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
 import { ApiClientError, type HumanMeResponseDto } from "../../../lib/api-client.js";
 import { isAgentLiveReachable } from "../../../lib/format.js";
+import {
+  formatApiErrorMessage,
+  readGuestLanguagePreference,
+  setGuestLanguagePreference,
+  useGuestLanguagePreference,
+} from "../../../lib/i18n/index.js";
 import { navigateBackOr, navigateTo } from "../../../lib/session-store.js";
 import { toggleGuestThemePreference, useThemeMode } from "../../../lib/theme-store.js";
 import { PwaInstallGuideModal, usePwaInstallState } from "../../pwa-install/index.js";
 import {
   authConfigQueryOptions,
   currentMeQueryOptions,
+  useAccountLanguagePreference,
   useAccountThemePreference,
   useConfirmPasswordResetMutation,
   useLoginWithPasswordMutation,
@@ -70,7 +81,9 @@ import {
   useRequestPasswordResetCodeMutation,
   useRequestRegisterCodeMutation,
 } from "../api/auth-pairing.queries.js";
+import { useAuthI18n } from "../i18n/index.js";
 import { AccountThemeMenu } from "./account-theme-menu.js";
+import { LocaleSwitcherMenu } from "./locale-switcher-menu.js";
 import {
   DEFAULT_PORTAL_CONTEXT_HIT,
   PortalArchitectureSection,
@@ -97,25 +110,15 @@ export interface AuthScreenProps {
 
 type AuthViewMode = "login" | "register" | "reset";
 type PrimaryAuthTab = "login" | "register";
-
-const AUTH_TAB_ITEMS: ReadonlyArray<SegmentedTabItem<PrimaryAuthTab>> = [
-  { value: "login", label: "登录" },
-  { value: "register", label: "注册账号" },
-];
-
-const HEADER_NAV_ITEMS: ReadonlyArray<{
-  readonly targetId: string;
-  readonly label: string;
-}> = [
-  { targetId: "portal-capabilities", label: "核心能力" },
-  { targetId: "portal-architecture", label: "性能与多端" },
-  { targetId: "portal-open-source", label: "开源与联系" },
-];
+type AuthTranslator = ReturnType<typeof useAuthI18n>;
 
 /**
  * 计算密码强度视觉档位（纯展示提示，不阻塞合规口令）。
  */
-function evaluatePasswordStrength(password: string): {
+function evaluatePasswordStrength(
+  password: string,
+  t: AuthTranslator["t"],
+): {
   readonly level: 0 | 1 | 2 | 3;
   readonly label: string;
   readonly barClass: string;
@@ -127,7 +130,7 @@ function evaluatePasswordStrength(password: string): {
   if (password.length < PASSWORD_MIN_LENGTH) {
     return {
       level: 1,
-      label: `至少 ${PASSWORD_MIN_LENGTH} 位`,
+      label: t("strength.tooShort", { min: PASSWORD_MIN_LENGTH }),
       barClass: "bg-[#FF3B30] dark:bg-[#FF453A]",
       textClass: "text-[#D70015] dark:text-[#FF6961]",
     };
@@ -141,7 +144,7 @@ function evaluatePasswordStrength(password: string): {
   if (score >= 3) {
     return {
       level: 3,
-      label: "强度：强",
+      label: t("strength.strong"),
       barClass: "bg-[#2A7B59] dark:bg-[#34D399]",
       textClass: "text-[#1E5638] dark:text-[#86E0A6]",
     };
@@ -149,14 +152,14 @@ function evaluatePasswordStrength(password: string): {
   if (score >= 1) {
     return {
       level: 2,
-      label: "强度：中",
+      label: t("strength.medium"),
       barClass: "bg-[#D97706] dark:bg-[#FBBF24]",
       textClass: "text-[#92400E] dark:text-[#FCD34D]",
     };
   }
   return {
     level: 1,
-    label: "强度：弱（建议混合字母与数字）",
+    label: t("strength.weak"),
     barClass: "bg-[#FF3B30] dark:bg-[#FF453A]",
     textClass: "text-[#D70015] dark:text-[#FF6961]",
   };
@@ -174,68 +177,58 @@ function readNumericDetail(details: unknown, key: string): number | undefined {
 }
 
 /**
- * 将后端标准 `ApiClientError` 错误码翻译为清晰、可行动的中文界面提示。
+ * 将后端标准 `ApiClientError` 错误码翻译为清晰、可行动的双语界面提示。
  */
-function formatAuthError(error: unknown): {
+function formatAuthError(
+  error: unknown,
+  authI18n: AuthTranslator,
+): {
   readonly text: string;
   readonly suggestSwitchToLogin?: boolean;
 } | null {
   if (!error) {
     return null;
   }
+  const { t, tp, locale } = authI18n;
   if (error instanceof ApiClientError) {
     switch (error.code) {
       case "INVALID_CREDENTIALS":
-        return {
-          text: "邮箱或密码不正确。如果你是早期无密码老用户，请点击「忘记密码」设置登录密码。",
-        };
+        return { text: t("error.invalidCredentials") };
       case "EMAIL_ALREADY_REGISTERED":
         return {
-          text: "该邮箱已注册 OpenHuddle 账号，请直接登录或使用忘记密码。",
+          text: t("error.emailAlreadyRegistered"),
           suggestSwitchToLogin: true,
         };
       case "SIGNUP_DISABLED":
-        return {
-          text: "当前实例已关闭自助注册，请联系站点管理员开通账号。",
-        };
+        return { text: t("error.signupDisabled") };
       case "EMAIL_DOMAIN_NOT_ALLOWED":
-        return {
-          text: "该邮箱域名不在允许注册的白名单范围内，请更换受支持的邮箱。",
-        };
+        return { text: t("error.emailDomainNotAllowed") };
       case "OTP_INVALID_OR_EXPIRED": {
         const remaining = readNumericDetail(error.details, "remainingAttempts");
         return {
           text:
             remaining !== undefined && remaining > 0
-              ? `验证码不正确或已过期（本码还可重试 ${remaining} 次）。`
-              : "验证码不正确或已过期，请核对后重试或重新获取。",
+              ? tp("error.otpRemainingAttempts", remaining)
+              : t("error.otpInvalidOrExpired"),
         };
       }
       case "OTP_ATTEMPTS_EXCEEDED":
-        return {
-          text: "该验证码连续输错次数过多已作废，请重新点击发送验证码。",
-        };
+        return { text: t("error.otpAttemptsExceeded") };
       case "AUTH_RATE_LIMITED": {
         const retryAfter = readNumericDetail(error.details, "retryAfterSec");
         return {
           text:
             retryAfter !== undefined
-              ? `操作过于频繁，请 ${retryAfter} 秒后再试。`
-              : "操作过于频繁，请稍后再试。",
+              ? t("error.rateLimitedRetryAfter", { sec: retryAfter })
+              : t("error.rateLimited"),
         };
       }
       case "ACCOUNT_SUSPENDED":
-        return {
-          text: "该账号已被管理员停用，无法继续登录。",
-        };
+        return { text: t("error.accountSuspended") };
       case "EMAIL_DELIVERY_FAILED":
-        return {
-          text: "验证邮件发送失败，请检查邮箱地址是否正确或稍后重试。",
-        };
+        return { text: t("error.emailDeliveryFailed") };
       case "EMAIL_DELIVERY_UNAVAILABLE":
-        return {
-          text: "服务器尚未配置 SMTP 发信服务，暂无法发送邮箱验证码，请联系管理员。",
-        };
+        return { text: t("error.emailDeliveryUnavailable") };
       case "INTERNAL_SERVER_ERROR":
         if (
           error.requestId === "gateway" ||
@@ -247,21 +240,24 @@ function formatAuthError(error: unknown): {
         return {
           text:
             error.requestId && error.requestId !== "unknown"
-              ? `服务器内部处理异常，请稍后重试（请求编号：${error.requestId}）。`
-              : "后端服务暂未就绪或内部异常，请稍后重试。",
+              ? t("error.internalWithRequestId", { requestId: error.requestId })
+              : t("error.internalGeneric"),
         };
       default:
-        return { text: `${error.message} (${error.code})` };
+        return {
+          text: `${formatApiErrorMessage(error.code, error.message, locale)} (${error.code})`,
+        };
     }
   }
-  return error instanceof Error ? { text: error.message } : { text: "请求失败，请稍后重试。" };
+  return error instanceof Error ? { text: error.message } : { text: t("error.requestFailed") };
 }
 
 /**
  * 渲染简洁的 3 格密码强度指示条。
  */
 function PasswordStrengthMeter(props: { readonly password: string }) {
-  const strength = evaluatePasswordStrength(props.password);
+  const { t } = useAuthI18n();
+  const strength = evaluatePasswordStrength(props.password, t);
   if (strength.level === 0) {
     return null;
   }
@@ -289,6 +285,7 @@ function PasswordStrengthMeter(props: { readonly password: string }) {
  * 已登录状态下访问 `/welcome` 时展示的当前协作空间概览卡片。
  */
 function AuthenticatedPortalSpaceCard(props: { readonly me: HumanMeResponseDto }) {
+  const { t } = useAuthI18n();
   const { user, agents } = props.me;
   const onlineCount = agents.filter((agent) => isAgentLiveReachable(agent.reach)).length;
   const previewAgents = agents.slice(0, 5);
@@ -304,7 +301,7 @@ function AuthenticatedPortalSpaceCard(props: { readonly me: HumanMeResponseDto }
             </h2>
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#E3F3EC] px-2 py-0.5 text-[11px] font-medium text-[#1E5638] dark:bg-[#16271F] dark:text-[#86E0A6]">
               <span className="h-1.5 w-1.5 rounded-full bg-[#16A34A] dark:bg-[#34D399]" />
-              <span>已登录</span>
+              <span>{t("spaceCard.signedInBadge")}</span>
             </span>
           </div>
           <p className="mt-0.5 truncate text-[12.5px] text-[#687082] dark:text-[#8E8E96]">
@@ -317,12 +314,12 @@ function AuthenticatedPortalSpaceCard(props: { readonly me: HumanMeResponseDto }
       <div className="mt-4 rounded-[16px] border border-black/[0.06] bg-[#EFF1F4] px-3.5 py-3 dark:border-white/[0.07] dark:bg-[#141417]">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[12px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
-            已绑定个人 Agent
+            {t("spaceCard.boundAgentsLabel")}
           </span>
           <span className="font-mono text-[12px] font-semibold tabular-nums text-[#111318] dark:text-[#F2F2F4]">
             {agents.length > 0
-              ? `${String(agents.length)} 个已接入 · ${String(onlineCount)} 个在线`
-              : "暂未接入 Agent"}
+              ? t("spaceCard.agentsSummary", { total: agents.length, online: onlineCount })
+              : t("spaceCard.agentsEmptyCount")}
           </span>
         </div>
 
@@ -351,7 +348,7 @@ function AuthenticatedPortalSpaceCard(props: { readonly me: HumanMeResponseDto }
           </div>
         ) : (
           <p className="mt-1.5 text-[12px] leading-relaxed text-[#5A6272] dark:text-[#8E8E96]">
-            进入工作台后点击左侧导轨「接入 agent」，即可连通 Claude Code、Codex 或任意 MCP 客户端。
+            {t("spaceCard.agentsEmptyHint")}
           </p>
         )}
       </div>
@@ -366,7 +363,7 @@ function AuthenticatedPortalSpaceCard(props: { readonly me: HumanMeResponseDto }
           onClick={() => navigateTo("/")}
           className="h-10.5 rounded-full text-[14px] font-medium sm:h-11"
         >
-          进入聊天会话
+          {t("spaceCard.openChats")}
         </AppButton>
 
         <AppButton
@@ -377,7 +374,7 @@ function AuthenticatedPortalSpaceCard(props: { readonly me: HumanMeResponseDto }
           onClick={() => navigateTo("/?view=workbench")}
           className="h-10.5 rounded-full text-[13.5px] font-medium sm:h-11"
         >
-          打开个人工作台
+          {t("spaceCard.openWorkbench")}
         </AppButton>
       </div>
     </div>
@@ -392,6 +389,8 @@ function AuthenticatedPortalSpaceCard(props: { readonly me: HumanMeResponseDto }
  */
 export function AuthScreen(props: AuthScreenProps) {
   const portalMode: PortalMode = props.portalMode ?? "auth";
+  const authI18n = useAuthI18n();
+  const { t, tp, locale } = authI18n;
 
   const authConfigQuery = useQuery(authConfigQueryOptions());
   const welcomeMeQuery = useQuery({
@@ -446,8 +445,31 @@ export function AuthScreen(props: AuthScreenProps) {
 
   const themeMode = useThemeMode();
   const accountTheme = useAccountThemePreference();
+  const accountLanguage = useAccountLanguagePreference();
+  const guestLanguagePreference = useGuestLanguagePreference();
+  const activeLanguagePreference = isAuthenticatedWelcome
+    ? accountLanguage.preference
+    : guestLanguagePreference;
   const pwaState = usePwaInstallState();
   const reducedMotion = usePrefersReducedMotion();
+
+  const authTabItems = useMemo<ReadonlyArray<SegmentedTabItem<PrimaryAuthTab>>>(
+    () => [
+      { value: "login", label: t("tabs.login") },
+      { value: "register", label: t("tabs.register") },
+    ],
+    [t],
+  );
+
+  const headerNavItems = useMemo(
+    () =>
+      [
+        { targetId: "portal-capabilities", label: t("header.nav.capabilities") },
+        { targetId: "portal-architecture", label: t("header.nav.architecture") },
+        { targetId: "portal-open-source", label: t("header.nav.openSource") },
+      ] as const,
+    [t],
+  );
 
   // 冷却倒计时器：每秒递减直至归零
   const hasActiveCooldown = registerCooldownSec > 0 || resetCooldownSec > 0;
@@ -521,6 +543,17 @@ export function AuthScreen(props: AuthScreenProps) {
     }
   }, [accountTheme, isAuthenticatedWelcome, themeMode]);
 
+  const handleSelectPortalLanguage = useCallback(
+    (nextPreference: LanguagePreference): void => {
+      if (isAuthenticatedWelcome) {
+        accountLanguage.setPreference(nextPreference);
+      } else {
+        setGuestLanguagePreference(nextPreference);
+      }
+    },
+    [accountLanguage, isAuthenticatedWelcome],
+  );
+
   const trimmedEmail = email.trim().toLowerCase();
   const trimmedDisplayName = displayName.trim();
   const isEmailShapeValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail);
@@ -548,14 +581,14 @@ export function AuthScreen(props: AuthScreenProps) {
     event.preventDefault();
     setLocalValidationError(null);
     if (!isEmailShapeValid || password.length === 0) {
-      setLocalValidationError("请输入有效的邮箱地址和登录密码。");
+      setLocalValidationError(t("validation.loginRequired"));
       return;
     }
     loginMutation.mutate(
       { email: trimmedEmail, password },
       {
         onSuccess: (res) => {
-          toast.success(`欢迎回来，${res.user.displayName}`);
+          toast.success(t("toast.welcomeBack", { name: res.user.displayName }));
           navigateFromWelcomeAfterAuth();
         },
       },
@@ -567,7 +600,7 @@ export function AuthScreen(props: AuthScreenProps) {
     setLocalValidationError(null);
     registerMutation.reset();
     if (!isEmailShapeValid) {
-      setLocalValidationError("请先输入格式正确的邮箱地址。");
+      setLocalValidationError(t("validation.emailFirst"));
       return;
     }
     requestRegisterCodeMutation.mutate(
@@ -577,12 +610,14 @@ export function AuthScreen(props: AuthScreenProps) {
           setRegisterCodeMeta(res);
           setRegisterCooldownSec(res.resendCooldownSec);
           toast.success(
-            res.devOtpCode !== undefined ? "开发模式注册验证码已生成" : "6 位注册验证码已发送",
+            res.devOtpCode !== undefined
+              ? t("toast.devRegisterCodeTitle")
+              : t("toast.registerCodeSentTitle"),
             {
               description:
                 res.devOtpCode !== undefined
-                  ? `可直接点击一键填入验证码 ${res.devOtpCode}`
-                  : `请前往 ${res.email} 收件箱查收（10 分钟内有效）`,
+                  ? t("toast.devCodeDesc", { code: res.devOtpCode })
+                  : t("toast.registerCodeSentDesc", { email: res.email }),
             },
           );
         },
@@ -602,27 +637,27 @@ export function AuthScreen(props: AuthScreenProps) {
     event.preventDefault();
     setLocalValidationError(null);
     if (!isEmailShapeValid) {
-      setLocalValidationError("请输入有效的邮箱地址。");
+      setLocalValidationError(t("validation.invalidEmail"));
       return;
     }
     if (!/^\d{6}$/.test(verificationCode)) {
-      setLocalValidationError("请输入邮件中收到的 6 位数字验证码。");
+      setLocalValidationError(t("validation.registerCodeRequired"));
       return;
     }
     if (trimmedDisplayName.length === 0) {
-      setLocalValidationError("请输入你的展示昵称。");
+      setLocalValidationError(t("validation.displayNameRequired"));
       return;
     }
     if (password.length < PASSWORD_MIN_LENGTH || !/\S/.test(password)) {
-      setLocalValidationError(`登录密码至少需要 ${PASSWORD_MIN_LENGTH} 位有效字符。`);
+      setLocalValidationError(t("validation.passwordTooShort", { min: PASSWORD_MIN_LENGTH }));
       return;
     }
     if (password !== confirmPassword) {
-      setLocalValidationError("两次输入的密码不一致，请重新核对。");
+      setLocalValidationError(t("validation.passwordMismatch"));
       return;
     }
     if (password.trim().toLowerCase() === trimmedEmail) {
-      setLocalValidationError("为保障账号安全，密码不能与邮箱地址相同。");
+      setLocalValidationError(t("validation.passwordSameAsEmail"));
       return;
     }
 
@@ -632,10 +667,11 @@ export function AuthScreen(props: AuthScreenProps) {
         code: verificationCode,
         displayName: trimmedDisplayName,
         password,
+        languagePreference: readGuestLanguagePreference(),
       },
       {
         onSuccess: (res) => {
-          toast.success(`注册成功，欢迎加入 OpenHuddle，${res.user.displayName}！`);
+          toast.success(t("toast.registerSuccess", { name: res.user.displayName }));
           navigateFromWelcomeAfterAuth();
         },
       },
@@ -647,7 +683,7 @@ export function AuthScreen(props: AuthScreenProps) {
     setLocalValidationError(null);
     confirmResetMutation.reset();
     if (!isEmailShapeValid) {
-      setLocalValidationError("请先输入你的注册邮箱地址。");
+      setLocalValidationError(t("validation.registeredEmailFirst"));
       return;
     }
     requestResetCodeMutation.mutate(
@@ -657,12 +693,14 @@ export function AuthScreen(props: AuthScreenProps) {
           setResetCodeMeta(res);
           setResetCooldownSec(res.resendCooldownSec);
           toast.success(
-            res.devOtpCode !== undefined ? "开发模式重置验证码已生成" : "重置邮件请求已受理",
+            res.devOtpCode !== undefined
+              ? t("toast.devResetCodeTitle")
+              : t("toast.resetCodeSentTitle"),
             {
               description:
                 res.devOtpCode !== undefined
-                  ? `可直接点击一键填入验证码 ${res.devOtpCode}`
-                  : "如果该邮箱已注册，6 位重置验证码已发送至你的收件箱",
+                  ? t("toast.devCodeDesc", { code: res.devOtpCode })
+                  : t("toast.resetCodeSentDesc"),
             },
           );
         },
@@ -682,23 +720,23 @@ export function AuthScreen(props: AuthScreenProps) {
     event.preventDefault();
     setLocalValidationError(null);
     if (!isEmailShapeValid) {
-      setLocalValidationError("请输入有效的邮箱地址。");
+      setLocalValidationError(t("validation.invalidEmail"));
       return;
     }
     if (!/^\d{6}$/.test(verificationCode)) {
-      setLocalValidationError("请输入 6 位数字重置验证码。");
+      setLocalValidationError(t("validation.resetCodeRequired"));
       return;
     }
     if (password.length < PASSWORD_MIN_LENGTH || !/\S/.test(password)) {
-      setLocalValidationError(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 位有效字符。`);
+      setLocalValidationError(t("validation.newPasswordTooShort", { min: PASSWORD_MIN_LENGTH }));
       return;
     }
     if (password !== confirmPassword) {
-      setLocalValidationError("两次输入的新密码不一致，请重新核对。");
+      setLocalValidationError(t("validation.newPasswordMismatch"));
       return;
     }
     if (password.trim().toLowerCase() === trimmedEmail) {
-      setLocalValidationError("新密码不能与邮箱地址相同。");
+      setLocalValidationError(t("validation.newPasswordSameAsEmail"));
       return;
     }
 
@@ -710,8 +748,8 @@ export function AuthScreen(props: AuthScreenProps) {
       },
       {
         onSuccess: () => {
-          toast.success("密码已重置并为你登录", {
-            description: "该账号在其余设备上的历史会话已全部安全下线",
+          toast.success(t("toast.resetSuccessTitle"), {
+            description: t("toast.resetSuccessDesc"),
           });
           navigateFromWelcomeAfterAuth();
         },
@@ -729,14 +767,14 @@ export function AuthScreen(props: AuthScreenProps) {
   const formattedError =
     localValidationError !== null
       ? { text: localValidationError }
-      : formatAuthError(activeServerError);
+      : formatAuthError(activeServerError, authI18n);
 
   const passwordToggleButton = (
     <button
       type="button"
       tabIndex={-1}
       onClick={() => setShowPassword((prev) => !prev)}
-      aria-label={showPassword ? "隐藏密码" : "显示密码"}
+      aria-label={showPassword ? t("field.hidePassword") : t("field.showPassword")}
       className="cursor-pointer rounded-md p-1 text-[#8E8E93] transition-colors hover:text-[#141414] dark:text-zinc-500 dark:hover:text-zinc-200"
     >
       {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -748,7 +786,9 @@ export function AuthScreen(props: AuthScreenProps) {
       type="button"
       tabIndex={-1}
       onClick={() => setShowConfirmPassword((prev) => !prev)}
-      aria-label={showConfirmPassword ? "隐藏确认密码" : "显示确认密码"}
+      aria-label={
+        showConfirmPassword ? t("field.hideConfirmPassword") : t("field.showConfirmPassword")
+      }
       className="cursor-pointer rounded-md p-1 text-[#8E8E93] transition-colors hover:text-[#141414] dark:text-zinc-500 dark:hover:text-zinc-200"
     >
       {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -764,11 +804,11 @@ export function AuthScreen(props: AuthScreenProps) {
         if (ok) {
           toast.success(successTitle, description !== undefined ? { description } : undefined);
         } else {
-          toast.error("复制失败，请手动选中复制");
+          toast.error(t("toast.copyFailed"));
         }
       });
     },
-    [],
+    [t],
   );
 
   const contextMenuEntries = useMemo(
@@ -778,6 +818,9 @@ export function AuthScreen(props: AuthScreenProps) {
         {
           isAuthenticatedWelcome,
           isDarkTheme: themeMode === "dark",
+          languagePreference: activeLanguagePreference,
+          locale,
+          onSelectLanguage: handleSelectPortalLanguage,
           onCopyText: handleCopyFromMenu,
           onOpenMailClient: (targetEmail) => {
             if (typeof window !== "undefined") {
@@ -796,18 +839,22 @@ export function AuthScreen(props: AuthScreenProps) {
           onCopySiteUrl: () => {
             const url = typeof window !== "undefined" ? window.location.origin : "";
             if (url.length > 0) {
-              handleCopyFromMenu(url, "已复制本站链接", url);
+              handleCopyFromMenu(url, t("toast.siteUrlCopied"), url);
             }
           },
         },
       ),
     [
+      activeLanguagePreference,
       contextHit,
       handleCopyFromMenu,
       handleJumpToAuthOrReturn,
+      handleSelectPortalLanguage,
       handleTogglePortalTheme,
       isAuthenticatedWelcome,
+      locale,
       scrollToSection,
+      t,
       themeMode,
     ],
   );
@@ -838,11 +885,11 @@ export function AuthScreen(props: AuthScreenProps) {
         data-tauri-drag-region=""
         className="app-drag-region pt-safe relative z-20 shrink-0 select-none border-b border-black/[0.05] bg-app-frame/85 backdrop-blur-xl dark:border-white/[0.06] dark:bg-[#0E0F13]/85"
       >
-        <div className="mx-auto flex w-full max-w-[1200px] items-center justify-between gap-3 px-4 py-2.5 sm:px-6 sm:py-3 lg:px-10">
+        <div className="mx-auto flex w-full max-w-[1200px] items-center justify-between gap-2 px-4 py-2.5 sm:gap-3 sm:px-6 sm:py-3 lg:px-10">
           <button
             type="button"
             onClick={scrollToTop}
-            aria-label="回到 OpenHuddle 页面顶部"
+            aria-label={t("header.scrollToTopAria")}
             className="app-no-drag inline-flex shrink-0 cursor-pointer items-center gap-2.5 rounded-xl py-0.5 text-left transition-opacity hover:opacity-85"
           >
             <BrandMark className="h-6 w-6 shrink-0" />
@@ -851,8 +898,11 @@ export function AuthScreen(props: AuthScreenProps) {
             </span>
           </button>
 
-          <nav aria-label="门户分区导览" className="app-no-drag hidden items-center gap-1 md:flex">
-            {HEADER_NAV_ITEMS.map((item) => (
+          <nav
+            aria-label={t("header.navAria")}
+            className="app-no-drag hidden items-center gap-1 md:flex"
+          >
+            {headerNavItems.map((item) => (
               <button
                 key={item.targetId}
                 type="button"
@@ -869,13 +919,22 @@ export function AuthScreen(props: AuthScreenProps) {
               <button
                 type="button"
                 onClick={() => setPwaGuideOpen(true)}
-                className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full bg-black/[0.05] px-2.5 text-xs font-medium text-[#3B414E] transition hover:bg-black/[0.09] dark:bg-white/[0.08] dark:text-[#D4D4D8] dark:hover:bg-white/[0.14]"
+                aria-label={t("header.installPwaAria")}
+                title={t("header.installPwaAria")}
+                className={cn(
+                  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-1 whitespace-nowrap rounded-full bg-black/[0.05] text-xs font-medium text-[#3B414E] transition hover:bg-black/[0.09] dark:bg-white/[0.08] dark:text-[#D4D4D8] dark:hover:bg-white/[0.14]",
+                  hasSecondaryHeaderCta ? "h-7 w-7 px-0 sm:h-8 sm:w-auto sm:px-2.5" : "h-8 px-2.5",
+                )}
               >
                 <Smartphone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                <span className={cn(hasSecondaryHeaderCta && "hidden sm:inline")}>
-                  添加到主屏幕
-                </span>
-                {hasSecondaryHeaderCta ? <span className="sm:hidden">主屏幕</span> : null}
+                {hasSecondaryHeaderCta ? (
+                  <span className="hidden sm:inline">{t("header.installPwaDesktop")}</span>
+                ) : (
+                  <>
+                    <span className="hidden sm:inline">{t("header.installPwaDesktop")}</span>
+                    <span className="sm:hidden">{t("header.installPwaShort")}</span>
+                  </>
+                )}
               </button>
             ) : null}
 
@@ -886,29 +945,34 @@ export function AuthScreen(props: AuthScreenProps) {
                 leadingIcon={<ArrowLeft aria-hidden="true" className="h-3.5 w-3.5" />}
                 onClick={() => navigateBackOr("/")}
               >
-                返回工作台
+                {t("header.backToApp")}
               </AppButton>
             ) : showScrollLoginCta ? (
               <AppButton variant="primary" size="sm" onClick={handleJumpToAuthOrReturn}>
-                去登录
+                {t("header.signInCta")}
               </AppButton>
             ) : null}
 
             {isAuthenticatedWelcome ? (
-              <AccountThemeMenu />
+              <AccountThemeMenu align="end" />
             ) : (
-              <IconButton
-                size="sm"
-                variant="ghost"
-                label={themeMode === "dark" ? "切换为白天模式" : "切换为夜间模式"}
-                onClick={toggleGuestThemePreference}
-              >
-                {themeMode === "dark" ? (
-                  <Sun aria-hidden="true" className="h-4 w-4" />
-                ) : (
-                  <Moon aria-hidden="true" className="h-4 w-4" />
-                )}
-              </IconButton>
+              <>
+                <LocaleSwitcherMenu align="end" />
+                <IconButton
+                  size="sm"
+                  variant="ghost"
+                  label={
+                    themeMode === "dark" ? t("header.switchToLight") : t("header.switchToDark")
+                  }
+                  onClick={toggleGuestThemePreference}
+                >
+                  {themeMode === "dark" ? (
+                    <Sun aria-hidden="true" className="h-4 w-4" />
+                  ) : (
+                    <Moon aria-hidden="true" className="h-4 w-4" />
+                  )}
+                </IconButton>
+              </>
             )}
           </div>
         </div>
@@ -940,11 +1004,10 @@ export function AuthScreen(props: AuthScreenProps) {
                   transition={{ type: "spring", stiffness: 380, damping: 32 }}
                 >
                   <h1 className="text-balance text-[25px] font-semibold leading-[1.18] tracking-[-0.03em] text-[#111318] sm:text-[40px] sm:leading-[1.14] xl:text-[46px] xl:leading-[1.12] dark:text-[#F2F2F4]">
-                    和你的多路 Agent 一起讨论、改码、拍板。
+                    {t("hero.title")}
                   </h1>
                   <p className="mt-2 max-w-xl text-pretty text-[13px] leading-[1.52] text-[#525A6B] sm:mt-3.5 sm:text-[15.5px] sm:leading-[1.62] dark:text-[#A5A7B2]">
-                    一键连通 Claude Code、Codex、Cursor 等个人
-                    Agent：受控群聊里交叉求证，隔离工作台里并行改码。
+                    {t("hero.subtitle")}
                   </p>
                 </motion.div>
 
@@ -971,10 +1034,10 @@ export function AuthScreen(props: AuthScreenProps) {
                           <SegmentedTabs<PrimaryAuthTab>
                             value={mode}
                             onValueChange={(next) => switchMode(next)}
-                            items={AUTH_TAB_ITEMS}
+                            items={authTabItems}
                             size="md"
                             fullWidth={true}
-                            ariaLabel="选择登录或注册"
+                            ariaLabel={t("tabs.ariaLabel")}
                           />
                         </div>
                       ) : null}
@@ -992,23 +1055,23 @@ export function AuthScreen(props: AuthScreenProps) {
                           >
                             <div className="select-none">
                               <h2 className="text-[19px] font-semibold tracking-[-0.02em] text-[#141414] sm:text-[22px] dark:text-zinc-100">
-                                欢迎回来
+                                {t("login.title")}
                               </h2>
                               <p className="mt-1 text-[12.5px] leading-snug text-[#6E6E73] sm:mt-1.5 sm:text-[13px] sm:leading-relaxed dark:text-zinc-400">
-                                使用你的注册邮箱与密码登录 OpenHuddle 协作空间。
+                                {t("login.subtitle")}
                               </p>
                             </div>
 
                             {!allowPublicSignup ? (
                               <div className="rounded-2xl bg-im-surface-muted px-3.5 py-2.5 text-[12px] leading-relaxed text-im-muted dark:bg-white/[0.05] dark:text-zinc-400">
-                                当前实例已关闭自助注册，仅限已有账号登录。
+                                {t("login.signupDisabledBanner")}
                               </div>
                             ) : null}
 
                             <div className="space-y-3 sm:space-y-3.5">
                               <div>
                                 <label htmlFor="auth-login-email" className={LABEL_CLASS}>
-                                  邮箱地址
+                                  {t("field.email")}
                                 </label>
                                 <AppInput
                                   ref={emailInputRef}
@@ -1033,14 +1096,14 @@ export function AuthScreen(props: AuthScreenProps) {
                               <div>
                                 <div className="flex items-center justify-between gap-2">
                                   <label htmlFor="auth-login-password" className={LABEL_CLASS}>
-                                    登录密码
+                                    {t("field.password")}
                                   </label>
                                   <button
                                     type="button"
                                     onClick={() => switchMode("reset")}
                                     className="cursor-pointer text-[12px] font-medium text-[#6E6E73] transition-colors hover:text-[#141414] dark:text-zinc-400 dark:hover:text-zinc-100"
                                   >
-                                    忘记密码？
+                                    {t("login.forgotPassword")}
                                   </button>
                                 </div>
                                 <AppInput
@@ -1057,7 +1120,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                   }}
                                   leadingIcon={<Lock className="h-4 w-4" />}
                                   trailingSlot={passwordToggleButton}
-                                  placeholder="请输入登录密码"
+                                  placeholder={t("field.passwordPlaceholder")}
                                   containerClassName="mt-1 sm:mt-1.5"
                                 />
                               </div>
@@ -1086,18 +1149,18 @@ export function AuthScreen(props: AuthScreenProps) {
                                 ) : undefined
                               }
                             >
-                              {loginMutation.isPending ? "正在登录..." : "登录"}
+                              {loginMutation.isPending ? t("login.submitting") : t("login.submit")}
                             </AppButton>
 
                             <div className="flex select-none items-center justify-between gap-2 pt-0.5 text-[12px] text-[#8E8E93] dark:text-zinc-500">
-                              <span>开源 · 可私有化部署</span>
+                              <span>{t("login.footerBadge")}</span>
                               {allowPublicSignup ? (
                                 <button
                                   type="button"
                                   onClick={() => switchMode("register")}
                                   className="cursor-pointer font-medium text-[#141414] underline-offset-4 hover:underline dark:text-zinc-200"
                                 >
-                                  还没有账号？去注册
+                                  {t("login.noAccountCta")}
                                 </button>
                               ) : null}
                             </div>
@@ -1114,10 +1177,10 @@ export function AuthScreen(props: AuthScreenProps) {
                           >
                             <div className="select-none">
                               <h2 className="text-[19px] font-semibold tracking-[-0.02em] text-[#141414] sm:text-[22px] dark:text-zinc-100">
-                                创建你的账号
+                                {t("register.title")}
                               </h2>
                               <p className="mt-1 text-[12.5px] leading-relaxed text-[#6E6E73] sm:text-[13px] dark:text-zinc-400">
-                                先验证邮箱收到的 6 位激活码，再设置登录密码即可开启协作。
+                                {t("register.subtitle")}
                               </p>
                             </div>
 
@@ -1125,9 +1188,11 @@ export function AuthScreen(props: AuthScreenProps) {
                               <div className="flex items-start gap-2 rounded-2xl bg-im-surface-muted px-3.5 py-2 text-[12px] leading-relaxed text-[#52525B] dark:bg-white/[0.05] dark:text-zinc-300">
                                 <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#2A7B59] dark:text-[#5ED3A2]" />
                                 <span>
-                                  仅允许使用{" "}
-                                  {allowedEmailDomains.map((domain) => `@${domain}`).join("、")}{" "}
-                                  邮箱注册
+                                  {t("register.allowedDomains", {
+                                    domains: allowedEmailDomains
+                                      .map((domain) => `@${domain}`)
+                                      .join(t("register.domainSeparator")),
+                                  })}
                                 </span>
                               </div>
                             ) : null}
@@ -1135,17 +1200,14 @@ export function AuthScreen(props: AuthScreenProps) {
                             {emailDeliveryMode === "unavailable" ? (
                               <div className="flex items-start gap-2 rounded-2xl border border-[#D97706]/30 bg-[#FEF3C7]/70 px-3.5 py-2.5 text-[12px] leading-relaxed text-[#92400E] dark:border-[#F59E0B]/25 dark:bg-[#451A03]/35 dark:text-[#FCD34D]">
                                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                <span>
-                                  当前服务器尚未配置 SMTP
-                                  发信服务，暂无法下发注册验证邮件，请联系管理员。
-                                </span>
+                                <span>{t("register.smtpUnavailable")}</span>
                               </div>
                             ) : null}
 
                             <div className="space-y-3">
                               <div>
                                 <label htmlFor="auth-reg-email" className={LABEL_CLASS}>
-                                  邮箱地址
+                                  {t("field.email")}
                                 </label>
                                 <div className="mt-1.5 flex flex-col gap-2 sm:flex-row sm:items-center">
                                   <AppInput
@@ -1186,17 +1248,17 @@ export function AuthScreen(props: AuthScreenProps) {
                                     className="h-10 w-full shrink-0 justify-center rounded-xl px-3.5 text-xs font-medium whitespace-nowrap sm:w-auto"
                                   >
                                     {registerCooldownSec > 0
-                                      ? `${registerCooldownSec}s 后重发`
+                                      ? t("code.resendCountdown", { sec: registerCooldownSec })
                                       : registerCodeMeta
-                                        ? "重新发送"
-                                        : "发送验证码"}
+                                        ? t("code.resend")
+                                        : t("code.send")}
                                   </AppButton>
                                 </div>
                                 <p
                                   id="auth-reg-code-hint"
                                   className="mt-1.5 text-[12px] leading-relaxed text-[#6E6E73] dark:text-zinc-400"
                                 >
-                                  如果收不到验证码，请检查邮箱的垃圾邮件文件夹。
+                                  {t("code.spamHint")}
                                 </p>
                               </div>
 
@@ -1206,7 +1268,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                   <div className="select-none rounded-2xl bg-[#E3F3EC] px-3.5 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#16271F] dark:ring-white/[0.08]">
                                     <div className="flex items-center justify-between gap-2">
                                       <span className="text-[11.5px] font-medium text-[#1E5638] dark:text-[#86E0A6]">
-                                        开发模式验证码
+                                        {t("code.devRegisterLabel")}
                                       </span>
                                       <div className="flex items-center gap-2">
                                         <code className="rounded-md bg-white/90 px-2 py-0.5 font-mono text-xs font-semibold tracking-widest text-[#141414] ring-1 ring-black/[0.06] dark:bg-black/30 dark:text-zinc-100 dark:ring-white/[0.1]">
@@ -1219,7 +1281,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                           }
                                           className="cursor-pointer rounded-full bg-[#141414] px-2.5 py-1 text-[11px] font-medium text-white transition hover:opacity-85 dark:bg-white dark:text-[#141414]"
                                         >
-                                          一键填入
+                                          {t("code.devAutofill")}
                                         </button>
                                       </div>
                                     </div>
@@ -1228,8 +1290,11 @@ export function AuthScreen(props: AuthScreenProps) {
                                   <p className="flex items-center gap-1.5 rounded-xl bg-[#E3F3EC]/80 px-3 py-2 text-[12px] text-[#1E5638] dark:bg-[#16271F] dark:text-[#86E0A6]">
                                     <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                                     <span>
-                                      验证码已发往 {activeDevOtpMeta.email}（
-                                      {Math.round(activeDevOtpMeta.expiresInSec / 60)} 分钟内有效）
+                                      {tp(
+                                        "code.registerSentNotice",
+                                        Math.max(1, Math.round(activeDevOtpMeta.expiresInSec / 60)),
+                                        { email: activeDevOtpMeta.email },
+                                      )}
                                     </span>
                                   </p>
                                 )
@@ -1238,7 +1303,7 @@ export function AuthScreen(props: AuthScreenProps) {
                               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                                 <div>
                                   <label htmlFor="auth-reg-code" className={LABEL_CLASS}>
-                                    6 位邮箱验证码
+                                    {t("field.emailCode")}
                                   </label>
                                   <AppInput
                                     id="auth-reg-code"
@@ -1265,7 +1330,7 @@ export function AuthScreen(props: AuthScreenProps) {
 
                                 <div>
                                   <label htmlFor="auth-reg-name" className={LABEL_CLASS}>
-                                    你的名字
+                                    {t("field.displayName")}
                                   </label>
                                   <AppInput
                                     id="auth-reg-name"
@@ -1280,7 +1345,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                       setLocalValidationError(null);
                                     }}
                                     leadingIcon={<User className="h-4 w-4" />}
-                                    placeholder="例如：庞彦 / Alex"
+                                    placeholder={t("field.displayNamePlaceholder")}
                                     containerClassName="mt-1.5"
                                   />
                                 </div>
@@ -1288,7 +1353,7 @@ export function AuthScreen(props: AuthScreenProps) {
 
                               <div>
                                 <label htmlFor="auth-reg-password" className={LABEL_CLASS}>
-                                  设置密码
+                                  {t("field.setPassword")}
                                 </label>
                                 <AppInput
                                   id="auth-reg-password"
@@ -1304,7 +1369,9 @@ export function AuthScreen(props: AuthScreenProps) {
                                   }}
                                   leadingIcon={<Lock className="h-4 w-4" />}
                                   trailingSlot={passwordToggleButton}
-                                  placeholder={`至少 ${PASSWORD_MIN_LENGTH} 位字符`}
+                                  placeholder={t("field.minLengthPlaceholder", {
+                                    min: PASSWORD_MIN_LENGTH,
+                                  })}
                                   containerClassName="mt-1.5"
                                 />
                                 <PasswordStrengthMeter password={password} />
@@ -1312,7 +1379,7 @@ export function AuthScreen(props: AuthScreenProps) {
 
                               <div>
                                 <label htmlFor="auth-reg-password-confirm" className={LABEL_CLASS}>
-                                  确认密码
+                                  {t("field.confirmPassword")}
                                 </label>
                                 <AppInput
                                   id="auth-reg-password-confirm"
@@ -1330,7 +1397,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                   }}
                                   leadingIcon={<Lock className="h-4 w-4" />}
                                   trailingSlot={confirmPasswordToggleButton}
-                                  placeholder="再次输入密码"
+                                  placeholder={t("field.confirmPasswordPlaceholder")}
                                   containerClassName="mt-1.5"
                                 />
                               </div>
@@ -1348,7 +1415,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                     onClick={() => switchMode("login")}
                                     className="mt-1.5 inline-flex cursor-pointer items-center gap-1 font-semibold underline underline-offset-2"
                                   >
-                                    <span>直接用该邮箱登录</span>
+                                    <span>{t("register.switchToLoginCta")}</span>
                                     <ArrowRight aria-hidden="true" className="h-3 w-3" />
                                   </button>
                                 ) : null}
@@ -1375,7 +1442,9 @@ export function AuthScreen(props: AuthScreenProps) {
                                 ) : undefined
                               }
                             >
-                              {registerMutation.isPending ? "正在创建账号..." : "完成注册并进入"}
+                              {registerMutation.isPending
+                                ? t("register.submitting")
+                                : t("register.submit")}
                             </AppButton>
                           </motion.form>
                         ) : (
@@ -1399,28 +1468,27 @@ export function AuthScreen(props: AuthScreenProps) {
                                 onClick={() => switchMode("login")}
                                 className="-ml-2.5"
                               >
-                                返回登录
+                                {t("reset.backToLogin")}
                               </AppButton>
                               <h2 className="mt-2 text-[19px] font-semibold tracking-[-0.02em] text-[#141414] sm:text-[22px] dark:text-zinc-100">
-                                重置登录密码
+                                {t("reset.title")}
                               </h2>
                               <p className="mt-1 text-[12.5px] leading-relaxed text-[#6E6E73] sm:text-[13px] dark:text-zinc-400">
-                                通过邮箱接收 6
-                                位验证码重设密码；早期无密码老用户也可在此直接设置登录密码。
+                                {t("reset.subtitle")}
                               </p>
                             </div>
 
                             {emailDeliveryMode === "unavailable" ? (
                               <div className="flex items-start gap-2 rounded-2xl border border-[#D97706]/30 bg-[#FEF3C7]/70 px-3.5 py-2.5 text-[12px] leading-relaxed text-[#92400E] dark:border-[#F59E0B]/25 dark:bg-[#451A03]/35 dark:text-[#FCD34D]">
                                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                <span>当前服务器尚未配置 SMTP 发信服务，暂无法发送重置邮件。</span>
+                                <span>{t("reset.smtpUnavailable")}</span>
                               </div>
                             ) : null}
 
                             <div className="space-y-3">
                               <div>
                                 <label htmlFor="auth-reset-email" className={LABEL_CLASS}>
-                                  注册邮箱
+                                  {t("field.registeredEmail")}
                                 </label>
                                 <div className="mt-1.5 flex flex-col gap-2 sm:flex-row sm:items-center">
                                   <AppInput
@@ -1461,10 +1529,10 @@ export function AuthScreen(props: AuthScreenProps) {
                                     className="h-10 w-full shrink-0 justify-center rounded-xl px-3.5 text-xs font-medium whitespace-nowrap sm:w-auto"
                                   >
                                     {resetCooldownSec > 0
-                                      ? `${resetCooldownSec}s 后重发`
+                                      ? t("code.resendCountdown", { sec: resetCooldownSec })
                                       : resetCodeMeta
-                                        ? "重新发送"
-                                        : "发送验证码"}
+                                        ? t("code.resend")
+                                        : t("code.send")}
                                   </AppButton>
                                 </div>
                               </div>
@@ -1474,7 +1542,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                   <div className="select-none rounded-2xl bg-[#E3F3EC] px-3.5 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-[#16271F] dark:ring-white/[0.08]">
                                     <div className="flex items-center justify-between gap-2">
                                       <span className="text-[11.5px] font-medium text-[#1E5638] dark:text-[#86E0A6]">
-                                        开发模式重置码
+                                        {t("code.devResetLabel")}
                                       </span>
                                       <div className="flex items-center gap-2">
                                         <code className="rounded-md bg-white/90 px-2 py-0.5 font-mono text-xs font-semibold tracking-widest text-[#141414] ring-1 ring-black/[0.06] dark:bg-black/30 dark:text-zinc-100 dark:ring-white/[0.1]">
@@ -1487,7 +1555,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                           }
                                           className="cursor-pointer rounded-full bg-[#141414] px-2.5 py-1 text-[11px] font-medium text-white transition hover:opacity-85 dark:bg-white dark:text-[#141414]"
                                         >
-                                          一键填入
+                                          {t("code.devAutofill")}
                                         </button>
                                       </div>
                                     </div>
@@ -1495,14 +1563,14 @@ export function AuthScreen(props: AuthScreenProps) {
                                 ) : (
                                   <p className="flex items-center gap-1.5 rounded-xl bg-[#E3F3EC]/80 px-3 py-2 text-[12px] text-[#1E5638] dark:bg-[#16271F] dark:text-[#86E0A6]">
                                     <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                                    <span>如果该邮箱已注册，6 位重置验证码已发往你的收件箱。</span>
+                                    <span>{t("code.resetSentNotice")}</span>
                                   </p>
                                 )
                               ) : null}
 
                               <div>
                                 <label htmlFor="auth-reset-code" className={LABEL_CLASS}>
-                                  6 位邮箱验证码
+                                  {t("field.emailCode")}
                                 </label>
                                 <AppInput
                                   id="auth-reset-code"
@@ -1528,7 +1596,7 @@ export function AuthScreen(props: AuthScreenProps) {
 
                               <div>
                                 <label htmlFor="auth-reset-password" className={LABEL_CLASS}>
-                                  新密码
+                                  {t("field.newPassword")}
                                 </label>
                                 <AppInput
                                   id="auth-reset-password"
@@ -1544,7 +1612,9 @@ export function AuthScreen(props: AuthScreenProps) {
                                   }}
                                   leadingIcon={<Lock className="h-4 w-4" />}
                                   trailingSlot={passwordToggleButton}
-                                  placeholder={`至少 ${PASSWORD_MIN_LENGTH} 位字符`}
+                                  placeholder={t("field.minLengthPlaceholder", {
+                                    min: PASSWORD_MIN_LENGTH,
+                                  })}
                                   containerClassName="mt-1.5"
                                 />
                                 <PasswordStrengthMeter password={password} />
@@ -1555,7 +1625,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                   htmlFor="auth-reset-password-confirm"
                                   className={LABEL_CLASS}
                                 >
-                                  确认新密码
+                                  {t("field.confirmNewPassword")}
                                 </label>
                                 <AppInput
                                   id="auth-reset-password-confirm"
@@ -1573,7 +1643,7 @@ export function AuthScreen(props: AuthScreenProps) {
                                   }}
                                   leadingIcon={<Lock className="h-4 w-4" />}
                                   trailingSlot={confirmPasswordToggleButton}
-                                  placeholder="再次输入新密码"
+                                  placeholder={t("field.confirmNewPasswordPlaceholder")}
                                   containerClassName="mt-1.5"
                                 />
                               </div>
@@ -1608,8 +1678,8 @@ export function AuthScreen(props: AuthScreenProps) {
                               }
                             >
                               {confirmResetMutation.isPending
-                                ? "正在更新密码..."
-                                : "重置密码并登录"}
+                                ? t("reset.submitting")
+                                : t("reset.submit")}
                             </AppButton>
                           </motion.form>
                         )}

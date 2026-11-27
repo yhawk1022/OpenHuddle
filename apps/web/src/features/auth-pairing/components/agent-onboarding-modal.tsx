@@ -7,15 +7,17 @@
  * 2. 跨机接入链接始终与所选群聊、恢复身份范围匹配。
  * 3. 原身份无损重连：接入链接可恢复选定的 `AgentId`，保留群成员身份与消息游标。
  */
-import type {
-  AgentId,
-  AgentPlatform,
-  ConnectLocalAgentResponse,
-  CreateAgentConnectionResponse,
-  HumanUserDto,
-  LocalAgentCliEntry,
-  OwnedAgentSummaryDto,
-  RoomDetailDto,
+import {
+  type AgentId,
+  type AgentPlatform,
+  type ConnectLocalAgentResponse,
+  type CreateAgentConnectionResponse,
+  type HumanUserDto,
+  type LocalAgentCliEntry,
+  type OwnedAgentSummaryDto,
+  type RoomDetailDto,
+  type SupportedLocale,
+  assertNever,
 } from "@openhuddle/protocol";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -62,11 +64,11 @@ import { HighlightedCodeBlock } from "../../../components/ui/syntax-code.js";
 import {
   type AgentExecutionTier,
   formatDaemonCapabilityCliFlags,
-  getExecutionTierMeta,
   updateAgentCapabilityPref,
 } from "../../../lib/agent-capability-prefs.js";
 import { ApiClientError } from "../../../lib/api-client.js";
 import { getPlatformVisualMeta } from "../../../lib/format.js";
+import { formatApiErrorMessage } from "../../../lib/i18n/index.js";
 import { huddleQueryKeys } from "../../../lib/query-keys.js";
 import {
   localAgentsStatusQueryOptions,
@@ -84,6 +86,7 @@ import {
   findNewAgentMatchingInstructions,
   resolveAgentConnectEndpoint,
 } from "../connect-instructions.js";
+import { useOnboardingI18n } from "../i18n/index.js";
 
 const PLATFORM_PRESETS: ReadonlyArray<AgentPlatform> = [
   "claude_code",
@@ -106,38 +109,43 @@ export type OnboardingModalTab = "pair_agent" | "invite_share";
 /** 接入指令的表现方式 */
 type ConnectMethodTab = "prompt" | "cli" | "mcp";
 
-/** 顶栏自然口语分段标签配置 */
-const TOP_TAB_ITEMS: ReadonlyArray<SegmentedTabItem<OnboardingModalTab>> = [
-  {
-    value: "pair_agent",
-    label: "接入 Agent",
-    icon: <Bot className="h-3.5 w-3.5" />,
-  },
-  {
-    value: "invite_share",
-    label: "邀请进群",
-    icon: <UserPlus className="h-3.5 w-3.5" />,
-  },
-];
+function isClientTransportRequestId(requestId: string): boolean {
+  return requestId === "timeout" || requestId === "network" || requestId === "gateway";
+}
 
-/** 接入方式分段标签配置 */
-const CONNECT_METHOD_ITEMS: ReadonlyArray<SegmentedTabItem<ConnectMethodTab>> = [
-  {
-    value: "prompt",
-    label: "一句话接入",
-    icon: <MessageSquareText className="h-3.5 w-3.5" />,
-  },
-  {
-    value: "cli",
-    label: "手动 CLI",
-    icon: <Terminal className="h-3.5 w-3.5" />,
-  },
-  {
-    value: "mcp",
-    label: "MCP 接入",
-    icon: <Plug className="h-3.5 w-3.5" />,
-  },
-];
+function formatModalError(error: unknown, fallback: string, locale: SupportedLocale): string {
+  if (error instanceof ApiClientError) {
+    return isClientTransportRequestId(error.requestId)
+      ? error.message
+      : formatApiErrorMessage(error.code, error.message, locale);
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
+function getLocalizedTierText(
+  tier: AgentExecutionTier,
+  t: ReturnType<typeof useOnboardingI18n>["t"],
+): { readonly shortLabel: string; readonly description: string } {
+  switch (tier) {
+    case "chat_only":
+      return {
+        shortLabel: t("tier.chat_only.short"),
+        description: t("tier.chat_only.description"),
+      };
+    case "workspace_read":
+      return {
+        shortLabel: t("tier.workspace_read.short"),
+        description: t("tier.workspace_read.description"),
+      };
+    case "worktree_write":
+      return {
+        shortLabel: t("tier.worktree_write.short"),
+        description: t("tier.worktree_write.description"),
+      };
+    default:
+      return assertNever(tier);
+  }
+}
 
 /** `AgentOnboardingModal` 入参属性 */
 export interface AgentOnboardingModalProps {
@@ -198,13 +206,8 @@ function CopyButton(props: CopyButtonProps) {
  * @param props - 当前用户、已绑定 Agent 列表、当前激活房间与弹窗控制参数
  * @returns 双标签引导模态框
  */
-const ONBOARDING_TIER_TABS: ReadonlyArray<SegmentedTabItem<AgentExecutionTier>> = [
-  { value: "chat_only", label: "仅群聊讨论" },
-  { value: "workspace_read", label: "查看代码" },
-  { value: "worktree_write", label: "修改代码" },
-];
-
 export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
+  const { t, locale } = useOnboardingI18n();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<OnboardingModalTab>(props.initialTab ?? "pair_agent");
   const [methodTab, setMethodTab] = useState<ConnectMethodTab>("prompt");
@@ -355,7 +358,55 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
     };
   }, [props.open, generatedConnection, directConnectedResult, activeRoomId, queryClient]);
 
-  const platformMeta = getPlatformVisualMeta(selectedPlatform);
+  const topTabItems = useMemo<ReadonlyArray<SegmentedTabItem<OnboardingModalTab>>>(
+    () => [
+      {
+        value: "pair_agent",
+        label: t("tabs.pairAgent"),
+        icon: <Bot className="h-3.5 w-3.5" />,
+      },
+      {
+        value: "invite_share",
+        label: t("tabs.inviteShare"),
+        icon: <UserPlus className="h-3.5 w-3.5" />,
+      },
+    ],
+    [t],
+  );
+
+  const connectMethodItems = useMemo<ReadonlyArray<SegmentedTabItem<ConnectMethodTab>>>(
+    () => [
+      {
+        value: "prompt",
+        label: t("method.prompt"),
+        icon: <MessageSquareText className="h-3.5 w-3.5" />,
+      },
+      {
+        value: "cli",
+        label: t("method.cli"),
+        icon: <Terminal className="h-3.5 w-3.5" />,
+      },
+      {
+        value: "mcp",
+        label: t("method.mcp"),
+        icon: <Plug className="h-3.5 w-3.5" />,
+      },
+    ],
+    [t],
+  );
+
+  const onboardingTierTabs = useMemo<ReadonlyArray<SegmentedTabItem<AgentExecutionTier>>>(
+    () => [
+      { value: "chat_only", label: t("tier.chat_only.tab") },
+      { value: "workspace_read", label: t("tier.workspace_read.tab") },
+      { value: "worktree_write", label: t("tier.worktree_write.tab") },
+    ],
+    [t],
+  );
+
+  const draftTierText = getLocalizedTierText(draftTier, t);
+
+  const platformMeta = getPlatformVisualMeta(selectedPlatform, locale);
   const reclaimTarget =
     reclaimAgentId !== null
       ? (props.ownedAgents.find((item) => item.id === reclaimAgentId) ?? null)
@@ -364,18 +415,18 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
   const reclaimSelectOptions = useMemo<ReadonlyArray<AppSelectOption<string>>>(() => {
     const base: AppSelectOption<string> = {
       value: NEW_AGENT_SENTINEL,
-      label: "接入一个新的 Agent",
-      description: "签发独立可吊销的 oh_agt_ 身份令牌",
+      label: t("reclaim.newLabel"),
+      description: t("reclaim.newDesc"),
     };
     const agentOptions = props.ownedAgents.map(
       (agent): AppSelectOption<string> => ({
         value: agent.id,
-        label: `恢复原身份：${agent.displayName} (@${agent.slug})`,
-        description: "保留原 AgentId、群成员记录与消息已读游标",
+        label: t("reclaim.existingLabel", { name: agent.displayName, slug: agent.slug }),
+        description: t("reclaim.existingDesc"),
       }),
     );
     return [base, ...agentOptions];
-  }, [props.ownedAgents]);
+  }, [props.ownedAgents, t]);
 
   const triggerCopy = (
     key: string,
@@ -385,7 +436,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
     onCopied?: () => void,
   ): void => {
     if (typeof navigator === "undefined" || !navigator.clipboard) {
-      toast.error("当前环境不支持直接写入剪贴板，请手动选中文本复制");
+      toast.error(t("toast.clipboardUnavailable"));
       return;
     }
     void navigator.clipboard
@@ -402,7 +453,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
         }, 2_000);
       })
       .catch(() => {
-        toast.error("复制失败，请手动选中复制");
+        toast.error(t("toast.copyFailed"));
       });
   };
 
@@ -421,17 +472,11 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
           onSuccess: (res) => {
             setGeneratedConnection({ scope: connectionScope, response: res, existingAgentIds });
             if (!options?.silentToast) {
-              toast.success("已生成新的接入指令");
+              toast.success(t("toast.connectionGenerated"));
             }
           },
           onError: (err) => {
-            const msg =
-              err instanceof ApiClientError
-                ? err.message
-                : err instanceof Error
-                  ? err.message
-                  : "生成接入指令失败";
-            toast.error(msg);
+            toast.error(formatModalError(err, t("toast.connectionGenerateFailed"), locale));
           },
         },
       );
@@ -443,6 +488,8 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
       targetAutoJoinRoomId,
       reclaimAgentId,
       mutateConnection,
+      locale,
+      t,
     ],
   );
 
@@ -554,16 +601,10 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
             res.agent.platform,
           );
           setReclaimAgentId(res.agent.id);
-          toast.success(`「${res.agent.displayName}」身份已绑定`);
+          toast.success(t("toast.localBound", { name: res.agent.displayName }));
         },
         onError: (err) => {
-          const msg =
-            err instanceof ApiClientError
-              ? err.message
-              : err instanceof Error
-                ? err.message
-                : "连接本机失败";
-          toast.error(msg);
+          toast.error(formatModalError(err, t("toast.localConnectFailed"), locale));
         },
       },
     );
@@ -576,7 +617,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
       )
     : null;
   const runnerLabel =
-    replyMode === "on_demand" ? undefined : getPlatformVisualMeta(replyMode).label;
+    replyMode === "on_demand" ? undefined : getPlatformVisualMeta(replyMode, locale).label;
   const connectInstructions = connectEndpoint
     ? buildAgentConnectInstructions({
         ...connectEndpoint,
@@ -585,9 +626,12 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
         replyMode,
         runnerLabel,
         roomName: targetAutoJoinRoomId !== undefined ? props.connectionRoom?.name : undefined,
+        locale,
       })
     : null;
-  const mcpConfigs = connectEndpoint ? buildAgentMcpConfigs(connectEndpoint.serverUrl) : null;
+  const mcpConfigs = connectEndpoint
+    ? buildAgentMcpConfigs(connectEndpoint.serverUrl, locale)
+    : null;
 
   const shareUrl =
     props.activeRoom?.inviteToken !== undefined && typeof window !== "undefined"
@@ -595,18 +639,14 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
       : null;
 
   const mutationError =
-    connectionMutation.error instanceof ApiClientError
-      ? connectionMutation.error.message
-      : connectionMutation.error instanceof Error
-        ? connectionMutation.error.message
-        : null;
+    connectionMutation.error !== null
+      ? formatModalError(connectionMutation.error, t("toast.connectionGenerateFailed"), locale)
+      : null;
 
   const localConnectError =
-    connectLocalMutation.error instanceof ApiClientError
-      ? connectLocalMutation.error.message
-      : connectLocalMutation.error instanceof Error
-        ? connectLocalMutation.error.message
-        : null;
+    connectLocalMutation.error !== null
+      ? formatModalError(connectLocalMutation.error, t("toast.localConnectFailed"), locale)
+      : null;
 
   const connectedBannerAgent =
     directConnectedResult === null
@@ -619,13 +659,13 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
     <ModalDialog
       open={props.open}
       onClose={props.onClose}
-      title={activeTab === "pair_agent" ? "接入我的 Agent" : "邀请进群"}
+      title={activeTab === "pair_agent" ? t("modal.title.pairAgent") : t("modal.title.inviteShare")}
       subtitle={
         activeTab === "pair_agent"
           ? isSelectedLocalConnectReady
-            ? "已检测到本机 CLI，可以直接接入"
-            : "选择回复方式，再把接入指令发给你的 Agent"
-          : "发邀请码把同伴拉进群，或生成公开只读回放链接"
+            ? t("modal.subtitle.localReady")
+            : t("modal.subtitle.remote")
+          : t("modal.subtitle.inviteShare")
       }
       maxWidthClass="max-w-2xl"
       icon={
@@ -637,10 +677,10 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
         <SegmentedTabs
           value={activeTab}
           onValueChange={setActiveTab}
-          items={TOP_TAB_ITEMS}
+          items={topTabItems}
           size="md"
           fullWidth={true}
-          ariaLabel="接入我的 Agent 或邀请进群切换"
+          ariaLabel={t("tabs.ariaLabel")}
         />
 
         <AnimatePresence mode="wait" initial={false}>
@@ -657,7 +697,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-xs">
                   <span className="font-medium text-[#111318] dark:text-[#ECECEF]">
-                    你的 Agent 运行在哪里？
+                    {t("platform.heading")}
                   </span>
                   <span className="min-w-0 truncate text-[11.5px] text-[#687082] dark:text-[#8E8E96]">
                     {platformMeta.cliHint}
@@ -665,7 +705,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                 </div>
                 <div className="grid select-none grid-cols-2 gap-1.5 sm:grid-cols-4">
                   {PLATFORM_PRESETS.map((platform) => {
-                    const meta = getPlatformVisualMeta(platform);
+                    const meta = getPlatformVisualMeta(platform, locale);
                     const isSelected = selectedPlatform === platform;
                     const isInstalledLocally = localCliByPlatform.get(platform)?.installed === true;
                     return (
@@ -704,7 +744,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         <span className="min-w-0 flex-1 truncate">{meta.label}</span>
                         {isInstalledLocally ? (
                           <span
-                            title="已安装，可直接连接"
+                            title={t("platform.installedLocallyTitle")}
                             className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#16A34A] dark:bg-[#34D399]"
                           />
                         ) : null}
@@ -721,14 +761,14 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     htmlFor="reclaim-agent-select"
                     className="mb-1.5 block text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]"
                   >
-                    接入方式
+                    {t("reclaim.label")}
                   </label>
                   <AppSelect
                     id="reclaim-agent-select"
                     value={reclaimAgentId ?? NEW_AGENT_SENTINEL}
                     options={reclaimSelectOptions}
                     size="md"
-                    ariaLabel="选择接入新 Agent 或恢复已有身份"
+                    ariaLabel={t("reclaim.ariaLabel")}
                     onValueChange={(val) => {
                       if (val === NEW_AGENT_SENTINEL) {
                         setReclaimAgentId(null);
@@ -754,7 +794,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     htmlFor="agent-nickname-input"
                     className="mb-1.5 block text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]"
                   >
-                    Agent 名称
+                    {t("name.label")}
                   </label>
                   <AppInput
                     id="agent-nickname-input"
@@ -775,16 +815,18 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                   htmlFor="agent-reply-mode-select"
                   className="mb-1.5 block text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]"
                 >
-                  谁来回复消息？
+                  {t("replyMode.label")}
                 </label>
                 <AppSelect
                   id="agent-reply-mode-select"
                   value={replyMode}
                   options={[
-                    { value: "on_demand", label: "由当前 Agent 按需读写" },
+                    { value: "on_demand", label: t("replyMode.onDemand") },
                     ...CONNECT_RUNNER_PRESETS.map((preset) => ({
                       value: preset,
-                      label: `由 ${getPlatformVisualMeta(preset).label} CLI 自动回复`,
+                      label: t("replyMode.runnerOption", {
+                        runner: getPlatformVisualMeta(preset, locale).label,
+                      }),
                     })),
                   ]}
                   size="md"
@@ -798,22 +840,22 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                 />
                 <p className="mt-1.5 text-xs text-im-muted">
                   {replyMode === "on_demand"
-                    ? "在当前 Agent 会话里按需查收文字与图片消息，通过 CLI 或 MCP 回复文字或图片。"
-                    : `由接入设备上的 ${runnerLabel} CLI 后台监听并自动回复，支持直接看图理解与发图回复。`}
+                    ? t("replyMode.onDemandHint")
+                    : t("replyMode.runnerHint", { runner: runnerLabel ?? replyMode })}
                 </p>
               </div>
 
               {/* 自动进群拨杆开关 */}
               <div className="flex items-center justify-between gap-3 rounded-[18px] bg-black/[0.035] px-4 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.045] dark:ring-white/[0.08]">
                 {props.connectionRoomPending ? (
-                  <p className="text-xs text-im-muted">正在确认当前群聊…</p>
+                  <p className="text-xs text-im-muted">{t("autoJoin.pending")}</p>
                 ) : props.connectionRoom ? (
                   <>
                     <label
                       htmlFor="auto-join-active-room-switch"
                       className="min-w-0 flex-1 cursor-pointer select-none text-xs text-[#3B414E] dark:text-[#C4C4CA]"
                     >
-                      接入时同时加入群聊{" "}
+                      {t("autoJoin.labelPrefix")}{" "}
                       <strong className="font-semibold text-[#111318] dark:text-[#F2F2F4]">
                         {props.connectionRoom.name}
                       </strong>
@@ -827,12 +869,12 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         setGeneratedConnection(null);
                         autoGeneratedScopeRef.current = null;
                       }}
-                      ariaLabel={`接入后自动加入群聊 ${props.connectionRoom.name}`}
+                      ariaLabel={t("autoJoin.ariaLabel", { roomName: props.connectionRoom.name })}
                     />
                   </>
                 ) : (
                   <p className="text-xs text-[#687082] dark:text-[#8E8E96]">
-                    接入后可以直接发起单聊，或从群聊成员面板添加。
+                    {t("autoJoin.noRoomHint")}
                   </p>
                 )}
               </div>
@@ -849,10 +891,10 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     <span className="inline-flex min-w-0 items-center gap-2">
                       <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-[#111318] dark:text-[#F2F2F4]" />
                       <span className="truncate font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                        本地运行设置（可选）
+                        {t("localSettings.title")}
                       </span>
                       <span className="rounded-full bg-black/[0.055] px-2 py-0.5 text-[10.5px] font-medium text-[#3B414E] dark:bg-white/[0.09] dark:text-[#C4C4CA]">
-                        {getExecutionTierMeta(draftTier).shortLabel}
+                        {draftTierText.shortLabel}
                       </span>
                     </span>
                     <ChevronDown
@@ -876,7 +918,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         <div className="space-y-3 p-4 text-xs">
                           <div>
                             <p className="mb-1.5 font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-                              本地权限（仅用于你批准的任务）
+                              {t("localSettings.permissionsLabel")}
                             </p>
                             <SegmentedTabs
                               value={draftTier}
@@ -890,13 +932,13 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                   );
                                 }
                               }}
-                              items={ONBOARDING_TIER_TABS}
+                              items={onboardingTierTabs}
                               size="xs"
                               fullWidth={true}
-                              ariaLabel="选择 Agent 本地权限"
+                              ariaLabel={t("localSettings.permissionsAria")}
                             />
                             <p className="mt-1.5 text-[11px] text-im-muted">
-                              {getExecutionTierMeta(draftTier).description}
+                              {draftTierText.description}
                             </p>
                           </div>
 
@@ -906,7 +948,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                 htmlFor="onboarding-workspace-path"
                                 className="mb-1 block text-[11.5px] font-medium text-[#3B414E] dark:text-[#C4C4CA]"
                               >
-                                本地代码仓库绝对路径
+                                {t("localSettings.workspacePathLabel")}
                               </label>
                               <AppInput
                                 id="onboarding-workspace-path"
@@ -922,15 +964,15 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
                               <p className="font-medium text-[#111318] dark:text-[#F2F2F4]">
-                                保留会话 15 分钟
+                                {t("localSettings.warmSessionTitle")}
                               </p>
                               <p className="text-[11px] text-im-muted">
-                                下次运行任务时可以继续使用这个会话。
+                                {t("localSettings.warmSessionDesc")}
                               </p>
                             </div>
                             <AppSwitch
                               size="sm"
-                              ariaLabel="保留会话 15 分钟"
+                              ariaLabel={t("localSettings.warmSessionTitle")}
                               checked={draftWarmSession}
                               onCheckedChange={setDraftWarmSession}
                             />
@@ -940,15 +982,15 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             <div className="flex items-center justify-between gap-3 border-t border-black/[0.05] pt-2.5 dark:border-white/[0.07]">
                               <div className="min-w-0">
                                 <p className="font-medium text-[#111318] dark:text-[#F2F2F4]">
-                                  分开规划和执行
+                                  {t("localSettings.orchestratorTitle")}
                                 </p>
                                 <p className="text-[11px] text-im-muted">
-                                  Carbon 负责只读规划，Hydrogen 负责执行。
+                                  {t("localSettings.orchestratorDesc")}
                                 </p>
                               </div>
                               <AppSwitch
                                 size="sm"
-                                ariaLabel="分开规划和执行"
+                                ariaLabel={t("localSettings.orchestratorTitle")}
                                 checked={draftNativeOrchestrator}
                                 onCheckedChange={setDraftNativeOrchestrator}
                               />
@@ -956,7 +998,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                           ) : null}
 
                           <div className="rounded-xl bg-white/85 px-3 py-2 font-mono text-[11px] text-[#3B414E] ring-1 ring-inset ring-black/[0.05] dark:bg-[#141417] dark:text-[#C4C4CA] dark:ring-white/[0.08]">
-                            listen 附加参数：{" "}
+                            {t("localSettings.extraFlagsPrefix")}{" "}
                             {formatDaemonCapabilityCliFlags(
                               {
                                 tier: draftTier,
@@ -965,7 +1007,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                 nativeOrchestratorEnabled: draftNativeOrchestrator,
                               },
                               selectedPlatform,
-                            ) || "(默认纯聊天模式)"}
+                            ) || t("localSettings.defaultChatOnly")}
                           </div>
                         </div>
                       </motion.div>
@@ -990,10 +1032,15 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       <Terminal aria-hidden="true" className="h-4 w-4 shrink-0" />
                     )}
                     <span className="truncate font-medium">
-                      「{connectedBannerAgent.displayName}」
-                      {directConnectedResult === null ? "已出现在账号中" : "身份已绑定"}
+                      {directConnectedResult === null
+                        ? t("banner.appearedInAccount", { name: connectedBannerAgent.displayName })
+                        : t("banner.identityBound", { name: connectedBannerAgent.displayName })}
                     </span>
-                    <span>{realtimeListenerConnected ? "实时监听已连接" : "实时监听未连接"}</span>
+                    <span>
+                      {realtimeListenerConnected
+                        ? t("banner.listenerConnected")
+                        : t("banner.listenerDisconnected")}
+                    </span>
                   </div>
                   <AppButton
                     variant="secondary"
@@ -1001,15 +1048,14 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     isLoading={props.isOpeningDirectChat}
                     onClick={() => props.onVerifyReply(connectedBannerAgent.id)}
                   >
-                    打开单聊验证回复
+                    {t("banner.verifyReply")}
                   </AppButton>
                 </div>
               ) : null}
 
               {generatedConnection && reclaimTarget && !directConnectedResult ? (
                 <p className="text-xs text-im-muted">
-                  已为「{reclaimTarget.displayName}」签发重连指令。执行后，在 Agent
-                  端核对身份，并用原单聊验证本次回复。
+                  {t("reclaim.issuedNotice", { name: reclaimTarget.displayName })}
                 </p>
               ) : null}
 
@@ -1019,10 +1065,10 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
                       <span className="h-2 w-2 rounded-full bg-[#16A34A] dark:bg-[#34D399]" />
-                      <span>已检测到本机 {platformMeta.label} CLI</span>
+                      <span>{t("localDirect.detected", { platform: platformMeta.label })}</span>
                     </span>
                     <span className="rounded-full bg-white/90 px-2.5 py-0.5 font-mono text-[11px] text-[#687082] ring-1 ring-inset ring-black/[0.06] dark:bg-[#141417] dark:text-[#8E8E96] dark:ring-white/[0.08]">
-                      {selectedLocalCli.binaryName} · 本机直连
+                      {t("localDirect.badge", { binary: selectedLocalCli.binaryName })}
                     </span>
                   </div>
 
@@ -1036,7 +1082,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                   ) : null}
 
                   <p className="mb-3 text-xs leading-relaxed text-[#4B5565] dark:text-[#9B9BA3]">
-                    点击下方按钮绑定身份，并尝试启动后台监听。
+                    {t("localDirect.description")}
                   </p>
 
                   <AppButton
@@ -1053,10 +1099,10 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     className="h-10 rounded-full"
                   >
                     {connectLocalMutation.isPending || autoJoinRoomPending
-                      ? "正在直连并启动后台监听..."
+                      ? t("localDirect.connecting")
                       : reclaimTarget
-                        ? `重新连接本机的「${reclaimTarget.displayName}」`
-                        : `连接本机的 ${platformMeta.label}`}
+                        ? t("localDirect.reconnectCta", { name: reclaimTarget.displayName })
+                        : t("localDirect.connectCta", { platform: platformMeta.label })}
                   </AppButton>
 
                   <div className="mt-2.5 flex items-center justify-center">
@@ -1069,8 +1115,8 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       className="app-no-drag cursor-pointer text-[11.5px] text-[#687082] underline-offset-4 transition hover:text-[#111318] hover:underline dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
                     >
                       {showManualConnectFallback
-                        ? "收起跨环境接入提示词与 CLI 安装链接"
-                        : "Agent 在云端沙箱或另一台机器上？展开跨环境 CLI 安装链接"}
+                        ? t("localDirect.hideManual")
+                        : t("localDirect.showManual")}
                     </button>
                   </div>
                 </div>
@@ -1110,10 +1156,10 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         className="h-10 rounded-full"
                       >
                         {connectionMutation.isPending || autoJoinRoomPending
-                          ? "正在准备接入指令…"
+                          ? t("generate.preparing")
                           : reclaimTarget
-                            ? `生成「${reclaimTarget.displayName}」的重连话术`
-                            : `准备发给 ${platformMeta.label} 的话`}
+                            ? t("generate.reclaimCta", { name: reclaimTarget.displayName })
+                            : t("generate.newCta", { platform: platformMeta.label })}
                       </AppButton>
                     </motion.div>
                   ) : (
@@ -1127,17 +1173,18 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                     >
                       {connectEndpoint?.isLoopback ? (
                         <p className="rounded-[14px] bg-amber-500/10 px-3.5 py-2 text-[11.5px] leading-relaxed text-[#6B4E12] ring-1 ring-inset ring-amber-500/20 dark:bg-amber-400/10 dark:text-[#F5DF9D] dark:ring-amber-400/20">
-                          当前地址 <code className="font-mono">{connectEndpoint.serverUrl}</code>{" "}
-                          仅本机可达。接入云端或其他设备上的 Agent，请从该设备可访问的地址打开本页。
+                          {t("loopback.warningPrefix")}{" "}
+                          <code className="font-mono">{connectEndpoint.serverUrl}</code>{" "}
+                          {t("loopback.warningSuffix")}
                         </p>
                       ) : null}
 
                       <SegmentedTabs
                         value={methodTab}
                         onValueChange={setMethodTab}
-                        items={CONNECT_METHOD_ITEMS}
+                        items={connectMethodItems}
                         size="sm"
-                        ariaLabel="Agent 接入方式切换"
+                        ariaLabel={t("method.ariaLabel")}
                       />
 
                       <AnimatePresence mode="wait" initial={false}>
@@ -1151,7 +1198,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             className="space-y-3 rounded-[22px] bg-black/[0.035] p-4 ring-1 ring-inset ring-black/[0.06] dark:bg-white/[0.045] dark:ring-white/[0.08]"
                           >
                             <p className="text-xs text-[#687082] dark:text-[#A0A0A8]">
-                              复制后，在 {platformMeta.label} 的对话里粘贴发送。
+                              {t("prompt.hint", { platform: platformMeta.label })}
                             </p>
                             <AppButton
                               variant="primary"
@@ -1172,18 +1219,18 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                 copyConnectInstructions(
                                   "prompt",
                                   connectInstructions.prompt,
-                                  "发给 Agent 的话已复制",
-                                  `在 ${platformMeta.label} 的会话里粘贴发送`,
+                                  t("prompt.copiedToastTitle"),
+                                  t("prompt.copiedToastDesc", { platform: platformMeta.label }),
                                 )
                               }
                             >
                               {copiedKey === "prompt"
-                                ? `已复制，去发给 ${platformMeta.label} 吧`
-                                : "复制接入指令"}
+                                ? t("prompt.copiedCta", { platform: platformMeta.label })
+                                : t("prompt.copyCta")}
                             </AppButton>
                             <details>
                               <summary className="cursor-pointer text-xs text-im-muted">
-                                查看接入指令
+                                {t("prompt.inspectSummary")}
                               </summary>
                               <pre data-vaul-no-drag="" className={cn(CODE_BLOCK_CLASS, "mt-2")}>
                                 {connectInstructions.prompt}
@@ -1199,10 +1246,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             transition={{ duration: 0.14, ease: "easeOut" }}
                             className="space-y-3"
                           >
-                            <p className="text-xs text-im-muted">
-                              需要安装 CLI
-                              时，由设备的用户或管理员下载并检查脚本。确认获准后，在同一终端执行第二步。
-                            </p>
+                            <p className="text-xs text-im-muted">{t("cli.intro")}</p>
                             {connectInstructions.installers.map((installer) => (
                               <div key={installer.id} className="space-y-1.5">
                                 <h4 className="text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]">
@@ -1215,11 +1259,11 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                       triggerCopy(
                                         `download-${installer.id}`,
                                         installer.download,
-                                        "下载安装器的命令已复制",
+                                        t("cli.downloadCopiedToast"),
                                       )
                                     }
-                                    label="复制下载命令"
-                                    copiedLabel="已复制"
+                                    label={t("cli.copyDownload")}
+                                    copiedLabel={t("common.copied")}
                                     variant="secondary"
                                   />
                                 </div>
@@ -1236,11 +1280,11 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                       copyConnectInstructions(
                                         `install-${installer.id}`,
                                         installer.connect,
-                                        "安装并接入命令已复制",
+                                        t("cli.connectCopiedToast"),
                                       )
                                     }
-                                    label="复制安装并接入命令"
-                                    copiedLabel="已复制"
+                                    label={t("cli.copyConnect")}
+                                    copiedLabel={t("common.copied")}
                                     variant="secondary"
                                   />
                                 </div>
@@ -1262,7 +1306,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             <div className="space-y-1.5">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <p className="text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-                                  无终端时，先通过 HTTP 兑换 Agent 令牌
+                                  {t("mcp.httpHeading")}
                                 </p>
                                 <CopyButton
                                   copied={copiedKey === "http"}
@@ -1270,11 +1314,11 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                     copyConnectInstructions(
                                       "http",
                                       connectInstructions.http,
-                                      "HTTP 兑换请求已复制",
+                                      t("mcp.httpCopiedToast"),
                                     )
                                   }
-                                  label="复制 HTTP 请求"
-                                  copiedLabel="已复制"
+                                  label={t("mcp.copyHttp")}
+                                  copiedLabel={t("common.copied")}
                                   variant="secondary"
                                 />
                               </div>
@@ -1289,7 +1333,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             <div className="space-y-1.5">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <p className="text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-                                  远程 MCP，使用 Streamable HTTP 与返回的令牌
+                                  {t("mcp.remoteHeading")}
                                 </p>
                                 <CopyButton
                                   copied={copiedKey === "mcpRemote"}
@@ -1297,28 +1341,25 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                     triggerCopy(
                                       "mcpRemote",
                                       mcpConfigs.remote,
-                                      "远程 HTTP MCP 配置已复制",
-                                      "填入连接后获取的 oh_agt_ 令牌",
+                                      t("mcp.remoteCopiedToastTitle"),
+                                      t("mcp.remoteCopiedToastDesc"),
                                     )
                                   }
-                                  label="复制远程配置"
-                                  copiedLabel="已复制"
+                                  label={t("mcp.copyRemote")}
+                                  copiedLabel={t("common.copied")}
                                   variant="secondary"
                                 />
                               </div>
                               <pre data-vaul-no-drag="" className={CODE_BLOCK_CLASS}>
                                 <HighlightedCodeBlock code={mcpConfigs.remote} language="json" />
                               </pre>
-                              <p className="text-xs text-im-muted">
-                                按 MCP 宿主的配置格式填写地址和 Authorization
-                                请求头。会话可按需收发。
-                              </p>
+                              <p className="text-xs text-im-muted">{t("mcp.remoteHint")}</p>
                             </div>
 
                             <div className="space-y-1.5">
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <p className="text-xs font-medium text-[#3B414E] dark:text-[#C4C4CA]">
-                                  本地 stdio MCP，先执行 CLI 接入，再填写实际路径
+                                  {t("mcp.stdioHeading")}
                                 </p>
                                 <CopyButton
                                   copied={copiedKey === "mcp"}
@@ -1326,12 +1367,12 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                     triggerCopy(
                                       "mcp",
                                       mcpConfigs.stdio,
-                                      "本地 stdio MCP 配置已复制",
-                                      "填写 Node.js、安装目录及本次令牌文件的绝对路径",
+                                      t("mcp.stdioCopiedToastTitle"),
+                                      t("mcp.stdioCopiedToastDesc"),
                                     )
                                   }
-                                  label="复制本地配置"
-                                  copiedLabel="已复制"
+                                  label={t("mcp.copyStdio")}
+                                  copiedLabel={t("common.copied")}
                                   variant="secondary"
                                 />
                               </div>
@@ -1344,14 +1385,14 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                       </AnimatePresence>
 
                       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-im-muted">
-                        <p>接入指令有效期为 10 分钟，可使用一次。请只发给你的 Agent。</p>
+                        <p>{t("expiry.notice")}</p>
                         <AppButton
                           variant="ghost"
                           size="xs"
                           isLoading={connectionMutation.isPending}
                           onClick={() => requestNewConnection()}
                         >
-                          重新生成
+                          {t("expiry.regenerate")}
                         </AppButton>
                       </div>
                     </motion.div>
@@ -1362,17 +1403,17 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
               {/* 4. 我已接入的 Agent */}
               <div className="space-y-2 border-t border-black/[0.06] pt-4 dark:border-white/[0.08]">
                 <h3 className="select-none text-xs font-medium text-[#687082] dark:text-[#8E8E96]">
-                  我已接入的 Agent · {props.ownedAgents.length}
+                  {t("myAgents.heading", { count: props.ownedAgents.length })}
                 </h3>
 
                 {props.ownedAgents.length === 0 ? (
                   <p className="rounded-[16px] bg-black/[0.035] px-4 py-3 text-center text-xs text-[#687082] ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.045] dark:text-[#9B9BA3] dark:ring-white/[0.08]">
-                    还没有接入任何 Agent，把上面生成的话发给它就能连上。
+                    {t("myAgents.empty")}
                   </p>
                 ) : (
                   <div className="max-h-44 space-y-1 overflow-y-auto pr-1">
                     {props.ownedAgents.map((agent) => {
-                      const meta = getPlatformVisualMeta(agent.platform);
+                      const meta = getPlatformVisualMeta(agent.platform, locale);
                       const isConfirmingDelete = confirmDeleteAgentId === agent.id;
                       const isDeletingThis =
                         deleteAgentMutation.isPending && deleteAgentMutation.variables === agent.id;
@@ -1409,7 +1450,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                   disabled={isDeletingThis}
                                   onClick={() => setConfirmDeleteAgentId(null)}
                                 >
-                                  取消
+                                  {t("myAgents.cancelDelete")}
                                 </AppButton>
                                 <AppButton
                                   variant="danger"
@@ -1425,21 +1466,28 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                         setDirectConnectedResult((prev) =>
                                           prev?.agent.id === agent.id ? null : prev,
                                         );
-                                        toast.success(`已删除 Agent「${agent.displayName}」`, {
-                                          description: res.stoppedLocalDaemon
-                                            ? "已移出群聊并停止本机监听服务"
-                                            : "已移出群聊并吊销访问令牌",
-                                        });
+                                        toast.success(
+                                          t("toast.agentDeleted", { name: agent.displayName }),
+                                          {
+                                            description: res.stoppedLocalDaemon
+                                              ? t("toast.agentDeletedWithDaemon")
+                                              : t("toast.agentDeletedRevoked"),
+                                          },
+                                        );
                                       },
                                       onError: (err) => {
                                         toast.error(
-                                          err instanceof Error ? err.message : "删除 Agent 失败",
+                                          formatModalError(
+                                            err,
+                                            t("toast.agentDeleteFailed"),
+                                            locale,
+                                          ),
                                         );
                                       },
                                     });
                                   }}
                                 >
-                                  确认删除
+                                  {t("myAgents.confirmDelete")}
                                 </AppButton>
                               </>
                             ) : (
@@ -1448,7 +1496,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                 <IconButton
                                   size="xs"
                                   variant="ghost"
-                                  label={`打开与 ${agent.displayName} 的单聊`}
+                                  label={t("myAgents.openDmAria", { name: agent.displayName })}
                                   disabled={props.isOpeningDirectChat}
                                   onClick={() => props.onVerifyReply(agent.id)}
                                 >
@@ -1490,31 +1538,37 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                                           onSuccess: (res) => {
                                             setDirectConnectedResult(res);
                                             setReclaimAgentId(res.agent.id);
-                                            toast.success(`「${res.agent.displayName}」身份已恢复`);
+                                            toast.success(
+                                              t("toast.localRestored", {
+                                                name: res.agent.displayName,
+                                              }),
+                                            );
                                           },
                                           onError: (err) => {
-                                            const msg =
-                                              err instanceof ApiClientError
-                                                ? err.message
-                                                : err instanceof Error
-                                                  ? err.message
-                                                  : "本机重连失败";
-                                            toast.error(msg);
+                                            toast.error(
+                                              formatModalError(
+                                                err,
+                                                t("toast.localReconnectFailed"),
+                                                locale,
+                                              ),
+                                            );
                                           },
                                         },
                                       );
                                       return;
                                     }
-                                    toast.info(`已切换到「${agent.displayName}」重连模式`);
+                                    toast.info(
+                                      t("toast.switchedToReclaim", { name: agent.displayName }),
+                                    );
                                   }}
                                 >
-                                  重连
+                                  {t("myAgents.reconnect")}
                                 </AppButton>
-                                <AppTooltip side="top" content="删除该 Agent">
+                                <AppTooltip side="top" content={t("myAgents.deleteTooltip")}>
                                   <IconButton
                                     size="xs"
                                     variant="ghost"
-                                    label={`删除 ${agent.displayName}`}
+                                    label={t("myAgents.deleteAria", { name: agent.displayName })}
                                     onClick={() => setConfirmDeleteAgentId(agent.id)}
                                     className="text-[#8E96A6] hover:text-[#E5484D] dark:text-[#63636B] dark:hover:text-[#F87171]"
                                   >
@@ -1543,7 +1597,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
             >
               {!props.activeRoom ? (
                 <div className="rounded-[20px] bg-black/[0.035] p-6 text-center text-xs text-[#687082] dark:bg-white/[0.045] dark:text-[#8E8E96]">
-                  请先在左侧打开或新建一个群聊，再复制它的邀请码或回放链接。
+                  {t("invite.noRoom")}
                 </div>
               ) : (
                 <>
@@ -1554,14 +1608,14 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         aria-hidden="true"
                         className="h-4 w-4 text-[#111318] dark:text-[#ECECEF]"
                       />
-                      <span>群邀请码 · {props.activeRoom.name}</span>
+                      <span>{t("invite.codeHeading", { roomName: props.activeRoom.name })}</span>
                     </div>
                     <p className="text-xs leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                      同伴登录后点击「加入群聊」粘贴即可进群；已接入的同伴 Agent 也可以执行{" "}
+                      {t("invite.codeDescPrefix")}{" "}
                       <code className="rounded-md bg-black/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-[#111318] dark:bg-white/[0.10] dark:text-[#ECECEF]">
                         openhuddle.mjs join
                       </code>{" "}
-                      直接入群。
+                      {t("invite.codeDescSuffix")}
                     </p>
 
                     {props.activeRoom.inviteToken ? (
@@ -1569,7 +1623,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         <AppInput
                           readOnly={true}
                           size="md"
-                          aria-label="群邀请码"
+                          aria-label={t("invite.codeAria")}
                           value={props.activeRoom.inviteToken}
                           leadingIcon={<KeyRound className="h-3.5 w-3.5" />}
                           className="select-all font-mono text-xs font-semibold"
@@ -1581,18 +1635,20 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             triggerCopy(
                               "inviteToken",
                               props.activeRoom?.inviteToken ?? "",
-                              "群邀请码已复制",
-                              `发给同伴即可加入「${props.activeRoom?.name ?? ""}」`,
+                              t("invite.codeCopiedToastTitle"),
+                              t("invite.codeCopiedToastDesc", {
+                                roomName: props.activeRoom?.name ?? "",
+                              }),
                             )
                           }
-                          label="复制邀请码"
-                          copiedLabel="已复制"
+                          label={t("invite.copyCode")}
+                          copiedLabel={t("common.copied")}
                           variant="primary"
                         />
                       </div>
                     ) : (
                       <p className="text-xs text-[#687082] dark:text-[#8E8E96]">
-                        当前身份暂不可查看原始群邀请码。
+                        {t("invite.codeUnavailable")}
                       </p>
                     )}
                   </div>
@@ -1606,16 +1662,16 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             aria-hidden="true"
                             className="h-4 w-4 text-[#16A34A] dark:text-[#34D399]"
                           />
-                          <span>公开只读回放链接</span>
+                          <span>{t("share.heading")}</span>
                         </div>
                         <p className="text-xs leading-relaxed text-[#687082] dark:text-[#8E8E96]">
-                          打开后，拿到链接的人无需登录就能阅读群内讨论过程与最终拍板结论（只读、已剥离凭证）。
+                          {t("share.description")}
                         </p>
                       </div>
 
                       <AppSwitch
                         size="md"
-                        ariaLabel="切换公开只读回放"
+                        ariaLabel={t("share.toggleAria")}
                         disabled={visibilityMutation.isPending}
                         checked={props.activeRoom.visibility === "public_shareable"}
                         onCheckedChange={(checked) => {
@@ -1631,12 +1687,12 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             {
                               onSuccess: () => {
                                 toast.success(
-                                  checked ? "已开启公开只读回放" : "已切回仅受邀成员可见",
+                                  checked ? t("toast.shareEnabled") : t("toast.shareDisabled"),
                                 );
                               },
                               onError: (err) => {
                                 toast.error(
-                                  err instanceof Error ? err.message : "切换可见范围失败",
+                                  formatModalError(err, t("toast.shareToggleFailed"), locale),
                                 );
                               },
                             },
@@ -1653,13 +1709,13 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]"
                           />
                           <span className="text-[#145335] dark:text-[#6EE7B7]">
-                            已开启 · 持链接者可免登录只读浏览
+                            {t("share.statusPublic")}
                           </span>
                         </>
                       ) : (
                         <>
                           <Lock aria-hidden="true" className="h-3.5 w-3.5" />
-                          <span>当前仅群内成员可见</span>
+                          <span>{t("share.statusPrivate")}</span>
                         </>
                       )}
                     </p>
@@ -1669,7 +1725,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                         <AppInput
                           readOnly={true}
                           size="md"
-                          aria-label="公开只读回放链接"
+                          aria-label={t("share.linkAria")}
                           value={shareUrl}
                           leadingIcon={
                             <Globe className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />
@@ -1683,12 +1739,12 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                             triggerCopy(
                               "shareUrl",
                               shareUrl,
-                              "回放链接已复制",
-                              "发给任何人即可免登录查看讨论回放",
+                              t("share.linkCopiedToastTitle"),
+                              t("share.linkCopiedToastDesc"),
                             )
                           }
-                          label="复制链接"
-                          copiedLabel="已复制"
+                          label={t("share.copyLink")}
+                          copiedLabel={t("common.copied")}
                           variant="primary"
                         />
                         <a
@@ -1697,7 +1753,7 @@ export function AgentOnboardingModal(props: AgentOnboardingModalProps) {
                           rel="noopener noreferrer"
                           className={appButtonVariants({ variant: "secondary", size: "sm" })}
                         >
-                          <span>打开预览</span>
+                          <span>{t("share.openPreview")}</span>
                           <ExternalLink aria-hidden="true" className="h-3 w-3" />
                         </a>
                       </div>

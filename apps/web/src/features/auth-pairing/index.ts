@@ -5,9 +5,10 @@
 export {
   authConfigQueryOptions,
   currentMeQueryOptions,
+  useAccountLanguagePreference,
+  useAccountThemePreference,
   useChangePasswordMutation,
   useConfirmPasswordResetMutation,
-  useAccountThemePreference,
   useCreatePairingCodeMutation,
   useDeleteOwnedAgentMutation,
   useLoginWithPasswordMutation,
@@ -25,12 +26,22 @@ export {
   AccountSecurityModal,
   type AccountSecurityModalProps,
 } from "./components/account-security-modal.js";
-export { AccountThemeMenu } from "./components/account-theme-menu.js";
+export {
+  AccountThemeMenu,
+  type AccountThemeMenuProps,
+} from "./components/account-theme-menu.js";
 export {
   AgentOnboardingModal,
   type AgentOnboardingModalProps,
   type OnboardingModalTab,
 } from "./components/agent-onboarding-modal.js";
+export {
+  LOCALE_PREFERENCE_ORDER,
+  LocaleMenuGroup,
+  LocaleSwitcherMenu,
+  type LocaleMenuGroupProps,
+  type LocaleSwitcherMenuProps,
+} from "./components/locale-switcher-menu.js";
 export {
   AuthScreen,
   type AuthScreenProps,

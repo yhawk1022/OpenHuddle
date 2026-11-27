@@ -253,6 +253,16 @@ export function AppDropdownMenuItem(
 }
 
 /**
+ * 下拉菜单语义分组容器原语（用于隔离多组 `menuitemradio` 或相关操作项）。
+ *
+ * @param props - Radix `DropdownMenu.Group` 属性
+ * @returns 带 ARIA 分组语义的菜单组节点
+ */
+export function AppDropdownMenuGroup(props: ComponentPropsWithoutRef<typeof DropdownMenu.Group>) {
+  return <DropdownMenu.Group {...props} />;
+}
+
+/**
  * 下拉菜单分组标题原语。
  *
  * @param props - Radix `DropdownMenu.Label` 属性

@@ -1,18 +1,34 @@
 /**
  * @module web/features/auth-pairing/account-security-modal
- * @description 登录后人类账号资料与密码安全管理弹窗（编辑昵称、修改登录密码或为早期无密码老用户首次补设密码）。
+ * @description 登录后人类账号设置弹窗（编辑昵称、跨端同步界面语言偏好、修改登录密码或为早期无密码老用户首次补设密码）。
  *
  * 架构职责与关键不变量（Invariants）：
  * 1. 无密码老用户平滑迁移：根据 `currentUser.hasPassword` 自动切换「修改登录密码（需核验当前密码）」与「首次设置登录密码」表单。
- * 2. 改密即轮换会话：成功后 `useChangePasswordMutation` 自动替换本地备份令牌，并提示其余设备已安全下线。
+ * 2. 界面语言即时乐观切换：点击 `SegmentedTabs` 立即切换并跨端同步，右侧固定状态位零布局抖动（CLS = 0）。
+ * 3. 改密即轮换会话：成功后 `useChangePasswordMutation` 自动替换本地备份令牌，并提示其余设备已安全下线。
  */
-import { type HumanUserDto, PASSWORD_MIN_LENGTH } from "@openhuddle/protocol";
-import { CheckCircle2, Eye, EyeOff, Lock, ShieldCheck, User } from "lucide-react";
+import {
+  type HumanUserDto,
+  type LanguagePreference,
+  PASSWORD_MIN_LENGTH,
+} from "@openhuddle/protocol";
+import { CheckCircle2, Eye, EyeOff, Loader2, Lock, ShieldCheck, User } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
-import { AppButton, AppInput, toast } from "../../../components/primitives/index.js";
+import {
+  AppButton,
+  AppInput,
+  type SegmentedTabItem,
+  SegmentedTabs,
+  toast,
+} from "../../../components/primitives/index.js";
 import { ModalDialog } from "../../../components/ui/modal-dialog.js";
 import { ApiClientError } from "../../../lib/api-client.js";
-import { useChangePasswordMutation, useUpdateMeMutation } from "../api/auth-pairing.queries.js";
+import { formatApiErrorMessage, useCommonI18n } from "../../../lib/i18n/index.js";
+import {
+  useAccountLanguagePreference,
+  useChangePasswordMutation,
+  useUpdateMeMutation,
+} from "../api/auth-pairing.queries.js";
 
 /** `AccountSecurityModal` 入参属性 */
 export interface AccountSecurityModalProps {
@@ -23,14 +39,19 @@ export interface AccountSecurityModalProps {
 
 const LABEL_CLASS = "block text-xs font-medium text-[#3A3A3C] dark:text-zinc-300";
 
+function isClientTransportRequestId(requestId: string): boolean {
+  return requestId === "timeout" || requestId === "network" || requestId === "gateway";
+}
+
 /**
- * 渲染当前登录人类账号的个人资料与登录密码安全管理弹窗。
+ * 渲染当前登录人类账号的个人资料、界面语言与登录密码管理弹窗。
  *
  * @param props - 开关状态、当前登录用户 DTO 与关闭回调
- * @returns 无障碍响应式账户安全模态窗
+ * @returns 无障碍响应式账号设置模态窗
  */
 export function AccountSecurityModal(props: AccountSecurityModalProps) {
   const { open, currentUser, onClose } = props;
+  const { t } = useCommonI18n();
 
   const [displayName, setDisplayName] = useState<string>(currentUser.displayName);
   const [currentPassword, setCurrentPassword] = useState<string>("");
@@ -41,6 +62,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
 
   const updateMeMutation = useUpdateMeMutation();
   const changePasswordMutation = useChangePasswordMutation();
+  const accountLanguage = useAccountLanguagePreference();
 
   const { reset: resetUpdateMe } = updateMeMutation;
   const { reset: resetChangePassword } = changePasswordMutation;
@@ -61,6 +83,15 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
   const trimmedName = displayName.trim();
   const hasNameChanged = trimmedName.length > 0 && trimmedName !== currentUser.displayName;
 
+  const languageTabs: ReadonlyArray<SegmentedTabItem<LanguagePreference>> = [
+    { value: "auto", label: t("locale.option.auto") },
+    { value: "zh-CN", label: t("locale.autonym.zhCN") },
+    { value: "en", label: t("locale.autonym.en") },
+  ];
+
+  const resolvedLanguageAutonym =
+    accountLanguage.resolvedLocale === "zh-CN" ? t("locale.autonym.zhCN") : t("locale.autonym.en");
+
   const handleSaveDisplayName = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     if (!hasNameChanged) {
@@ -70,10 +101,20 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
       { displayName: trimmedName },
       {
         onSuccess: () => {
-          toast.success("昵称已更新");
+          toast.success(t("accountSettings.displayName.updated"));
         },
         onError: (err) => {
-          toast.error(err instanceof Error ? err.message : "更新昵称失败");
+          if (err instanceof ApiClientError) {
+            toast.error(
+              isClientTransportRequestId(err.requestId)
+                ? err.message
+                : formatApiErrorMessage(err.code, err.message),
+            );
+            return;
+          }
+          toast.error(
+            err instanceof Error ? err.message : t("accountSettings.displayName.updateFailed"),
+          );
         },
       },
     );
@@ -83,19 +124,19 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
     event.preventDefault();
     setLocalError(null);
     if (currentUser.hasPassword && currentPassword.length === 0) {
-      setLocalError("请输入当前密码。");
+      setLocalError(t("accountSettings.password.errCurrentRequired"));
       return;
     }
     if (newPassword.length < PASSWORD_MIN_LENGTH || !/\S/.test(newPassword)) {
-      setLocalError(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`);
+      setLocalError(t("accountSettings.password.errTooShort", { min: PASSWORD_MIN_LENGTH }));
       return;
     }
     if (newPassword !== confirmNewPassword) {
-      setLocalError("两次输入的新密码不一致。");
+      setLocalError(t("accountSettings.password.errMismatch"));
       return;
     }
     if (newPassword.trim().toLowerCase() === currentUser.email.toLowerCase()) {
-      setLocalError("新密码不能与邮箱地址相同。");
+      setLocalError(t("accountSettings.password.errSameAsEmail"));
       return;
     }
 
@@ -109,9 +150,14 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
           setCurrentPassword("");
           setNewPassword("");
           setConfirmNewPassword("");
-          toast.success(currentUser.hasPassword ? "登录密码已修改" : "登录密码已设置", {
-            description: "其他设备需要重新登录",
-          });
+          toast.success(
+            currentUser.hasPassword
+              ? t("accountSettings.password.toastChanged")
+              : t("accountSettings.password.toastSet"),
+            {
+              description: t("accountSettings.password.toastSignOutOthers"),
+            },
+          );
         },
       },
     );
@@ -120,8 +166,13 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
   const passwordServerError =
     changePasswordMutation.error instanceof ApiClientError
       ? changePasswordMutation.error.code === "INVALID_CREDENTIALS"
-        ? "当前密码不正确，请重新输入。"
-        : changePasswordMutation.error.message
+        ? t("accountSettings.password.errInvalidCurrent")
+        : isClientTransportRequestId(changePasswordMutation.error.requestId)
+          ? changePasswordMutation.error.message
+          : formatApiErrorMessage(
+              changePasswordMutation.error.code,
+              changePasswordMutation.error.message,
+            )
       : changePasswordMutation.error instanceof Error
         ? changePasswordMutation.error.message
         : null;
@@ -132,8 +183,8 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
     <ModalDialog
       open={open}
       onClose={onClose}
-      title="账号安全"
-      subtitle={`${currentUser.email} · ${currentUser.role === "admin" ? "平台管理员" : "成员"}`}
+      title={t("accountSettings.title")}
+      subtitle={`${currentUser.email} · ${currentUser.role === "admin" ? t("accountSettings.role.admin") : t("accountSettings.role.member")}`}
       maxWidthClass="max-w-md"
       icon={<ShieldCheck className="h-4 w-4" />}
     >
@@ -142,18 +193,24 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
         <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-[#F5F5F7] px-3.5 py-2.5 text-xs text-[#52525B] dark:bg-white/[0.05] dark:text-zinc-300">
           <span className="inline-flex items-center gap-1 text-[#1E5638] dark:text-[#86E0A6]">
             <CheckCircle2 className="h-3.5 w-3.5" />
-            {currentUser.emailVerified ? "邮箱已验证" : "邮箱未验证"}
+            {currentUser.emailVerified
+              ? t("accountSettings.emailVerified")
+              : t("accountSettings.emailUnverified")}
           </span>
           <span aria-hidden="true" className="opacity-35">
             ·
           </span>
-          <span>{currentUser.hasPassword ? "已设置登录密码" : "未设置登录密码"}</span>
+          <span>
+            {currentUser.hasPassword
+              ? t("accountSettings.passwordSet")
+              : t("accountSettings.passwordNotSet")}
+          </span>
         </div>
 
         {/* 1. 昵称设置 */}
         <form onSubmit={handleSaveDisplayName} className="space-y-3">
           <label htmlFor="account-display-name" className={LABEL_CLASS}>
-            昵称
+            {t("accountSettings.displayName.label")}
           </label>
           <div className="flex items-center gap-2">
             <AppInput
@@ -174,18 +231,57 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
               isLoading={updateMeMutation.isPending}
               className="shrink-0"
             >
-              保存
+              {t("action.save")}
             </AppButton>
           </div>
         </form>
 
         <div className="h-px bg-black/[0.06] dark:bg-white/[0.08]" />
 
-        {/* 2. 修改 / 首次设置密码 */}
+        {/* 2. 界面语言设置（跨端同步，乐观切换，零 CLS 状态位） */}
+        <section aria-labelledby="account-language-heading" className="space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <h3 id="account-language-heading" className={LABEL_CLASS}>
+              {t("accountSettings.language.label")}
+            </h3>
+            <span
+              aria-live="polite"
+              className="inline-flex h-4 min-w-[5rem] shrink-0 items-center justify-end gap-1 text-[11px] font-medium text-[#6E6E73] dark:text-zinc-400"
+            >
+              {accountLanguage.isSaving ? (
+                <>
+                  <Loader2 aria-hidden="true" className="h-3 w-3 shrink-0 animate-spin" />
+                  <span>{t("status.saving")}</span>
+                </>
+              ) : (
+                <span>{t("status.synced")}</span>
+              )}
+            </span>
+          </div>
+          <SegmentedTabs
+            size="sm"
+            fullWidth={true}
+            value={accountLanguage.preference}
+            onValueChange={accountLanguage.setPreference}
+            items={languageTabs}
+            ariaLabel={t("accountSettings.language.ariaLabel")}
+          />
+          <p className="text-[11.5px] leading-relaxed text-[#6E6E73] dark:text-zinc-400">
+            {accountLanguage.preference === "auto"
+              ? t("locale.account.followingSystem", { language: resolvedLanguageAutonym })
+              : t("locale.account.pinnedSynced", { language: resolvedLanguageAutonym })}
+          </p>
+        </section>
+
+        <div className="h-px bg-black/[0.06] dark:bg-white/[0.08]" />
+
+        {/* 3. 修改 / 首次设置密码 */}
         <form onSubmit={handleChangePassword} className="space-y-3.5">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-[13px] font-semibold text-[#141414] dark:text-zinc-100">
-              {currentUser.hasPassword ? "修改登录密码" : "设置登录密码"}
+              {currentUser.hasPassword
+                ? t("accountSettings.password.sectionChange")
+                : t("accountSettings.password.sectionSet")}
             </h3>
             <button
               type="button"
@@ -193,14 +289,18 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
               className="inline-flex cursor-pointer items-center gap-1 text-[11.5px] text-[#6E6E73] transition hover:text-[#141414] dark:text-zinc-400 dark:hover:text-zinc-100"
             >
               {showPasswords ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-              <span>{showPasswords ? "隐藏密码" : "显示密码"}</span>
+              <span>
+                {showPasswords
+                  ? t("accountSettings.password.hide")
+                  : t("accountSettings.password.show")}
+              </span>
             </button>
           </div>
 
           {currentUser.hasPassword ? (
             <div>
               <label htmlFor="account-current-password" className={LABEL_CLASS}>
-                当前密码
+                {t("accountSettings.password.currentLabel")}
               </label>
               <AppInput
                 id="account-current-password"
@@ -214,7 +314,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
                   setLocalError(null);
                 }}
                 leadingIcon={<Lock className="h-4 w-4" />}
-                placeholder="输入当前密码"
+                placeholder={t("accountSettings.password.currentPlaceholder")}
                 containerClassName="mt-1.5"
               />
             </div>
@@ -222,7 +322,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
 
           <div>
             <label htmlFor="account-new-password" className={LABEL_CLASS}>
-              新密码
+              {t("accountSettings.password.newLabel")}
             </label>
             <AppInput
               id="account-new-password"
@@ -237,14 +337,16 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
                 setLocalError(null);
               }}
               leadingIcon={<Lock className="h-4 w-4" />}
-              placeholder={`至少 ${PASSWORD_MIN_LENGTH} 个字符`}
+              placeholder={t("accountSettings.password.newPlaceholder", {
+                min: PASSWORD_MIN_LENGTH,
+              })}
               containerClassName="mt-1.5"
             />
           </div>
 
           <div>
             <label htmlFor="account-confirm-new-password" className={LABEL_CLASS}>
-              确认新密码
+              {t("accountSettings.password.confirmLabel")}
             </label>
             <AppInput
               id="account-confirm-new-password"
@@ -259,7 +361,7 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
                 setLocalError(null);
               }}
               leadingIcon={<Lock className="h-4 w-4" />}
-              placeholder="再次输入新密码"
+              placeholder={t("accountSettings.password.confirmPlaceholder")}
               containerClassName="mt-1.5"
             />
           </div>
@@ -287,10 +389,10 @@ export function AccountSecurityModal(props: AccountSecurityModalProps) {
             className="rounded-full"
           >
             {changePasswordMutation.isPending
-              ? "正在保存..."
+              ? t("accountSettings.password.submitting")
               : currentUser.hasPassword
-                ? "保存新密码"
-                : "保存登录密码"}
+                ? t("accountSettings.password.submitChange")
+                : t("accountSettings.password.submitSet")}
           </AppButton>
         </form>
       </div>

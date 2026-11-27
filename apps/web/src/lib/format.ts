@@ -13,9 +13,11 @@ import {
   type MessageDto,
   type OperationKey,
   type RoomSummaryDto,
+  type SupportedLocale,
   type UserId,
   assertNever,
 } from "@openhuddle/protocol";
+import { formatDate, getActiveLocale, getCommonTranslator } from "./i18n/index.js";
 
 /** 消息可撤回的最大时间窗口（2 分钟 = 120,000 毫秒） */
 export const MESSAGE_RECALL_WINDOW_MS = 120_000;
@@ -112,25 +114,33 @@ export function sortRoomsByLatestActivity<T extends RoomSummaryDto>(rooms: Reado
  * 获取引用与通知中的消息摘要，混排消息保留媒体类型前缀，纯媒体消息显示对应的媒体类别。
  * @param message - 待展示的消息
  * @param maxLength - 摘要最大长度
+ * @param locale - 可选显式语种（缺省取当前生效语种）
  * @returns 可读的短文本
  */
-export function getMessageSnippet(message: MessageDto, maxLength: number): string {
+export function getMessageSnippet(
+  message: MessageDto,
+  maxLength: number,
+  locale?: SupportedLocale,
+): string {
+  const { t } = getCommonTranslator(locale);
   if (message.recalledAtIso !== undefined) {
-    return "该消息已撤回";
+    return t("message.recalled");
   }
   const text = message.content.replace(/\s+/gu, " ").trim();
   if (message.attachment === undefined) {
     return text.slice(0, maxLength);
   }
   if (message.attachment.stickerName !== undefined) {
-    const base = `[表情] ${message.attachment.stickerName}`;
+    const base = `${t("message.tag.sticker")} ${message.attachment.stickerName}`;
     return (text.length > 0 ? `${base} ${text}` : base).slice(0, maxLength);
   }
   if (message.attachment.mimeType === "application/octet-stream") {
-    const base = `[文件] ${message.attachment.fileName ?? "附件"}`;
+    const base = `${t("message.tag.file")} ${message.attachment.fileName ?? t("message.defaultAttachmentName")}`;
     return (text.length > 0 ? `${base} · ${text}` : base).slice(0, maxLength);
   }
-  const mediaTag = message.attachment.mimeType.startsWith("image/") ? "[图片]" : "[语音]";
+  const mediaTag = message.attachment.mimeType.startsWith("image/")
+    ? t("message.tag.image")
+    : t("message.tag.voice");
   return (text.length > 0 ? `${mediaTag} ${text}` : mediaTag).slice(0, maxLength);
 }
 
@@ -181,9 +191,14 @@ export function isAgentLiveReachable(reach: AgentReachState | undefined): boolea
  * 获取指定 `AgentPlatform` 的精简名称、双主题粉彩头像/徽章样式与接入说明。
  *
  * @param platform - 协议定义的 Agent 宿主平台枚举
+ * @param locale - 可选显式语种（缺省取当前生效语种）
  * @returns 完整的视觉与引导配置元数据
  */
-export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMeta {
+export function getPlatformVisualMeta(
+  platform: AgentPlatform,
+  locale?: SupportedLocale,
+): PlatformVisualMeta {
+  const { t } = getCommonTranslator(locale);
   switch (platform) {
     case "antigravity":
       return {
@@ -193,7 +208,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#EFEAFF] text-[#3F3368] dark:border-white/[0.08] dark:bg-[#25213A] dark:text-[#C9BEFF]",
         avatarClass:
           "bg-[#EFEAFF] text-[#352A59] ring-1 ring-inset ring-black/[0.06] dark:bg-[#25213A] dark:text-[#C9BEFF] dark:ring-white/[0.08]",
-        cliHint: "在云端或本地都可以按 /install.md 安装 CLI",
+        cliHint: t("platform.cliHint.antigravity"),
       };
     case "codex":
       return {
@@ -203,7 +218,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
         avatarClass:
           "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1A273D] dark:text-[#9FC5FF] dark:ring-white/[0.08]",
-        cliHint: "可在 Codex 云端沙箱或本地 CLI 打开安装链接",
+        cliHint: t("platform.cliHint.codex"),
       };
     case "claude_code":
       return {
@@ -213,7 +228,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2F261C] dark:text-[#F3CFA2]",
         avatarClass:
           "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F261C] dark:text-[#F3CFA2] dark:ring-white/[0.08]",
-        cliHint: "可在云端容器、远程服务器或本地终端安装 CLI",
+        cliHint: t("platform.cliHint.claude_code"),
       };
     case "cursor":
       return {
@@ -223,7 +238,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#FFF1C2] text-[#5C4813] dark:border-white/[0.08] dark:bg-[#2F2816] dark:text-[#F5D687]",
         avatarClass:
           "bg-[#FFF1C2] text-[#4F3D0E] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F2816] dark:text-[#F5D687] dark:ring-white/[0.08]",
-        cliHint: "可在 IDE 的 Composer 中粘贴接入说明，或通过 MCP 连接",
+        cliHint: t("platform.cliHint.cursor"),
       };
     case "deepseek":
       return {
@@ -233,7 +248,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#FBE3D9] text-[#663523] dark:border-white/[0.08] dark:bg-[#32201E] dark:text-[#F7B6A8]",
         avatarClass:
           "bg-[#FBE3D9] text-[#572B1B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#32201E] dark:text-[#F7B6A8] dark:ring-white/[0.08]",
-        cliHint: "可通过 CLI 或 MCP 连接",
+        cliHint: t("platform.cliHint.deepseek"),
       };
     case "openclaw":
       return {
@@ -243,7 +258,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#162C24] dark:text-[#86E5BA]",
         avatarClass:
           "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#162C24] dark:text-[#86E5BA] dark:ring-white/[0.08]",
-        cliHint: "可在后台接收群里的 @ 提醒，也可定时查看消息",
+        cliHint: t("platform.cliHint.openclaw"),
       };
     case "gemini":
       return {
@@ -253,7 +268,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#E1ECFF] text-[#244375] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#9FC5FF]",
         avatarClass:
           "bg-[#E1ECFF] text-[#1E3A66] ring-1 ring-inset ring-black/[0.06] dark:bg-[#1A273D] dark:text-[#9FC5FF] dark:ring-white/[0.08]",
-        cliHint: "可在 Gemini CLI 中粘贴接入说明",
+        cliHint: t("platform.cliHint.gemini"),
       };
     case "chatgpt":
       return {
@@ -263,7 +278,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#E4F4EA] text-[#215236] dark:border-white/[0.08] dark:bg-[#162C24] dark:text-[#86E5BA]",
         avatarClass:
           "bg-[#E4F4EA] text-[#1B452D] ring-1 ring-inset ring-black/[0.06] dark:bg-[#162C24] dark:text-[#86E5BA] dark:ring-white/[0.08]",
-        cliHint: "可通过 Remote MCP 或桌面工具连接",
+        cliHint: t("platform.cliHint.chatgpt"),
       };
     case "hosted":
       return {
@@ -273,7 +288,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#F4ECDD] text-[#5C4528] dark:border-white/[0.08] dark:bg-[#2F261C] dark:text-[#F3CFA2]",
         avatarClass:
           "bg-[#F4ECDD] text-[#4A351B] ring-1 ring-inset ring-black/[0.06] dark:bg-[#2F261C] dark:text-[#F3CFA2] dark:ring-white/[0.08]",
-        cliHint: "使用你提供的模型密钥，在服务器上运行",
+        cliHint: t("platform.cliHint.hosted"),
       };
     case "custom":
       return {
@@ -283,7 +298,7 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
           "border-black/[0.06] bg-[#ECEEF3] text-[#3B414E] dark:border-white/[0.08] dark:bg-[#27272B] dark:text-[#D4D4DA]",
         avatarClass:
           "bg-[#ECEEF3] text-[#181B22] ring-1 ring-inset ring-black/[0.06] dark:bg-[#27272B] dark:text-[#D4D4DA] dark:ring-white/[0.08]",
-        cliHint: "可通过 HTTP、CLI 或 MCP 连接自己的脚本",
+        cliHint: t("platform.cliHint.custom"),
       };
     default:
       return assertNever(platform);
@@ -291,55 +306,60 @@ export function getPlatformVisualMeta(platform: AgentPlatform): PlatformVisualMe
 }
 
 /**
- * 获取 Agent 在线可达状态（`reach`）的克制指示圆点与自然中文说明。
+ * 获取 Agent 在线可达状态（`reach`）的克制指示圆点与双语自然说明。
  *
  * @param reach - Agent 当前实时可达状态（缺省按 `offline` 处理）
+ * @param locale - 可选显式语种（缺省取当前生效语种）
  * @returns 圆点颜色、胶囊类名与自然说明文案
  */
-export function getReachVisualMeta(reach: AgentReachState | undefined): ReachVisualMeta {
+export function getReachVisualMeta(
+  reach: AgentReachState | undefined,
+  locale?: SupportedLocale,
+): ReachVisualMeta {
   const effective = reach ?? "offline";
+  const { t } = getCommonTranslator(locale);
   switch (effective) {
     case "online_sse":
       return {
-        label: "在线",
-        shortLabel: "在线",
-        description: "已连接，在群里 @ 它即可提问",
+        label: t("reach.online_sse.label"),
+        shortLabel: t("reach.online_sse.shortLabel"),
+        description: t("reach.online_sse.description"),
         dotClass: "bg-[#16A34A] dark:bg-[#34D399]",
         pillClass:
           "border-black/[0.06] bg-[#E8F5EE] text-[#145335] dark:border-white/[0.08] dark:bg-[#162923] dark:text-[#6EE7B7]",
       };
     case "hosted_ready":
       return {
-        label: "云端在线",
-        shortLabel: "在线",
-        description: "托管模型已连接，可以参与讨论和投票",
+        label: t("reach.hosted_ready.label"),
+        shortLabel: t("reach.hosted_ready.shortLabel"),
+        description: t("reach.hosted_ready.description"),
         dotClass: "bg-[#16A34A] dark:bg-[#34D399]",
         pillClass:
           "border-black/[0.06] bg-[#E8F5EE] text-[#145335] dark:border-white/[0.08] dark:bg-[#162923] dark:text-[#6EE7B7]",
       };
     case "webhook":
       return {
-        label: "Webhook 在线",
-        shortLabel: "Webhook",
-        description: "通过 Webhook 接收群消息提醒",
+        label: t("reach.webhook.label"),
+        shortLabel: t("reach.webhook.shortLabel"),
+        description: t("reach.webhook.description"),
         dotClass: "bg-[#2563EB] dark:bg-[#60A5FA]",
         pillClass:
           "border-black/[0.06] bg-[#E1ECFF] text-[#1E40AF] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#93C5FD]",
       };
     case "polling":
       return {
-        label: "监听未连接",
-        shortLabel: "未监听",
-        description: "请在 Agent 所在设备检查后台监听",
+        label: t("reach.polling.label"),
+        shortLabel: t("reach.polling.shortLabel"),
+        description: t("reach.polling.description"),
         dotClass: "bg-[#D97706] dark:bg-[#FBBF24]",
         pillClass:
           "border-black/[0.06] bg-[#FEF3C7] text-[#78350F] dark:border-white/[0.08] dark:bg-[#2E2516] dark:text-[#FCD34D]",
       };
     case "offline":
       return {
-        label: "离线",
-        shortLabel: "离线",
-        description: "可在 Agent 所在设备运行 listen 重新连接",
+        label: t("reach.offline.label"),
+        shortLabel: t("reach.offline.shortLabel"),
+        description: t("reach.offline.description"),
         dotClass: "bg-[#CBD2DE] dark:bg-[#63636B]",
         pillClass:
           "border-black/[0.06] bg-[#F3F4F7] text-[#687082] dark:border-white/[0.08] dark:bg-[#222226] dark:text-[#8E8E96]",
@@ -381,12 +401,13 @@ export function getInitials(displayName: string): string {
 }
 
 /**
- * 将 ISO-8601 时间戳格式化为紧凑的本地时刻字符串（`HH:mm` 或 `MM-DD HH:mm`）。
+ * 将 ISO-8601 时间戳格式化为紧凑的本地时刻字符串（中文：`HH:mm` 或 `MM-DD HH:mm`；英文：`HH:mm` 或 `MMM d, HH:mm`）。
  *
  * @param iso - ISO-8601 格式时间字符串
+ * @param locale - 可选显式语种（缺省取当前生效语种）
  * @returns 人类友好的简短时间表示
  */
-export function formatMessageTimestamp(iso: string): string {
+export function formatMessageTimestamp(iso: string, locale?: SupportedLocale): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) {
     return iso;
@@ -401,6 +422,11 @@ export function formatMessageTimestamp(iso: string): string {
   const minutes = String(date.getMinutes()).padStart(2, "0");
   if (isSameDay) {
     return `${hours}:${minutes}`;
+  }
+  const effectiveLocale = locale ?? getActiveLocale();
+  if (effectiveLocale === "en") {
+    const shortDate = formatDate(date, { month: "short", day: "numeric" }, "en");
+    return `${shortDate}, ${hours}:${minutes}`;
   }
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");

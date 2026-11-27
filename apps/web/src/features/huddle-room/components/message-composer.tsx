@@ -19,6 +19,7 @@ import type {
   OperationKey,
   RoomKind,
   RoomMemberDto,
+  SupportedLocale,
   UserId,
 } from "@openhuddle/protocol";
 import {
@@ -79,6 +80,11 @@ import {
   formatDraftAttachmentDisplayName,
 } from "../../../lib/message-media.js";
 import { isCoarsePointerDevice, isImeComposing } from "../../../lib/viewport-sync.js";
+import {
+  getChatDetailTranslator,
+  resolveChatDetailErrorMessage,
+  useChatDetailI18n,
+} from "../i18n/chat-detail.js";
 import type { AgentWorkspace } from "../work/solo-workbench-store.js";
 import type {
   DispatchWorkPayload,
@@ -98,12 +104,6 @@ const MAX_MENTION_SUGGESTIONS = 8;
 
 const MEDIA_BUTTON_CLASS =
   "im-press app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] hover:bg-black/[0.05] hover:text-[#111318] disabled:cursor-not-allowed disabled:opacity-40 dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F2F2F4]";
-
-const TOPOLOGY_TAB_ITEMS: ReadonlyArray<SegmentedTabItem<WorkTopology>> = [
-  { value: "direct", label: "单人" },
-  { value: "verify_loop", label: "复核" },
-  { value: "swarm", label: "并行" },
-];
 
 const TIER_CYCLE_ORDER: ReadonlyArray<AgentExecutionTier> = [
   "chat_only",
@@ -182,29 +182,35 @@ export function resolveComposerPlaceholder(params: {
   readonly dispatchMode: boolean;
   readonly askMode: boolean;
   readonly hasDraftImage: boolean;
+  readonly locale?: SupportedLocale | undefined;
 }): string {
+  const { t } = getChatDetailTranslator(params.locale);
   if (params.dispatchMode) {
-    return params.hasDraftImage ? "结合这张图片写下要交办的任务说明…" : "写下要交办的任务说明…";
+    return params.hasDraftImage
+      ? t("composer.placeholder.dispatchWithImage")
+      : t("composer.placeholder.dispatch");
   }
   if (params.askMode) {
-    return params.hasDraftImage ? "结合这张图片写下要提问的问题…" : "写下要等待人类作答的问题…";
+    return params.hasDraftImage
+      ? t("composer.placeholder.askWithImage")
+      : t("composer.placeholder.ask");
   }
   if (params.hasDraftImage) {
     if (params.roomKind === "group") {
-      return "输入 @ 让 Agent 看图分析，或直接发送…";
+      return t("composer.placeholder.imageGroup");
     }
     if (params.roomKind === "direct_agent") {
-      return `补充说明给 ${params.roomName}，或直接发送…`;
+      return t("composer.placeholder.imageDirectAgent", { roomName: params.roomName });
     }
-    return "补充图片说明，或直接发送…";
+    return t("composer.placeholder.imageDefault");
   }
   if (params.roomKind === "direct_agent") {
-    return `发消息或图片给 ${params.roomName}…`;
+    return t("composer.placeholder.directAgent", { roomName: params.roomName });
   }
   if (params.roomKind === "direct_human") {
-    return `发消息给 ${params.roomName}…`;
+    return t("composer.placeholder.directHuman", { roomName: params.roomName });
   }
-  return `发消息到 ${params.roomName}…`;
+  return t("composer.placeholder.group", { roomName: params.roomName });
 }
 
 function AttachmentPreview(props: {
@@ -212,16 +218,17 @@ function AttachmentPreview(props: {
   readonly disabled: boolean;
   readonly onRemove: () => void;
 }) {
+  const { locale, t } = useChatDetailI18n();
   const [url, setUrl] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const { blob, mimeType, stickerName, width, height } = props.attachment;
   const isFile = mimeType === "application/octet-stream";
   const isImage = mimeType.startsWith("image/");
-  const displayName = formatDraftAttachmentDisplayName(props.attachment);
+  const displayName = formatDraftAttachmentDisplayName(props.attachment, locale);
   const sizeLabel =
     props.attachment.wasCompressed === true
-      ? `已压缩 · ${formatAttachmentSize(blob.size)}`
+      ? t("composer.attachment.compressedSize", { size: formatAttachmentSize(blob.size) })
       : formatAttachmentSize(blob.size);
 
   useEffect(() => {
@@ -249,13 +256,17 @@ function AttachmentPreview(props: {
               ref={previewTriggerRef}
               type="button"
               onClick={() => setPreviewOpen(true)}
-              aria-label={`预览待发送图片：${displayName}`}
-              title="点击放大确认待发送图片"
+              aria-label={t("composer.attachment.previewImageAria", { name: displayName })}
+              title={t("composer.attachment.previewImageTitle")}
               className="app-no-drag relative h-12 w-12 shrink-0 cursor-zoom-in overflow-hidden rounded-md ring-1 ring-inset ring-black/[0.06] focus-visible:ring-2 dark:ring-white/[0.08]"
             >
               <img
                 src={url}
-                alt={stickerName !== undefined ? `待发送表情：${stickerName}` : "待发送图片预览"}
+                alt={
+                  stickerName !== undefined
+                    ? t("composer.attachment.pendingStickerAlt", { name: stickerName })
+                    : t("composer.attachment.pendingImageAlt")
+                }
                 className={cn(
                   "block h-full w-full",
                   stickerName !== undefined ? "object-contain" : "object-cover",
@@ -269,7 +280,7 @@ function AttachmentPreview(props: {
             src={url}
             controls
             preload="metadata"
-            aria-label="试听待发送语音"
+            aria-label={t("composer.attachment.previewVoiceAria")}
             className="h-9 w-48 min-w-0 max-w-[65%]"
           />
         ) : null}
@@ -285,8 +296,8 @@ function AttachmentPreview(props: {
 
         <button
           type="button"
-          aria-label="移除附件"
-          title="移除附件"
+          aria-label={t("composer.attachment.remove")}
+          title={t("composer.attachment.remove")}
           disabled={props.disabled}
           onClick={props.onRemove}
           className={MEDIA_BUTTON_CLASS}
@@ -435,6 +446,7 @@ function detectMentionTrigger(draft: string, caret: number): MentionTrigger | nu
  * @returns 底部液态玻璃聊天输入舱组件
  */
 export function MessageComposer(props: MessageComposerProps) {
+  const { locale, t, tp } = useChatDetailI18n();
   const [draft, setDraft] = useState<string>("");
   const [selectedMentions, setSelectedMentions] = useState<ReadonlyArray<MessageMention>>([]);
   const [caretIndex, setCaretIndex] = useState<number>(0);
@@ -523,7 +535,7 @@ export function MessageComposer(props: MessageComposerProps) {
   const senderDisplayName =
     props.currentUserDisplayName !== undefined && props.currentUserDisplayName.trim().length > 0
       ? props.currentUserDisplayName.trim()
-      : "你";
+      : t("composer.selfFallbackName");
 
   const agentMembers = useMemo(
     () => props.members.filter((m) => m.memberKind === "agent" && m.agentId !== undefined),
@@ -592,9 +604,9 @@ export function MessageComposer(props: MessageComposerProps) {
     props.boundWorkspace != null && !workspaceSupportsSwarm(props.boundWorkspace);
   const supportsSwarm = hasEnoughAgentsForSwarm && !workspaceBlocksSwarm;
   const swarmDisabledReason = !hasEnoughAgentsForSwarm
-    ? "群内至少需要 2 个 Agent 才能启用多路并行"
+    ? t("composer.dispatch.swarmNeedsTwoAgents")
     : workspaceBlocksSwarm
-      ? "仅多目录组合且非只读工作区支持"
+      ? t("composer.dispatch.swarmWorkspaceUnsupported")
       : undefined;
   const fallbackNonSwarmTopology: WorkTopology =
     agentMembers.length >= 2 && props.boundWorkspace?.kind !== "folder" ? "verify_loop" : "direct";
@@ -602,17 +614,21 @@ export function MessageComposer(props: MessageComposerProps) {
     dispatchTopology === "swarm" && !supportsSwarm ? fallbackNonSwarmTopology : dispatchTopology;
 
   const topologyTabItems = useMemo<ReadonlyArray<SegmentedTabItem<WorkTopology>>>(
-    () =>
-      TOPOLOGY_TAB_ITEMS.map((item) =>
-        item.value === "swarm" && !supportsSwarm
+    () => [
+      { value: "direct", label: t("composer.topology.direct") },
+      { value: "verify_loop", label: t("composer.topology.verify") },
+      {
+        value: "swarm",
+        label: t("composer.topology.swarm"),
+        ...(!supportsSwarm
           ? {
-              ...item,
               disabled: true,
               ...(swarmDisabledReason !== undefined ? { title: swarmDisabledReason } : {}),
             }
-          : item,
-      ),
-    [supportsSwarm, swarmDisabledReason],
+          : {}),
+      },
+    ],
+    [supportsSwarm, swarmDisabledReason, t],
   );
 
   useEffect(() => {
@@ -810,12 +826,16 @@ export function MessageComposer(props: MessageComposerProps) {
     }
     const q = mentionTrigger.query.toLowerCase();
     const list: MentionCandidate[] = [];
-    if (agentMembers.length >= 2 && ("全体".includes(q) || "all".includes(q) || q.length === 0)) {
+    const allLabel = t("composer.mention.allLabel");
+    if (
+      agentMembers.length >= 2 &&
+      (allLabel.toLowerCase().includes(q) || "all".includes(q) || q.length === 0)
+    ) {
       list.push({
         key: "all-agents",
         kind: "all",
-        label: "全体",
-        sublabel: `同时叫醒群内 ${String(agentMembers.length)} 个 Agent`,
+        label: allLabel,
+        sublabel: tp("composer.mention.wakeAllAgents", agentMembers.length),
         dotClass: null,
         mention: null,
       });
@@ -829,19 +849,23 @@ export function MessageComposer(props: MessageComposerProps) {
         continue;
       }
       const isAgent = member.memberKind === "agent";
+      const reachMeta = isAgent ? getReachVisualMeta(member.reach, locale) : null;
       list.push({
         key: mentionIdentityKey(mention),
         kind: isAgent ? "agent" : "human",
         label: member.displayName,
         sublabel: isAgent
-          ? `${member.ownerDisplayName} 的 Agent · ${getReachVisualMeta(member.reach).shortLabel}`
-          : "群成员",
-        dotClass: isAgent ? getReachVisualMeta(member.reach).dotClass : null,
+          ? t("composer.mention.agentSublabel", {
+              owner: member.ownerDisplayName,
+              reach: reachMeta?.shortLabel ?? "",
+            })
+          : t("composer.mention.memberSublabel"),
+        dotClass: reachMeta?.dotClass ?? null,
         mention,
       });
     }
     return list.slice(0, MAX_MENTION_SUGGESTIONS);
-  }, [mentionTrigger, agentMembers, humanMembers]);
+  }, [mentionTrigger, agentMembers, humanMembers, locale, t, tp]);
 
   const isSuggestOpen = mentionTrigger !== null && suggestions.length > 0 && !pickerOpen;
   const safeActiveIndex = Math.min(activeSuggestIndex, Math.max(0, suggestions.length - 1));
@@ -1140,12 +1164,11 @@ export function MessageComposer(props: MessageComposerProps) {
     }
   };
 
+  const resolvedSendErr = resolveChatDetailErrorMessage(props.sendError, locale);
   const errorText =
-    props.sendError instanceof ApiClientError
-      ? `${props.sendError.message} (${props.sendError.code})`
-      : props.sendError instanceof Error
-        ? props.sendError.message
-        : null;
+    props.sendError instanceof ApiClientError && resolvedSendErr !== null
+      ? `${resolvedSendErr} (${props.sendError.code})`
+      : resolvedSendErr;
 
   const effectiveKind: RoomKind = props.roomKind ?? "group";
   const hasAnyTeammate =
@@ -1160,13 +1183,14 @@ export function MessageComposer(props: MessageComposerProps) {
     dispatchMode,
     askMode,
     hasDraftImage,
+    locale,
   });
   const sendButtonTooltip =
     media.attachment !== null && dispatchMode && trimmed.length === 0
-      ? "请补充要交办的任务说明后再发送"
+      ? t("composer.send.needDispatchText")
       : media.attachment !== null && askMode && trimmed.length === 0
-        ? "请补充要提问的问题后再发送"
-        : "发送消息";
+        ? t("composer.send.needAskText")
+        : t("composer.send.tooltip");
 
   return (
     <footer
@@ -1191,8 +1215,9 @@ export function MessageComposer(props: MessageComposerProps) {
             >
               <div className="flex flex-wrap items-center justify-between gap-2 bg-[#E5484D]/[0.10] px-3.5 py-2 text-xs font-medium text-[#C81E1E] dark:bg-[#F05252]/[0.14] dark:text-[#FCA5A5]">
                 <span>
-                  发送失败（{failedTextSnapshot !== null ? "可一键重发" : "草稿已自动回填"}）：
-                  {errorText}
+                  {failedTextSnapshot !== null
+                    ? t("composer.error.failedWithRetry", { error: errorText })
+                    : t("composer.error.failedRestored", { error: errorText })}
                 </span>
                 {failedTextSnapshot !== null ? (
                   <button
@@ -1222,10 +1247,10 @@ export function MessageComposer(props: MessageComposerProps) {
                   >
                     {failedTextSnapshot.attachment?.mimeType.startsWith("image/") === true &&
                     failedTextSnapshot.attachment.stickerName === undefined
-                      ? "重发上一条图片消息"
+                      ? t("composer.error.retryImage")
                       : failedTextSnapshot.attachment !== undefined
-                        ? "重发上一条附件消息"
-                        : "重发上一条"}
+                        ? t("composer.error.retryAttachment")
+                        : t("composer.error.retryMessage")}
                   </button>
                 ) : null}
               </div>
@@ -1242,8 +1267,11 @@ export function MessageComposer(props: MessageComposerProps) {
             >
               <div className="flex flex-wrap items-center justify-between gap-2 bg-amber-500/[0.08] px-3.5 py-2 text-xs text-[#6B4E12] dark:bg-amber-400/[0.08] dark:text-[#F5DF9D]">
                 <span>
-                  {offlineMentionedAgents.map((m) => `@${m.displayName}`).join("、")}{" "}
-                  当前未开启本地监听（离线），发出后会在它上线时自动补回。
+                  {tp("composer.offlineHint.text", offlineMentionedAgents.length, {
+                    agents: offlineMentionedAgents
+                      .map((m) => `@${m.displayName}`)
+                      .join(t("common.listSeparator")),
+                  })}
                 </span>
                 {(() => {
                   const reconnectableOwn = offlineMentionedAgents.find(
@@ -1264,7 +1292,7 @@ export function MessageComposer(props: MessageComposerProps) {
                       onClick={() => props.onReconnectOfflineAgent?.(targetId)}
                       className="shrink-0 cursor-pointer rounded-full bg-[#181B22] px-2.5 py-1 text-[11px] font-medium text-white transition hover:bg-[#252A35] dark:bg-[#EAEEF6] dark:text-[#111318] dark:hover:bg-white"
                     >
-                      重连开启监听
+                      {t("composer.offlineHint.reconnect")}
                     </button>
                   );
                 })()}
@@ -1278,7 +1306,7 @@ export function MessageComposer(props: MessageComposerProps) {
           {isSuggestOpen ? (
             <motion.div
               key="inline-mention-popover"
-              aria-label="选择要 @ 的成员"
+              aria-label={t("composer.mention.popoverAria")}
               initial={{ opacity: 0, y: 6, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 4, scale: 0.98 }}
@@ -1286,8 +1314,8 @@ export function MessageComposer(props: MessageComposerProps) {
               className="pointer-events-auto absolute right-0 bottom-full left-0 z-30 mb-2 flex max-h-[min(14rem,calc(var(--oh-vvh,100dvh)-8.5rem))] max-w-sm flex-col overflow-hidden rounded-[20px] p-1.5 liquid-glass-modal"
             >
               <div className="shrink-0 px-2.5 pt-1 pb-1.5 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                <span>选择要提及的对象</span>
-                <span className="hidden sm:inline"> · ↑↓ 切换 · Enter 确认</span>
+                <span>{t("composer.mention.popoverTitle")}</span>
+                <span className="hidden sm:inline">{t("composer.mention.popoverKeyHint")}</span>
               </div>
               <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain">
                 {suggestions.map((candidate, idx) => {
@@ -1372,7 +1400,7 @@ export function MessageComposer(props: MessageComposerProps) {
                     <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto overscroll-x-contain sm:flex-wrap">
                       <span className="hidden sm:inline-flex shrink-0 items-center gap-1 px-1 text-[11.5px] font-medium text-[#4B5565] dark:text-[#A1A1AA]">
                         <ListTodo className="h-3.5 w-3.5 text-[#687082] dark:text-[#8E8E96]" />
-                        <span>交办任务</span>
+                        <span>{t("composer.dispatch.label")}</span>
                       </span>
 
                       {effectiveKind === "group" ? (
@@ -1388,7 +1416,7 @@ export function MessageComposer(props: MessageComposerProps) {
                             }}
                             items={topologyTabItems}
                             size="xs"
-                            ariaLabel="选择协作方式"
+                            ariaLabel={t("composer.dispatch.topologyAria")}
                           />
                         </div>
                       ) : null}
@@ -1397,7 +1425,7 @@ export function MessageComposer(props: MessageComposerProps) {
                       {agentMembers.length > 0 ? (
                         <button
                           type="button"
-                          title="点击切换负责的 Agent"
+                          title={t("composer.dispatch.cycleExecutorTitle")}
                           onClick={() => {
                             if (agentMembers.length < 2) {
                               return;
@@ -1414,13 +1442,17 @@ export function MessageComposer(props: MessageComposerProps) {
                         >
                           {effectiveDispatchTopology === "swarm" ? (
                             <span className="truncate">
-                              @{resolvedCoordinator?.displayName ?? "Agent"} 等{" "}
-                              {Math.max(2, agentMembers.length)} 路并行
+                              {t("composer.dispatch.swarmSummary", {
+                                lead: resolvedCoordinator?.displayName ?? "Agent",
+                                count: Math.max(2, agentMembers.length),
+                              })}
                             </span>
                           ) : effectiveDispatchTopology === "verify_loop" ? (
                             <span className="truncate">
-                              @{resolvedExecutor?.displayName ?? "Agent"} 执行 · @
-                              {resolvedVerifier?.displayName ?? "Agent"} 复核
+                              {t("composer.dispatch.verifySummary", {
+                                executor: resolvedExecutor?.displayName ?? "Agent",
+                                verifier: resolvedVerifier?.displayName ?? "Agent",
+                              })}
                             </span>
                           ) : (
                             <span className="truncate">
@@ -1435,8 +1467,8 @@ export function MessageComposer(props: MessageComposerProps) {
                         disabled={!isExecutorOwnedByMe}
                         title={
                           isExecutorOwnedByMe
-                            ? "点击切换本地目录权限"
-                            : "其他成员的 Agent 仅参与讨论，不读写本地目录"
+                            ? t("composer.dispatch.tierToggleTitle")
+                            : t("composer.dispatch.tierExternalDisabledTitle")
                         }
                         onClick={() => {
                           const idx = TIER_CYCLE_ORDER.indexOf(dispatchTier);
@@ -1454,15 +1486,15 @@ export function MessageComposer(props: MessageComposerProps) {
                         <FolderGit2 className="h-3 w-3 text-[#687082] dark:text-[#8E8E96]" />
                         <span>
                           {isExecutorOwnedByMe
-                            ? getExecutionTierMeta(effectiveDispatchTier).shortLabel
-                            : "仅讨论"}
+                            ? getExecutionTierMeta(effectiveDispatchTier, locale).shortLabel
+                            : getExecutionTierMeta("chat_only", locale).shortLabel}
                         </span>
                       </button>
                     </div>
 
                     <button
                       type="button"
-                      aria-label="退出派活模式"
+                      aria-label={t("composer.dispatch.exitAria")}
                       onClick={() => setDispatchMode(false)}
                       className="relative inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] after:absolute after:-inset-1.5 dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
                     >
@@ -1508,12 +1540,14 @@ export function MessageComposer(props: MessageComposerProps) {
                           ) : null;
                         })()}
                         <span className="truncate">
-                          回复 <strong>{props.replyTarget.author.displayName}</strong>：
-                          {getMessageSnippet(props.replyTarget, 42)}
+                          {t("composer.reply.prefix")}
+                          <strong>{props.replyTarget.author.displayName}</strong>
+                          {t("composer.reply.colon")}
+                          {getMessageSnippet(props.replyTarget, 42, locale)}
                         </span>
                         <button
                           type="button"
-                          aria-label="取消引用回复"
+                          aria-label={t("composer.reply.cancelAria")}
                           onClick={props.onClearReplyTarget}
                           className="relative inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#687082] transition hover:bg-black/10 hover:text-[#111318] after:absolute after:-inset-1.5 dark:text-[#8E8E96] dark:hover:bg-white/15 dark:hover:text-white"
                         >
@@ -1537,7 +1571,9 @@ export function MessageComposer(props: MessageComposerProps) {
                           <span className="max-w-[8.5rem] truncate">@{mention.displayName}</span>
                           <button
                             type="button"
-                            aria-label={`移除点名 @${mention.displayName}`}
+                            aria-label={t("composer.mention.removeChipAria", {
+                              name: mention.displayName,
+                            })}
                             onClick={() => toggleMention(mention)}
                             className="relative inline-flex h-5 w-5 cursor-pointer items-center justify-center rounded-full transition hover:bg-black/10 after:absolute after:-inset-1.5 dark:hover:bg-white/15"
                           >
@@ -1563,7 +1599,7 @@ export function MessageComposer(props: MessageComposerProps) {
             ) : null}
             {media.isPreparingImage ? (
               <output className="mb-1 block text-xs text-[#687082] dark:text-[#C4C4CA]">
-                正在压缩图片…
+                {t("composer.attachment.compressingImage")}
               </output>
             ) : null}
             {media.error !== null ? (
@@ -1577,7 +1613,9 @@ export function MessageComposer(props: MessageComposerProps) {
             className={cn(MEDIA_BUTTON_CLASS, "oh-chat-more hidden")}
             aria-expanded={toolsOpen}
             aria-controls={toolstripId}
-            aria-label={toolsOpen ? "收起聊天工具" : "更多聊天工具"}
+            aria-label={
+              toolsOpen ? t("composer.tools.collapseAria") : t("composer.tools.expandAria")
+            }
             onPointerDown={(event) => {
               if (document.activeElement === textareaRef.current) event.preventDefault();
             }}
@@ -1606,7 +1644,9 @@ export function MessageComposer(props: MessageComposerProps) {
                     } else {
                       setDispatchTopology(fallbackNonSwarmTopology);
                       toast.info(
-                        `当前暂不支持多路并行，已切换为${fallbackNonSwarmTopology === "verify_loop" ? "双人复核" : "单人执行"}`,
+                        fallbackNonSwarmTopology === "verify_loop"
+                          ? t("composer.dispatch.swarmFallbackVerify")
+                          : t("composer.dispatch.swarmFallbackDirect"),
                         ...(swarmDisabledReason !== undefined
                           ? [{ description: swarmDisabledReason }]
                           : []),
@@ -1634,7 +1674,7 @@ export function MessageComposer(props: MessageComposerProps) {
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             enterKeyHint={touchKeyboard ? "enter" : "send"}
-            aria-label={`在 ${props.roomName} 发言`}
+            aria-label={t("composer.textareaAria", { roomName: props.roomName })}
             placeholder={composerPlaceholder}
             className={cn(
               "oh-chat-draft block max-h-[168px] min-h-[26px] w-full resize-none border-0 bg-transparent p-0 text-[16px] md:text-[14.5px] leading-[1.5] text-[#111318] caret-[#111318] outline-none placeholder:text-im-placeholder dark:text-[#F2F2F4] dark:caret-[#F2F2F4] dark:placeholder:text-[#63636B]",
@@ -1659,8 +1699,8 @@ export function MessageComposer(props: MessageComposerProps) {
                     <button
                       type="button"
                       disabled={!hasAnyTeammate}
-                      title="提及群内 Agent 或成员"
-                      aria-label="提及群内 Agent 或成员"
+                      title={t("composer.mention.triggerLabel")}
+                      aria-label={t("composer.mention.triggerLabel")}
                       className={cn(
                         "oh-chat-extra app-no-drag inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors active:scale-[0.95] disabled:cursor-not-allowed disabled:opacity-40",
                         pickerOpen
@@ -1675,10 +1715,13 @@ export function MessageComposer(props: MessageComposerProps) {
                   <div className="space-y-1">
                     <div className="flex items-center justify-between px-2 py-1">
                       <span className="text-[11.5px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                        提及群成员
+                        {t("composer.mention.pickerTitle")}
                       </span>
                       <span className="text-[11px] font-medium text-[#16A34A] dark:text-[#34D399]">
-                        {onlineAgentCount}/{agentMembers.length} 个 Agent 在线
+                        {t("composer.mention.agentsOnline", {
+                          online: onlineAgentCount,
+                          total: agentMembers.length,
+                        })}
                       </span>
                     </div>
 
@@ -1692,9 +1735,11 @@ export function MessageComposer(props: MessageComposerProps) {
                           <Users className="h-3.5 w-3.5" />
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate font-semibold">@全体 Agent</span>
+                          <span className="block truncate font-semibold">
+                            {t("composer.mention.allAgentsTitle")}
+                          </span>
                           <span className="block text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                            同时叫醒全部 {agentMembers.length} 个 Agent 参与讨论
+                            {tp("composer.mention.allAgentsDesc", agentMembers.length)}
                           </span>
                         </span>
                       </button>
@@ -1707,7 +1752,7 @@ export function MessageComposer(props: MessageComposerProps) {
                           return null;
                         }
                         const checked = draft.includes(`@${member.displayName}`);
-                        const reachMeta = getReachVisualMeta(member.reach);
+                        const reachMeta = getReachVisualMeta(member.reach, locale);
                         return (
                           <button
                             key={`pop-agt-${member.agentId ?? member.displayName}`}
@@ -1734,7 +1779,10 @@ export function MessageComposer(props: MessageComposerProps) {
                                 @{member.displayName}
                               </span>
                               <span className="block truncate text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                                {member.ownerDisplayName} 的 Agent · {reachMeta.shortLabel}
+                                {t("composer.mention.agentSublabel", {
+                                  owner: member.ownerDisplayName,
+                                  reach: reachMeta.shortLabel,
+                                })}
                               </span>
                             </span>
                             {checked ? (
@@ -1770,7 +1818,7 @@ export function MessageComposer(props: MessageComposerProps) {
                                 @{member.displayName}
                               </span>
                               <span className="block truncate text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                                群成员
+                                {t("composer.mention.memberSublabel")}
                               </span>
                             </span>
                             {checked ? (
@@ -1799,8 +1847,8 @@ export function MessageComposer(props: MessageComposerProps) {
               />
               <button
                 type="button"
-                aria-label="添加附件"
-                title="添加图片、音频或文件"
+                aria-label={t("composer.media.attachAria")}
+                title={t("composer.media.attachTitle")}
                 onClick={() => fileInputRef.current?.click()}
                 disabled={!canChooseMedia}
                 className={cn(MEDIA_BUTTON_CLASS, "oh-chat-extra")}
@@ -1819,8 +1867,12 @@ export function MessageComposer(props: MessageComposerProps) {
               {media.phase === "idle" ? (
                 <button
                   type="button"
-                  aria-label="录制语音"
-                  title={media.canRecord ? "录制语音" : "当前浏览器无法录音，可以上传音频文件"}
+                  aria-label={t("composer.media.recordAria")}
+                  title={
+                    media.canRecord
+                      ? t("composer.media.recordAria")
+                      : t("composer.media.recordUnsupported")
+                  }
                   disabled={!canChooseMedia || !media.canRecord}
                   onClick={() => void media.startRecording()}
                   className={cn(MEDIA_BUTTON_CLASS, "oh-chat-voice")}
@@ -1831,15 +1883,15 @@ export function MessageComposer(props: MessageComposerProps) {
                 <div className="flex items-center gap-0.5">
                   <output className="sr-only">
                     {media.phase === "requesting"
-                      ? "等待麦克风授权"
+                      ? t("composer.media.statusRequesting")
                       : media.phase === "recording"
-                        ? "录音中"
-                        : "正在生成录音"}
+                        ? t("composer.media.statusRecording")
+                        : t("composer.media.statusFinishing")}
                   </output>
                   <button
                     type="button"
-                    aria-label="停止录音"
-                    title="停止录音"
+                    aria-label={t("composer.media.stopRecording")}
+                    title={t("composer.media.stopRecording")}
                     disabled={media.phase !== "recording"}
                     onClick={media.finishRecording}
                     className={cn(
@@ -1855,8 +1907,8 @@ export function MessageComposer(props: MessageComposerProps) {
                   </button>
                   <button
                     type="button"
-                    aria-label="取消录音"
-                    title="取消录音"
+                    aria-label={t("composer.media.cancelRecording")}
+                    title={t("composer.media.cancelRecording")}
                     onClick={media.cancelRecording}
                     className={MEDIA_BUTTON_CLASS}
                   >
@@ -1868,11 +1920,8 @@ export function MessageComposer(props: MessageComposerProps) {
               {/* ADR-0002 提问模式开关：开启后本条消息以 attention 形式发出，等待人类作答 */}
               <button
                 type="button"
-                title={
-                  askMode
-                    ? "提问模式已开启：发送后将等待人类作答"
-                    : "以提问形式发送（等待人类作答）"
-                }
+                aria-label={t("composer.ask.label")}
+                title={askMode ? t("composer.ask.activeTitle") : t("composer.ask.inactiveTitle")}
                 aria-pressed={askMode}
                 onClick={() => {
                   setAskMode((v) => {
@@ -1894,7 +1943,7 @@ export function MessageComposer(props: MessageComposerProps) {
               </button>
               {askMode ? (
                 <span className="hidden select-none rounded-full bg-amber-500/12 px-2 py-0.5 text-[10.5px] font-medium text-amber-700 @[420px]:inline dark:text-amber-300">
-                  提问模式
+                  {t("composer.ask.label")}
                 </span>
               ) : null}
 
@@ -1902,8 +1951,12 @@ export function MessageComposer(props: MessageComposerProps) {
               {effectiveKind !== "direct_human" ? (
                 <button
                   type="button"
-                  title={dispatchMode ? "交办任务已开启" : "交办任务"}
-                  aria-label="交办任务"
+                  title={
+                    dispatchMode
+                      ? t("composer.dispatch.activeTitle")
+                      : t("composer.dispatch.toggleTitle")
+                  }
+                  aria-label={t("composer.dispatch.toggleTitle")}
                   aria-pressed={dispatchMode}
                   onClick={() => {
                     setDispatchMode((v) => {
@@ -1930,10 +1983,10 @@ export function MessageComposer(props: MessageComposerProps) {
                 <button
                   type="button"
                   onClick={handleMentionAllAgents}
-                  title="同时点名群内所有 Agent"
+                  title={t("composer.mention.allPillTitle")}
                   className="hidden @[390px]:inline-flex h-7 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full bg-black/[0.05] px-2.5 text-[12px] font-medium text-[#181B22] transition-colors hover:bg-black/[0.09] active:scale-[0.97] dark:bg-white/[0.07] dark:text-[#ECECEF] dark:hover:bg-white/[0.12]"
                 >
-                  <span>@全体</span>
+                  <span>{t("composer.mention.allPillLabel")}</span>
                 </button>
               ) : null}
 

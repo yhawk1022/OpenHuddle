@@ -11,10 +11,11 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { compressMessageImage } from "../../../lib/compress-message-image.js";
 import type { DraftMessageAttachment } from "../../../lib/message-media.js";
+import { getChatDetailTranslator } from "../i18n/chat-detail.js";
 import type { StickerImage } from "../stickers/sticker-library.js";
 
 const RECORDER_TYPES = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"];
-const SIZE_LIMIT_TEXT = `附件大小上限为 ${String(MAX_MESSAGE_ATTACHMENT_BYTES / 1024 / 1024)} MB`;
+const MAX_ATTACHMENT_MB = MAX_MESSAGE_ATTACHMENT_BYTES / 1024 / 1024;
 const MIME_BY_EXTENSION: Readonly<Record<string, MessageAttachmentMimeType>> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -118,12 +119,13 @@ export function useMessageMediaDraft() {
   };
 
   const chooseFiles = async (files: readonly File[]): Promise<void> => {
+    const { t } = getChatDetailTranslator();
     const file = files[0];
     if (file === undefined) {
       return;
     }
     if (files.length > 1) {
-      setError("每条消息可带一个附件，请分开发送");
+      setError(t("media.err.singleAttachmentOnly"));
       return;
     }
     imageSelectionRef.current?.abort();
@@ -134,14 +136,20 @@ export function useMessageMediaDraft() {
       file.size === 0 ||
       (file.size > MAX_MESSAGE_ATTACHMENT_BYTES && !mimeType.startsWith("image/"))
     ) {
-      setError(file.size === 0 ? "无法发送空文件" : SIZE_LIMIT_TEXT);
+      setError(
+        file.size === 0
+          ? t("media.err.emptyFile")
+          : t("media.err.sizeLimit", { maxMb: MAX_ATTACHMENT_MB }),
+      );
       return;
     }
     setError(null);
     if (mimeType === "application/octet-stream") {
-      const name = MessageAttachmentFileNameSchema.safeParse(file.name.trim() || "附件");
+      const name = MessageAttachmentFileNameSchema.safeParse(
+        file.name.trim() || t("media.defaultAttachmentName"),
+      );
       if (!name.success) {
-        setError("无法使用此文件名，请重命名后再发送");
+        setError(t("media.err.invalidFileName"));
         return;
       }
       setAttachment({ blob: file, mimeType, name: name.data });
@@ -197,7 +205,7 @@ export function useMessageMediaDraft() {
       if (!selection.signal.aborted) {
         setError(
           cause instanceof DOMException || !(cause instanceof Error)
-            ? "无法读取这张图片，请重新选择"
+            ? getChatDetailTranslator().t("media.err.unreadableImage")
             : cause.message,
         );
       }
@@ -257,7 +265,11 @@ export function useMessageMediaDraft() {
         session.byteLength += data.size;
         if (session.byteLength > MAX_MESSAGE_ATTACHMENT_BYTES) {
           cancelRecording();
-          setError(`录音过大。${SIZE_LIMIT_TEXT}，请录制一段较短的语音`);
+          setError(
+            getChatDetailTranslator().t("media.err.recordingTooLarge", {
+              maxMb: MAX_ATTACHMENT_MB,
+            }),
+          );
           return;
         }
         session.chunks.push(data);
@@ -265,7 +277,7 @@ export function useMessageMediaDraft() {
       recorder.onerror = () => {
         if (sessionRef.current === session) {
           cancelRecording();
-          setError("录音中断，请检查麦克风后重试");
+          setError(getChatDetailTranslator().t("media.err.recordingInterrupted"));
         }
       };
       recorder.onstop = () => {
@@ -275,14 +287,15 @@ export function useMessageMediaDraft() {
         cancelRecording();
         const recordedType = recorder.mimeType || session.chunks[0]?.type || "";
         const mimeType = normalizeMimeType(recordedType);
+        const { t } = getChatDetailTranslator();
         if (session.byteLength === 0 || mimeType === undefined || !mimeType.startsWith("audio/")) {
-          setError("未生成可发送的录音，可以重试或上传音频文件");
+          setError(t("media.err.recordingEmpty"));
           return;
         }
         setAttachment({
           blob: new Blob(session.chunks, { type: mimeType }),
           mimeType,
-          name: "录音",
+          name: t("media.recordingName"),
         });
       };
       // 分段收集后可在采集期间检查大小，各浏览器仍使用同一个连续录音容器。
@@ -291,10 +304,11 @@ export function useMessageMediaDraft() {
     } catch (cause) {
       if (sessionRef.current === session) {
         cancelRecording();
+        const { t } = getChatDetailTranslator();
         setError(
           cause instanceof DOMException && cause.name === "NotAllowedError"
-            ? "麦克风权限未开启，可以在浏览器中允许访问或上传音频文件"
-            : "无法开启麦克风，请检查设备或上传音频文件",
+            ? t("media.err.micPermissionDenied")
+            : t("media.err.micUnavailable"),
         );
       }
     }

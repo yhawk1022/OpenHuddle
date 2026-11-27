@@ -20,6 +20,8 @@ import {
   AgentPlatformSchema,
   AgentWakePolicySchema,
   type HumanUserDto,
+  type LanguagePreference,
+  LanguagePreferenceSchema,
   type OtpPurpose,
   OtpPurposeSchema,
   type OwnedAgentSummaryDto,
@@ -68,11 +70,12 @@ export interface OtpVerificationRecord {
 }
 
 /**
- * 仅供 `AuthService` 内部校验密码使用的账户凭据投影（严禁透传至路由层或响应 DTO）。
+ * 仅供 `AuthService` 内部校验密码及解析发信语言使用的账户凭据投影（严禁透传至路由层或响应 DTO）。
  */
 export interface UserAuthRecord {
   readonly user: HumanUserDto;
   readonly passwordHash: string | null;
+  readonly languagePreference: LanguagePreference;
 }
 
 /**
@@ -415,6 +418,7 @@ export class AuthRepository {
         emailVerifiedAt: usersTable.emailVerifiedAt,
         role: usersTable.role,
         status: usersTable.status,
+        languagePreference: usersTable.languagePreference,
         createdAt: usersTable.createdAt,
       })
       .from(usersTable)
@@ -428,6 +432,7 @@ export class AuthRepository {
     return {
       user: mapUserRowToDto(row, adminEmails),
       passwordHash: row.passwordHash,
+      languagePreference: LanguagePreferenceSchema.catch("auto").parse(row.languagePreference),
     };
   }
 
@@ -451,6 +456,7 @@ export class AuthRepository {
         emailVerifiedAt: usersTable.emailVerifiedAt,
         role: usersTable.role,
         status: usersTable.status,
+        languagePreference: usersTable.languagePreference,
         createdAt: usersTable.createdAt,
       })
       .from(usersTable)
@@ -464,6 +470,7 @@ export class AuthRepository {
     return {
       user: mapUserRowToDto(row, adminEmails),
       passwordHash: row.passwordHash,
+      languagePreference: LanguagePreferenceSchema.catch("auto").parse(row.languagePreference),
     };
   }
 
@@ -515,6 +522,7 @@ export class AuthRepository {
     readonly displayName: string;
     readonly passwordHash: string;
     readonly grantAdmin: boolean;
+    readonly languagePreference?: LanguagePreference;
     readonly now: Date;
     readonly adminEmails?: ReadonlySet<string>;
   }): Promise<HumanUserDto> {
@@ -529,6 +537,7 @@ export class AuthRepository {
         passwordUpdatedAt: input.now,
         role: input.grantAdmin ? "admin" : "user",
         status: "active",
+        languagePreference: input.languagePreference ?? "auto",
         lastLoginAt: input.now,
       })
       .returning();
@@ -795,17 +804,22 @@ export class AuthRepository {
   }
 
   /**
-   * 按主键查询人类用户公开资料及独立的账号外观偏好。
+   * 按主键查询人类用户公开资料及独立的账号外观与语言偏好。
    *
    * @param userId - 人类用户主键
    * @param adminEmails - 可选 `ADMIN_EMAILS` 白名单集合
-   * @returns 用户资料与外观偏好。分开返回以便 Agent 自省仅投影公开资料。
+   * @returns 用户资料与外观、语言偏好。分开返回以便 Agent 自省仅投影公开资料。
    */
   public async findUserById(
     userId: UserId,
     adminEmails?: ReadonlySet<string>,
   ): Promise<
-    { readonly user: HumanUserDto; readonly themePreference: ThemePreference } | undefined
+    | {
+        readonly user: HumanUserDto;
+        readonly themePreference: ThemePreference;
+        readonly languagePreference: LanguagePreference;
+      }
+    | undefined
   > {
     const rows = await this.db
       .select({
@@ -817,6 +831,7 @@ export class AuthRepository {
         role: usersTable.role,
         status: usersTable.status,
         themePreference: usersTable.themePreference,
+        languagePreference: usersTable.languagePreference,
         createdAt: usersTable.createdAt,
       })
       .from(usersTable)
@@ -830,6 +845,7 @@ export class AuthRepository {
     return {
       user: mapUserRowToDto(row, adminEmails),
       themePreference: ThemePreferenceSchema.catch("auto").parse(row.themePreference),
+      languagePreference: LanguagePreferenceSchema.catch("auto").parse(row.languagePreference),
     };
   }
 
@@ -893,16 +909,40 @@ export class AuthRepository {
   }
 
   /**
-   * 在一次行更新中保存人类用户的展示昵称和外观偏好。
+   * 在一次行更新中按字段局部保存人类用户的展示昵称、外观偏好和语言偏好。
    *
    * @param userId - 人类用户主键
    * @param patch - 仅包含本次要写入的字段，避免覆盖其他会话的资料更新。
    */
   public async updateHumanProfile(
     userId: UserId,
-    patch: { readonly displayName?: string; readonly themePreference?: ThemePreference },
+    patch: {
+      readonly displayName?: string;
+      readonly themePreference?: ThemePreference;
+      readonly languagePreference?: LanguagePreference;
+    },
   ): Promise<void> {
-    await this.db.update(usersTable).set(patch).where(eq(usersTable.id, userId));
+    const updates: {
+      displayName?: string;
+      themePreference?: ThemePreference;
+      languagePreference?: LanguagePreference;
+    } = {};
+
+    if (patch.displayName !== undefined) {
+      updates.displayName = patch.displayName;
+    }
+    if (patch.themePreference !== undefined) {
+      updates.themePreference = patch.themePreference;
+    }
+    if (patch.languagePreference !== undefined) {
+      updates.languagePreference = patch.languagePreference;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return;
+    }
+
+    await this.db.update(usersTable).set(updates).where(eq(usersTable.id, userId));
   }
 
   /**

@@ -6,7 +6,39 @@ import {
   MessageAttachmentFileNameSchema,
   type MessageAttachmentMimeType,
   type MessageAttachmentUpload,
+  type SupportedLocale,
 } from "@openhuddle/protocol";
+import { createScopedTranslator, defineCatalog, getCommonTranslator } from "./i18n/index.js";
+
+const messageMediaCatalog = defineCatalog(
+  {
+    /* i18n-ignore */
+    clipboardImagePrefix: "剪贴板图片.",
+    /* i18n-ignore */
+    "error.decodeImage": "无法解码图片",
+    /* i18n-ignore */
+    "error.canvasUnsupported": "当前浏览器不支持画布转换",
+    /* i18n-ignore */
+    "error.convertPng": "无法将图片转换为 PNG",
+    /* i18n-ignore */
+    "error.clipboardUnsupported": "当前浏览器不支持复制图片",
+    /* i18n-ignore */
+    "error.fetchOriginal": "拉取原图失败",
+    /* i18n-ignore */
+    "error.readAttachment": "无法读取附件，请重新选择文件后重试",
+  },
+  {
+    clipboardImagePrefix: "Clipboard image.",
+    "error.decodeImage": "Unable to decode image",
+    "error.canvasUnsupported": "Canvas conversion is not supported in this browser",
+    "error.convertPng": "Failed to convert image to PNG",
+    "error.clipboardUnsupported": "Copying images is not supported in this browser",
+    "error.fetchOriginal": "Failed to fetch original image",
+    "error.readAttachment": "Unable to read the attachment. Please select the file again.",
+  },
+);
+
+const messageMediaI18n = createScopedTranslator(messageMediaCatalog);
 
 /** 待提交的媒体草稿，保留原始字节以免在交互期间重复编码。 */
 export interface DraftMessageAttachment {
@@ -39,20 +71,24 @@ export function sanitizeAttachmentFileName(rawName: string): string | undefined 
 }
 
 /**
- * 生成输入舱草稿预览条的可读文件名（将浏览器剪贴板默认的匿名 `image.png` 映射为 `剪贴板图片.png`）。
+ * 生成输入舱草稿预览条的可读文件名（将浏览器剪贴板默认的匿名 `image.png` 映射为本地化剪贴板图片名）。
  */
 export function formatDraftAttachmentDisplayName(
   attachment: Pick<DraftMessageAttachment, "name" | "mimeType" | "stickerName">,
+  locale?: SupportedLocale,
 ): string {
+  const { t } = messageMediaI18n.getTranslator(locale);
   const trimmed = attachment.name.trim();
   if (
     attachment.mimeType.startsWith("image/") &&
     attachment.stickerName === undefined &&
     /^image\.(png|jpe?g|webp|gif)$/iu.test(trimmed)
   ) {
-    return trimmed.replace(/^image\./iu, "剪贴板图片.");
+    return trimmed.replace(/^image\./iu, t("clipboardImagePrefix"));
   }
-  return trimmed.length > 0 ? trimmed : "附件";
+  return trimmed.length > 0
+    ? trimmed
+    : getCommonTranslator(locale).t("message.defaultAttachmentName");
 }
 
 /**
@@ -66,10 +102,11 @@ export function canCopyImageToClipboard(): boolean {
   );
 }
 
-async function decodeBlobToPngBlob(sourceBlob: Blob): Promise<Blob> {
+async function decodeBlobToPngBlob(sourceBlob: Blob, locale?: SupportedLocale): Promise<Blob> {
   if (typeof document === "undefined" || typeof Image === "undefined") {
     return sourceBlob;
   }
+  const { t } = messageMediaI18n.getTranslator(locale);
   const objectUrl = URL.createObjectURL(sourceBlob);
   const canvas = document.createElement("canvas");
   try {
@@ -77,7 +114,7 @@ async function decodeBlobToPngBlob(sourceBlob: Blob): Promise<Blob> {
     img.decoding = "async";
     await new Promise<void>((resolve, reject) => {
       img.onload = () => resolve();
-      img.onerror = () => reject(new Error("无法解码图片"));
+      img.onerror = () => reject(new Error(t("error.decodeImage")));
       img.src = objectUrl;
     });
     const width = Math.max(1, img.naturalWidth || img.width || 1);
@@ -87,7 +124,7 @@ async function decodeBlobToPngBlob(sourceBlob: Blob): Promise<Blob> {
       if (sourceBlob.type === "image/png") {
         return sourceBlob;
       }
-      throw new Error("当前浏览器不支持画布转换");
+      throw new Error(t("error.canvasUnsupported"));
     }
     canvas.width = width;
     canvas.height = height;
@@ -96,7 +133,7 @@ async function decodeBlobToPngBlob(sourceBlob: Blob): Promise<Blob> {
       canvas.toBlob(resolve, "image/png"),
     );
     if (pngBlob === null) {
-      throw new Error("无法将图片转换为 PNG");
+      throw new Error(t("error.convertPng"));
     }
     return pngBlob;
   } finally {
@@ -109,18 +146,23 @@ async function decodeBlobToPngBlob(sourceBlob: Blob): Promise<Blob> {
 /**
  * 拉取指定图片地址并经由 Canvas 统一转为 `image/png` 写入系统剪贴板。
  * @param src - 同源鉴权附件地址或本地 `blob:` 预览地址
+ * @param locale - 可选显式语种（缺省取全局生效语种）
  */
-export async function copyImageUrlToClipboard(src: string): Promise<void> {
+export async function copyImageUrlToClipboard(
+  src: string,
+  locale?: SupportedLocale,
+): Promise<void> {
+  const { t } = messageMediaI18n.getTranslator(locale);
   if (!canCopyImageToClipboard()) {
-    throw new Error("当前浏览器不支持复制图片");
+    throw new Error(t("error.clipboardUnsupported"));
   }
   const pngPromise = (async (): Promise<Blob> => {
     const response = await fetch(src, { credentials: "include" });
     if (!response.ok) {
-      throw new Error("拉取原图失败");
+      throw new Error(t("error.fetchOriginal"));
     }
     const rawBlob = await response.blob();
-    return decodeBlobToPngBlob(rawBlob);
+    return decodeBlobToPngBlob(rawBlob, locale);
   })();
 
   try {
@@ -139,15 +181,18 @@ export async function copyImageUrlToClipboard(src: string): Promise<void> {
 /**
  * 将单条消息的附件草稿编码为协议请求载荷。
  * @param attachment - 已通过浏览器侧格式与大小检查的媒体草稿
+ * @param locale - 可选显式语种（缺省取全局生效语种）
  * @returns MIME 类型与标准 Base64 字节
  * @throws 浏览器无法读取本地文件时拒绝 Promise
  */
 export async function encodeMessageAttachment(
   attachment: DraftMessageAttachment,
+  locale?: SupportedLocale,
 ): Promise<MessageAttachmentUpload> {
+  const { t } = messageMediaI18n.getTranslator(locale);
   const data = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    const rejectRead = (): void => reject(new Error("无法读取附件，请重新选择文件后重试"));
+    const rejectRead = (): void => reject(new Error(t("error.readAttachment")));
     reader.onerror = rejectRead;
     reader.onabort = rejectRead;
     reader.onload = () => {

@@ -8,6 +8,7 @@
  */
 import type { AgentId, AgentPlatform, RoomId, RoomMemberDto, UserId } from "@openhuddle/protocol";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { getWorkbenchTranslator } from "../i18n/workbench.js";
 import type {
   DispatchWorkPayload,
   ObserveDryRunEntry,
@@ -187,7 +188,7 @@ function toWorkAgentRef(
     displayName: fallback.name,
     platform: fallback.platform,
     isOwnedByViewer: true,
-    ownerDisplayName: "你本人",
+    ownerDisplayName: getWorkbenchTranslator().t("owner.you"),
   };
 }
 
@@ -243,10 +244,11 @@ function resolveShowcaseRoster(
 }
 
 function summarizeTitle(rawPrompt: string): string {
-  const firstLine = rawPrompt.split(/\r?\n/)[0]?.trim() ?? "执行任务";
+  const { t } = getWorkbenchTranslator();
+  const firstLine = rawPrompt.split(/\r?\n/)[0]?.trim() ?? t("task.defaultRunTitle");
   const cleaned = firstLine.replace(/^\/(?:task|verify|swarm)\s+/i, "").trim();
   if (cleaned.length <= 46) {
-    return cleaned || "执行协同任务";
+    return cleaned || t("task.defaultCollabTitle");
   }
   return `${cleaned.slice(0, 45).trim()}…`;
 }
@@ -261,6 +263,7 @@ export function updateRoomOrchestrationDefaults(
   roomId: RoomId,
   patch: Partial<RoomOrchestrationDefaults>,
 ): void {
+  const { t } = getWorkbenchTranslator();
   const bucket = getRoomBucket(roomId);
   const nextDefaults: RoomOrchestrationDefaults = {
     ...bucket.defaults,
@@ -271,10 +274,10 @@ export function updateRoomOrchestrationDefaults(
       ? [
           {
             id: `obs-${Date.now().toString(36)}`,
-            triggerSnippet: "“登录态过期后 SSE 重连偶尔没刷新侧栏角标”",
+            triggerSnippet: t("roomWork.observe.triggerSnippet"),
             suggestedTopology: "verify_loop",
-            suggestedAssigneeName: "Codex → Claude 交叉核验",
-            reason: "命中客户端状态同步修复规则（Observe 演练态仅记录，未打扰群聊）",
+            suggestedAssigneeName: t("roomWork.observe.assignee"),
+            reason: t("roomWork.observe.reason"),
             recordedAtIso: new Date().toISOString(),
           },
         ]
@@ -341,32 +344,33 @@ export function dispatchRoomWorkItem(params: {
   const id = `wrk_${Date.now().toString(36)}`;
   const title = summarizeTitle(params.content);
 
+  const { t } = getWorkbenchTranslator();
   const slices: ReadonlyArray<WorkSliceNode> =
     params.payload.topology === "swarm"
       ? [
           {
             sliceId: `${id}-s1`,
-            title: "核心状态机与契约分片",
+            title: t("roomWork.swarmSlice1Title"),
             worker: primaryWorker,
             ownedPaths: ["packages/core-governance/**", "packages/protocol/**"],
             status: "running",
             liveSummary:
               effectiveTier === "worktree_write"
-                ? "温热会话已命中 · 正在隔离 Worktree 编写状态转移与单测…"
-                : "正在只读扫描模块依赖与边界条件…",
+                ? t("roomWork.swarmSlice1LiveWrite")
+                : t("roomWork.swarmSlice1LiveRead"),
             elapsedSec: 2,
             steerNotes: [],
           },
           {
             sliceId: `${id}-s2`,
-            title: "服务端事务与守护适配分片",
+            title: t("roomWork.swarmSlice2Title"),
             worker:
               roster.workerB.agentId === primaryWorker.agentId
                 ? roster.coordinator
                 : roster.workerB,
             ownedPaths: ["apps/server/src/modules/**"],
             status: "running",
-            liveSummary: "正在核验行级锁顺序与 Post-Commit 广播不变量…",
+            liveSummary: t("roomWork.swarmSlice2Live"),
             elapsedSec: 1,
             steerNotes: [],
           },
@@ -379,12 +383,12 @@ export function dispatchRoomWorkItem(params: {
             ownedPaths:
               effectiveTier === "worktree_write"
                 ? ["apps/server/**", "packages/**"]
-                : ["(只读上下文)"],
+                : [t("roomWork.readOnlyContext")],
             status: "running",
             liveSummary:
               effectiveTier === "worktree_write"
-                ? "预热 Worktree 就绪 · 正在应用改动并运行 vitest…"
-                : "温热会话推理中 · 正在梳理结构化方案…",
+                ? t("roomWork.singleLiveWrite")
+                : t("roomWork.singleLiveRead"),
             elapsedSec: 1,
             steerNotes: [],
           },
@@ -436,9 +440,11 @@ export function steerRoomWorkSlice(
   if (clean.length === 0) {
     return;
   }
+  const { t } = getWorkbenchTranslator();
   const bucket = getRoomBucket(roomId);
   const matched = bucket.items.find((i) => i.id === workItemId);
   const nowIso = new Date().toISOString();
+  const snippet = `${clean.slice(0, 28)}${clean.length > 28 ? "…" : ""}`;
   setRoomBucket(roomId, {
     ...bucket,
     items: bucket.items.map((item) => {
@@ -457,7 +463,7 @@ export function steerRoomWorkSlice(
             ? {
                 ...s,
                 steerNotes: [...s.steerNotes, clean],
-                liveSummary: `已接收纠偏：「${clean.slice(0, 28)}${clean.length > 28 ? "…" : ""}」· 正在当前回合内修正…`,
+                liveSummary: t("roomWork.steered", { snippet }),
               }
             : s,
         ),
@@ -473,6 +479,7 @@ export function steerRoomWorkSlice(
  * 人工中止正在运行的工单（立即释放运行槽位，转为 `cancelled`）。
  */
 export function stopRoomWorkItem(roomId: RoomId, workItemId: string): void {
+  const { t } = getWorkbenchTranslator();
   const bucket = getRoomBucket(roomId);
   const matched = bucket.items.find((i) => i.id === workItemId);
   const nowIso = new Date().toISOString();
@@ -491,7 +498,7 @@ export function stopRoomWorkItem(roomId: RoomId, workItemId: string): void {
         updatedAtIso: nowIso,
         slices: item.slices.map((s) =>
           s.status === "running" || s.status === "waiting" || s.status === "verifying"
-            ? { ...s, status: "blocked", liveSummary: "已由主人手动中止运行" }
+            ? { ...s, status: "blocked", liveSummary: t("roomWork.stoppedByOwner") }
             : s,
         ),
       };
@@ -506,6 +513,7 @@ export function stopRoomWorkItem(roomId: RoomId, workItemId: string): void {
  * 回答受托 Worker 的单问 `Attention` 卡片，立即恢复该工单继续执行。
  */
 export function answerRoomWorkAttention(roomId: RoomId, workItemId: string, choice: string): void {
+  const { t } = getWorkbenchTranslator();
   const bucket = getRoomBucket(roomId);
   const matched = bucket.items.find((i) => i.id === workItemId);
   const nowIso = new Date().toISOString();
@@ -528,7 +536,7 @@ export function answerRoomWorkAttention(roomId: RoomId, workItemId: string, choi
             ? {
                 ...s,
                 status: "running",
-                liveSummary: `已按「${choice}」恢复温热会话执行…`,
+                liveSummary: t("roomWork.resumedWithChoice", { choice }),
               }
             : s,
         ),
@@ -549,6 +557,7 @@ export function decideRoomWorkReview(
   decision: "approve" | "rework",
   reworkNote?: string | undefined,
 ): void {
+  const { t } = getWorkbenchTranslator();
   const bucket = getRoomBucket(roomId);
   const matched = bucket.items.find((i) => i.id === workItemId);
   const nowIso = new Date().toISOString();
@@ -566,11 +575,11 @@ export function decideRoomWorkReview(
           slices: item.slices.map((s) => ({
             ...s,
             status: "ready",
-            liveSummary: "主人已签收采纳",
+            liveSummary: t("roomWork.approvedByOwner"),
           })),
         };
       }
-      const note = reworkNote?.trim() || "请补充边界测试后重新交审";
+      const note = reworkNote?.trim() || t("roomWork.defaultReworkNote");
       return {
         ...item,
         stage: "working",
@@ -582,7 +591,7 @@ export function decideRoomWorkReview(
                 status: "running",
                 elapsedSec: 1,
                 steerNotes: [...s.steerNotes, note],
-                liveSummary: `按审阅意见微调中：「${note.slice(0, 26)}」…`,
+                liveSummary: t("roomWork.reworking", { snippet: note.slice(0, 26) }),
               }
             : s,
         ),
@@ -603,6 +612,7 @@ export function decideRoomWorkReview(
  * 重试受阻或已中止的工单（保留原上下文与 Worktree 目录连续性）。
  */
 export function retryRoomWorkItem(roomId: RoomId, workItemId: string): void {
+  const { t } = getWorkbenchTranslator();
   const bucket = getRoomBucket(roomId);
   const matched = bucket.items.find((i) => i.id === workItemId);
   const nowIso = new Date().toISOString();
@@ -619,7 +629,7 @@ export function retryRoomWorkItem(roomId: RoomId, workItemId: string): void {
               status: "running",
               elapsedSec: 1,
               failureCode: undefined,
-              liveSummary: "已在原 Worktree 上下文恢复重跑…",
+              liveSummary: t("roomWork.retriedWorktree"),
             })),
           }
         : item,
@@ -652,6 +662,7 @@ export function loadRoomWorkShowcase(params: {
   readonly members: ReadonlyArray<RoomMemberDto>;
   readonly currentUserId: UserId;
 }): void {
+  const { t } = getWorkbenchTranslator();
   const { coordinator, workerA, workerB, verifier } = resolveShowcaseRoster(
     params.members,
     params.currentUserId,
@@ -664,8 +675,8 @@ export function loadRoomWorkShowcase(params: {
     id: "wrk_showcase_swarm",
     roomId: params.roomId,
     anchorSeq: anchorB,
-    title: "重构多 Agent 持久租约队列并补齐并发锁验收测试",
-    brief: "按模块边界切分为互不重叠的两个分片并行推进，完成后由独立验证员实跑 PGlite 并发测试。",
+    title: t("roomWork.showcase.swarmTitle"),
+    brief: t("roomWork.showcase.swarmBrief"),
     topology: "swarm",
     tier: "worktree_write",
     stage: "working",
@@ -675,11 +686,11 @@ export function loadRoomWorkShowcase(params: {
     slices: [
       {
         sliceId: "sl_1",
-        title: "纯函数路径冲突与状态机分片",
+        title: t("roomWork.showcase.swarmSlice1Title"),
         worker: workerA,
         ownedPaths: ["packages/core-governance/**"],
         status: "running",
-        liveSummary: "正在运行 vitest (work-orchestration.test.ts 14/14)…",
+        liveSummary: t("roomWork.showcase.swarmSlice1Live"),
         elapsedSec: 16,
         diffAdded: 142,
         diffRemoved: 18,
@@ -687,11 +698,11 @@ export function loadRoomWorkShowcase(params: {
       },
       {
         sliceId: "sl_2",
-        title: "PostgreSQL 租约 Claim 与心跳仓储分片",
+        title: t("roomWork.showcase.swarmSlice2Title"),
         worker: workerB,
         ownedPaths: ["packages/db/**", "apps/server/src/modules/work/**"],
         status: "ready",
-        liveSummary: "已完成分片 (+186 / -22)，等待兄弟分片汇合交审",
+        liveSummary: t("roomWork.showcase.swarmSlice2Live"),
         elapsedSec: 23,
         diffAdded: 186,
         diffRemoved: 22,
@@ -706,8 +717,8 @@ export function loadRoomWorkShowcase(params: {
     id: "wrk_showcase_review",
     roomId: params.roomId,
     anchorSeq: anchorA,
-    title: "修复 SSE 断线重连时的重复唤醒合并与幂等校验",
-    brief: "确保同一房间活跃回合内的多次 wake 合并保留 owner_command 最高优先级。",
+    title: t("roomWork.showcase.reviewTitle"),
+    brief: t("roomWork.showcase.reviewBrief"),
     topology: "verify_loop",
     tier: "worktree_write",
     stage: "awaiting_review",
@@ -716,11 +727,11 @@ export function loadRoomWorkShowcase(params: {
     slices: [
       {
         sliceId: "sl_rev_1",
-        title: "RoomWakeQueue 优先级合并与回归测试",
+        title: t("roomWork.showcase.reviewSliceTitle"),
         worker: workerA,
         ownedPaths: ["packages/cli/src/sse-listener.ts"],
         status: "ready",
-        liveSummary: "通过交叉验证，等待主人签收",
+        liveSummary: t("roomWork.showcase.reviewSliceLive"),
         elapsedSec: 29,
         diffAdded: 94,
         diffRemoved: 27,
@@ -738,7 +749,7 @@ export function loadRoomWorkShowcase(params: {
       testCommand: "pnpm --filter @openhuddle/cli test",
       testPassed: true,
       worktreeBranch: "huddle/wrk-sse-coalesce",
-      verifierNote: `${verifier.displayName} 核验通过：未修改任何测试断言，并发重放幂等性符合契约。`,
+      verifierNote: t("roomWork.showcase.reviewVerifierNote", { verifier: verifier.displayName }),
       verifyLoopsUsed: 1,
     },
     createdAtIso: nowIso,
@@ -749,8 +760,8 @@ export function loadRoomWorkShowcase(params: {
     id: "wrk_showcase_attn",
     roomId: params.roomId,
     anchorSeq: anchorB,
-    title: "收紧跨主人 Worktree 路径越界回滚策略",
-    brief: "检测 Worker 是否在回合中触碰了 ownedPaths 之外的未授权文件。",
+    title: t("roomWork.showcase.attnTitle"),
+    brief: t("roomWork.showcase.attnBrief"),
     topology: "direct",
     tier: "worktree_write",
     stage: "awaiting_answer",
@@ -758,22 +769,22 @@ export function loadRoomWorkShowcase(params: {
     slices: [
       {
         sliceId: "sl_attn_1",
-        title: "Worktree 越界检测策略确认",
+        title: t("roomWork.showcase.attnSliceTitle"),
         worker: workerB,
         ownedPaths: ["packages/cli/src/worktree-pool.ts"],
         status: "waiting",
-        liveSummary: "已释放槽位静默挂起 · 等待主人确认边界策略",
+        liveSummary: t("roomWork.showcase.attnSliceLive"),
         elapsedSec: 8,
         steerNotes: [],
       },
     ],
     attention: {
-      question: "检测到自动格式化顺带触碰了未声明的快照文件时，守护器应如何处理？",
+      question: t("roomWork.showcase.attnQuestion"),
       askedBy: workerB,
       options: [
-        "仅自动还原越界文件并保留合规改动（推荐）",
-        "整单拒绝提交并标记 owned_path_violation",
-        "转为待人工审阅由主人裁决",
+        t("roomWork.showcase.attnOpt1"),
+        t("roomWork.showcase.attnOpt2"),
+        t("roomWork.showcase.attnOpt3"),
       ],
     },
     createdAtIso: nowIso,
@@ -793,7 +804,9 @@ export function loadRoomWorkShowcase(params: {
               slices: reviewReadyItem.slices.map((s) => ({
                 ...s,
                 status: "verifying",
-                liveSummary: `${verifier.displayName} 正在独立审查 Diff 并复跑单测…`,
+                liveSummary: t("roomWork.showcase.verifyingLive", {
+                  verifier: verifier.displayName,
+                }),
               })),
             },
           ];
@@ -811,6 +824,7 @@ export function loadRoomWorkShowcase(params: {
 }
 
 function advanceRunningTimers(): void {
+  const { t } = getWorkbenchTranslator();
   let mutated = false;
   const nowIso = new Date().toISOString();
 
@@ -842,8 +856,8 @@ function advanceRunningTimers(): void {
             diffRemoved: slice.diffRemoved ?? 11,
             liveSummary:
               item.verifier !== undefined
-                ? `改动完成，已直推 @${item.verifier.displayName} 交叉核验…`
-                : "执行完成，已自动推入待签收",
+                ? t("roomWork.timer.pushedVerify", { verifier: item.verifier.displayName })
+                : t("roomWork.timer.pushedReview"),
           };
         }
         if (isLiveUserItem && slice.status === "verifying" && nextSec >= 14) {
@@ -851,7 +865,9 @@ function advanceRunningTimers(): void {
             ...slice,
             elapsedSec: nextSec,
             status: "ready",
-            liveSummary: `@${item.verifier?.displayName ?? "Verifier"} 核验通过`,
+            liveSummary: t("roomWork.timer.verifiedOk", {
+              verifier: item.verifier?.displayName ?? "Verifier",
+            }),
           };
         }
         return {
@@ -887,7 +903,9 @@ function advanceRunningTimers(): void {
                 ...(item.tier === "worktree_write" ? { worktreeBranch: `huddle/${item.id}` } : {}),
                 ...(item.verifier !== undefined
                   ? {
-                      verifierNote: `${item.verifier.displayName} 独立核验通过：分片无路径重叠，类型检查与单测全绿。`,
+                      verifierNote: t("roomWork.timer.verifierNote", {
+                        verifier: item.verifier.displayName,
+                      }),
                     }
                   : {}),
                 verifyLoopsUsed: item.verifier !== undefined ? 1 : 0,

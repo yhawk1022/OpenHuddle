@@ -30,7 +30,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type AgentExecutionTier,
   getExecutionTierMeta,
@@ -42,6 +42,7 @@ import {
   getPlatformVisualMeta,
   getReachVisualMeta,
 } from "../../lib/format.js";
+import { type getComponentsTranslator, useComponentsI18n } from "../i18n/index.js";
 import {
   AnimatePresence,
   AppButton,
@@ -114,13 +115,15 @@ interface ReachPillMeta {
 function resolveReachPill(
   reach: AgentReachState | undefined,
   checkinIntervalMin: number | undefined,
+  i18n: ReturnType<typeof getComponentsTranslator>,
 ): ReachPillMeta {
+  const { t, tp } = i18n;
   const effective = reach ?? "offline";
   switch (effective) {
     case "online_sse":
       return {
-        text: "在线",
-        hint: "在群里 @ 它即可提问",
+        text: t("agentProfile.reach.online"),
+        hint: t("agentProfile.reach.onlineHint"),
         className:
           "border-black/[0.06] bg-[#E6F5EC] text-[#145335] dark:border-white/[0.08] dark:bg-[#1B2B23] dark:text-[#6EE7B7]",
         dotClassName: "bg-[#16A34A] dark:bg-[#34D399]",
@@ -128,8 +131,8 @@ function resolveReachPill(
       };
     case "hosted_ready":
       return {
-        text: "云端在线",
-        hint: "已连接到托管模型",
+        text: t("agentProfile.reach.cloudOnline"),
+        hint: t("agentProfile.reach.cloudOnlineHint"),
         className:
           "border-black/[0.06] bg-[#E6F5EC] text-[#145335] dark:border-white/[0.08] dark:bg-[#1B2B23] dark:text-[#6EE7B7]",
         dotClassName: "bg-[#16A34A] dark:bg-[#34D399]",
@@ -137,8 +140,8 @@ function resolveReachPill(
       };
     case "webhook":
       return {
-        text: "在线",
-        hint: "通过 Webhook 接收群消息提醒",
+        text: t("agentProfile.reach.online"),
+        hint: t("agentProfile.reach.webhookHint"),
         className:
           "border-black/[0.06] bg-[#E1ECFF] text-[#1E40AF] dark:border-white/[0.08] dark:bg-[#1A273D] dark:text-[#93C5FD]",
         dotClassName: "bg-[#2563EB] dark:bg-[#60A5FA]",
@@ -146,11 +149,14 @@ function resolveReachPill(
       };
     case "polling":
       return {
-        text: checkinIntervalMin !== undefined ? "定时查消息" : "监听未连接",
+        text:
+          checkinIntervalMin !== undefined
+            ? t("agentProfile.reach.scheduledCheckin")
+            : t("agentProfile.reach.listenerDisconnected"),
         hint:
           checkinIntervalMin !== undefined
-            ? `约每 ${checkinIntervalMin} 分钟看一次群消息`
-            : "在 Agent 所在设备检查后台监听状态",
+            ? tp("agentProfile.pollingIntervalHint", checkinIntervalMin)
+            : t("agentProfile.reach.listenerDisconnectedHint"),
         className:
           "border-black/[0.06] bg-[#FEF3C7] text-[#78350F] dark:border-white/[0.08] dark:bg-[#2E2516] dark:text-[#FCD34D]",
         dotClassName: "bg-[#D97706] dark:bg-[#FBBF24]",
@@ -158,8 +164,8 @@ function resolveReachPill(
       };
     case "offline":
       return {
-        text: "离线",
-        hint: "可在 Agent 所在设备运行 listen 重新连接",
+        text: t("agentProfile.reach.offline"),
+        hint: t("agentProfile.reach.offlineHint"),
         className:
           "border-black/[0.06] bg-black/[0.045] text-[#687082] dark:border-white/[0.08] dark:bg-white/[0.06] dark:text-[#8E8E96]",
         dotClassName: "bg-[#CBD2DE] dark:bg-[#63636B]",
@@ -180,13 +186,9 @@ function resolveReachPill(
  * @param props - 当前选中的 Agent 名片、当前人类用户 ID 及快捷操作回调
  * @returns 名片模态弹窗；`profile` 为空时返回 `null`
  */
-const CAPABILITY_TIER_TABS: ReadonlyArray<SegmentedTabItem<AgentExecutionTier>> = [
-  { value: "chat_only", label: "仅讨论" },
-  { value: "workspace_read", label: "查看代码" },
-  { value: "worktree_write", label: "修改代码" },
-];
-
 export function AgentProfileDialog(props: AgentProfileDialogProps) {
+  const i18n = useComponentsI18n();
+  const { locale, t, tp } = i18n;
   const lastProfileRef = useRef<InspectedAgentProfile | null>(props.profile);
   if (props.profile !== null) {
     lastProfileRef.current = props.profile;
@@ -197,6 +199,15 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
   const [confirmingDelete, setConfirmingDelete] = useState<boolean>(false);
   const [capabilityExpanded, setCapabilityExpanded] = useState<boolean>(false);
   const { getPref, setPref } = useAgentCapabilityPrefs();
+
+  const capabilityTierTabs = useMemo<ReadonlyArray<SegmentedTabItem<AgentExecutionTier>>>(
+    () => [
+      { value: "chat_only", label: getExecutionTierMeta("chat_only", locale).shortLabel },
+      { value: "workspace_read", label: getExecutionTierMeta("workspace_read", locale).shortLabel },
+      { value: "worktree_write", label: getExecutionTierMeta("worktree_write", locale).shortLabel },
+    ],
+    [locale],
+  );
 
   // 切换查看不同 Agent 名片或外部显式请求删除确认时同步局部交互态
   const activeAgentId = props.profile?.agentId;
@@ -213,16 +224,19 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
     return null;
   }
 
-  const platformMeta = getPlatformVisualMeta(profile.platform);
-  const reachMeta = getReachVisualMeta(profile.reach);
-  const reachPill = resolveReachPill(profile.reach, profile.checkinIntervalMin);
+  const platformMeta = getPlatformVisualMeta(profile.platform, locale);
+  const reachMeta = getReachVisualMeta(profile.reach, locale);
+  const reachPill = resolveReachPill(profile.reach, profile.checkinIntervalMin, i18n);
   const isOwnedByMe =
     props.currentUserId !== undefined && profile.ownerUserId === props.currentUserId;
   const handleText = profile.slug ? `@${profile.slug}` : `@${profile.displayName}`;
   const bioText =
     profile.intro !== undefined && profile.intro.trim().length > 0
       ? profile.intro
-      : `运行在 ${platformMeta.label} 上的个人 Agent，支持看图理解与发图回复。${platformMeta.cliHint}。`;
+      : t("agentProfile.defaultBio", {
+          platform: platformMeta.label,
+          cliHint: platformMeta.cliHint,
+        });
 
   const handleCopyMentionTag = (): void => {
     if (typeof navigator === "undefined" || !navigator.clipboard) {
@@ -230,7 +244,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
     }
     void navigator.clipboard.writeText(handleText).then(() => {
       setCopiedHandle(true);
-      toast.success("已复制 @ 标识", { description: handleText });
+      toast.success(t("agentProfile.toast.copiedHandle"), { description: handleText });
       window.setTimeout(() => {
         setCopiedHandle(false);
       }, 1_800);
@@ -256,7 +270,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
             props.onStartDirectChat?.(profile.agentId);
           }}
         >
-          发消息
+          {t("agentProfile.action.message")}
         </AppButton>
       ) : null}
 
@@ -275,15 +289,14 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
             props.onClose();
           }}
         >
-          在群里 @ TA
+          {t("agentProfile.action.mentionInRoom")}
         </AppButton>
       ) : null}
 
       {isOwnedByMe && confirmingDelete && props.onDeleteAgent ? (
         <div className="space-y-2.5 rounded-[16px] bg-[#E5484D]/[0.08] px-3 py-2.5 ring-1 ring-inset ring-[#E5484D]/20 dark:bg-[#F05252]/[0.12] dark:ring-[#F05252]/25">
           <p className="text-[12px] leading-relaxed text-[#8A1C14] dark:text-[#FCA5A5]">
-            确定删除「{profile.displayName}
-            」？删除后，它会退出所有群聊，连接令牌随即失效，本机监听也会停止。群里的历史消息会保留。
+            {t("agentProfile.deleteConfirmBody", { name: profile.displayName })}
           </p>
           <div className="flex items-center justify-end gap-2">
             <AppButton
@@ -292,7 +305,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
               disabled={props.isDeletingAgent === true}
               onClick={() => setConfirmingDelete(false)}
             >
-              取消
+              {t("agentProfile.action.cancel")}
             </AppButton>
             <AppButton
               variant="danger"
@@ -301,7 +314,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
               leadingIcon={<Trash2 aria-hidden="true" className="h-3.5 w-3.5" />}
               onClick={() => props.onDeleteAgent?.(profile.agentId, profile.displayName)}
             >
-              确认删除
+              {t("agentProfile.action.confirmDelete")}
             </AppButton>
           </div>
         </div>
@@ -318,7 +331,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
               }}
               className="min-w-0 flex-1 whitespace-nowrap"
             >
-              重新连接
+              {t("agentProfile.action.reconnect")}
             </AppButton>
           ) : null}
           {props.onDeleteAgent ? (
@@ -329,7 +342,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
               onClick={() => setConfirmingDelete(true)}
               className="min-w-0 flex-1 whitespace-nowrap"
             >
-              删除该 Agent
+              {t("agentProfile.action.delete")}
             </AppButton>
           ) : null}
         </div>
@@ -341,7 +354,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
     <AppModal
       open={isOpen}
       onClose={props.onClose}
-      title="Agent 名片"
+      title={t("agentProfile.modalTitle")}
       maxWidthClass="max-w-[400px]"
       bodyClassName="px-4 pt-4 pb-4 sm:px-6 sm:pt-5 sm:pb-5"
       footer={footerNode}
@@ -420,11 +433,11 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
             <span className="truncate font-mono text-[11.5px] text-[#3B414E] dark:text-[#C4C4CA]">
               {handleText}
             </span>
-            <AppTooltip content="复制 @ 标识" side="top">
+            <AppTooltip content={t("agentProfile.copyHandleTooltip")} side="top">
               <IconButton
                 size="xs"
                 variant="ghost"
-                label="复制 Agent 的 @ 标识"
+                label={t("agentProfile.copyHandleAria")}
                 onClick={handleCopyMentionTag}
               >
                 {copiedHandle ? (
@@ -454,26 +467,30 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
           </div>
           <div className="min-w-0 flex-1">
             <p className="flex items-center gap-1 text-[13px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-              <span className="truncate">{profile.ownerDisplayName} 的个人 Agent</span>
+              <span className="truncate">
+                {t("agentProfile.ownerCard.title", { owner: profile.ownerDisplayName })}
+              </span>
               <BadgeCheck
                 aria-hidden="true"
                 className="h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]"
               />
             </p>
             <p className="mt-0.5 text-[11.5px] leading-snug text-[#687082] dark:text-[#8E8E96]">
-              只执行所有者的指令，其他成员的消息仅供参考。
+              {t("agentProfile.ownerCard.subtitle")}
             </p>
           </div>
           {isOwnedByMe ? (
             <span className="shrink-0 rounded-full bg-[#181B22] px-2.5 py-0.5 text-[10.5px] font-medium text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
-              我的
+              {t("agentProfile.ownerCard.mineBadge")}
             </span>
           ) : null}
         </motion.div>
 
         {/* 角色简介 Bio */}
         <div className="rounded-[18px] bg-black/[0.035] px-3.5 py-3 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
-          <h4 className="text-[11px] font-medium text-[#939BAD] dark:text-[#8E8E96]">简介</h4>
+          <h4 className="text-[11px] font-medium text-[#939BAD] dark:text-[#8E8E96]">
+            {t("agentProfile.about.heading")}
+          </h4>
           <p className="mt-1 select-text text-[13px] leading-relaxed text-[#111318] dark:text-[#F2F2F4]">
             {bioText}
           </p>
@@ -484,7 +501,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
           <div className="rounded-[16px] bg-black/[0.035] px-3 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
             <p className="flex items-center gap-1 text-[11px] text-[#939BAD] dark:text-[#8E8E96]">
               <Radio aria-hidden="true" className="h-3 w-3" />
-              <span>连接方式</span>
+              <span>{t("agentProfile.connection.heading")}</span>
             </p>
             <p className="mt-1 truncate font-medium text-[#111318] dark:text-[#F2F2F4]">
               {reachMeta.label}
@@ -493,21 +510,27 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
           <div className="rounded-[16px] bg-black/[0.035] px-3 py-2.5 ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
             <p className="flex items-center gap-1 text-[11px] text-[#939BAD] dark:text-[#8E8E96]">
               <Clock aria-hidden="true" className="h-3 w-3" />
-              <span>{profile.checkinIntervalMin !== undefined ? "检查消息间隔" : "最近在线"}</span>
+              <span>
+                {profile.checkinIntervalMin !== undefined
+                  ? t("agentProfile.checkin.heading")
+                  : t("agentProfile.lastSeen.heading")}
+              </span>
             </p>
             <p className="mt-1 truncate font-medium text-[#111318] dark:text-[#F2F2F4]">
               {profile.checkinIntervalMin !== undefined
-                ? `每 ${profile.checkinIntervalMin} 分钟`
+                ? tp("agentProfile.checkinEveryMinutes", profile.checkinIntervalMin)
                 : profile.lastSeenAtIso !== undefined
-                  ? formatMessageTimestamp(profile.lastSeenAtIso)
-                  : "暂无记录"}
+                  ? formatMessageTimestamp(profile.lastSeenAtIso, locale)
+                  : t("agentProfile.lastSeen.empty")}
             </p>
           </div>
         </div>
 
         {profile.checkinIntervalMin !== undefined && profile.lastSeenAtIso !== undefined ? (
           <p className="text-right text-[11px] text-[#939BAD] dark:text-[#63636B]">
-            最近在线 {formatMessageTimestamp(profile.lastSeenAtIso)}
+            {t("agentProfile.lastSeen.inline", {
+              time: formatMessageTimestamp(profile.lastSeenAtIso, locale),
+            })}
           </p>
         ) : null}
 
@@ -515,7 +538,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
         {isOwnedByMe
           ? (() => {
               const capPref = getPref(profile.agentId, profile.platform);
-              const tierMeta = getExecutionTierMeta(capPref.tier);
+              const tierMeta = getExecutionTierMeta(capPref.tier, locale);
               return (
                 <div className="overflow-hidden rounded-[18px] bg-black/[0.035] ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.055] dark:ring-white/[0.08]">
                   <button
@@ -528,13 +551,15 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
                       <FolderGit2 className="h-4 w-4 shrink-0 text-[#111318] dark:text-[#F2F2F4]" />
                       <div className="min-w-0">
                         <p className="text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                          本地运行设置
+                          {t("agentProfile.local.heading")}
                         </p>
                         <p className="mt-0.5 truncate text-[11px] text-[#687082] dark:text-[#8E8E96]">
                           {tierMeta.shortLabel}
-                          {capPref.warmSessionEnabled ? " · 会话保留 15 分钟" : ""}
+                          {capPref.warmSessionEnabled
+                            ? t("agentProfile.local.summaryWarmSession")
+                            : ""}
                           {profile.platform === "antigravity" && capPref.nativeOrchestratorEnabled
-                            ? " · 分开规划和执行"
+                            ? t("agentProfile.local.summaryOrchestrator")
                             : ""}
                         </p>
                       </div>
@@ -560,20 +585,22 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
                         <div className="space-y-3 p-3.5 text-xs">
                           <div>
                             <p className="mb-1.5 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
-                              本地权限（仅用于你批准的任务）
+                              {t("agentProfile.local.permissionsLabel")}
                             </p>
                             <SegmentedTabs
                               value={capPref.tier}
                               onValueChange={(nextTier) => {
                                 setPref(profile.agentId, { tier: nextTier }, profile.platform);
                                 toast.success(
-                                  `已更新为「${getExecutionTierMeta(nextTier).shortLabel}」`,
+                                  t("agentProfile.local.toastTierUpdated", {
+                                    tier: getExecutionTierMeta(nextTier, locale).shortLabel,
+                                  }),
                                 );
                               }}
-                              items={CAPABILITY_TIER_TABS}
+                              items={capabilityTierTabs}
                               size="xs"
                               fullWidth={true}
-                              ariaLabel="选择 Agent 本地权限"
+                              ariaLabel={t("agentProfile.local.permissionsAria")}
                             />
                             <p className="mt-1.5 text-[11px] leading-snug text-[#687082] dark:text-[#8E8E96]">
                               {tierMeta.description}
@@ -586,7 +613,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
                                 htmlFor="profile-workspace-path"
                                 className="mb-1 block text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]"
                               >
-                                绑定的本地代码库路径
+                                {t("agentProfile.local.workspacePathLabel")}
                               </label>
                               <AppInput
                                 id="profile-workspace-path"
@@ -608,15 +635,15 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0">
                               <p className="font-medium text-[#111318] dark:text-[#F2F2F4]">
-                                保留会话 15 分钟
+                                {t("agentProfile.local.warmSessionTitle")}
                               </p>
                               <p className="text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                                下次运行任务时可以继续使用这个会话。
+                                {t("agentProfile.local.warmSessionDesc")}
                               </p>
                             </div>
                             <AppSwitch
                               size="sm"
-                              ariaLabel="切换 保留会话 15 分钟"
+                              ariaLabel={t("agentProfile.local.warmSessionAria")}
                               checked={capPref.warmSessionEnabled}
                               onCheckedChange={(checked) =>
                                 setPref(
@@ -632,15 +659,15 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
                             <div className="flex items-center justify-between gap-2 border-t border-black/[0.05] pt-2.5 dark:border-white/[0.07]">
                               <div className="min-w-0">
                                 <p className="font-medium text-[#111318] dark:text-[#F2F2F4]">
-                                  分开规划和执行
+                                  {t("agentProfile.local.orchestratorTitle")}
                                 </p>
                                 <p className="text-[10.5px] text-[#687082] dark:text-[#8E8E96]">
-                                  Carbon 负责只读规划，Hydrogen 负责执行。
+                                  {t("agentProfile.local.orchestratorDesc")}
                                 </p>
                               </div>
                               <AppSwitch
                                 size="sm"
-                                ariaLabel="分开规划和执行"
+                                ariaLabel={t("agentProfile.local.orchestratorAria")}
                                 checked={capPref.nativeOrchestratorEnabled}
                                 onCheckedChange={(checked) =>
                                   setPref(
@@ -672,16 +699,16 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
               )}
               <div className="min-w-0">
                 <p className="text-[12.5px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                  允许其他用户私聊
+                  {t("agentProfile.externalDm.title")}
                 </p>
                 <p className="mt-0.5 text-[11px] leading-snug text-[#687082] dark:text-[#8E8E96]">
-                  其他用户的消息仅供参考，不能让 Agent 执行本机命令。
+                  {t("agentProfile.externalDm.desc")}
                 </p>
               </div>
             </div>
             <AppSwitch
               size="sm"
-              ariaLabel="切换允许其他用户私聊此 Agent"
+              ariaLabel={t("agentProfile.externalDm.aria")}
               checked={profile.allowExternalDm === true}
               disabled={props.isUpdatingAgent === true}
               onCheckedChange={(checked) =>
@@ -692,7 +719,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
         ) : !isOwnedByMe && profile.allowExternalDm === true ? (
           <div className="flex items-center gap-2 rounded-[16px] bg-[#E6F5EC]/75 px-3.5 py-2.5 text-xs text-[#145335] ring-1 ring-inset ring-[#16A34A]/15 dark:bg-[#1B2B23]/75 dark:text-[#A7F3D0] dark:ring-[#34D399]/20">
             <Globe className="h-3.5 w-3.5 shrink-0" />
-            <span>可以私聊这个 Agent，你的消息仅供参考。</span>
+            <span>{t("agentProfile.externalDm.guestNotice")}</span>
           </div>
         ) : null}
 
@@ -701,7 +728,7 @@ export function AgentProfileDialog(props: AgentProfileDialogProps) {
             aria-hidden="true"
             className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]"
           />
-          <span>平台已验证此 Agent 的归属。</span>
+          <span>{t("agentProfile.verifiedOwnership")}</span>
         </p>
       </div>
     </AppModal>

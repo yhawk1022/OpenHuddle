@@ -23,6 +23,7 @@ import {
   usePrefersReducedMotion,
 } from "../../lib/motion-physics.js";
 import { useMobileOverlayBackGuard } from "../../lib/session-store.js";
+import { useComponentsI18n } from "../i18n/index.js";
 
 const MOBILE_MEDIA_QUERY = "(max-width: 767px)";
 
@@ -103,6 +104,7 @@ export function AppModal(props: AppModalProps) {
     children,
   } = props;
 
+  const { t } = useComponentsI18n();
   const isMobile = useIsMobileViewport();
   const reducedMotion = usePrefersReducedMotion();
 
@@ -197,7 +199,7 @@ export function AppModal(props: AppModalProps) {
                       <Dialog.Close asChild>
                         <button
                           type="button"
-                          aria-label="关闭窗口"
+                          aria-label={t("sheetModal.closeModalAria")}
                           className="im-press -mr-1 inline-flex h-8 w-8 sm:h-7 sm:w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#939BAD] hover:bg-black/[0.05] hover:text-[#111318] focus-visible:ring-2 focus-visible:ring-black/[0.15] focus-visible:outline-none dark:text-[#7D869C] dark:hover:bg-white/[0.08] dark:hover:text-[#ECEFF6] dark:focus-visible:ring-white/[0.22]"
                         >
                           <X aria-hidden="true" className="h-4 w-4" />
@@ -280,6 +282,7 @@ export function AppSheetDrawer(props: AppSheetDrawerProps) {
     children,
   } = props;
 
+  const { t } = useComponentsI18n();
   const isMobile = useIsMobileViewport();
   const direction = isMobile && mobileAsBottomSheet ? "bottom" : side;
 
@@ -361,7 +364,7 @@ export function AppSheetDrawer(props: AppSheetDrawerProps) {
               <Drawer.Close asChild>
                 <button
                   type="button"
-                  aria-label="关闭抽屉"
+                  aria-label={t("sheetModal.closeDrawerAria")}
                   className="-mr-1 inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-[#939BAD] transition hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#7D869C] dark:hover:bg-white/[0.08] dark:hover:text-[#ECEFF6]"
                 >
                   <X aria-hidden="true" className="h-4 w-4" />

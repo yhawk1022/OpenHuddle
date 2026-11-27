@@ -7,15 +7,12 @@
  * 2. 精确悬停交互：支持鼠标滑过/点击日期列查看单日人类消息、Agent 消息、新用户、新房间与新提案明细。
  */
 import type { AdminDailyTrendPoint, AdminDistributionEntry } from "@openhuddle/protocol";
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { type SegmentedTabItem, SegmentedTabs, cn } from "../../../components/primitives/index.js";
+import { formatDate, formatNumber } from "../../../lib/i18n/index.js";
+import { useAdminI18n } from "../i18n/index.js";
 
 type TrendChartMetricMode = "messages" | "growth";
-
-const METRIC_MODE_TABS: ReadonlyArray<SegmentedTabItem<TrendChartMetricMode>> = [
-  { value: "messages", label: "消息活跃 (人类 / Agent)" },
-  { value: "growth", label: "新增实体 (用户 / 群聊 / 提案)" },
-];
 
 /**
  * 渲染后台大盘每日多维趋势交互图表卡片。
@@ -24,9 +21,18 @@ export function AdminTrendChartCard(props: {
   readonly points: ReadonlyArray<AdminDailyTrendPoint>;
   readonly windowDays: number;
 }) {
+  const { locale, t } = useAdminI18n();
   const [mode, setMode] = useState<TrendChartMetricMode>("messages");
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const gradId = useId();
+
+  const metricModeTabs = useMemo<ReadonlyArray<SegmentedTabItem<TrendChartMetricMode>>>(
+    () => [
+      { value: "messages", label: t("charts.trend.mode.messages") },
+      { value: "growth", label: t("charts.trend.mode.growth") },
+    ],
+    [t],
+  );
 
   const points = props.points;
   const maxVal = Math.max(
@@ -103,15 +109,26 @@ export function AdminTrendChartCard(props: {
     setHoverIdx(clampedIdx);
   };
 
+  const formatAxisDate = (dateStr: string): string => {
+    if (locale === "en") {
+      return formatDate(
+        `${dateStr}T00:00:00Z`,
+        { month: "short", day: "numeric", timeZone: "UTC" },
+        "en",
+      );
+    }
+    return dateStr.slice(5);
+  };
+
   return (
     <section className="oh-elevated-card flex flex-col justify-between rounded-2xl p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-[14.5px] font-semibold tracking-[-0.01em] text-[#111318] dark:text-[#ECEFF6]">
-            近 {props.windowDays} 天平台活跃与增长趋势
+            {t("charts.trend.title", { days: props.windowDays })}
           </h3>
           <p className="mt-0.5 text-xs text-[#687082] dark:text-[#7D869C]">
-            按 UTC 自然日聚合，触控滑动或悬停任意日期列查看人机交互明细
+            {t("charts.trend.subtitle")}
           </p>
         </div>
 
@@ -119,9 +136,9 @@ export function AdminTrendChartCard(props: {
           <SegmentedTabs
             value={mode}
             onValueChange={setMode}
-            items={METRIC_MODE_TABS}
+            items={metricModeTabs}
             size="xs"
-            ariaLabel="切换趋势图统计指标"
+            ariaLabel={t("charts.trend.modeAriaLabel")}
           />
         </div>
       </div>
@@ -136,30 +153,48 @@ export function AdminTrendChartCard(props: {
             <>
               <span className="inline-flex items-center gap-1.5 text-[#3B414E] dark:text-[#B4BCD0]">
                 <span className="h-2 w-2 rounded-full bg-[#181B22] dark:bg-[#ECEFF6]" />
-                总消息 <strong className="tabular-nums">{activePoint.totalMessages}</strong>
+                {t("charts.trend.legend.totalMessages")}{" "}
+                <strong className="tabular-nums">
+                  {formatNumber(activePoint.totalMessages, undefined, locale)}
+                </strong>
               </span>
               <span className="inline-flex items-center gap-1.5 text-[#3B414E] dark:text-[#B4BCD0]">
                 <span className="h-2 w-2 rounded-full bg-[#16A34A] dark:bg-[#34D399]" />
-                人类发言 <strong className="tabular-nums">{activePoint.humanMessages}</strong>
+                {t("charts.trend.legend.humanMessages")}{" "}
+                <strong className="tabular-nums">
+                  {formatNumber(activePoint.humanMessages, undefined, locale)}
+                </strong>
               </span>
               <span className="inline-flex items-center gap-1.5 text-[#3B414E] dark:text-[#B4BCD0]">
                 <span className="h-2 w-2 rounded-full bg-[#2563EB] dark:bg-[#60A5FA]" />
-                Agent 发言 <strong className="tabular-nums">{activePoint.agentMessages}</strong>
+                {t("charts.trend.legend.agentMessages")}{" "}
+                <strong className="tabular-nums">
+                  {formatNumber(activePoint.agentMessages, undefined, locale)}
+                </strong>
               </span>
             </>
           ) : (
             <>
               <span className="inline-flex items-center gap-1.5 text-[#3B414E] dark:text-[#B4BCD0]">
                 <span className="h-2 w-2 rounded-full bg-[#181B22] dark:bg-[#ECEFF6]" />
-                新用户 <strong className="tabular-nums">{activePoint.newUsers}</strong>
+                {t("charts.trend.legend.newUsers")}{" "}
+                <strong className="tabular-nums">
+                  {formatNumber(activePoint.newUsers, undefined, locale)}
+                </strong>
               </span>
               <span className="inline-flex items-center gap-1.5 text-[#3B414E] dark:text-[#B4BCD0]">
                 <span className="h-2 w-2 rounded-full bg-[#16A34A] dark:bg-[#34D399]" />
-                新群聊 <strong className="tabular-nums">{activePoint.newRooms}</strong>
+                {t("charts.trend.legend.newRooms")}{" "}
+                <strong className="tabular-nums">
+                  {formatNumber(activePoint.newRooms, undefined, locale)}
+                </strong>
               </span>
               <span className="inline-flex items-center gap-1.5 text-[#3B414E] dark:text-[#B4BCD0]">
                 <span className="h-2 w-2 rounded-full bg-[#D97706] dark:bg-[#FBBF24]" />
-                新提案 <strong className="tabular-nums">{activePoint.newProposals}</strong>
+                {t("charts.trend.legend.newProposals")}{" "}
+                <strong className="tabular-nums">
+                  {formatNumber(activePoint.newProposals, undefined, locale)}
+                </strong>
               </span>
             </>
           )}
@@ -171,7 +206,7 @@ export function AdminTrendChartCard(props: {
           viewBox={`0 0 ${String(svgWidth)} ${String(svgHeight)}`}
           className="h-[200px] w-full touch-pan-y select-none"
           role="img"
-          aria-label={`近 ${String(props.windowDays)} 天平台趋势图`}
+          aria-label={t("charts.trend.svgAriaLabel", { days: props.windowDays })}
           onMouseLeave={() => setHoverIdx(null)}
           onPointerDown={(e) => {
             if (e.pointerType === "touch") {
@@ -210,7 +245,7 @@ export function AdminTrendChartCard(props: {
                   textAnchor="end"
                   className="fill-[#939BAD] text-[10px] tabular-nums dark:fill-[#687082]"
                 >
-                  {tickVal}
+                  {formatNumber(tickVal, undefined, locale)}
                 </text>
               </g>
             );
@@ -305,7 +340,7 @@ export function AdminTrendChartCard(props: {
                 textAnchor="middle"
                 className="fill-[#687082] text-[10px] tabular-nums dark:fill-[#7D869C]"
               >
-                {p.date.slice(5)}
+                {formatAxisDate(p.date)}
               </text>
             );
           })}
@@ -334,7 +369,7 @@ export function AdminTrendChartCard(props: {
                   fill="transparent"
                   role="button"
                   tabIndex={0}
-                  aria-label={`查看 ${p.date} 趋势数据`}
+                  aria-label={t("charts.trend.inspectDateAria", { date: p.date })}
                   className="cursor-crosshair outline-none focus-visible:stroke-[#181B22]/40 dark:focus-visible:stroke-white/40"
                   onMouseEnter={() => setHoverIdx(idx)}
                   onFocus={() => setHoverIdx(idx)}
@@ -363,7 +398,9 @@ export function AdminBreakdownCard(props: {
   readonly subtitle?: string | undefined;
   readonly entries: ReadonlyArray<AdminDistributionEntry>;
   readonly accentMap?: Readonly<Record<string, string>> | undefined;
+  readonly labelMap?: Readonly<Record<string, string>> | undefined;
 }) {
+  const { locale, t } = useAdminI18n();
   const total = props.entries.reduce((acc, item) => acc + item.count, 0);
 
   return (
@@ -374,7 +411,7 @@ export function AdminBreakdownCard(props: {
             {props.title}
           </h3>
           <span className="text-xs font-medium text-[#687082] tabular-nums dark:text-[#7D869C]">
-            总计 {total}
+            {t("charts.breakdown.total", { total: formatNumber(total, undefined, locale) })}
           </span>
         </div>
         {props.subtitle !== undefined ? (
@@ -383,20 +420,23 @@ export function AdminBreakdownCard(props: {
       </div>
 
       {props.entries.length === 0 || total === 0 ? (
-        <p className="py-6 text-center text-xs text-[#939BAD] dark:text-[#63636B]">暂无分布数据</p>
+        <p className="py-6 text-center text-xs text-[#939BAD] dark:text-[#63636B]">
+          {t("charts.breakdown.empty")}
+        </p>
       ) : (
         <div className="mt-4 space-y-2.5">
           {props.entries.map((entry) => {
             const pct = total > 0 ? Math.round((entry.count / total) * 100) : 0;
             const barClass = props.accentMap?.[entry.key] ?? "bg-[#181B22]/80 dark:bg-[#ECEFF6]/80";
+            const resolvedLabel = props.labelMap?.[entry.key] ?? entry.label;
             return (
               <div key={entry.key} className="space-y-1">
                 <div className="flex items-center justify-between text-xs">
                   <span className="truncate font-medium text-[#3B414E] dark:text-[#B4BCD0]">
-                    {entry.label}
+                    {resolvedLabel}
                   </span>
                   <span className="shrink-0 font-mono text-[11.5px] text-[#687082] tabular-nums dark:text-[#8E96AB]">
-                    {entry.count} ({pct}%)
+                    {formatNumber(entry.count, undefined, locale)} ({pct}%)
                   </span>
                 </div>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/[0.05] dark:bg-white/[0.06]">

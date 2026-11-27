@@ -16,6 +16,7 @@ import type {
   MessageSeq,
   ProposalCardDto,
   ProposalId,
+  SupportedLocale,
 } from "@openhuddle/protocol";
 import {
   AtSign,
@@ -26,6 +27,7 @@ import {
   Copy,
   Download,
   FileText,
+  Hand,
   Image as ImageIcon,
   ListTodo,
   Loader2,
@@ -45,6 +47,7 @@ import {
 } from "../../lib/format.js";
 import { canCopyImageToClipboard, copyImageUrlToClipboard } from "../../lib/message-media.js";
 import type { OptimisticMessageItem } from "../../lib/query-keys.js";
+import { getComponentsTranslator, useComponentsI18n } from "../i18n/index.js";
 import {
   AppContextMenu,
   type AppContextMenuEntry,
@@ -106,6 +109,7 @@ const JUMP_FLASH_CLASS = "oh-jump-flash";
 /** 构建单条消息右键菜单所需的上下文与回调参数 */
 export interface BuildMessageContextMenuOptions {
   readonly message: OptimisticMessageItem;
+  readonly locale?: SupportedLocale | undefined;
   readonly readOnly?: boolean | undefined;
   readonly isPending: boolean;
   readonly isSelf: boolean;
@@ -139,6 +143,7 @@ export function buildMessageContextMenuItems(
   if (Boolean(opts.readOnly) || opts.isPending) {
     return [];
   }
+  const { t } = getComponentsTranslator(opts.locale);
   const { message } = opts;
   const hasContent = message.content.length > 0;
   const hasNonStickerImage =
@@ -146,14 +151,14 @@ export function buildMessageContextMenuItems(
     message.attachment.stickerName === undefined;
   const taskSeedText = hasContent
     ? message.content
-    : `请结合消息 #${String(message.seq)} 的图片处理：`;
+    : t("messageBubble.ctx.imageTaskSeed", { seq: message.seq });
 
   return [
     ...(opts.capturedSelection.length > 0 && opts.onCopySelection !== undefined
       ? [
           {
             id: "ctx-msg-copy-selection",
-            label: "复制选中文字",
+            label: t("messageBubble.ctx.copySelection"),
             icon: <Copy className="h-3.5 w-3.5" />,
             onSelect: () => opts.onCopySelection?.(opts.capturedSelection),
           } satisfies AppContextMenuEntry,
@@ -163,7 +168,7 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-reply",
-            label: "回复此消息",
+            label: t("messageBubble.ctx.reply"),
             icon: <Reply className="h-3.5 w-3.5" />,
             onSelect: () => opts.onReply?.(message),
           } satisfies AppContextMenuEntry,
@@ -173,7 +178,7 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-view-image",
-            label: "查看大图",
+            label: t("messageBubble.ctx.viewImage"),
             icon: <Maximize2 className="h-3.5 w-3.5" />,
             onSelect: () => opts.onOpenLightbox?.(),
           } satisfies AppContextMenuEntry,
@@ -183,7 +188,7 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-copy-image",
-            label: "复制图片",
+            label: t("messageBubble.ctx.copyImage"),
             icon: <ImageIcon className="h-3.5 w-3.5" />,
             onSelect: () => opts.onCopyImage?.(),
           } satisfies AppContextMenuEntry,
@@ -193,7 +198,7 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-download-image",
-            label: "下载图片",
+            label: t("messageBubble.ctx.downloadImage"),
             icon: <Download className="h-3.5 w-3.5" />,
             onSelect: () => opts.onDownloadImage?.(),
           } satisfies AppContextMenuEntry,
@@ -203,7 +208,9 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-copy-all",
-            label: hasNonStickerImage ? "复制消息文字" : "复制消息内容",
+            label: hasNonStickerImage
+              ? t("messageBubble.ctx.copyMessageText")
+              : t("messageBubble.ctx.copyMessageContent"),
             icon: <Copy className="h-3.5 w-3.5" />,
             onSelect: () => opts.onCopyMessageContent?.(),
           } satisfies AppContextMenuEntry,
@@ -213,7 +220,7 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-save-sticker",
-            label: "收藏表情",
+            label: t("messageBubble.ctx.saveSticker"),
             icon: <BookmarkPlus className="h-3.5 w-3.5" />,
             onSelect: () => opts.onSaveSticker?.(message),
           } satisfies AppContextMenuEntry,
@@ -223,7 +230,7 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-to-task",
-            label: "转为任务…",
+            label: t("messageBubble.ctx.convertToTask"),
             icon: <ListTodo className="h-3.5 w-3.5" />,
             onSelect: () => opts.onConvertToWorkTask?.(taskSeedText),
           } satisfies AppContextMenuEntry,
@@ -244,7 +251,7 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-inspect",
-            label: `查看 ${message.author.displayName} 名片`,
+            label: t("messageBubble.ctx.inspectAgent", { name: message.author.displayName }),
             icon: <UserRound className="h-3.5 w-3.5" />,
             onSelect: () => opts.onInspectAgent?.(),
           } satisfies AppContextMenuEntry,
@@ -254,7 +261,7 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-proposal",
-            label: "查看关联提案",
+            label: t("messageBubble.ctx.openProposal"),
             icon: <FileText className="h-3.5 w-3.5" />,
             onSelect: () => opts.onOpenProposal?.(),
           } satisfies AppContextMenuEntry,
@@ -265,7 +272,7 @@ export function buildMessageContextMenuItems(
       ? [
           {
             id: "ctx-msg-recall",
-            label: "撤回消息",
+            label: t("messageBubble.ctx.recall"),
             icon: <RotateCcw className="h-3.5 w-3.5" />,
             danger: true,
             disabled: Boolean(opts.isRecalling),
@@ -324,6 +331,7 @@ function scrollToMessageSeq(seq: MessageSeq): void {
  * @returns 单条消息时间线节点
  */
 export function MessageBubble(props: MessageBubbleProps) {
+  const { locale, t, tp } = useComponentsI18n();
   const { message } = props;
   const authorDisplayName = props.authorDisplayName ?? message.author.displayName;
   const [copied, setCopied] = useState(false);
@@ -372,7 +380,7 @@ export function MessageBubble(props: MessageBubbleProps) {
       message.type === "text");
   const canSaveSticker = isSticker && props.onSaveSticker !== undefined;
   const canRecall = !props.readOnly && !isPending && canViewerRecallMessage(message, props.nowMs);
-  const timeLabel = formatMessageTimestamp(message.createdAtIso);
+  const timeLabel = formatMessageTimestamp(message.createdAtIso, locale);
   const anchorId = `msg-seq-${String(message.seq)}`;
 
   // ── 1. 系统事件：居中安静灰字文本行（无闪光图标、无胶囊框噪音） ──
@@ -405,7 +413,9 @@ export function MessageBubble(props: MessageBubbleProps) {
         className="flex select-none justify-center rounded-xl px-4 py-1.5 text-center transition-colors duration-700"
       >
         <p className="text-[12px] text-im-subtle">
-          {isSelf ? "你撤回了一条消息" : `${authorDisplayName} 撤回了一条消息`}
+          {isSelf
+            ? t("messageBubble.recalledSelf")
+            : t("messageBubble.recalledOther", { name: authorDisplayName })}
         </p>
       </div>
     );
@@ -426,7 +436,10 @@ export function MessageBubble(props: MessageBubbleProps) {
       platform: message.author.platform ?? "custom",
       ownerUserId: message.author.ownerUserId,
       ownerDisplayName:
-        props.authorOwnerName ?? (message.author.isYourOwner ? "你本人" : "群内协作者"),
+        props.authorOwnerName ??
+        (message.author.isYourOwner
+          ? t("messageBubble.ownerFallbackSelf")
+          : t("messageBubble.ownerFallbackOther")),
       reach: props.authorReach,
     });
   };
@@ -464,7 +477,13 @@ export function MessageBubble(props: MessageBubbleProps) {
   };
 
   const handleCopy = (): void => {
-    handleCopyText(message.content, hasNonStickerImage ? "已复制消息文字" : "已复制消息内容", true);
+    handleCopyText(
+      message.content,
+      hasNonStickerImage
+        ? t("messageBubble.toastCopiedText")
+        : t("messageBubble.toastCopiedContent"),
+      true,
+    );
   };
 
   const imageAttachmentSrc = hasNonStickerImage
@@ -477,12 +496,12 @@ export function MessageBubble(props: MessageBubbleProps) {
     if (imageAttachmentSrc === null) {
       return;
     }
-    void copyImageUrlToClipboard(imageAttachmentSrc)
+    void copyImageUrlToClipboard(imageAttachmentSrc, locale)
       .then(() => {
-        toast.success("已复制图片");
+        toast.success(t("messageBubble.toastCopiedImage"));
       })
       .catch(() => {
-        toast.error("复制图片失败，请尝试下载图片");
+        toast.error(t("messageBubble.toastCopyImageFailed"));
       });
   };
 
@@ -536,12 +555,13 @@ export function MessageBubble(props: MessageBubbleProps) {
   const isAgentInspectable = message.author.kind === "agent" && props.onInspectAgent !== undefined;
   const agentPlatformLabel =
     message.author.kind === "agent" && message.author.platform !== undefined
-      ? getPlatformVisualMeta(message.author.platform).label
+      ? getPlatformVisualMeta(message.author.platform, locale).label
       : undefined;
 
   const isContextMenuDisabled = Boolean(props.readOnly) || isPending;
   const contextMenuItems = buildMessageContextMenuItems({
     message,
+    locale,
     readOnly: props.readOnly,
     isPending,
     isSelf,
@@ -552,7 +572,7 @@ export function MessageBubble(props: MessageBubbleProps) {
     isAgentInspectable,
     hasLinkedProposal: props.linkedProposal !== undefined && props.onOpenProposal !== undefined,
     capturedSelection,
-    onCopySelection: (text) => handleCopyText(text, "已复制选中文字"),
+    onCopySelection: (text) => handleCopyText(text, t("messageBubble.toastCopiedSelection")),
     onReply: props.onReply,
     onOpenLightbox: hasNonStickerImage ? () => setLightboxOpen(true) : undefined,
     onCopyImage: hasNonStickerImage ? handleCopyImage : undefined,
@@ -582,7 +602,7 @@ export function MessageBubble(props: MessageBubbleProps) {
   const mobileQuickTrigger = hasMessageActions ? (
     <button
       type="button"
-      aria-label="消息操作菜单"
+      aria-label={t("messageBubble.mobileActionsAria")}
       aria-haspopup="menu"
       onClick={(event) => {
         event.stopPropagation();
@@ -620,7 +640,7 @@ export function MessageBubble(props: MessageBubbleProps) {
             className="app-no-drag inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-1 text-[11.5px] font-medium text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
           >
             <Reply className="h-3 w-3" />
-            <span>回复</span>
+            <span>{t("messageBubble.action.reply")}</span>
           </button>
         ) : null}
 
@@ -648,16 +668,18 @@ export function MessageBubble(props: MessageBubbleProps) {
             ) : (
               <Copy className="h-3 w-3" />
             )}
-            <span>{copied ? "已复制" : "复制"}</span>
+            <span>
+              {copied ? t("messageBubble.action.copied") : t("messageBubble.action.copy")}
+            </span>
           </button>
         ) : null}
 
         {hasNonStickerImage && imageAttachmentSrc !== null ? (
-          <AppTooltip content="下载图片" side="top">
+          <AppTooltip content={t("messageBubble.action.downloadImage")} side="top">
             <a
               href={imageAttachmentSrc}
               download={imageDownloadName}
-              aria-label="下载图片"
+              aria-label={t("messageBubble.action.downloadImage")}
               className="app-no-drag inline-flex cursor-pointer items-center justify-center rounded-full px-1.5 py-1 text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
             >
               <Download className="h-3.5 w-3.5" />
@@ -666,10 +688,10 @@ export function MessageBubble(props: MessageBubbleProps) {
         ) : null}
 
         {canSaveSticker ? (
-          <AppTooltip content="收藏表情" side="top">
+          <AppTooltip content={t("messageBubble.action.saveSticker")} side="top">
             <button
               type="button"
-              aria-label="收藏表情"
+              aria-label={t("messageBubble.action.saveSticker")}
               onClick={() => props.onSaveSticker?.(message)}
               className="app-no-drag inline-flex cursor-pointer items-center justify-center rounded-full px-1.5 py-1 text-[#687082] transition-colors hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#C4C4CA] dark:hover:bg-white/[0.10] dark:hover:text-[#F2F2F4]"
             >
@@ -679,7 +701,7 @@ export function MessageBubble(props: MessageBubbleProps) {
         ) : null}
 
         {canRecall && props.onRecall ? (
-          <AppTooltip content="撤回（发送后 2 分钟内）" side="top">
+          <AppTooltip content={t("messageBubble.action.recallTooltip")} side="top">
             <button
               type="button"
               disabled={Boolean(props.isRecalling)}
@@ -691,7 +713,7 @@ export function MessageBubble(props: MessageBubbleProps) {
               ) : (
                 <RotateCcw className="h-3 w-3" />
               )}
-              <span>撤回</span>
+              <span>{t("messageBubble.action.recall")}</span>
             </button>
           </AppTooltip>
         ) : null}
@@ -704,7 +726,10 @@ export function MessageBubble(props: MessageBubbleProps) {
       ? (() => {
           const replySeq = message.replyToSeq;
           const replied = props.repliedMessage;
-          const snippet = replied === undefined ? "引用前序发言" : getMessageSnippet(replied, 88);
+          const snippet =
+            replied === undefined
+              ? t("messageBubble.replyFallbackSnippet")
+              : getMessageSnippet(replied, 88, locale);
           const replyThumbKey =
             replied !== undefined ? `${replied.roomId}:${String(replied.seq)}` : null;
           const showReplyImageThumb =
@@ -739,7 +764,9 @@ export function MessageBubble(props: MessageBubbleProps) {
               <span className="line-clamp-2 min-w-0 flex-1">
                 {replied !== undefined ? (
                   <span className="mr-1 font-medium text-[#111318]/85 dark:text-[#F2F2F4]/90">
-                    {props.repliedAuthorDisplayName ?? replied.author.displayName}：
+                    {t("messageBubble.replyAuthorPrefix", {
+                      author: props.repliedAuthorDisplayName ?? replied.author.displayName,
+                    })}
                   </span>
                 ) : null}
                 <span>{snippet}</span>
@@ -784,8 +811,13 @@ export function MessageBubble(props: MessageBubbleProps) {
                     {linked.draft.title}
                   </p>
                   <p className="mt-0.5 text-[12px] tabular-nums text-[#687082] dark:text-[#8E8E96]">
-                    {linked.draft.options.length} 个方案 · {linked.votes.length} 人表态
-                    {linked.decidedOptionKey ? ` · 已拍板 ${linked.decidedOptionKey}` : ""}
+                    {tp("proposal.optionCount", linked.draft.options.length)} ·{" "}
+                    {tp("proposal.voteCount", linked.votes.length)}
+                    {linked.decidedOptionKey
+                      ? ` · ${t("messageBubble.linkedProposalDecided", {
+                          optionKey: linked.decidedOptionKey,
+                        })}`
+                      : ""}
                   </p>
                 </div>
               </div>
@@ -795,7 +827,11 @@ export function MessageBubble(props: MessageBubbleProps) {
                   onClick={() => props.onOpenProposal?.(linked.id)}
                   className="app-no-drag flex w-full cursor-pointer items-center justify-between border-t border-black/[0.06] px-3 py-2 text-[12px] font-medium text-[#111318] transition-colors hover:bg-black/[0.03] active:scale-[0.99] dark:border-white/[0.07] dark:text-[#F2F2F4] dark:hover:bg-white/[0.05]"
                 >
-                  <span>{isApproved ? "查看拍板结论" : "查看提案并拍板"}</span>
+                  <span>
+                    {isApproved
+                      ? t("messageBubble.linkedProposalViewApproved")
+                      : t("messageBubble.linkedProposalReview")}
+                  </span>
                   <ChevronRight className="h-3.5 w-3.5 opacity-70" />
                 </button>
               ) : null}
@@ -820,11 +856,14 @@ export function MessageBubble(props: MessageBubbleProps) {
     attention !== undefined ? (
       <div className="mt-1.5 w-full min-w-0 select-none rounded-[14px] border border-black/[0.06] bg-im-surface/85 p-2.5 dark:border-white/[0.08] dark:bg-[#18181B]/90">
         <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#687082] dark:text-[#8E8E96]">
-          <span aria-hidden="true">🙋</span>
-          <span>等待人类作答</span>
+          <Hand
+            aria-hidden="true"
+            className="h-3 w-3 shrink-0 text-amber-600 dark:text-amber-400"
+          />
+          <span>{t("messageBubble.attentionWaiting")}</span>
           {attentionExpired ? (
             <span className="rounded-full bg-black/[0.06] px-1.5 py-0.5 text-[10px] dark:bg-white/10">
-              已过期
+              {t("messageBubble.attentionExpired")}
             </span>
           ) : null}
         </div>
@@ -872,7 +911,7 @@ export function MessageBubble(props: MessageBubbleProps) {
       ) : null}
       {isFallbackEmptyBody ? (
         <span className="select-none text-[13px] text-[#687082] dark:text-[#8E8E96]">
-          消息内容仅群成员可见
+          {t("messageBubble.emptyReadOnlyFallback")}
         </span>
       ) : null}
       {linkedCard}
@@ -882,10 +921,13 @@ export function MessageBubble(props: MessageBubbleProps) {
   const timeNode = isPending ? (
     <span className="inline-flex select-none items-center gap-1 text-[12px] text-im-subtle">
       <Loader2 className="h-3 w-3 animate-spin" />
-      <span>发送中</span>
+      <span>{t("messageBubble.sending")}</span>
     </span>
   ) : (
-    <AppTooltip content={`消息 #${String(message.seq)} · ${timeLabel}`} side="top">
+    <AppTooltip
+      content={t("messageBubble.timeTooltip", { seq: message.seq, time: timeLabel })}
+      side="top"
+    >
       <time
         dateTime={message.createdAtIso}
         className="select-none text-[12px] tabular-nums text-im-subtle"
@@ -1098,7 +1140,10 @@ export function MessageBubble(props: MessageBubbleProps) {
             {timeLabel}
           </time>
         ) : isAgentInspectable ? (
-          <AppTooltip content={`查看 ${message.author.displayName} 资料`} side="top">
+          <AppTooltip
+            content={t("messageBubble.inspectAvatarTooltip", { name: message.author.displayName })}
+            side="top"
+          >
             <button
               type="button"
               onClick={handleAgentInspect}

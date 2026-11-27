@@ -29,8 +29,9 @@ import {
   ThumbsUp,
   XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { formatMessageTimestamp } from "../../lib/format.js";
+import { type getComponentsTranslator, useComponentsI18n } from "../i18n/index.js";
 import {
   AnimatePresence,
   AppButton,
@@ -56,50 +57,34 @@ export interface ProposalCardViewProps {
   readonly highlighted?: boolean | undefined;
 }
 
-const STANCE_TAB_ITEMS: ReadonlyArray<SegmentedTabItem<ProposalVoteStance>> = [
-  {
-    value: "endorse",
-    label: "赞成",
-    icon: <ThumbsUp className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />,
-  },
-  {
-    value: "challenge",
-    label: "质疑",
-    icon: <AlertTriangle className="h-3.5 w-3.5 text-[#C84B31] dark:text-[#F29B88]" />,
-  },
-  {
-    value: "abstain",
-    label: "弃权",
-    icon: <HelpCircle className="h-3.5 w-3.5 text-[#939BAD] dark:text-[#8E8E96]" />,
-  },
-];
+type ComponentsT = ReturnType<typeof getComponentsTranslator>["t"];
 
-function renderStatusPill(status: ProposalStatus) {
+function renderStatusPill(status: ProposalStatus, t: ComponentsT) {
   switch (status) {
     case "open":
       return (
         <span className="inline-flex select-none items-center gap-1 rounded-full bg-black/[0.05] px-2.5 py-0.5 text-[11px] font-medium text-[#111318] dark:bg-white/[0.09] dark:text-[#F2F2F4]">
-          <span>待拍板</span>
+          <span>{t("proposal.status.open")}</span>
         </span>
       );
     case "approved":
       return (
         <span className="inline-flex select-none items-center gap-1 rounded-full bg-[#E6F5EC] px-2.5 py-0.5 text-[11px] font-semibold text-[#145335] ring-1 ring-inset ring-black/[0.05] dark:bg-[#1B2B23] dark:text-[#6EE7B7] dark:ring-emerald-400/[0.15]">
           <Award className="h-3 w-3" />
-          <span>已拍板</span>
+          <span>{t("proposal.status.approved")}</span>
         </span>
       );
     case "rejected":
       return (
         <span className="inline-flex select-none items-center gap-1 rounded-full bg-[#FBE3D9] px-2.5 py-0.5 text-[11px] font-medium text-[#6E3420] dark:bg-[#32201E] dark:text-[#F7B6A8]">
           <XCircle className="h-3 w-3" />
-          <span>已驳回</span>
+          <span>{t("proposal.status.rejected")}</span>
         </span>
       );
     case "superseded":
       return (
         <span className="inline-flex select-none items-center gap-1 rounded-full bg-black/[0.045] px-2.5 py-0.5 text-[11px] font-medium text-[#687082] dark:bg-white/[0.06] dark:text-[#8E8E96]">
-          <span>已被替代</span>
+          <span>{t("proposal.status.superseded")}</span>
         </span>
       );
     default:
@@ -107,21 +92,21 @@ function renderStatusPill(status: ProposalStatus) {
   }
 }
 
-function getStanceMeta(stance: ProposalVoteStance) {
+function getStanceMeta(stance: ProposalVoteStance, t: ComponentsT) {
   switch (stance) {
     case "endorse":
       return {
-        label: "赞成",
+        label: t("proposal.stance.endorse"),
         pillClass: "bg-[#E6F5EC] text-[#145335] dark:bg-[#1B2B23] dark:text-[#6EE7B7]",
       };
     case "challenge":
       return {
-        label: "质疑",
+        label: t("proposal.stance.challenge"),
         pillClass: "bg-[#FBE3D9] text-[#6E3420] dark:bg-[#32201E] dark:text-[#F7B6A8]",
       };
     case "abstain":
       return {
-        label: "弃权",
+        label: t("proposal.stance.abstain"),
         pillClass: "bg-black/[0.05] text-[#687082] dark:bg-white/[0.08] dark:text-[#C4C4CA]",
       };
     default:
@@ -136,6 +121,7 @@ function getStanceMeta(stance: ProposalVoteStance) {
  * @returns 提案决策卡片视图
  */
 export function ProposalCardView(props: ProposalCardViewProps) {
+  const { locale, t } = useComponentsI18n();
   const { proposal } = props;
   const defaultOptionKey =
     proposal.decidedOptionKey ??
@@ -148,6 +134,27 @@ export function ProposalCardView(props: ProposalCardViewProps) {
   const [voteDrawerOpen, setVoteDrawerOpen] = useState<boolean>(false);
   const [voteStance, setVoteStance] = useState<ProposalVoteStance>("endorse");
   const [voteRationale, setVoteRationale] = useState<string>("");
+
+  const stanceTabItems = useMemo<ReadonlyArray<SegmentedTabItem<ProposalVoteStance>>>(
+    () => [
+      {
+        value: "endorse",
+        label: t("proposal.stance.endorse"),
+        icon: <ThumbsUp className="h-3.5 w-3.5 text-[#16A34A] dark:text-[#34D399]" />,
+      },
+      {
+        value: "challenge",
+        label: t("proposal.stance.challenge"),
+        icon: <AlertTriangle className="h-3.5 w-3.5 text-[#C84B31] dark:text-[#F29B88]" />,
+      },
+      {
+        value: "abstain",
+        label: t("proposal.stance.abstain"),
+        icon: <HelpCircle className="h-3.5 w-3.5 text-[#939BAD] dark:text-[#8E8E96]" />,
+      },
+    ],
+    [t],
+  );
 
   const endorseCount = proposal.votes.filter((v) => v.stance === "endorse").length;
   const challengeCount = proposal.votes.filter((v) => v.stance === "challenge").length;
@@ -209,9 +216,9 @@ export function ProposalCardView(props: ProposalCardViewProps) {
             <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#181B22] text-white dark:bg-[#EAEEF6] dark:text-[#111318]">
               <Scale className="h-3 w-3" />
             </span>
-            <span>共识提案</span>
+            <span>{t("proposal.headerTitle")}</span>
           </span>
-          {renderStatusPill(proposal.status)}
+          {renderStatusPill(proposal.status, t)}
         </div>
 
         <h3 className="mt-2.5 select-text text-[15.5px] font-semibold tracking-tight leading-snug text-[#111318] dark:text-[#F2F2F4]">
@@ -221,7 +228,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
           {proposal.draft.contextSummary}
         </p>
         <p className="mt-2 text-[11.5px] tabular-nums text-[#939BAD] dark:text-[#63636B]">
-          创建于 {formatMessageTimestamp(proposal.createdAtIso)}
+          {t("proposal.createdAt", { time: formatMessageTimestamp(proposal.createdAtIso, locale) })}
         </p>
       </header>
 
@@ -245,8 +252,10 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                 )}
                 <span>
                   {proposal.status === "approved"
-                    ? `已拍板采纳：${proposal.decidedOptionKey ?? "默认方案"}`
-                    : "已驳回，继续讨论"}
+                    ? t("proposal.banner.approved", {
+                        option: proposal.decidedOptionKey ?? t("proposal.banner.defaultOption"),
+                      })
+                    : t("proposal.banner.rejected")}
                 </span>
               </span>
               {proposal.status === "approved" && props.onDispatchFromProposal !== undefined ? (
@@ -259,46 +268,57 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                       (o) => o.optionKey === (proposal.decidedOptionKey ?? selectedOptionKey),
                     );
                     const seed = chosenOpt
-                      ? `按已拍板提案「${proposal.draft.title}（${chosenOpt.label}）」落地执行：${chosenOpt.summary}`
-                      : `按已拍板提案「${proposal.draft.title}」落地执行：${proposal.draft.contextSummary}`;
+                      ? t("proposal.banner.dispatchSeedWithOption", {
+                          title: proposal.draft.title,
+                          optionLabel: chosenOpt.label,
+                          summary: chosenOpt.summary,
+                        })
+                      : t("proposal.banner.dispatchSeedFallback", {
+                          title: proposal.draft.title,
+                          summary: proposal.draft.contextSummary,
+                        });
                     props.onDispatchFromProposal?.(seed);
                   }}
                 >
-                  派发执行 →
+                  {t("proposal.banner.dispatch")}
                 </AppButton>
               ) : proposal.decidedBy ? (
                 <span className="text-[11.5px] font-normal tabular-nums opacity-80">
                   {proposal.decidedBy.displayName}
                   {proposal.decidedAtIso
-                    ? ` · ${formatMessageTimestamp(proposal.decidedAtIso)}`
+                    ? ` · ${formatMessageTimestamp(proposal.decidedAtIso, locale)}`
                     : ""}
                 </span>
               ) : null}
             </div>
             {proposal.decisionNote ? (
               <p className="mt-1.5 select-text leading-relaxed opacity-90">
-                备注：{proposal.decisionNote}
+                {t("proposal.banner.note", { note: proposal.decisionNote })}
               </p>
             ) : null}
             {proposal.mandate ? (
               /* ADR-0002：授权语义（scope/strength/策略版本/批准者）——授权力仅及于批准者名下 Agent */
               <div className="mt-2 rounded-xl bg-black/[0.04] px-2.5 py-2 text-[11.5px] leading-relaxed ring-1 ring-inset ring-black/[0.05] dark:bg-white/[0.05] dark:ring-white/[0.07]">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-medium">
-                  <span>授权范围：{proposal.mandate.scope}</span>
+                  <span>{t("proposal.mandate.scope", { scope: proposal.mandate.scope })}</span>
                   <span className="rounded-full bg-black/[0.06] px-1.5 py-0.5 text-[10.5px] dark:bg-white/10">
                     {proposal.mandate.strength === "act"
-                      ? "可执行"
+                      ? t("proposal.mandate.strengthAct")
                       : proposal.mandate.strength === "act_with_review"
-                        ? "执行后需复盘"
-                        : "仅供参考"}
+                        ? t("proposal.mandate.strengthReview")
+                        : t("proposal.mandate.strengthAdvise")}
                   </span>
                   <span className="font-normal opacity-70">
-                    群规 v{proposal.mandate.policyVersion}
+                    {t("proposal.mandate.policyVersion", {
+                      version: proposal.mandate.policyVersion,
+                    })}
                   </span>
                 </div>
                 <p className="mt-1 font-normal opacity-75">
-                  授权力仅及于批准者（{proposal.decidedBy?.displayName ?? "拍板者"}）名下的
-                  Agent，其他成员的 Agent 视为参考信息。
+                  {t("proposal.mandate.authorityHint", {
+                    approver:
+                      proposal.decidedBy?.displayName ?? t("proposal.mandate.approverFallback"),
+                  })}
                 </p>
               </div>
             ) : null}
@@ -308,9 +328,13 @@ export function ProposalCardView(props: ProposalCardViewProps) {
         {/* 3. 多备选方案 Pros / Cons / Risks 对照 */}
         <section className="space-y-2">
           <div className="flex select-none items-center justify-between text-[12px] font-medium text-[#687082] dark:text-[#8E8E96]">
-            <span className="tabular-nums">备选方案 · {proposal.draft.options.length}</span>
+            <span className="tabular-nums">
+              {t("proposal.options.heading", { count: proposal.draft.options.length })}
+            </span>
             {isOpenInteractive ? (
-              <span className="text-[#111318] dark:text-[#F2F2F4]">点选拟采纳方案</span>
+              <span className="text-[#111318] dark:text-[#F2F2F4]">
+                {t("proposal.options.selectPrompt")}
+              </span>
             ) : null}
           </div>
 
@@ -354,12 +378,12 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                     <div className="flex items-center gap-1.5">
                       {isRecommended ? (
                         <span className="rounded-full bg-[#F4ECDD] px-2 py-0.5 text-[10.5px] font-medium text-[#5C4528] dark:bg-[#2F261C] dark:text-[#F3CFA2]">
-                          推荐
+                          {t("proposal.options.recommended")}
                         </span>
                       ) : null}
                       {isDecidedWinner ? (
                         <span className="rounded-full bg-[#E6F5EC] px-2 py-0.5 text-[10.5px] font-semibold text-[#145335] dark:bg-[#1B2B23] dark:text-[#6EE7B7]">
-                          ✓ 已采纳
+                          {t("proposal.options.adopted")}
                         </span>
                       ) : null}
                     </div>
@@ -374,7 +398,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                       {option.pros.length > 0 ? (
                         <div className="space-y-0.5">
                           <span className="font-medium text-[#145335] dark:text-[#6EE7B7]">
-                            + 优势
+                            {t("proposal.options.pros")}
                           </span>
                           <ul className="space-y-0.5 text-[#3B414E] dark:text-[#C4C4CA]">
                             {option.pros.map((pro, idx) => (
@@ -393,7 +417,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                       {option.cons.length > 0 ? (
                         <div className="space-y-0.5">
                           <span className="font-medium text-[#8A3B24] dark:text-[#F7B6A8]">
-                            − 代价
+                            {t("proposal.options.cons")}
                           </span>
                           <ul className="space-y-0.5 text-[#3B414E] dark:text-[#C4C4CA]">
                             {option.cons.map((con, idx) => (
@@ -413,7 +437,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                         <div className="space-y-0.5">
                           <span className="inline-flex items-center gap-1 font-medium text-[#78350F] dark:text-[#FCD34D]">
                             <AlertTriangle className="h-3 w-3" />
-                            <span>风险</span>
+                            <span>{t("proposal.options.risks")}</span>
                           </span>
                           <ul className="space-y-0.5 text-[#3B414E] dark:text-[#C4C4CA]">
                             {option.risks.map((risk, idx) => (
@@ -463,8 +487,10 @@ export function ProposalCardView(props: ProposalCardViewProps) {
         <section className="space-y-2.5">
           <div className="flex select-none flex-wrap items-center justify-between gap-2 text-[12px]">
             <span className="font-medium tabular-nums text-[#687082] dark:text-[#8E8E96]">
-              群内表态 · {totalVotes}
-              {totalVotes > 0 ? `（${String(Math.round(endorsePct))}% 赞成）` : ""}
+              {t("proposal.votes.heading", { count: totalVotes })}
+              {totalVotes > 0
+                ? t("proposal.votes.endorsePct", { percent: Math.round(endorsePct) })
+                : ""}
             </span>
             <div className="flex items-center gap-2.5 font-medium tabular-nums">
               <span className="inline-flex items-center gap-1 text-[#145335] dark:text-[#6EE7B7]">
@@ -513,7 +539,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
 
               <ul className="space-y-2.5 pt-1">
                 {proposal.votes.map((vote, idx) => {
-                  const stanceMeta = getStanceMeta(vote.stance);
+                  const stanceMeta = getStanceMeta(vote.stance, t);
                   const voterKey = `${vote.voter.agentId ?? vote.voter.userId ?? vote.voter.displayName}-${String(idx)}`;
                   return (
                     <li key={voterKey} className="flex items-start gap-2.5">
@@ -558,7 +584,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
             </>
           ) : (
             <p className="rounded-2xl bg-[#F3F4F6] px-3.5 py-2.5 text-[12px] text-[#687082] dark:bg-[#26262B] dark:text-[#8E8E96]">
-              还没有成员表态。可以在群里 @ 你的 Agent 听听意见，或直接拍板。
+              {t("proposal.votes.empty")}
             </p>
           )}
         </section>
@@ -583,7 +609,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                 />
               }
             >
-              补充我的看法
+              {t("proposal.voteForm.toggle")}
             </AppButton>
 
             <AnimatePresence initial={false}>
@@ -600,17 +626,17 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                     <SegmentedTabs
                       value={voteStance}
                       onValueChange={setVoteStance}
-                      items={STANCE_TAB_ITEMS}
+                      items={stanceTabItems}
                       size="sm"
                       fullWidth={true}
-                      ariaLabel="选择评议立场"
+                      ariaLabel={t("proposal.voteForm.stanceAria")}
                     />
 
                     <AppTextarea
                       rows={2}
                       value={voteRationale}
                       onChange={(e) => setVoteRationale(e.target.value)}
-                      placeholder="写下赞成或质疑的理由..."
+                      placeholder={t("proposal.voteForm.rationalePlaceholder")}
                       className="resize-none text-[16px] md:text-xs"
                     />
 
@@ -622,7 +648,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                         disabled={voteRationale.trim().length === 0}
                         onClick={handleVoteSubmit}
                       >
-                        提交表态
+                        {t("proposal.voteForm.submit")}
                       </AppButton>
                     </div>
                   </div>
@@ -636,10 +662,12 @@ export function ProposalCardView(props: ProposalCardViewProps) {
             <div className="flex select-none flex-wrap items-center justify-between gap-1 text-[12px] font-semibold text-[#111318] dark:text-[#F2F2F4]">
               <span className="inline-flex items-center gap-1.5">
                 <Award className="h-3.5 w-3.5" />
-                <span>最终拍板</span>
+                <span>{t("proposal.decisionForm.heading")}</span>
               </span>
               <span className="rounded-full bg-white px-2.5 py-0.5 font-mono text-[11px] font-medium tabular-nums text-[#111318] ring-1 ring-black/[0.06] dark:bg-white/[0.09] dark:text-[#F2F2F4] dark:ring-white/[0.08]">
-                拟选：{selectedOptionKey || "未选"}
+                {t("proposal.decisionForm.selected", {
+                  option: selectedOptionKey || t("proposal.decisionForm.unselected"),
+                })}
               </span>
             </div>
 
@@ -648,7 +676,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
               type="text"
               value={decisionNote}
               onChange={(e) => setDecisionNote(e.target.value)}
-              placeholder="可选：写一句拍板说明或执行要求"
+              placeholder={t("proposal.decisionForm.notePlaceholder")}
             />
 
             <div className="flex flex-wrap items-center gap-2">
@@ -661,7 +689,11 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                 onClick={() => handleDecision("approved")}
                 className="min-w-0 flex-1"
               >
-                <span className="truncate">{`拍板采纳 ${selectedOptionKey}`}</span>
+                <span className="truncate">
+                  {selectedOptionKey.length > 0
+                    ? t("proposal.decisionForm.approveOption", { option: selectedOptionKey })
+                    : t("proposal.decisionForm.approveFallback")}
+                </span>
               </AppButton>
 
               <AppButton
@@ -671,7 +703,7 @@ export function ProposalCardView(props: ProposalCardViewProps) {
                 leadingIcon={<XCircle className="h-4 w-4" />}
                 onClick={() => handleDecision("rejected")}
               >
-                驳回重议
+                {t("proposal.decisionForm.reject")}
               </AppButton>
             </div>
           </div>

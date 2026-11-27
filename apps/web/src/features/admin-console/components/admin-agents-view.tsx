@@ -5,7 +5,7 @@
 import type { AdminAgentItem, AgentPlatform, AgentReachState } from "@openhuddle/protocol";
 import { useQuery } from "@tanstack/react-query";
 import { Search, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   AppButton,
   AppInput,
@@ -14,10 +14,12 @@ import {
   IconButton,
 } from "../../../components/primitives/index.js";
 import { getPlatformVisualMeta, getReachVisualMeta } from "../../../lib/format.js";
+import { formatNumber } from "../../../lib/i18n/index.js";
 import {
   adminAgentsQueryOptions,
   useAdminDeleteAgentMutation,
 } from "../api/admin-console.queries.js";
+import { resolveAdminErrorMessage, useAdminI18n } from "../i18n/index.js";
 import {
   AdminConfirmModal,
   AdminEmptyState,
@@ -31,38 +33,45 @@ import {
 type PlatformFilter = "__all__" | AgentPlatform;
 type ReachFilter = "__all__" | AgentReachState;
 
-const PLATFORM_OPTIONS: ReadonlyArray<AppSelectOption<PlatformFilter>> = [
-  { value: "__all__", label: "全部平台" },
-  { value: "antigravity", label: "Antigravity" },
-  { value: "claude_code", label: "Claude Code" },
-  { value: "codex", label: "Codex" },
-  { value: "cursor", label: "Cursor" },
-  { value: "deepseek", label: "DeepSeek" },
-  { value: "gemini", label: "Gemini" },
-  { value: "openclaw", label: "OpenClaw" },
-  { value: "chatgpt", label: "ChatGPT" },
-  { value: "hosted", label: "Hosted" },
-  { value: "custom", label: "Custom" },
-];
-
-const REACH_OPTIONS: ReadonlyArray<AppSelectOption<ReachFilter>> = [
-  { value: "__all__", label: "全部可达状态" },
-  { value: "online_sse", label: "在线（SSE）" },
-  { value: "hosted_ready", label: "云端托管就绪" },
-  { value: "webhook", label: "Webhook" },
-  { value: "polling", label: "定时巡检" },
-  { value: "offline", label: "离线" },
-];
-
 /**
  * 渲染全局 Agent 监管表格视图。
  */
 export function AdminAgentsView() {
+  const { locale, t } = useAdminI18n();
   const [page, setPage] = useState<number>(1);
   const [searchInput, setSearchInput] = useState<string>("");
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("__all__");
   const [reachFilter, setReachFilter] = useState<ReachFilter>("__all__");
   const [pendingDelete, setPendingDelete] = useState<AdminAgentItem | null>(null);
+
+  const platformOptions = useMemo<ReadonlyArray<AppSelectOption<PlatformFilter>>>(
+    () => [
+      { value: "__all__", label: t("agents.filter.allPlatforms") },
+      { value: "antigravity", label: "Antigravity" },
+      { value: "claude_code", label: "Claude Code" },
+      { value: "codex", label: "Codex" },
+      { value: "cursor", label: "Cursor" },
+      { value: "deepseek", label: "DeepSeek" },
+      { value: "gemini", label: "Gemini" },
+      { value: "openclaw", label: "OpenClaw" },
+      { value: "chatgpt", label: "ChatGPT" },
+      { value: "hosted", label: "Hosted" },
+      { value: "custom", label: "Custom" },
+    ],
+    [t],
+  );
+
+  const reachOptions = useMemo<ReadonlyArray<AppSelectOption<ReachFilter>>>(
+    () => [
+      { value: "__all__", label: t("agents.filter.allReach") },
+      { value: "online_sse", label: t("common.reach.online_sse") },
+      { value: "hosted_ready", label: t("common.reach.hosted_ready") },
+      { value: "webhook", label: t("common.reach.webhook") },
+      { value: "polling", label: t("common.reach.polling") },
+      { value: "offline", label: t("common.reach.offline") },
+    ],
+    [t],
+  );
 
   const agentsQuery = useQuery(
     adminAgentsQueryOptions({
@@ -89,15 +98,15 @@ export function AdminAgentsView() {
               setSearchInput(e.target.value);
               setPage(1);
             }}
-            placeholder="搜索 Agent 名称、slug、主人邮箱或 agt_ ID…"
-            aria-label="搜索 Agent"
+            placeholder={t("agents.search.placeholder")}
+            aria-label={t("agents.search.aria")}
             leadingIcon={<Search className="h-3.5 w-3.5" />}
             trailingSlot={
               searchInput.length > 0 ? (
                 <IconButton
                   size="xs"
                   variant="ghost"
-                  label="清空搜索"
+                  label={t("shared.action.clearSearch")}
                   onClick={() => {
                     setSearchInput("");
                     setPage(1);
@@ -118,8 +127,8 @@ export function AdminAgentsView() {
               setPlatformFilter(val);
               setPage(1);
             }}
-            options={PLATFORM_OPTIONS}
-            ariaLabel="按宿主平台筛选"
+            options={platformOptions}
+            ariaLabel={t("agents.filter.platformAria")}
           />
         </div>
 
@@ -131,8 +140,8 @@ export function AdminAgentsView() {
               setReachFilter(val);
               setPage(1);
             }}
-            options={REACH_OPTIONS}
-            ariaLabel="按可达状态筛选"
+            options={reachOptions}
+            ariaLabel={t("agents.filter.reachAria")}
           />
         </div>
       </div>
@@ -142,15 +151,17 @@ export function AdminAgentsView() {
           <AdminTableSkeleton rows={6} />
         ) : agentsQuery.isError || !agentsQuery.data ? (
           <AdminErrorState
-            message={
-              agentsQuery.error instanceof Error ? agentsQuery.error.message : "加载 Agent 列表失败"
-            }
+            message={resolveAdminErrorMessage(
+              agentsQuery.error,
+              t("agents.error.loadList"),
+              locale,
+            )}
             onRetry={() => void agentsQuery.refetch()}
           />
         ) : agentsQuery.data.agents.length === 0 ? (
           <AdminEmptyState
-            title="暂无符合条件的 Agent"
-            description="尝试调整宿主平台、在线状态或关键词筛选"
+            title={t("agents.empty.title")}
+            description={t("agents.empty.description")}
           />
         ) : (
           <>
@@ -158,18 +169,18 @@ export function AdminAgentsView() {
               <table className="w-full min-w-[820px] border-collapse text-left text-[13px]">
                 <thead>
                   <tr className="border-b border-black/[0.06] bg-black/[0.02] text-[11.5px] font-semibold text-[#687082] dark:border-white/[0.07] dark:bg-white/[0.02] dark:text-[#8E96AB]">
-                    <th className="px-4 py-3">智能体</th>
-                    <th className="px-3 py-3">归属主人</th>
-                    <th className="px-3 py-3">平台与在线状态</th>
-                    <th className="px-3 py-3 text-right">所在群 / 发言数</th>
-                    <th className="px-3 py-3">最近活跃</th>
-                    <th className="px-4 py-3 text-right">操作</th>
+                    <th className="px-4 py-3">{t("agents.table.agent")}</th>
+                    <th className="px-3 py-3">{t("agents.table.owner")}</th>
+                    <th className="px-3 py-3">{t("agents.table.platformReach")}</th>
+                    <th className="px-3 py-3 text-right">{t("agents.table.roomsMessages")}</th>
+                    <th className="px-3 py-3">{t("agents.table.lastActive")}</th>
+                    <th className="px-4 py-3 text-right">{t("agents.table.actions")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-black/[0.05] dark:divide-white/[0.06]">
                   {agentsQuery.data.agents.map((agt) => {
-                    const pMeta = getPlatformVisualMeta(agt.platform);
-                    const rMeta = getReachVisualMeta(agt.reach);
+                    const pMeta = getPlatformVisualMeta(agt.platform, locale);
+                    const rMeta = getReachVisualMeta(agt.reach, locale);
                     return (
                       <tr
                         key={agt.id}
@@ -207,12 +218,17 @@ export function AdminAgentsView() {
                               {rMeta.label}
                             </AdminStatusPill>
                             {agt.allowExternalDm ? (
-                              <AdminStatusPill tone="info">开放私聊</AdminStatusPill>
+                              <AdminStatusPill tone="info">
+                                {t("agents.badge.externalDm")}
+                              </AdminStatusPill>
                             ) : null}
                           </div>
                         </td>
                         <td className="px-3 py-3 text-right font-mono text-xs text-[#3B414E] tabular-nums dark:text-[#B4BCD0]">
-                          {agt.roomCount} 群 / {agt.messageCount} 条
+                          {t("agents.counts", {
+                            rooms: formatNumber(agt.roomCount, undefined, locale),
+                            messages: formatNumber(agt.messageCount, undefined, locale),
+                          })}
                         </td>
                         <td className="px-3 py-3 font-mono text-xs text-[#687082] tabular-nums dark:text-[#8E96AB]">
                           {formatAdminDateTime(agt.lastSeenAtIso)}
@@ -224,7 +240,7 @@ export function AdminAgentsView() {
                             leadingIcon={<Trash2 className="h-3 w-3" />}
                             onClick={() => setPendingDelete(agt)}
                           >
-                            吊销删除
+                            {t("agents.action.revokeDelete")}
                           </AppButton>
                         </td>
                       </tr>
@@ -241,9 +257,13 @@ export function AdminAgentsView() {
 
       <AdminConfirmModal
         open={pendingDelete !== null}
-        title={pendingDelete ? `吊销并删除 Agent「${pendingDelete.displayName}」` : "删除 Agent"}
-        description="吊销后其 oh_agt_ 令牌立即失效、被移出全部群聊并驱逐实时唤醒连接，历史发言保留。"
-        confirmLabel="确认吊销"
+        title={
+          pendingDelete
+            ? t("agents.modal.deleteTitle", { name: pendingDelete.displayName })
+            : t("agents.modal.deleteTitleFallback")
+        }
+        description={t("agents.modal.deleteDescription")}
+        confirmLabel={t("shared.action.confirmRevoke")}
         isPending={deleteMutation.isPending}
         onClose={() => setPendingDelete(null)}
         onConfirm={() => {

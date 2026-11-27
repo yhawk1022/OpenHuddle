@@ -26,6 +26,7 @@ import {
   toast,
 } from "../../../components/primitives/index.js";
 import { PlatformAvatar } from "../../../components/ui/identity-badges.js";
+import { useWorkbenchI18n } from "../i18n/workbench.js";
 import type { RoomWorkItemView } from "../work/work-types.js";
 import { WorkStageGlyph, formatWorkStageLabel, getWorkTopologyLabel } from "../work/work-utils.js";
 import { WorkAttentionCard } from "./work-attention-card.js";
@@ -44,6 +45,7 @@ export interface LiveRunFloatingBarProps {
  * 底部输入舱上方的单行运行状态条（无活跃任务时占零高度）。
  */
 export function LiveRunFloatingBar(props: LiveRunFloatingBarProps) {
+  const { t } = useWorkbenchI18n();
   const lead = props.activeItems[0];
   const [steerOpenForId, setSteerOpenForId] = useState<string | null>(null);
   const [steerText, setSteerText] = useState<string>("");
@@ -67,7 +69,7 @@ export function LiveRunFloatingBar(props: LiveRunFloatingBarProps) {
       return;
     }
     props.onSteer(lead.id, trimmed);
-    toast.success("已发送补充说明");
+    toast.success(t("inspector.toast.steerSent"));
     setSteerText("");
     setSteerOpenForId(null);
   };
@@ -91,14 +93,17 @@ export function LiveRunFloatingBar(props: LiveRunFloatingBarProps) {
 
             <span className="shrink-0 font-medium text-[#111318] dark:text-[#F2F2F4]">
               {isParallel
-                ? `并行 ${String(readyCount)}/${String(lead.slices.length)}`
+                ? t("timeline.parallelProgress", {
+                    ready: readyCount,
+                    total: lead.slices.length,
+                  })
                 : isVerifying && lead.verifier !== undefined
                   ? lead.verifier.displayName
                   : (primarySlice?.worker.displayName ?? lead.primaryWorker.displayName)}
             </span>
 
             <span className="min-w-0 flex-1 truncate text-[#545D6C] dark:text-[#A1A1AA]">
-              {primarySlice?.liveSummary ?? "正在处理…"}
+              {primarySlice?.liveSummary ?? t("timeline.workingFallback")}
             </span>
 
             <span className="shrink-0 font-mono text-[11px] tabular-nums text-[#687082] dark:text-[#8E8E96]">
@@ -117,16 +122,16 @@ export function LiveRunFloatingBar(props: LiveRunFloatingBarProps) {
                   : "text-[#4B5565] hover:bg-black/[0.05] hover:text-[#111318] dark:text-[#A1A1AA] dark:hover:bg-white/[0.08] dark:hover:text-white",
               )}
             >
-              补充
+              {t("inspector.steerShort")}
             </button>
 
             <button
               type="button"
-              title="停止任务"
-              aria-label="停止任务"
+              title={t("inspector.stopTaskAriaLabel")}
+              aria-label={t("inspector.stopTaskAriaLabel")}
               onClick={() => {
                 props.onStop(lead.id);
-                toast.info("已停止任务");
+                toast.info(t("detail.toast.stopped"));
               }}
               className="app-no-drag inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-[#687082] transition hover:bg-black/[0.06] hover:text-[#DC2626] dark:text-[#8E8E96] dark:hover:bg-white/[0.08] dark:hover:text-[#F87171]"
             >
@@ -136,7 +141,7 @@ export function LiveRunFloatingBar(props: LiveRunFloatingBarProps) {
             <button
               type="button"
               onClick={() => props.onOpenTasksInspector(lead.id)}
-              aria-label="查看任务详情"
+              aria-label={t("timeline.viewTaskDetailsAriaLabel")}
               className="app-no-drag inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-[#687082] transition hover:text-[#111318] dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
             >
               <ChevronRight className="h-3.5 w-3.5" />
@@ -163,7 +168,7 @@ export function LiveRunFloatingBar(props: LiveRunFloatingBarProps) {
                   size="sm"
                   value={steerText}
                   onChange={(e) => setSteerText(e.target.value)}
-                  placeholder="补充要求…"
+                  placeholder={t("inspector.steerPlaceholder")}
                   className="flex-1 text-xs"
                 />
                 <AppButton
@@ -173,7 +178,7 @@ export function LiveRunFloatingBar(props: LiveRunFloatingBarProps) {
                   disabled={steerText.trim().length === 0}
                   trailingIcon={<CornerDownLeft className="h-3 w-3" />}
                 >
-                  发送
+                  {t("timeline.send")}
                 </AppButton>
               </div>
             </motion.form>
@@ -202,6 +207,7 @@ export interface WorkTimelineMilestoneCardProps {
  * 嵌入聊天时间线的原生质感任务卡片。
  */
 export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps) {
+  const { locale, t, tp } = useWorkbenchI18n();
   const { item } = props;
   const [filesExpanded, setFilesExpanded] = useState<boolean>(false);
   const [reworkOpen, setReworkOpen] = useState<boolean>(false);
@@ -235,14 +241,16 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
                   }
                   setIsStopping(true);
                   void Promise.resolve(props.onStop(item.id))
-                    .then(() => toast.info("已停止任务"))
+                    .then(() => toast.info(t("detail.toast.stopped")))
                     .catch((err: unknown) =>
-                      toast.error(err instanceof Error ? err.message : "停止任务失败"),
+                      toast.error(
+                        err instanceof Error ? err.message : t("detail.toast.stopFailed"),
+                      ),
                     )
                     .finally(() => setIsStopping(false));
                 }}
               >
-                停止
+                {t("detail.stop")}
               </AppButton>
             ) : null}
 
@@ -251,7 +259,7 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
               onClick={() => props.onOpenInInspector(item.id)}
               className="inline-flex shrink-0 cursor-pointer items-center gap-1 text-[12px] text-[#687082] transition hover:text-[#111318] dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
             >
-              <span>{formatWorkStageLabel(item.stage)}</span>
+              <span>{formatWorkStageLabel(item.stage, locale)}</span>
               <ChevronRight className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -315,7 +323,7 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
             <div className="space-y-2.5 border-t border-black/[0.05] pt-2.5 text-[12px] dark:border-white/[0.06]">
               <div className="flex flex-wrap items-center justify-between gap-2 text-[#4B5565] dark:text-[#A1A1AA]">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span>{item.review.filesChanged} 个文件变更</span>
+                  <span>{tp("filesChanged", item.review.filesChanged)}</span>
                   <span className="font-mono text-[11.5px] tabular-nums">
                     <span className="text-[#15803D] dark:text-[#4ADE80]">
                       +{item.review.additions}
@@ -337,7 +345,7 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
                   onClick={() => setFilesExpanded((v) => !v)}
                   className="inline-flex cursor-pointer items-center gap-0.5 text-[11.5px] text-[#687082] hover:text-[#111318] dark:text-[#8E8E96] dark:hover:text-[#F2F2F4]"
                 >
-                  <span>{filesExpanded ? "收起文件" : "查看文件"}</span>
+                  <span>{filesExpanded ? t("timeline.hideFiles") : t("timeline.showFiles")}</span>
                   <ChevronDown
                     className={cn("h-3 w-3 transition-transform", filesExpanded && "rotate-180")}
                   />
@@ -346,7 +354,7 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
 
               {item.review.verifierNote ? (
                 <p className="text-[12px] leading-relaxed text-[#545D6C] dark:text-[#A1A1AA]">
-                  复核说明：{item.review.verifierNote}
+                  {t("timeline.verifierNotePrefix", { note: item.review.verifierNote })}
                 </p>
               ) : null}
 
@@ -369,17 +377,17 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
                       leadingIcon={<Check className="h-3.5 w-3.5" />}
                       onClick={() => {
                         props.onDecideReview(item.id, "approve");
-                        toast.success("已签收变更");
+                        toast.success(t("detail.toast.approved"));
                       }}
                     >
-                      签收
+                      {t("detail.approve")}
                     </AppButton>
                     <AppButton
                       variant="secondary"
                       size="xs"
                       onClick={() => setReworkOpen((v) => !v)}
                     >
-                      退回修改
+                      {t("detail.requestChanges")}
                     </AppButton>
                   </div>
 
@@ -389,7 +397,7 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
                         size="sm"
                         value={reworkDraft}
                         onChange={(e) => setReworkDraft(e.target.value)}
-                        placeholder="填写需要调整的说明…"
+                        placeholder={t("timeline.reworkPlaceholder")}
                         className="flex-1 text-xs"
                       />
                       <AppButton
@@ -400,10 +408,10 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
                           props.onDecideReview(item.id, "rework", reworkDraft);
                           setReworkDraft("");
                           setReworkOpen(false);
-                          toast.info("已退回继续修改");
+                          toast.info(t("detail.toast.changesRequested"));
                         }}
                       >
-                        确定
+                        {t("timeline.confirm")}
                       </AppButton>
                     </div>
                   ) : null}
@@ -420,10 +428,10 @@ export function WorkTimelineMilestoneCard(props: WorkTimelineMilestoneCardProps)
                 leadingIcon={<RotateCcw className="h-3 w-3" />}
                 onClick={() => {
                   props.onRetry(item.id);
-                  toast.info("已恢复运行");
+                  toast.info(t("timeline.toast.resumed"));
                 }}
               >
-                重新运行
+                {t("detail.retry")}
               </AppButton>
             </div>
           ) : null}

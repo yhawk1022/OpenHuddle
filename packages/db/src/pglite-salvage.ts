@@ -226,6 +226,24 @@ export async function salvageCorruptedPgliteInto(
         continue;
       }
       try {
+        // 跨版本抢救护栏：仅写入源表与目标表 pg_attribute 共有的未删除列，避免回滚旧版本时因新增列导致整表跳过
+        const targetAttrs = await targetClient.query<{ readonly attname: string }>(
+          `SELECT a.attname AS attname
+           FROM pg_attribute a
+           JOIN pg_class c ON c.oid = a.attrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = current_schema()
+             AND c.relkind = 'r'
+             AND c.relname = $1
+             AND a.attnum > 0
+             AND NOT a.attisdropped`,
+          [tableName],
+        );
+        const targetColumns = new Set(targetAttrs.rows.map((row) => row.attname));
+        if (targetColumns.size === 0) {
+          continue;
+        }
+
         const extracted = await sourcePg.query<Record<string, unknown>>(
           `SELECT * FROM "${tableName}"`,
         );
@@ -233,7 +251,9 @@ export async function salvageCorruptedPgliteInto(
         if (!firstRow) {
           continue;
         }
-        const cols = Object.keys(firstRow).filter((col) => /^[a-z0-9_]+$/u.test(col));
+        const cols = Object.keys(firstRow).filter(
+          (col) => /^[a-z0-9_]+$/u.test(col) && targetColumns.has(col),
+        );
         if (cols.length === 0) {
           continue;
         }

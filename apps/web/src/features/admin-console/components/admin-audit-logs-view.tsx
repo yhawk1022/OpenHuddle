@@ -5,7 +5,7 @@
 import type { AdminAuditTargetType } from "@openhuddle/protocol";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Search, X } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   AppInput,
   AppSelect,
@@ -14,6 +14,12 @@ import {
 } from "../../../components/primitives/index.js";
 import { HighlightedCodeBlock } from "../../../components/ui/syntax-code.js";
 import { adminAuditLogsQueryOptions } from "../api/admin-console.queries.js";
+import {
+  getAuditActionLabel,
+  getAuditTargetLabel,
+  resolveAdminErrorMessage,
+  useAdminI18n,
+} from "../i18n/index.js";
 import {
   AdminEmptyState,
   AdminErrorState,
@@ -25,26 +31,30 @@ import {
 
 type TargetTypeFilter = "__all__" | AdminAuditTargetType;
 
-const TARGET_TYPE_OPTIONS: ReadonlyArray<AppSelectOption<TargetTypeFilter>> = [
-  { value: "__all__", label: "全部操作对象" },
-  { value: "user", label: "用户账号 (user)" },
-  { value: "session", label: "登录会话 (session)" },
-  { value: "room", label: "群聊房间 (room)" },
-  { value: "message", label: "群聊消息 (message)" },
-  { value: "agent", label: "智能体 (agent)" },
-  { value: "proposal", label: "结构化提案 (proposal)" },
-  { value: "pairing_code", label: "配对码 (pairing_code)" },
-  { value: "system", label: "批量维护 (system)" },
-];
-
 /**
  * 渲染后台审计日志记录视图。
  */
 export function AdminAuditLogsView() {
+  const { locale, t } = useAdminI18n();
   const [page, setPage] = useState<number>(1);
   const [targetFilter, setTargetFilter] = useState<TargetTypeFilter>("__all__");
   const [searchInput, setSearchInput] = useState<string>("");
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+
+  const targetTypeOptions = useMemo<ReadonlyArray<AppSelectOption<TargetTypeFilter>>>(
+    () => [
+      { value: "__all__", label: t("auditLogs.filter.allTargets") },
+      { value: "user", label: t("auditLogs.filter.user") },
+      { value: "session", label: t("auditLogs.filter.session") },
+      { value: "room", label: t("auditLogs.filter.room") },
+      { value: "message", label: t("auditLogs.filter.message") },
+      { value: "agent", label: t("auditLogs.filter.agent") },
+      { value: "proposal", label: t("auditLogs.filter.proposal") },
+      { value: "pairing_code", label: t("auditLogs.filter.pairing_code") },
+      { value: "system", label: t("auditLogs.filter.system") },
+    ],
+    [t],
+  );
 
   const logsQuery = useQuery(
     adminAuditLogsQueryOptions({
@@ -68,15 +78,15 @@ export function AdminAuditLogsView() {
               setSearchInput(e.target.value);
               setPage(1);
             }}
-            placeholder="搜索操作人、目标 ID 或审计摘要…"
-            aria-label="搜索审计日志"
+            placeholder={t("auditLogs.search.placeholder")}
+            aria-label={t("auditLogs.search.aria")}
             leadingIcon={<Search className="h-3.5 w-3.5" />}
             trailingSlot={
               searchInput.length > 0 ? (
                 <IconButton
                   size="xs"
                   variant="ghost"
-                  label="清空搜索"
+                  label={t("shared.action.clearSearch")}
                   onClick={() => {
                     setSearchInput("");
                     setPage(1);
@@ -97,8 +107,8 @@ export function AdminAuditLogsView() {
               setTargetFilter(val);
               setPage(1);
             }}
-            options={TARGET_TYPE_OPTIONS}
-            ariaLabel="按审计目标类型筛选"
+            options={targetTypeOptions}
+            ariaLabel={t("auditLogs.filter.targetAria")}
           />
         </div>
       </div>
@@ -108,15 +118,17 @@ export function AdminAuditLogsView() {
           <AdminTableSkeleton rows={6} />
         ) : logsQuery.isError || !logsQuery.data ? (
           <AdminErrorState
-            message={
-              logsQuery.error instanceof Error ? logsQuery.error.message : "加载审计日志失败"
-            }
+            message={resolveAdminErrorMessage(
+              logsQuery.error,
+              t("auditLogs.error.loadList"),
+              locale,
+            )}
             onRetry={() => void logsQuery.refetch()}
           />
         ) : logsQuery.data.logs.length === 0 ? (
           <AdminEmptyState
-            title="暂无操作审计日志"
-            description="所有通过后台触发的权限调整、封禁、删房与撤回动作均会不可变留痕"
+            title={t("auditLogs.empty.title")}
+            description={t("auditLogs.empty.description")}
           />
         ) : (
           <>
@@ -129,14 +141,21 @@ export function AdminAuditLogsView() {
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0 flex-1 space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <AdminStatusPill tone="accent">{log.action}</AdminStatusPill>
-                          <AdminStatusPill tone="neutral">{log.targetType}</AdminStatusPill>
+                          <AdminStatusPill tone="accent" title={log.action}>
+                            {getAuditActionLabel(log.action, t)}
+                          </AdminStatusPill>
+                          <AdminStatusPill tone="neutral" title={log.targetType}>
+                            {getAuditTargetLabel(log.targetType, t)}
+                          </AdminStatusPill>
                           <span className="font-semibold text-[#111318] dark:text-[#ECEFF6]">
                             {log.summary}
                           </span>
                         </div>
                         <p className="text-[11.5px] text-[#687082] dark:text-[#8E96AB]">
-                          操作人：{log.actorDisplayName} ({log.actorEmail}) · 目标标识：
+                          {t("auditLogs.actorPrefix", {
+                            name: log.actorDisplayName,
+                            email: log.actorEmail,
+                          })}
                           <span className="font-mono">{log.targetId}</span>
                         </p>
                       </div>
@@ -156,7 +175,7 @@ export function AdminAuditLogsView() {
                             ) : (
                               <ChevronRight className="h-3 w-3" />
                             )}
-                            <span>详情</span>
+                            <span>{t("auditLogs.details")}</span>
                           </button>
                         ) : null}
                       </div>

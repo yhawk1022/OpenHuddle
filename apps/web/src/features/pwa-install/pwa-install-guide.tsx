@@ -7,19 +7,53 @@
  * 2. 原生几何图标：精准绘制 iOS/iPadOS 系统导出分享图标（方框+上箭头）、三点菜单与加号方框，无任何 Emoji 标题或 AI 装饰符。
  * 3. 全平台自适应：Android 支持 `beforeinstallprompt` 时提供一键原生安装主按钮；内置 WebView 提供一键复制网址与右上角菜单指引；国产 ROM 提供桌面快捷方式权限说明。
  */
+import type { SupportedLocale } from "@openhuddle/protocol";
 import { Check, Compass, Copy, Smartphone, X } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { BrandMark } from "../../components/brand-mark.js";
 import { AppButton } from "../../components/primitives/index.js";
 import { ModalDialog } from "../../components/ui/modal-dialog.js";
+import { usePwaInstallI18n } from "./i18n/index.js";
 import {
   markPwaInstalled,
   snoozePwaSmartBanner,
   triggerNativePwaInstall,
   usePwaInstallState,
 } from "./pwa-install-store.js";
-import type { StepGlyphKind } from "./pwa-platform-detect.js";
+import {
+  type PwaPlatformProfile,
+  type StepGlyphKind,
+  detectPwaPlatformProfile,
+} from "./pwa-platform-detect.js";
+
+function useLocalizedPwaProfile(
+  rawProfile: PwaPlatformProfile,
+  locale: SupportedLocale,
+): PwaPlatformProfile {
+  return useMemo(() => {
+    if (typeof window === "undefined" || typeof navigator === "undefined") {
+      return detectPwaPlatformProfile(
+        {
+          userAgent: "",
+          isStandaloneMedia: rawProfile.isStandalone,
+          hasBeforeInstallPrompt: rawProfile.canTriggerNativePrompt,
+        },
+        locale,
+      );
+    }
+    return detectPwaPlatformProfile(
+      {
+        userAgent: navigator.userAgent || "",
+        platform: navigator.platform,
+        maxTouchPoints: navigator.maxTouchPoints,
+        isStandaloneMedia: rawProfile.isStandalone,
+        hasBeforeInstallPrompt: rawProfile.canTriggerNativePrompt,
+      },
+      locale,
+    );
+  }, [locale, rawProfile.isStandalone, rawProfile.canTriggerNativePrompt]);
+}
 
 function StepGlyphIcon(props: { readonly kind: StepGlyphKind }) {
   switch (props.kind) {
@@ -115,7 +149,9 @@ export interface PwaInstallBannerProps {
  * 已处于 Standalone 独立应用模式或用户已关闭时自动静默不渲染。
  */
 export function PwaInstallBanner(props: PwaInstallBannerProps) {
-  const { profile, shouldShowSmartBanner } = usePwaInstallState();
+  const { locale, t } = usePwaInstallI18n();
+  const { profile: rawProfile, shouldShowSmartBanner } = usePwaInstallState();
+  const profile = useLocalizedPwaProfile(rawProfile, locale);
   const [installing, setInstalling] = useState(false);
 
   if (!shouldShowSmartBanner) {
@@ -128,7 +164,7 @@ export function PwaInstallBanner(props: PwaInstallBannerProps) {
       try {
         const outcome = await triggerNativePwaInstall();
         if (outcome === "accepted") {
-          toast.success("已添加到手机主屏幕");
+          toast.success(t("toast.installed"));
           return;
         }
         if (outcome === "unavailable") {
@@ -143,17 +179,17 @@ export function PwaInstallBanner(props: PwaInstallBannerProps) {
   };
 
   return (
-    <section className={`md:hidden ${props.className ?? ""}`} aria-label="添加到手机主屏幕提示">
+    <section className={`md:hidden ${props.className ?? ""}`} aria-label={t("banner.aria")}>
       <div className="flex items-center gap-2.5 rounded-xl border border-im-border bg-im-surface/90 px-3 py-2">
         <BrandMark size={30} className="shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12.5px] font-semibold leading-tight text-im-fg">
-            添加到手机主屏幕
+            {t("banner.title")}
           </div>
           <div className="mt-0.5 truncate text-[11px] leading-tight text-im-muted">
             {profile.inAppHostLabel
-              ? `从${profile.inAppHostLabel}用浏览器打开并固定桌面`
-              : "像原生 App 一样全屏秒开"}
+              ? t("banner.subtitleInApp", { host: profile.inAppHostLabel })
+              : t("banner.subtitleDefault")}
           </div>
         </div>
         <AppButton
@@ -166,12 +202,12 @@ export function PwaInstallBanner(props: PwaInstallBannerProps) {
           }}
           className="h-7 shrink-0 whitespace-nowrap rounded-lg px-2.5 text-[11.5px]"
         >
-          {profile.canTriggerNativePrompt ? "立即添加" : "添加"}
+          {profile.canTriggerNativePrompt ? t("banner.ctaInstall") : t("banner.ctaGuide")}
         </AppButton>
         <button
           type="button"
           onClick={snoozePwaSmartBanner}
-          aria-label="暂时关闭主屏幕提示"
+          aria-label={t("banner.dismissAria")}
           className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-im-subtle transition-colors hover:bg-im-hover hover:text-im-fg after:absolute after:-inset-1.5"
         >
           <X className="h-3.5 w-3.5" />
@@ -190,7 +226,9 @@ export interface PwaInstallGuideModalProps {
  * 全平台差异化「添加到手机主屏幕」分步操作抽屉/弹窗。
  */
 export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
-  const { profile } = usePwaInstallState();
+  const { locale, t } = usePwaInstallI18n();
+  const { profile: rawProfile } = usePwaInstallState();
+  const profile = useLocalizedPwaProfile(rawProfile, locale);
   const [installing, setInstalling] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
 
@@ -199,7 +237,7 @@ export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
     try {
       const outcome = await triggerNativePwaInstall();
       if (outcome === "accepted") {
-        toast.success("已添加到手机主屏幕");
+        toast.success(t("toast.installed"));
         props.onClose();
       }
     } finally {
@@ -215,10 +253,10 @@ export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
     try {
       await navigator.clipboard.writeText(targetUrl);
       setCopiedUrl(true);
-      toast.success("已复制网址，请粘贴到系统浏览器打开");
+      toast.success(t("toast.urlCopied"));
       window.setTimeout(() => setCopiedUrl(false), 2000);
     } catch {
-      toast.error("复制失败，请点击右上角菜单在浏览器打开");
+      toast.error(t("toast.urlCopyFailed"));
     }
   };
 
@@ -226,8 +264,8 @@ export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
     <ModalDialog
       open={props.open}
       onClose={props.onClose}
-      title="添加到手机主屏幕"
-      subtitle={`已识别当前环境：${profile.browserLabel}`}
+      title={t("modal.title")}
+      subtitle={t("modal.subtitle", { browser: profile.browserLabel })}
       maxWidthClass="max-w-md"
       icon={<Smartphone className="h-4 w-4" />}
       footer={
@@ -236,15 +274,15 @@ export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
             type="button"
             onClick={() => {
               markPwaInstalled();
-              toast.success("已记录，后续不再提示添加");
+              toast.success(t("toast.markedInstalled"));
               props.onClose();
             }}
             className="cursor-pointer text-xs font-medium text-im-muted transition-colors hover:text-im-fg"
           >
-            我已添加，不再提示
+            {t("modal.alreadyAdded")}
           </button>
           <AppButton type="button" variant="secondary" size="md" onClick={props.onClose}>
-            知道了
+            {t("modal.done")}
           </AppButton>
         </div>
       }
@@ -256,7 +294,7 @@ export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
           <div className="min-w-0 flex-1">
             <div className="truncate text-[14px] font-semibold text-im-fg">OpenHuddle</div>
             <div className="mt-0.5 text-xs leading-relaxed text-im-muted">
-              独立全屏窗口运行，隐藏浏览器地址栏，从桌面一键直达群聊与工作台。
+              {t("modal.previewDesc")}
             </div>
           </div>
         </div>
@@ -273,7 +311,7 @@ export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
             }}
             className="w-full justify-center"
           >
-            立即添加到主屏幕
+            {t("modal.nativeInstallCta")}
           </AppButton>
         ) : null}
 
@@ -281,7 +319,7 @@ export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
         {profile.inAppHost !== null ? (
           <div className="flex items-center justify-between gap-2 rounded-xl border border-im-border bg-im-surface/60 px-3 py-2.5">
             <div className="min-w-0 flex-1">
-              <div className="text-xs font-medium text-im-fg">备选方式：复制网址到浏览器</div>
+              <div className="text-xs font-medium text-im-fg">{t("modal.copyUrlHeading")}</div>
               <div className="truncate font-mono text-[11px] text-im-muted">
                 {typeof window !== "undefined" ? window.location.origin : "https://openhuddle.app"}
               </div>
@@ -296,7 +334,7 @@ export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
               className="shrink-0 whitespace-nowrap"
             >
               {copiedUrl ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              {copiedUrl ? "已复制" : "复制网址"}
+              {copiedUrl ? t("modal.copied") : t("modal.copyUrl")}
             </AppButton>
           </div>
         ) : null}
@@ -327,7 +365,9 @@ export function PwaInstallGuideModal(props: PwaInstallGuideModalProps) {
         {profile.secondaryNote ? (
           <div className="rounded-xl border border-im-border bg-im-surface/40 px-3.5 py-2.5 text-xs leading-relaxed text-im-muted">
             <span className="font-medium text-im-fg">
-              {profile.needsAndroidRomShortcutTip ? "权限提示：" : "提示："}
+              {profile.needsAndroidRomShortcutTip
+                ? t("modal.notePrefixPermission")
+                : t("modal.notePrefixTip")}
             </span>
             {profile.secondaryNote}
           </div>

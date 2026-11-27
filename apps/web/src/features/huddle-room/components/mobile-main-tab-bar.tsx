@@ -21,6 +21,7 @@ import {
   motion,
   usePrefersReducedMotion,
 } from "../../../components/primitives/index.js";
+import { useChatShellI18n } from "../i18n/chat-shell.js";
 
 export type MobileMainTabValue = "chats" | "contacts" | "workbench";
 
@@ -34,6 +35,7 @@ export interface MobileMainTabBarProps {
   readonly onSelectTab: (tab: MobileMainTabValue) => void;
   readonly chatUnreadCount?: number | undefined;
   readonly contactsBadgeText?: string | undefined;
+  readonly contactsBadgeTone?: "alert" | "neutral" | undefined;
   readonly workbenchNeedsYouCount?: number | undefined;
 }
 
@@ -54,6 +56,7 @@ function clampSlotWithRubberBand(rawSlot: number, maxIndex: number): number {
 }
 
 export function MobileMainTabBar(props: MobileMainTabBarProps) {
+  const { t } = useChatShellI18n();
   const reducedMotion = usePrefersReducedMotion();
   const barRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -199,7 +202,7 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
   }> = [
     {
       value: "chats",
-      label: "聊天",
+      label: t("mobileNav.chats"),
       icon: MessageCircle,
       badge:
         (props.chatUnreadCount ?? 0) > 0
@@ -211,14 +214,14 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
     },
     {
       value: "contacts",
-      label: "通讯录",
+      label: t("mobileNav.contacts"),
       icon: Users,
       badge: props.contactsBadgeText,
-      badgeTone: props.contactsBadgeText?.includes("新") ? "danger" : "neutral",
+      badgeTone: props.contactsBadgeTone === "alert" ? "danger" : "neutral",
     },
     {
       value: "workbench",
-      label: "工作台",
+      label: t("mobileNav.workbench"),
       icon: ListTodo,
       badge:
         (props.workbenchNeedsYouCount ?? 0) > 0 ? String(props.workbenchNeedsYouCount) : undefined,
@@ -232,7 +235,7 @@ export function MobileMainTabBar(props: MobileMainTabBarProps) {
       className="oh-mobile-main-nav pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center px-5 pt-1.5 md:hidden"
     >
       <nav
-        aria-label="移动端主导航"
+        aria-label={t("mobileNav.ariaLabel")}
         className="app-no-drag pointer-events-auto relative liquid-glass-bar w-full max-w-[19.5rem] select-none overflow-clip rounded-full p-1"
       >
         <div

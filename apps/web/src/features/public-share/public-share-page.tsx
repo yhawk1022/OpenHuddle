@@ -8,7 +8,13 @@
  * 3. App Shell 与桌面拖拽约束：全局 `html/body/#root` 锁定 `100dvh + overflow: hidden`，本页自带 `h-dvh` 根容器与内部 `overflow-y-auto` 滚动区；顶栏同时声明 `data-tauri-drag-region` 与 `.app-drag-region`。
  * 4. 渲染纯函数化与光学协调：日期分隔与连续消息分组仅基于消息自身的 `createdAtIso` 计算，绝不读取 `Date.now()`；回放舞台使用轻透 `oh-stage-frame` 保障长对话 120Hz 顺滑滚动。
  */
-import type { MessageDto, ProposalCardDto, ProposalId, RoomMemberDto } from "@openhuddle/protocol";
+import type {
+  MessageDto,
+  ProposalCardDto,
+  ProposalId,
+  RoomMemberDto,
+  SupportedLocale,
+} from "@openhuddle/protocol";
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -36,8 +42,11 @@ import { MessageBubble } from "../../components/ui/message-bubble.js";
 import { ProposalCardView } from "../../components/ui/proposal-card-view.js";
 import { ApiClientError, fetchPublicShareReplay } from "../../lib/api-client.js";
 import { formatMessageTimestamp } from "../../lib/format.js";
+import { formatDate } from "../../lib/i18n/index.js";
 import { huddleQueryKeys } from "../../lib/query-keys.js";
 import { navigateTo } from "../../lib/session-store.js";
+import { LocaleSwitcherMenu } from "../auth-pairing/index.js";
+import { usePublicShareI18n } from "./i18n/index.js";
 
 /** 连续消息分组的最大时间间隔（毫秒），与 IM 惯例保持一致 */
 const GROUPING_WINDOW_MS = 5 * 60_000;
@@ -110,17 +119,22 @@ function toDayKey(iso: string): string {
 }
 
 /**
- * 将 ISO 时间格式化为日期分隔行文案。
+ * 将 ISO 时间格式化为随当前语种切换的日期分隔行文案。
  *
  * @param iso - ISO-8601 时间字符串
- * @returns 例如 `11月12日 周四`
+ * @param locale - 当前生效语种
+ * @returns 例如 `11月12日周四` 或 `Thu, November 12`
  */
-function formatDayDivider(iso: string): string {
-  return new Date(iso).toLocaleDateString("zh-CN", {
-    month: "long",
-    day: "numeric",
-    weekday: "short",
-  });
+function formatDayDivider(iso: string, locale: SupportedLocale): string {
+  return formatDate(
+    iso,
+    {
+      month: "long",
+      day: "numeric",
+      weekday: "short",
+    },
+    locale,
+  );
 }
 
 /** `FinalDecisionCard` 入参属性 */
@@ -136,6 +150,7 @@ interface FinalDecisionCardProps {
  * @returns 决议便签卡
  */
 function FinalDecisionCard(props: FinalDecisionCardProps) {
+  const { locale, t } = usePublicShareI18n();
   const { proposal } = props;
   const decidedOption = proposal.draft.options.find(
     (option) => option.optionKey === proposal.decidedOptionKey,
@@ -154,17 +169,20 @@ function FinalDecisionCard(props: FinalDecisionCardProps) {
       <div className="flex items-center justify-between gap-2">
         <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#145335] dark:text-[#6EE7B7]">
           <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5" />
-          <span>已拍板结论</span>
+          <span>{t("decision.badge")}</span>
         </span>
         <span className="text-[11px] text-[#2F6849] dark:text-[#9ACBB0]">
-          {endorseCount}/{proposal.votes.length} Agent 赞成
+          {t("decision.endorsedRatio", {
+            endorsed: endorseCount,
+            total: proposal.votes.length,
+          })}
         </span>
       </div>
       <p className="mt-1.5 text-sm font-semibold leading-snug">{proposal.draft.title}</p>
       {decidedOption !== undefined ? (
         <div className="mt-2 rounded-[14px] bg-white/85 px-3 py-2 ring-1 ring-inset ring-black/[0.05] dark:bg-black/25 dark:ring-white/[0.08]">
           <p className="text-xs font-semibold text-[#111318] dark:text-[#F2F2F4]">
-            选定方案：{decidedOption.label}
+            {t("decision.selectedOption", { label: decidedOption.label })}
           </p>
           <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-[#4B5565] dark:text-[#C4C4CA]">
             {decidedOption.summary}
@@ -183,14 +201,14 @@ function FinalDecisionCard(props: FinalDecisionCardProps) {
         />
         <span>
           {proposal.decidedBy !== undefined
-            ? `${proposal.decidedBy.displayName} 拍板确认`
-            : "由人类拍板确认"}
+            ? t("decision.decidedBy", { name: proposal.decidedBy.displayName })
+            : t("decision.decidedByHuman")}
           {proposal.decidedAtIso !== undefined
-            ? ` · ${formatMessageTimestamp(proposal.decidedAtIso)}`
+            ? ` · ${formatMessageTimestamp(proposal.decidedAtIso, locale)}`
             : ""}
         </span>
         <span className="ml-auto font-medium text-[#145335] opacity-0 transition group-hover:opacity-100 dark:text-[#6EE7B7]">
-          查看详情 →
+          {t("decision.viewDetails")}
         </span>
       </p>
     </motion.button>
@@ -204,6 +222,7 @@ function FinalDecisionCard(props: FinalDecisionCardProps) {
  * @returns 公开分享回放视图
  */
 export function PublicSharePage(props: PublicSharePageProps) {
+  const { locale, t, tp } = usePublicShareI18n();
   const shareQuery = useQuery(publicShareReplayQueryOptions(props.inviteToken));
   const [copiedLink, setCopiedLink] = useState<boolean>(false);
   const [focusedProposalId, setFocusedProposalId] = useState<ProposalId | null>(null);
@@ -263,15 +282,15 @@ export function PublicSharePage(props: PublicSharePageProps) {
 
   const handleCopyShareUrl = (): void => {
     if (typeof window === "undefined" || !navigator.clipboard) {
-      toast.error("当前浏览器环境不支持一键复制，请直接复制地址栏链接");
+      toast.error(t("toast.copyUnsupported"));
       return;
     }
     void navigator.clipboard
       .writeText(window.location.href)
       .then(() => {
         setCopiedLink(true);
-        toast.success("公开回放链接已复制", {
-          description: "任何人无需登录即可只读浏览这段讨论与最终结论",
+        toast.success(t("toast.copySuccessTitle"), {
+          description: t("toast.copySuccessDesc"),
         });
         if (copiedTimerRef.current !== null) {
           window.clearTimeout(copiedTimerRef.current);
@@ -279,7 +298,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
         copiedTimerRef.current = window.setTimeout(() => setCopiedLink(false), 1_800);
       })
       .catch(() => {
-        toast.error("复制链接失败，请手动复制地址栏 URL");
+        toast.error(t("toast.copyFailed"));
       });
   };
 
@@ -307,7 +326,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
       ? shareQuery.error.message
       : shareQuery.error instanceof Error
         ? shareQuery.error.message
-        : "这个群聊不存在，或群主已关闭公开分享权限。";
+        : t("error.fallbackMessage");
 
   return (
     <div className="flex h-vvh w-full flex-col overflow-hidden text-[#111318] dark:text-[#F2F2F4]">
@@ -321,7 +340,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
             <button
               type="button"
               onClick={() => navigateTo("/")}
-              aria-label="返回 OpenHuddle 首页"
+              aria-label={t("header.backHomeAria")}
               className="app-no-drag flex min-w-0 cursor-pointer items-center gap-2 rounded-full px-1 py-0.5 transition hover:opacity-80 active:scale-[0.98]"
             >
               <BrandMark className="h-6 w-6 shrink-0" />
@@ -331,17 +350,18 @@ export function PublicSharePage(props: PublicSharePageProps) {
             </button>
             <span className="pointer-events-none hidden shrink-0 items-center gap-1 rounded-full bg-black/[0.05] px-2.5 py-0.5 text-[11px] font-medium text-[#4B5565] sm:inline-flex dark:bg-white/[0.07] dark:text-[#C4C4CA]">
               <Globe aria-hidden="true" className="h-3 w-3 text-[#16A34A] dark:text-[#34D399]" />
-              <span>公开回放</span>
+              <span>{t("header.publicReplay")}</span>
             </span>
           </div>
 
           <div className="app-no-drag flex shrink-0 items-center gap-1.5 sm:gap-2">
-            <AppTooltip content="复制公开只读回放链接" side="bottom">
+            <LocaleSwitcherMenu className="h-8 w-8" />
+            <AppTooltip content={t("header.copyLinkTooltip")} side="bottom">
               <AppButton
                 variant="secondary"
                 size="sm"
-                className="shrink-0 whitespace-nowrap"
-                aria-label={copiedLink ? "已复制公开链接" : "复制公开链接"}
+                className="shrink-0 whitespace-nowrap px-2.5 sm:px-3.5"
+                aria-label={copiedLink ? t("header.copiedLinkAria") : t("header.copyLinkAria")}
                 leadingIcon={
                   copiedLink ? (
                     <Check
@@ -354,17 +374,21 @@ export function PublicSharePage(props: PublicSharePageProps) {
                 }
                 onClick={handleCopyShareUrl}
               >
-                <span className="hidden sm:inline">{copiedLink ? "已复制" : "复制链接"}</span>
+                <span className="hidden sm:inline">
+                  {copiedLink ? t("header.copied") : t("header.copyLink")}
+                </span>
               </AppButton>
             </AppTooltip>
             <AppButton
               variant="primary"
               size="sm"
-              className="shrink-0 whitespace-nowrap"
+              className="shrink-0 whitespace-nowrap px-3 sm:px-3.5"
               trailingIcon={<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />}
               onClick={() => navigateTo("/")}
             >
-              <span className="max-[359px]:hidden">打开 </span>OpenHuddle
+              <span>
+                <span className="max-[374px]:hidden">{t("header.openBrandPrefix")}</span>OpenHuddle
+              </span>
             </AppButton>
           </div>
         </div>
@@ -400,7 +424,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                 <AlertCircle aria-hidden="true" className="h-5 w-5" />
               </div>
               <h1 className="mt-4 text-base font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                暂时打不开这段群聊回放
+                {t("error.heading")}
               </h1>
               <p className="mt-1.5 text-xs leading-relaxed text-[#687082] dark:text-[#8E8E96]">
                 {errMsg}
@@ -412,7 +436,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                   leadingIcon={<RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />}
                   onClick={() => void shareQuery.refetch()}
                 >
-                  重试
+                  {t("error.retry")}
                 </AppButton>
                 <AppButton
                   variant="primary"
@@ -420,7 +444,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                   trailingIcon={<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />}
                   onClick={() => navigateTo("/")}
                 >
-                  进入 OpenHuddle
+                  {t("error.enterBrand")}
                 </AppButton>
               </div>
             </motion.div>
@@ -444,7 +468,8 @@ export function PublicSharePage(props: PublicSharePageProps) {
                     {snapshot.room.name}
                   </h1>
                   <p className="truncate text-xs text-[#687082] dark:text-[#8E8E96]">
-                    {humanCount} 位成员 · {agentCount} 个 Agent · {snapshot.messages.length} 条消息
+                    {tp("stats.members", humanCount)} · {tp("stats.agents", agentCount)} ·{" "}
+                    {tp("stats.messages", snapshot.messages.length)}
                   </p>
                 </div>
 
@@ -454,7 +479,10 @@ export function PublicSharePage(props: PublicSharePageProps) {
                       key={`share-stack-${member.agentId ?? member.userId ?? member.displayName}`}
                       content={
                         member.ownerDisplayName !== undefined && member.memberKind === "agent"
-                          ? `${member.displayName} · ${member.ownerDisplayName} 的 Agent`
+                          ? t("room.agentOwnerTooltip", {
+                              name: member.displayName,
+                              owner: member.ownerDisplayName,
+                            })
                           : member.displayName
                       }
                       side="bottom"
@@ -488,7 +516,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                       />
                       <span>
                         <span className="font-semibold text-[#111318] dark:text-[#F2F2F4]">
-                          讨论主题：
+                          {t("room.topicPrefix")}
                         </span>
                         {snapshot.room.topic}
                       </span>
@@ -508,7 +536,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
               <div className="px-3.5 py-4 sm:px-6">
                 {snapshot.messages.length === 0 ? (
                   <div className="py-16 text-center text-xs text-[#8E96A6] dark:text-[#63636B]">
-                    这个群还没有公开的聊天记录。
+                    {t("room.emptyMessages")}
                   </div>
                 ) : (
                   <div>
@@ -530,7 +558,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                           {showDayDivider ? (
                             <div className="my-4 flex select-none justify-center first:mt-0">
                               <span className="rounded-full bg-black/[0.04] px-2.5 py-0.5 text-[11px] text-[#687082] dark:bg-white/[0.06] dark:text-[#8E8E96]">
-                                {formatDayDivider(msg.createdAtIso)}
+                                {formatDayDivider(msg.createdAtIso, locale)}
                               </span>
                             </div>
                           ) : null}
@@ -559,7 +587,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
               <div className="flex select-none flex-wrap items-center justify-between gap-3 border-t border-black/[0.06] bg-im-surface/45 px-4 py-3 sm:px-6 lg:pb-safe dark:border-white/[0.07] dark:bg-white/[0.03]">
                 <div className="flex min-w-0 items-center gap-2 rounded-full bg-black/[0.045] px-3.5 py-2 text-xs text-[#687082] dark:bg-white/[0.07] dark:text-[#9B9BA3]">
                   <Eye aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">只读回放 · 访客无需登录即可阅读，无法直接发言</span>
+                  <span className="truncate">{t("footer.readOnlyNotice")}</span>
                 </div>
                 <AppButton
                   variant="primary"
@@ -568,7 +596,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                   trailingIcon={<ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />}
                   onClick={() => navigateTo("/")}
                 >
-                  把我的 AI 也拉进群聊
+                  {t("footer.ctaBringAi")}
                 </AppButton>
               </div>
             </motion.section>
@@ -582,11 +610,11 @@ export function PublicSharePage(props: PublicSharePageProps) {
             >
               <h2 className="flex select-none items-center gap-1.5 px-1 text-xs font-semibold text-[#4B5565] dark:text-[#9B9BA3]">
                 <FileCheck2 aria-hidden="true" className="h-3.5 w-3.5" />
-                <span>提案与结论 · {snapshot.proposals.length}</span>
+                <span>{t("aside.proposalsHeading", { count: snapshot.proposals.length })}</span>
               </h2>
               {snapshot.proposals.length === 0 ? (
                 <div className="relative liquid-glass-panel rounded-[22px] p-6 text-center text-xs text-[#687082] dark:text-[#8E8E96]">
-                  这段讨论尚未发起正式提案卡。
+                  {t("aside.emptyProposals")}
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -617,7 +645,7 @@ export function PublicSharePage(props: PublicSharePageProps) {
                   aria-hidden="true"
                   className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#16A34A] dark:text-[#34D399]"
                 />
-                <span>公开回放已剥离房间邀请密钥，所有内容均以外部访客只读视角呈现。</span>
+                <span>{t("aside.securityNotice")}</span>
               </p>
             </motion.aside>
           </div>

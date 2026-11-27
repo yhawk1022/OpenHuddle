@@ -5,7 +5,7 @@
 import type { AdminProposalItem, ProposalStatus, RoomId } from "@openhuddle/protocol";
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, Search, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   AppButton,
   AppInput,
@@ -13,10 +13,12 @@ import {
   type AppSelectOption,
   IconButton,
 } from "../../../components/primitives/index.js";
+import { formatNumber } from "../../../lib/i18n/index.js";
 import {
   adminProposalsQueryOptions,
   useAdminDeleteProposalMutation,
 } from "../api/admin-console.queries.js";
+import { getProposalStatusLabel, resolveAdminErrorMessage, useAdminI18n } from "../i18n/index.js";
 import {
   AdminConfirmModal,
   AdminEmptyState,
@@ -29,14 +31,6 @@ import {
 } from "./admin-shared-ui.js";
 
 type ProposalStatusFilter = "__all__" | ProposalStatus;
-
-const STATUS_OPTIONS: ReadonlyArray<AppSelectOption<ProposalStatusFilter>> = [
-  { value: "__all__", label: "全部状态" },
-  { value: "open", label: "待拍板 (open)" },
-  { value: "approved", label: "已采纳 (approved)" },
-  { value: "rejected", label: "已驳回 (rejected)" },
-  { value: "superseded", label: "已替代 (superseded)" },
-];
 
 const STATUS_TONE: Readonly<Record<ProposalStatus, AdminTone>> = {
   open: "warning",
@@ -51,10 +45,22 @@ const STATUS_TONE: Readonly<Record<ProposalStatus, AdminTone>> = {
 export function AdminProposalsView(props: {
   readonly onInspectRoom: (roomId: RoomId) => void;
 }) {
+  const { locale, t } = useAdminI18n();
   const [page, setPage] = useState<number>(1);
   const [statusFilter, setStatusFilter] = useState<ProposalStatusFilter>("__all__");
   const [searchInput, setSearchInput] = useState<string>("");
   const [pendingDelete, setPendingDelete] = useState<AdminProposalItem | null>(null);
+
+  const statusOptions = useMemo<ReadonlyArray<AppSelectOption<ProposalStatusFilter>>>(
+    () => [
+      { value: "__all__", label: t("proposals.filter.allStatuses") },
+      { value: "open", label: t("proposals.filter.open") },
+      { value: "approved", label: t("proposals.filter.approved") },
+      { value: "rejected", label: t("proposals.filter.rejected") },
+      { value: "superseded", label: t("proposals.filter.superseded") },
+    ],
+    [t],
+  );
 
   const proposalsQuery = useQuery(
     adminProposalsQueryOptions({
@@ -80,15 +86,15 @@ export function AdminProposalsView(props: {
               setSearchInput(e.target.value);
               setPage(1);
             }}
-            placeholder="搜索提案标题、所属群聊或 prp_ ID…"
-            aria-label="搜索提案"
+            placeholder={t("proposals.search.placeholder")}
+            aria-label={t("proposals.search.aria")}
             leadingIcon={<Search className="h-3.5 w-3.5" />}
             trailingSlot={
               searchInput.length > 0 ? (
                 <IconButton
                   size="xs"
                   variant="ghost"
-                  label="清空搜索"
+                  label={t("shared.action.clearSearch")}
                   onClick={() => {
                     setSearchInput("");
                     setPage(1);
@@ -109,8 +115,8 @@ export function AdminProposalsView(props: {
               setStatusFilter(val);
               setPage(1);
             }}
-            options={STATUS_OPTIONS}
-            ariaLabel="按提案状态筛选"
+            options={statusOptions}
+            ariaLabel={t("proposals.filter.statusAria")}
           />
         </div>
       </div>
@@ -120,17 +126,17 @@ export function AdminProposalsView(props: {
           <AdminTableSkeleton rows={5} />
         ) : proposalsQuery.isError || !proposalsQuery.data ? (
           <AdminErrorState
-            message={
-              proposalsQuery.error instanceof Error
-                ? proposalsQuery.error.message
-                : "加载提案列表失败"
-            }
+            message={resolveAdminErrorMessage(
+              proposalsQuery.error,
+              t("proposals.error.loadList"),
+              locale,
+            )}
             onRetry={() => void proposalsQuery.refetch()}
           />
         ) : proposalsQuery.data.proposals.length === 0 ? (
           <AdminEmptyState
-            title="暂无符合条件的提案记录"
-            description="尝试切换提案状态或调整搜索关键词"
+            title={t("proposals.empty.title")}
+            description={t("proposals.empty.description")}
           />
         ) : (
           <>
@@ -138,12 +144,12 @@ export function AdminProposalsView(props: {
               <table className="w-full min-w-[820px] border-collapse text-left text-[13px]">
                 <thead>
                   <tr className="border-b border-black/[0.06] bg-black/[0.02] text-[11.5px] font-semibold text-[#687082] dark:border-white/[0.07] dark:bg-white/[0.02] dark:text-[#8E96AB]">
-                    <th className="px-4 py-3">提案标题与摘要</th>
-                    <th className="px-3 py-3">所属群聊</th>
-                    <th className="px-3 py-3">状态与拍板结论</th>
-                    <th className="px-3 py-3 text-right">方案 / 投票</th>
-                    <th className="px-3 py-3">创建时间</th>
-                    <th className="px-4 py-3 text-right">操作</th>
+                    <th className="px-4 py-3">{t("proposals.table.proposal")}</th>
+                    <th className="px-3 py-3">{t("proposals.table.room")}</th>
+                    <th className="px-3 py-3">{t("proposals.table.statusDecision")}</th>
+                    <th className="px-3 py-3 text-right">{t("proposals.table.optionsVotes")}</th>
+                    <th className="px-3 py-3">{t("proposals.table.createdAt")}</th>
+                    <th className="px-4 py-3 text-right">{t("proposals.table.actions")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-black/[0.05] dark:divide-white/[0.06]">
@@ -175,18 +181,25 @@ export function AdminProposalsView(props: {
                       <td className="px-3 py-3">
                         <div className="space-y-1">
                           <AdminStatusPill tone={STATUS_TONE[prop.status]}>
-                            {prop.status}
+                            {getProposalStatusLabel(prop.status, t)}
                           </AdminStatusPill>
                           {prop.decidedByDisplayName ? (
                             <p className="text-[11px] text-[#687082] dark:text-[#8E96AB]">
-                              拍板人：{prop.decidedByDisplayName}
-                              {prop.decidedOptionKey ? ` · ${prop.decidedOptionKey}` : ""}
+                              {prop.decidedOptionKey
+                                ? t("proposals.decidedByWithOption", {
+                                    name: prop.decidedByDisplayName,
+                                    optionKey: prop.decidedOptionKey,
+                                  })
+                                : t("proposals.decidedBy", { name: prop.decidedByDisplayName })}
                             </p>
                           ) : null}
                         </div>
                       </td>
                       <td className="px-3 py-3 text-right font-mono text-xs text-[#3B414E] tabular-nums dark:text-[#B4BCD0]">
-                        {prop.draft.options.length} 方案 / {prop.voteCount} 票
+                        {t("proposals.counts", {
+                          options: formatNumber(prop.draft.options.length, undefined, locale),
+                          votes: formatNumber(prop.voteCount, undefined, locale),
+                        })}
                       </td>
                       <td className="px-3 py-3 font-mono text-xs text-[#687082] tabular-nums dark:text-[#8E96AB]">
                         {formatAdminDateTime(prop.createdAtIso)}
@@ -198,7 +211,7 @@ export function AdminProposalsView(props: {
                           leadingIcon={<Trash2 className="h-3 w-3" />}
                           onClick={() => setPendingDelete(prop)}
                         >
-                          删除
+                          {t("shared.action.delete")}
                         </AppButton>
                       </td>
                     </tr>
@@ -217,9 +230,13 @@ export function AdminProposalsView(props: {
 
       <AdminConfirmModal
         open={pendingDelete !== null}
-        title={pendingDelete ? `删除提案「${pendingDelete.draft.title}」` : "删除提案"}
-        description="确定永久删除该结构化提案及其全部投票表态记录吗？"
-        confirmLabel="确认删除"
+        title={
+          pendingDelete
+            ? t("proposals.modal.deleteTitle", { title: pendingDelete.draft.title })
+            : t("proposals.modal.deleteTitleFallback")
+        }
+        description={t("proposals.modal.deleteDescription")}
+        confirmLabel={t("shared.action.confirmDelete")}
         isPending={deleteMutation.isPending}
         onClose={() => setPendingDelete(null)}
         onConfirm={() => {

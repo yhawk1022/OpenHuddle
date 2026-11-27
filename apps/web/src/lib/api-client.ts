@@ -41,6 +41,7 @@ import {
   type FriendshipId,
   type HumanUserDto,
   type JoinRoomBody,
+  type LanguagePreference,
   type ListWorkItemsResponse,
   type ListWorkspacesResponse,
   type LocalAgentsStatusResponse,
@@ -91,6 +92,13 @@ import {
   type WorkStage,
   type WorkspaceId,
 } from "@openhuddle/protocol";
+import {
+  formatBackendUnavailableMessage,
+  formatHttpFailedMessage,
+  formatNetworkFailedMessage,
+  formatNetworkTimeoutMessage,
+  getActiveLocale,
+} from "./i18n/index.js";
 import { getStoredSessionToken, setStoredSessionToken } from "./session-store.js";
 
 /**
@@ -134,6 +142,7 @@ export interface HumanMeResponseDto {
   readonly callerKind: "human";
   readonly user: HumanUserDto;
   readonly themePreference?: ThemePreference;
+  readonly languagePreference?: LanguagePreference;
   readonly agents: ReadonlyArray<OwnedAgentSummaryDto>;
 }
 
@@ -226,6 +235,7 @@ export async function requestApiJson<TResponse>(
 
   const headers: Record<string, string> = {
     Accept: "application/json",
+    "Accept-Language": getActiveLocale(),
   };
   if (token !== null) {
     headers.Authorization = `Bearer ${token}`;
@@ -248,14 +258,17 @@ export async function requestApiJson<TResponse>(
     if (err instanceof DOMException && err.name === "TimeoutError") {
       throw new ApiClientError({
         code: "INTERNAL_SERVER_ERROR",
-        message: `请求超时（${String(timeoutMs / 1_000)} 秒无响应），请检查网络后重试`,
+        message: formatNetworkTimeoutMessage(timeoutMs / 1_000),
         statusCode: 504,
         requestId: "timeout",
       });
     }
     throw new ApiClientError({
       code: "INTERNAL_SERVER_ERROR",
-      message: err instanceof Error ? err.message : "网络请求失败",
+      message:
+        err instanceof Error && err.message.trim().length > 0
+          ? err.message
+          : formatNetworkFailedMessage(),
       statusCode: 0,
       requestId: "network",
     });
@@ -283,8 +296,8 @@ export async function requestApiJson<TResponse>(
     throw new ApiClientError({
       code: response.status === 401 ? "UNAUTHORIZED" : "INTERNAL_SERVER_ERROR",
       message: isGatewayOrBackendDown
-        ? `后端服务暂未就绪或正在重启（HTTP ${String(response.status)}），请稍后重试`
-        : `Request failed with HTTP ${String(response.status)}`,
+        ? formatBackendUnavailableMessage(response.status)
+        : formatHttpFailedMessage(response.status),
       statusCode: response.status,
       requestId: isGatewayOrBackendDown ? "gateway" : "unknown",
     });

@@ -22,6 +22,7 @@ import {
   usePrefersReducedMotion,
 } from "../../lib/motion-physics.js";
 import { useMobileOverlayBackGuard } from "../../lib/session-store.js";
+import { useComponentsI18n } from "../i18n/index.js";
 import { useIsMobileViewport } from "./sheet-modal.js";
 
 /** 命令面板单条可执行动作 */
@@ -81,12 +82,13 @@ export interface AppCommandPaletteProps {
  * @returns `cmdk` + Radix `Dialog` 封装组件
  */
 export function AppCommandPalette(props: AppCommandPaletteProps) {
+  const { t } = useComponentsI18n();
   const {
     open,
     onOpenChange,
     groups,
-    placeholder = "搜索群聊、Agent 或快捷操作…",
-    emptyText = "没有找到匹配的群聊或操作",
+    placeholder = t("commandPalette.placeholder"),
+    emptyText = t("commandPalette.empty"),
     enableGlobalShortcut = true,
     footerHint,
   } = props;
@@ -160,12 +162,12 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
                 )}
               >
                 <div className="sr-only">
-                  <Dialog.Title>全局快捷搜索</Dialog.Title>
-                  <Dialog.Description>快速切换群聊、查看我的 Agent 或执行操作</Dialog.Description>
+                  <Dialog.Title>{t("commandPalette.srTitle")}</Dialog.Title>
+                  <Dialog.Description>{t("commandPalette.srDescription")}</Dialog.Description>
                 </div>
 
                 <Command
-                  label="OpenHuddle 全局命令面板"
+                  label={t("commandPalette.label")}
                   loop={true}
                   className="flex min-h-0 flex-1 flex-col overflow-hidden"
                 >
@@ -183,7 +185,7 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
                     <Dialog.Close asChild>
                       <button
                         type="button"
-                        aria-label="关闭搜索面板"
+                        aria-label={t("commandPalette.closeAria")}
                         className="inline-flex h-8 w-8 sm:h-auto sm:w-auto shrink-0 cursor-pointer items-center justify-center rounded-full bg-black/[0.05] sm:px-2 sm:py-0.5 font-mono text-[10.5px] font-semibold text-[#687082] transition hover:bg-black/[0.09] hover:text-[#111318] dark:bg-white/[0.08] dark:text-[#7D869C] dark:hover:bg-white/[0.14] dark:hover:text-[#ECEFF6]"
                       >
                         <X aria-hidden="true" className="h-4 w-4 sm:hidden" />
@@ -263,17 +265,17 @@ export function AppCommandPalette(props: AppCommandPaletteProps) {
 
                   {/* 底部键盘操作提示栏（仅桌面端显示，为手机软键盘态释放宝贵纵向空间） */}
                   <div className="hidden sm:flex shrink-0 select-none items-center justify-between border-t border-black/[0.06] bg-black/[0.025] px-4 py-2 text-[11px] text-[#939BAD] dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-[#586075]">
-                    <div className="truncate">{footerHint ?? "快速跳转与操作"}</div>
+                    <div className="truncate">{footerHint ?? t("commandPalette.footerHint")}</div>
                     <div className="flex items-center gap-3">
                       <span className="inline-flex items-center gap-1">
                         <kbd className="rounded bg-black/[0.06] px-1 py-0.2 font-mono text-[10px] dark:bg-white/10">
                           ↑↓
                         </kbd>
-                        <span>选择</span>
+                        <span>{t("commandPalette.keySelect")}</span>
                       </span>
                       <span className="inline-flex items-center gap-1">
                         <CornerDownLeft aria-hidden="true" className="h-3 w-3" />
-                        <span>打开</span>
+                        <span>{t("commandPalette.keyOpen")}</span>
                       </span>
                     </div>
                   </div>

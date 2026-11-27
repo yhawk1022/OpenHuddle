@@ -13,6 +13,9 @@
  * 8. 国产 Android 浏览器（夸克、UC、小米、华为、OPPO、vivo、QQ浏览器、百度）+ 国产 ROM 桌面快捷方式权限指引
  */
 
+import type { SupportedLocale } from "@openhuddle/protocol";
+import { getPwaInstallTranslator } from "./i18n/index.js";
+
 export type PwaOsKind = "ios" | "ipados" | "android" | "desktop";
 
 export type PwaInstallMode =
@@ -81,30 +84,32 @@ export interface PwaPlatformProfile {
   readonly secondaryNote: string | null;
 }
 
-const ANDROID_ROM_SHORTCUT_TIP =
-  "若点击添加后手机桌面未出现图标，请前往系统「设置 → 应用管理/权限 → 桌面快捷方式」，开启当前浏览器的「创建桌面快捷方式」权限（澎湃 OS / 鸿蒙 / ColorOS / OriginOS 常见默认拦截）。";
+type PwaTranslateFn = ReturnType<typeof getPwaInstallTranslator>["t"];
 
-function detectInAppWebView(ua: string): {
+function detectInAppWebView(
+  ua: string,
+  t: PwaTranslateFn,
+): {
   readonly kind: InAppWebViewKind;
   readonly label: string;
 } | null {
   if (/wxwork/i.test(ua)) {
-    return { kind: "wecom", label: "企业微信" };
+    return { kind: "wecom", label: t("host.wecom") };
   }
   if (/MicroMessenger/i.test(ua)) {
-    return { kind: "wechat", label: "微信" };
+    return { kind: "wechat", label: t("host.wechat") };
   }
   if (/Feishu|Lark/i.test(ua)) {
-    return { kind: "feishu", label: "飞书" };
+    return { kind: "feishu", label: t("host.feishu") };
   }
   if (/DingTalk/i.test(ua)) {
-    return { kind: "dingtalk", label: "钉钉" };
+    return { kind: "dingtalk", label: t("host.dingtalk") };
   }
   if (/AlipayClient|AliApp/i.test(ua)) {
-    return { kind: "alipay", label: "支付宝" };
+    return { kind: "alipay", label: t("host.alipay") };
   }
   if (/Weibo/i.test(ua)) {
-    return { kind: "weibo", label: "微博" };
+    return { kind: "weibo", label: t("host.weibo") };
   }
   // 注意排除 MQQBrowser（手机 QQ 独立浏览器），仅匹配手机 QQ / TIM 内置 WebView (`QQ/` 或 `TIM/`)
   if (/(?:\bQQ\/|\bTIM\/)/i.test(ua) && !/MQQBrowser\/.*TBS/i.test(ua)) {
@@ -138,36 +143,44 @@ function detectOs(ua: string, platform?: string, maxTouchPoints?: number): PwaOs
   return "desktop";
 }
 
-function detectIosThirdPartyBrowserLabel(ua: string): string | null {
+function detectIosThirdPartyBrowserLabel(ua: string, t: PwaTranslateFn): string | null {
   if (/CriOS/i.test(ua)) return "Chrome";
   if (/EdgiOS/i.test(ua)) return "Edge";
   if (/FxiOS/i.test(ua)) return "Firefox";
   if (/OPiOS/i.test(ua)) return "Opera";
-  if (/Quark/i.test(ua)) return "夸克浏览器";
-  if (/UCBrowser/i.test(ua)) return "UC 浏览器";
-  if (/MQQBrowser/i.test(ua)) return "QQ 浏览器";
-  if (/baiduboxapp/i.test(ua)) return "百度 App";
+  if (/Quark/i.test(ua)) return t("browser.quark");
+  if (/UCBrowser/i.test(ua)) return t("browser.uc");
+  if (/MQQBrowser/i.test(ua)) return t("browser.qq");
+  if (/baiduboxapp/i.test(ua)) return t("browser.baiduApp");
   return null;
 }
 
-function detectAndroidDomesticBrowserLabel(ua: string): string | null {
-  if (/Quark/i.test(ua)) return "夸克浏览器";
-  if (/UCBrowser|UCWEB/i.test(ua)) return "UC 浏览器";
-  if (/MiuiBrowser|XiaoMi/i.test(ua) && /MiuiBrowser/i.test(ua)) return "小米浏览器";
-  if (/HuaweiBrowser|HBPC/i.test(ua)) return "华为浏览器";
-  if (/HeyTapBrowser|OppoBrowser/i.test(ua)) return "OPPO 浏览器";
-  if (/VivoBrowser/i.test(ua)) return "vivo 浏览器";
-  if (/MQQBrowser/i.test(ua)) return "QQ 浏览器";
-  if (/baiduboxapp|baidubrowser/i.test(ua)) return "百度浏览器";
-  if (/SogouMobileBrowser/i.test(ua)) return "搜狗浏览器";
-  if (/MZBrowser/i.test(ua)) return "魅族浏览器";
+function detectAndroidDomesticBrowserLabel(ua: string, t: PwaTranslateFn): string | null {
+  if (/Quark/i.test(ua)) return t("browser.quark");
+  if (/UCBrowser|UCWEB/i.test(ua)) return t("browser.uc");
+  if (/MiuiBrowser|XiaoMi/i.test(ua) && /MiuiBrowser/i.test(ua)) return t("browser.miui");
+  if (/HuaweiBrowser|HBPC/i.test(ua)) return t("browser.huawei");
+  if (/HeyTapBrowser|OppoBrowser/i.test(ua)) return t("browser.oppo");
+  if (/VivoBrowser/i.test(ua)) return t("browser.vivo");
+  if (/MQQBrowser/i.test(ua)) return t("browser.qq");
+  if (/baiduboxapp|baidubrowser/i.test(ua)) return t("browser.baidu");
+  if (/SogouMobileBrowser/i.test(ua)) return t("browser.sogou");
+  if (/MZBrowser/i.test(ua)) return t("browser.meizu");
   return null;
 }
 
 /**
  * 根据运行环境快照解析精准的「添加到手机主屏幕」平台策略与分步说明。
+ *
+ * @param input - 浏览器环境特征快照
+ * @param locale - 可选显式语种（缺省取全局生效语种）
  */
-export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): PwaPlatformProfile {
+export function detectPwaPlatformProfile(
+  input: PwaPlatformEnvironmentInput,
+  locale?: SupportedLocale,
+): PwaPlatformProfile {
+  const { t } = getPwaInstallTranslator(locale);
+  const androidRomShortcutTip = t("note.androidRomShortcut");
   const ua = input.userAgent || "";
   const isStandalone = Boolean(
     input.isStandaloneMedia ||
@@ -183,7 +196,7 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
     return {
       os,
       mode: "standalone-installed",
-      browserLabel: "独立应用模式",
+      browserLabel: t("browser.standalone"),
       inAppHost: null,
       inAppHostLabel: null,
       isStandalone: true,
@@ -197,13 +210,13 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
     };
   }
 
-  const inApp = detectInAppWebView(ua);
+  const inApp = detectInAppWebView(ua, t);
   if (inApp !== null && isMobileOrTablet) {
     const isApple = os === "ios" || os === "ipados";
     return {
       os,
       mode: isApple ? "ios-in-app-webview" : "android-in-app-webview",
-      browserLabel: `${inApp.label}内置浏览器`,
+      browserLabel: t("browser.inAppFormat", { host: inApp.label }),
       inAppHost: inApp.kind,
       inAppHostLabel: inApp.label,
       isStandalone: false,
@@ -215,45 +228,45 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
       steps: isApple
         ? [
             {
-              title: "点击右上角「···」菜单",
-              detail: `在${inApp.label}顶栏右侧打开更多操作菜单。`,
+              title: t("step.inApp.menu.title"),
+              detail: t("step.inApp.menu.detail", { host: inApp.label }),
               glyph: "more-horizontal",
             },
             {
-              title: "选择「在默认浏览器 / Safari 中打开」",
-              detail: `${inApp.label}内置窗口不支持直接创建主屏幕图标，需先跳转系统浏览器。`,
+              title: t("step.inApp.iosOpen.title"),
+              detail: t("step.inApp.iosOpen.detail", { host: inApp.label }),
               glyph: "browser-compass",
             },
             {
-              title: "点击「分享」→「添加到主屏幕」",
-              detail: "在 Safari 打开后，点击工具栏分享按钮并选择「添加到主屏幕」即可。",
+              title: t("step.inApp.iosAdd.title"),
+              detail: t("step.inApp.iosAdd.detail"),
               glyph: "ios-share",
             },
           ]
         : [
             {
-              title: "点击右上角「···」菜单",
-              detail: `在${inApp.label}顶栏右侧打开更多操作菜单。`,
+              title: t("step.inApp.menu.title"),
+              detail: t("step.inApp.menu.detail", { host: inApp.label }),
               glyph: "more-horizontal",
             },
             {
-              title: "选择「在浏览器打开」",
-              detail: `${inApp.label}内置窗口不支持直接安装桌面图标，请先用手机系统浏览器打开。`,
+              title: t("step.inApp.androidOpen.title"),
+              detail: t("step.inApp.androidOpen.detail", { host: inApp.label }),
               glyph: "browser-compass",
             },
             {
-              title: "点击「安装应用 / 添加到主屏幕」",
-              detail: "在系统浏览器中打开后，即可一键安装或通过浏览器菜单添加到手机桌面。",
+              title: t("step.inApp.androidAdd.title"),
+              detail: t("step.inApp.androidAdd.detail"),
               glyph: "plus-square",
             },
           ],
-      secondaryNote: isApple ? null : ANDROID_ROM_SHORTCUT_TIP,
+      secondaryNote: isApple ? null : androidRomShortcutTip,
     };
   }
 
   // iOS / iPadOS 分支
   if (os === "ios" || os === "ipados") {
-    const thirdPartyLabel = detectIosThirdPartyBrowserLabel(ua);
+    const thirdPartyLabel = detectIosThirdPartyBrowserLabel(ua, t);
     if (thirdPartyLabel !== null) {
       return {
         os,
@@ -269,22 +282,22 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
         needsAndroidRomShortcutTip: false,
         steps: [
           {
-            title: "点击地址栏右侧「分享」图标",
-            detail: `在 ${thirdPartyLabel} 顶部（或底部）地址栏旁找到向上箭头的分享按钮。`,
+            title: t("step.iosThirdParty.share.title"),
+            detail: t("step.iosThirdParty.share.detail", { browser: thirdPartyLabel }),
             glyph: "ios-share",
           },
           {
-            title: "向下滑动，点击「添加到主屏幕」",
-            detail: "在系统分享菜单列表中找到带加号的「添加到主屏幕」选项。",
+            title: t("step.iosThirdParty.addToHome.title"),
+            detail: t("step.iosThirdParty.addToHome.detail"),
             glyph: "plus-square",
           },
           {
-            title: "点击右上角「添加」完成",
-            detail: "返回主屏幕即可点击 OpenHuddle 图标以独立全屏模式启动。",
+            title: t("step.iosThirdParty.confirm.title"),
+            detail: t("step.iosThirdParty.confirm.detail"),
             glyph: "check-confirm",
           },
         ],
-        secondaryNote: `若当前版本的 ${thirdPartyLabel} 菜单中未显示「添加到主屏幕」，可复制当前网址并在系统自带 Safari 浏览器中打开。`,
+        secondaryNote: t("note.iosThirdPartyFallback", { browser: thirdPartyLabel }),
       };
     }
 
@@ -303,20 +316,18 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
       needsAndroidRomShortcutTip: false,
       steps: [
         {
-          title: isIpad ? "点击顶部地址栏右侧「分享」按钮" : "点击底部工具栏「分享」按钮",
-          detail: isIpad
-            ? "在 Safari 顶栏右侧找到带向上箭头的方形分享图标。"
-            : "在 Safari 屏幕底部（若开启顶部地址栏则在上方）点击带向上箭头的方形分享图标。",
+          title: isIpad ? t("step.ipadosSafari.share.title") : t("step.iosSafari.share.title"),
+          detail: isIpad ? t("step.ipadosSafari.share.detail") : t("step.iosSafari.share.detail"),
           glyph: "ios-share",
         },
         {
-          title: "下滑菜单，点击「添加到主屏幕」",
-          detail: "在弹出的面板中向下滑动，找到「添加到主屏幕」并轻触。",
+          title: t("step.safari.addToHome.title"),
+          detail: t("step.safari.addToHome.detail"),
           glyph: "plus-square",
         },
         {
-          title: "点击右上角「添加」",
-          detail: "添加后从主屏幕图标进入，即可隐藏浏览器地址栏获得原生全屏体验。",
+          title: t("step.safari.confirm.title"),
+          detail: t("step.safari.confirm.detail"),
           glyph: "check-confirm",
         },
       ],
@@ -328,7 +339,7 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
   if (os === "android") {
     const isSamsung = /SamsungBrowser/i.test(ua);
     const isFirefox = /Firefox|FxiOS/i.test(ua);
-    const domesticLabel = detectAndroidDomesticBrowserLabel(ua);
+    const domesticLabel = detectAndroidDomesticBrowserLabel(ua, t);
     const chromiumLabel = /EdgA/i.test(ua)
       ? "Edge"
       : /Brave/i.test(ua)
@@ -352,17 +363,17 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
         needsAndroidRomShortcutTip: true,
         steps: [
           {
-            title: "点击下方「立即添加到主屏幕」",
-            detail: "直接唤起系统原生安装确认框，无需手动查找菜单。",
+            title: t("step.androidNative.tap.title"),
+            detail: t("step.androidNative.tap.detail"),
             glyph: "plus-square",
           },
           {
-            title: "在系统弹窗中点击「安装 / 添加」",
-            detail: "安装完成后即可在手机桌面与最近任务中独立全屏运行。",
+            title: t("step.androidNative.confirm.title"),
+            detail: t("step.androidNative.confirm.detail"),
             glyph: "check-confirm",
           },
         ],
-        secondaryNote: ANDROID_ROM_SHORTCUT_TIP,
+        secondaryNote: androidRomShortcutTip,
       };
     }
 
@@ -381,22 +392,22 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
         needsAndroidRomShortcutTip: true,
         steps: [
           {
-            title: "点击底部工具栏右下角「≡」菜单",
-            detail: "打开三星浏览器底部功能面板。",
+            title: t("step.samsung.menu.title"),
+            detail: t("step.samsung.menu.detail"),
             glyph: "hamburger-menu",
           },
           {
-            title: "点击「将页面添加至」→「主屏幕」",
-            detail: "在添加目标中选择手机「主屏幕」。",
+            title: t("step.samsung.addPage.title"),
+            detail: t("step.samsung.addPage.detail"),
             glyph: "plus-square",
           },
           {
-            title: "确认「添加」完成",
-            detail: "从手机桌面点击图标即可全屏启动 OpenHuddle。",
+            title: t("step.samsung.confirm.title"),
+            detail: t("step.samsung.confirm.detail"),
             glyph: "check-confirm",
           },
         ],
-        secondaryNote: ANDROID_ROM_SHORTCUT_TIP,
+        secondaryNote: androidRomShortcutTip,
       };
     }
 
@@ -415,22 +426,22 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
         needsAndroidRomShortcutTip: true,
         steps: [
           {
-            title: "点击地址栏右侧「⋮」菜单",
-            detail: "在 Firefox 地址栏旁打开三点浏览器菜单。",
+            title: t("step.firefox.menu.title"),
+            detail: t("step.firefox.menu.detail"),
             glyph: "more-vertical",
           },
           {
-            title: "选择「安装」或「添加到主屏幕」",
-            detail: "点击菜单中的「安装（Install）」或「添加到主屏幕」。",
+            title: t("step.firefox.install.title"),
+            detail: t("step.firefox.install.detail"),
             glyph: "plus-square",
           },
           {
-            title: "点击「添加」确认创建图标",
-            detail: "添加后即可从桌面直接独立打开。",
+            title: t("step.firefox.confirm.title"),
+            detail: t("step.firefox.confirm.detail"),
             glyph: "check-confirm",
           },
         ],
-        secondaryNote: ANDROID_ROM_SHORTCUT_TIP,
+        secondaryNote: androidRomShortcutTip,
       };
     }
 
@@ -449,22 +460,22 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
         needsAndroidRomShortcutTip: true,
         steps: [
           {
-            title: `打开${domesticLabel}工具栏菜单（「≡」或「⋮」）`,
-            detail: "在屏幕底部中间/右侧或右上角点击浏览器菜单按钮。",
+            title: t("step.domestic.menu.title", { browser: domesticLabel }),
+            detail: t("step.domestic.menu.detail"),
             glyph: "hamburger-menu",
           },
           {
-            title: "选择「添加到桌面 / 添加至主屏幕」",
-            detail: "部分浏览器位于「工具箱」或「收藏/书签」选项旁，选择「手机桌面 / 主屏幕」。",
+            title: t("step.domestic.add.title"),
+            detail: t("step.domestic.add.detail"),
             glyph: "plus-square",
           },
           {
-            title: "确认添加并检查桌面快捷方式权限",
-            detail: "点击确认后返回手机桌面即可看到 OpenHuddle 图标。",
+            title: t("step.domestic.confirm.title"),
+            detail: t("step.domestic.confirm.detail"),
             glyph: "check-confirm",
           },
         ],
-        secondaryNote: ANDROID_ROM_SHORTCUT_TIP,
+        secondaryNote: androidRomShortcutTip,
       };
     }
 
@@ -482,22 +493,22 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
       needsAndroidRomShortcutTip: true,
       steps: [
         {
-          title: "点击右上角「⋮」浏览器菜单",
-          detail: `在 ${chromiumLabel} 地址栏右侧打开更多菜单。`,
+          title: t("step.chromium.menu.title"),
+          detail: t("step.chromium.menu.detail", { browser: chromiumLabel }),
           glyph: "more-vertical",
         },
         {
-          title: "选择「添加到主屏幕」或「安装应用」",
-          detail: "在菜单列表中点击「安装应用」或「添加到主屏幕」。",
+          title: t("step.chromium.install.title"),
+          detail: t("step.chromium.install.detail"),
           glyph: "plus-square",
         },
         {
-          title: "在确认框中点击「安装 / 添加」",
-          detail: "完成后即可从手机桌面以独立 App 窗口秒开 OpenHuddle。",
+          title: t("step.chromium.confirm.title"),
+          detail: t("step.chromium.confirm.detail"),
           glyph: "check-confirm",
         },
       ],
-      secondaryNote: ANDROID_ROM_SHORTCUT_TIP,
+      secondaryNote: androidRomShortcutTip,
     };
   }
 
@@ -505,7 +516,7 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
   return {
     os: "desktop",
     mode: "desktop-browser",
-    browserLabel: "桌面浏览器",
+    browserLabel: t("browser.desktop"),
     inAppHost: null,
     inAppHostLabel: null,
     isStandalone: false,
@@ -516,8 +527,8 @@ export function detectPwaPlatformProfile(input: PwaPlatformEnvironmentInput): Pw
     needsAndroidRomShortcutTip: false,
     steps: [
       {
-        title: "在手机浏览器中打开当前地址，或使用桌面浏览器地址栏右侧安装图标",
-        detail: "支持 iOS Safari「分享 → 添加到主屏幕」与 Android 浏览器一键安装到桌面。",
+        title: t("step.desktop.title"),
+        detail: t("step.desktop.detail"),
         glyph: "plus-square",
       },
     ],

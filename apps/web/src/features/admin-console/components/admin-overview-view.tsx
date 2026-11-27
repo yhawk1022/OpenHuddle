@@ -22,13 +22,15 @@ import {
   Radio,
   Users,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   AppButton,
   type SegmentedTabItem,
   SegmentedTabs,
 } from "../../../components/primitives/index.js";
+import { formatNumber } from "../../../lib/i18n/index.js";
 import { adminOverviewQueryOptions } from "../api/admin-console.queries.js";
+import { getAuditActionLabel, resolveAdminErrorMessage, useAdminI18n } from "../i18n/index.js";
 import { AdminBreakdownCard, AdminTrendChartCard } from "./admin-charts.js";
 import {
   AdminErrorState,
@@ -50,12 +52,6 @@ export type AdminNavSection =
   | "audit-logs";
 
 type WindowPreset = "7" | "14" | "30";
-
-const WINDOW_TABS: ReadonlyArray<SegmentedTabItem<WindowPreset>> = [
-  { value: "7", label: "近 7 天" },
-  { value: "14", label: "近 14 天" },
-  { value: "30", label: "近 30 天" },
-];
 
 const REACH_ACCENT_MAP: Readonly<Record<string, string>> = {
   online_sse: "bg-[#16A34A] dark:bg-[#34D399]",
@@ -82,9 +78,39 @@ export interface AdminOverviewViewProps {
  * 渲染后台运营数据统计大盘。
  */
 export function AdminOverviewView(props: AdminOverviewViewProps) {
+  const { locale, t, tp } = useAdminI18n();
   const [windowPreset, setWindowPreset] = useState<WindowPreset>("14");
   const windowDays = Number(windowPreset);
   const overviewQuery = useQuery(adminOverviewQueryOptions(windowDays));
+
+  const windowTabs = useMemo<ReadonlyArray<SegmentedTabItem<WindowPreset>>>(
+    () => [
+      { value: "7", label: t("overview.window.7d") },
+      { value: "14", label: t("overview.window.14d") },
+      { value: "30", label: t("overview.window.30d") },
+    ],
+    [t],
+  );
+
+  const reachLabelMap = useMemo<Readonly<Record<string, string>>>(
+    () => ({
+      online_sse: t("common.reach.online_sse"),
+      hosted_ready: t("common.reach.hosted_ready"),
+      webhook: t("common.reach.webhook"),
+      polling: t("common.reach.polling"),
+      offline: t("common.reach.offline"),
+    }),
+    [t],
+  );
+
+  const governanceLabelMap = useMemo<Readonly<Record<string, string>>>(
+    () => ({
+      free: t("common.governance.free"),
+      round_table: t("common.governance.round_table"),
+      proposal: t("common.governance.proposal"),
+    }),
+    [t],
+  );
 
   if (overviewQuery.isPending) {
     return (
@@ -105,12 +131,12 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
   if (overviewQuery.isError || !overviewQuery.data) {
     return (
       <AdminErrorState
-        title="无法加载统计大盘"
-        message={
-          overviewQuery.error instanceof Error
-            ? overviewQuery.error.message
-            : "请检查网络或管理员权限后重试"
-        }
+        title={t("overview.error.title")}
+        message={resolveAdminErrorMessage(
+          overviewQuery.error,
+          t("overview.error.fallback"),
+          locale,
+        )}
         onRetry={() => void overviewQuery.refetch()}
       />
     );
@@ -118,6 +144,7 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
 
   const data = overviewQuery.data;
   const { kpis, runtime } = data;
+  const fmt = (value: number): string => formatNumber(value, undefined, locale);
 
   return (
     <div className="space-y-5">
@@ -125,66 +152,84 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <AdminStatusPill tone="success" dotClass="bg-[#16A34A] dark:bg-[#34D399]">
-            运行中 · {formatUptimeDuration(runtime.uptimeSec)}
+            {t("overview.runtime.running", {
+              uptime: formatUptimeDuration(runtime.uptimeSec, locale),
+            })}
           </AdminStatusPill>
           <AdminStatusPill tone="neutral">
             <Database className="mr-1 inline h-3 w-3" />
-            {runtime.databaseDriver === "postgres" ? "PostgreSQL 16+" : "PGlite 嵌入式"}
+            {runtime.databaseDriver === "postgres"
+              ? "PostgreSQL 16+"
+              : t("overview.runtime.dbPglite")}
           </AdminStatusPill>
           <AdminStatusPill tone="neutral">
             <Radio className="mr-1 inline h-3 w-3" />
-            {runtime.realtimeBusDriver === "postgres" ? "PG LISTEN/NOTIFY" : "进程内实时总线"}
+            {runtime.realtimeBusDriver === "postgres"
+              ? "PG LISTEN/NOTIFY"
+              : t("overview.runtime.busMemory")}
           </AdminStatusPill>
           <AdminStatusPill tone="info">
             <Activity className="mr-1 inline h-3 w-3" />
-            实时连接 {runtime.activeAgentConnections} Agent / {runtime.activeRoomSubscriptions}{" "}
-            房间订阅
+            {t("overview.runtime.liveConnections", {
+              agents: fmt(runtime.activeAgentConnections),
+              rooms: fmt(runtime.activeRoomSubscriptions),
+            })}
           </AdminStatusPill>
         </div>
 
         <SegmentedTabs
           value={windowPreset}
           onValueChange={setWindowPreset}
-          items={WINDOW_TABS}
+          items={windowTabs}
           size="sm"
-          ariaLabel="选择统计趋势时间范围"
+          ariaLabel={t("overview.window.ariaLabel")}
         />
       </div>
 
       {/* 2. 六大核心 KPI 指标卡 */}
       <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
         <AdminStatCard
-          label="注册人类账号"
+          label={t("overview.kpi.users.label")}
           value={kpis.totalUsers}
           icon={<Users className="h-4 w-4" />}
           badge={
             kpis.suspendedUsers > 0 ? (
-              <AdminStatusPill tone="danger">封禁 {kpis.suspendedUsers}</AdminStatusPill>
+              <AdminStatusPill tone="danger">
+                {t("overview.kpi.users.suspendedBadge", { count: fmt(kpis.suspendedUsers) })}
+              </AdminStatusPill>
             ) : (
-              <AdminStatusPill tone="success">近 7 天 +{kpis.newUsers7d}</AdminStatusPill>
+              <AdminStatusPill tone="success">
+                {t("overview.kpi.users.new7dBadge", { count: fmt(kpis.newUsers7d) })}
+              </AdminStatusPill>
             )
           }
-          hint={`管理员 ${kpis.adminUsers} 名 · 点击管理账号`}
+          hint={tp("overview.kpi.users.hint", kpis.adminUsers, {
+            formatted: fmt(kpis.adminUsers),
+          })}
           onClick={() => props.onNavigateSection("users")}
         />
 
         <AdminStatCard
-          label="Web 活跃登录会话"
+          label={t("overview.kpi.sessions.label")}
           value={kpis.activeSessions}
           icon={<KeyRound className="h-4 w-4" />}
           badge={
             kpis.expiredSessions > 0 ? (
-              <AdminStatusPill tone="warning">待清理 {kpis.expiredSessions}</AdminStatusPill>
+              <AdminStatusPill tone="warning">
+                {t("overview.kpi.sessions.expiredBadge", { count: fmt(kpis.expiredSessions) })}
+              </AdminStatusPill>
             ) : (
-              <AdminStatusPill tone="neutral">状态健康</AdminStatusPill>
+              <AdminStatusPill tone="neutral">
+                {t("overview.kpi.sessions.healthyBadge")}
+              </AdminStatusPill>
             )
           }
-          hint="支持实时查验与强制踢下线"
+          hint={t("overview.kpi.sessions.hint")}
           onClick={() => props.onNavigateSection("sessions")}
         />
 
         <AdminStatCard
-          label="已接入 Agent"
+          label={t("overview.kpi.agents.label")}
           value={kpis.totalAgents}
           icon={<Bot className="h-4 w-4" />}
           badge={
@@ -196,49 +241,68 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
                   : "bg-[#939BAD] dark:bg-[#586075]"
               }
             >
-              SSE 在线 {kpis.onlineSseAgents}
+              {t("overview.kpi.agents.sseBadge", { count: fmt(kpis.onlineSseAgents) })}
             </AdminStatusPill>
           }
-          hint="覆盖本地守护与云端托管智能体"
+          hint={t("overview.kpi.agents.hint")}
           onClick={() => props.onNavigateSection("agents")}
         />
 
         <AdminStatCard
-          label="协作群聊房间"
+          label={t("overview.kpi.rooms.label")}
           value={kpis.totalRooms}
           icon={<MessagesSquare className="h-4 w-4" />}
           badge={
             kpis.pausedBudgetRooms > 0 ? (
-              <AdminStatusPill tone="warning">预算挂起 {kpis.pausedBudgetRooms}</AdminStatusPill>
+              <AdminStatusPill tone="warning">
+                {t("overview.kpi.rooms.pausedBadge", { count: fmt(kpis.pausedBudgetRooms) })}
+              </AdminStatusPill>
             ) : (
-              <AdminStatusPill tone="info">公开分享 {kpis.publicShareableRooms}</AdminStatusPill>
+              <AdminStatusPill tone="info">
+                {t("overview.kpi.rooms.publicBadge", { count: fmt(kpis.publicShareableRooms) })}
+              </AdminStatusPill>
             )
           }
-          hint="支持跨房内容审查、治理热调控与解散"
+          hint={t("overview.kpi.rooms.hint")}
           onClick={() => props.onNavigateSection("rooms")}
         />
 
         <AdminStatCard
-          label="累计消息总数"
+          label={t("overview.kpi.messages.label")}
           value={kpis.totalMessages}
           icon={<MessageSquare className="h-4 w-4" />}
-          badge={<AdminStatusPill tone="info">24h +{kpis.messages24h}</AdminStatusPill>}
-          hint={`近 7 天 ${kpis.messages7d.toLocaleString()} 条 · 已撤回 ${kpis.recalledMessages} 条`}
+          badge={
+            <AdminStatusPill tone="info">
+              {t("overview.kpi.messages.badge24h", { count: fmt(kpis.messages24h) })}
+            </AdminStatusPill>
+          }
+          hint={t("overview.kpi.messages.hint", {
+            messages7d: fmt(kpis.messages7d),
+            recalled: fmt(kpis.recalledMessages),
+          })}
           onClick={() => props.onNavigateSection("rooms")}
         />
 
         <AdminStatCard
-          label="结构化提案与表态"
+          label={t("overview.kpi.proposals.label")}
           value={kpis.totalProposals}
           icon={<CheckSquare className="h-4 w-4" />}
           badge={
             kpis.openProposals > 0 ? (
-              <AdminStatusPill tone="warning">待拍板 {kpis.openProposals}</AdminStatusPill>
+              <AdminStatusPill tone="warning">
+                {t("overview.kpi.proposals.openBadge", { count: fmt(kpis.openProposals) })}
+              </AdminStatusPill>
             ) : (
-              <AdminStatusPill tone="success">已通过 {kpis.approvedProposals}</AdminStatusPill>
+              <AdminStatusPill tone="success">
+                {t("overview.kpi.proposals.approvedBadge", { count: fmt(kpis.approvedProposals) })}
+              </AdminStatusPill>
             )
           }
-          hint={`驳回 ${kpis.rejectedProposals} · 累计投票 ${kpis.totalVotes} · 有效配对码 ${kpis.activePairingCodes}`}
+          hint={t("overview.kpi.proposals.hint", {
+            rejected: fmt(kpis.rejectedProposals),
+            votes: fmt(kpis.totalVotes),
+            codes: fmt(kpis.activePairingCodes),
+          })}
           onClick={() => props.onNavigateSection("proposals")}
         />
       </div>
@@ -249,21 +313,23 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
       {/* 4. 三维结构分布条形卡 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <AdminBreakdownCard
-          title="Agent 宿主平台分布"
-          subtitle="各 CLI / IDE / 托管智能体接入占比"
+          title={t("overview.breakdown.platforms.title")}
+          subtitle={t("overview.breakdown.platforms.subtitle")}
           entries={data.agentPlatformDistribution}
         />
         <AdminBreakdownCard
-          title="Agent 在线可达通道"
-          subtitle="实时 SSE、Webhook 与巡检健康分布"
+          title={t("overview.breakdown.reach.title")}
+          subtitle={t("overview.breakdown.reach.subtitle")}
           entries={data.agentReachDistribution}
           accentMap={REACH_ACCENT_MAP}
+          labelMap={reachLabelMap}
         />
         <AdminBreakdownCard
-          title="群聊治理模式分布"
-          subtitle="自由讨论、圆桌轮流与提案收敛使用情况"
+          title={t("overview.breakdown.governance.title")}
+          subtitle={t("overview.breakdown.governance.subtitle")}
           entries={data.roomGovernanceDistribution}
           accentMap={GOVERNANCE_ACCENT_MAP}
+          labelMap={governanceLabelMap}
         />
       </div>
 
@@ -273,10 +339,10 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
           <div className="flex items-center justify-between gap-2">
             <div>
               <h3 className="text-[14px] font-semibold text-[#111318] dark:text-[#ECEFF6]">
-                活跃群聊 Top 5
+                {t("overview.topRooms.title")}
               </h3>
               <p className="mt-0.5 text-xs text-[#687082] dark:text-[#7D869C]">
-                按累计消息数与最近互动排序，点击进入消息审查
+                {t("overview.topRooms.subtitle")}
               </p>
             </div>
             <AppButton
@@ -285,13 +351,13 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
               trailingIcon={<ArrowRight className="h-3 w-3" />}
               onClick={() => props.onNavigateSection("rooms")}
             >
-              全部群聊
+              {t("overview.topRooms.viewAll")}
             </AppButton>
           </div>
 
           {data.topActiveRooms.length === 0 ? (
             <p className="py-8 text-center text-xs text-[#939BAD] dark:text-[#63636B]">
-              暂无群聊房间
+              {t("overview.topRooms.empty")}
             </p>
           ) : (
             <ul className="mt-3 divide-y divide-black/[0.05] dark:divide-white/[0.06]">
@@ -312,18 +378,23 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
                             {room.name}
                           </span>
                           {room.governanceStatus === "paused_budget" ? (
-                            <AdminStatusPill tone="warning">挂起</AdminStatusPill>
+                            <AdminStatusPill tone="warning">
+                              {t("common.status.pausedShort")}
+                            </AdminStatusPill>
                           ) : null}
                         </div>
                         <p className="truncate text-[11.5px] text-[#687082] dark:text-[#7D869C]">
-                          群主 {room.ownerDisplayName} · {room.memberCount} 成员 ·{" "}
-                          {room.proposalCount} 提案
+                          {t("overview.topRooms.meta", {
+                            owner: room.ownerDisplayName,
+                            members: fmt(room.memberCount),
+                            proposals: fmt(room.proposalCount),
+                          })}
                         </p>
                       </div>
                     </div>
                     <div className="shrink-0 text-right">
                       <span className="block font-mono text-[13px] font-semibold text-[#111318] tabular-nums dark:text-[#ECEFF6]">
-                        {room.messageCount} 条
+                        {t("overview.topRooms.messageCount", { count: fmt(room.messageCount) })}
                       </span>
                       <span className="block text-[11px] text-[#939BAD] dark:text-[#63636B]">
                         {formatAdminDateTime(room.lastMessageAtIso)}
@@ -340,10 +411,10 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
           <div className="flex items-center justify-between gap-2">
             <div>
               <h3 className="text-[14px] font-semibold text-[#111318] dark:text-[#ECEFF6]">
-                核心活跃用户 Top 5
+                {t("overview.topUsers.title")}
               </h3>
               <p className="mt-0.5 text-xs text-[#687082] dark:text-[#7D869C]">
-                统计本人及名下 Agent 发言总贡献，点击查看账号详情
+                {t("overview.topUsers.subtitle")}
               </p>
             </div>
             <AppButton
@@ -352,13 +423,13 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
               trailingIcon={<ArrowRight className="h-3 w-3" />}
               onClick={() => props.onNavigateSection("users")}
             >
-              全部用户
+              {t("overview.topUsers.viewAll")}
             </AppButton>
           </div>
 
           {data.topActiveUsers.length === 0 ? (
             <p className="py-8 text-center text-xs text-[#939BAD] dark:text-[#63636B]">
-              暂无用户账号
+              {t("overview.topUsers.empty")}
             </p>
           ) : (
             <ul className="mt-3 divide-y divide-black/[0.05] dark:divide-white/[0.06]">
@@ -379,23 +450,33 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
                             {user.displayName}
                           </span>
                           {user.role === "admin" ? (
-                            <AdminStatusPill tone="accent">管理员</AdminStatusPill>
+                            <AdminStatusPill tone="accent">
+                              {t("common.role.admin")}
+                            </AdminStatusPill>
                           ) : null}
                           {user.status === "suspended" ? (
-                            <AdminStatusPill tone="danger">已封禁</AdminStatusPill>
+                            <AdminStatusPill tone="danger">
+                              {t("common.status.suspended")}
+                            </AdminStatusPill>
                           ) : null}
                         </div>
                         <p className="truncate text-[11.5px] text-[#687082] dark:text-[#7D869C]">
-                          {user.email} · {user.agentCount} Agent · {user.ownedRoomCount} 建群
+                          {t("overview.topUsers.meta", {
+                            email: user.email,
+                            agents: fmt(user.agentCount),
+                            rooms: fmt(user.ownedRoomCount),
+                          })}
                         </p>
                       </div>
                     </div>
                     <div className="shrink-0 text-right">
                       <span className="block font-mono text-[13px] font-semibold text-[#111318] tabular-nums dark:text-[#ECEFF6]">
-                        {user.messageCount} 条
+                        {t("overview.topUsers.messageCount", { count: fmt(user.messageCount) })}
                       </span>
                       <span className="block text-[11px] text-[#939BAD] dark:text-[#63636B]">
-                        最近登录 {formatAdminDateTime(user.lastLoginAtIso)}
+                        {t("overview.topUsers.lastLogin", {
+                          time: formatAdminDateTime(user.lastLoginAtIso),
+                        })}
                       </span>
                     </div>
                   </button>
@@ -412,7 +493,7 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
           <div className="flex items-center gap-2">
             <FileClock className="h-4 w-4 text-[#687082] dark:text-[#8E96AB]" />
             <h3 className="text-[14px] font-semibold text-[#111318] dark:text-[#ECEFF6]">
-              近期管理操作审计
+              {t("overview.recentAudit.title")}
             </h3>
           </div>
           <AppButton
@@ -421,14 +502,14 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
             trailingIcon={<ArrowRight className="h-3 w-3" />}
             onClick={() => props.onNavigateSection("audit-logs")}
           >
-            查看完整日志
+            {t("overview.recentAudit.viewAll")}
           </AppButton>
         </div>
 
         {data.recentAuditLogs.length === 0 ? (
           <div className="mt-3 flex items-center justify-center gap-2 rounded-xl bg-black/[0.025] py-6 text-xs text-[#687082] dark:bg-white/[0.03] dark:text-[#7D869C]">
             <Cpu className="h-4 w-4" />
-            <span>暂无后台写操作记录，全部管理变更将自动留痕</span>
+            <span>{t("overview.recentAudit.empty")}</span>
           </div>
         ) : (
           <ul className="mt-3 divide-y divide-black/[0.05] dark:divide-white/[0.06]">
@@ -439,13 +520,18 @@ export function AdminOverviewView(props: AdminOverviewViewProps) {
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <AdminStatusPill tone="neutral">{log.action}</AdminStatusPill>
+                    <AdminStatusPill tone="neutral" title={log.action}>
+                      {getAuditActionLabel(log.action, t)}
+                    </AdminStatusPill>
                     <span className="font-medium text-[#111318] dark:text-[#ECEFF6]">
                       {log.summary}
                     </span>
                   </div>
                   <p className="mt-1 text-[11.5px] text-[#687082] dark:text-[#7D869C]">
-                    操作人 {log.actorDisplayName} ({log.actorEmail}) · 目标{" "}
+                    {t("overview.recentAudit.actorPrefix", {
+                      name: log.actorDisplayName,
+                      email: log.actorEmail,
+                    })}
                     <span className="font-mono">{log.targetId}</span>
                   </p>
                 </div>
